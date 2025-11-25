@@ -4,7 +4,6 @@
 # Xray-Proxya Bootstrap Installer
 # ==================================================
 
-# Github 链接 (请在部署前修改此处为你实际的仓库地址)
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/main.sh"
 
 # 目标安装路径
