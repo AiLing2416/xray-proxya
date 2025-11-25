@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager Script v2.0
+# Xray-Proxya Manager Script
 # Supports: VMess-WS | VLESS-XHTTP-ENC | Shadowsocks
 # ==================================================
 
