@@ -40,7 +40,7 @@ curl -sSL -o "$INSTALL_PATH" "$REMOTE_SCRIPT_URL"
 
 # 检查 curl 是否执行成功
 if [ $? -ne 0 ]; then
-    echo -e "${RED}❌ 下载失败 (curl error $?)。请检查网络或 URL 是否正确。${NC}"
+    echo -e "${RED}❌ 下载失败 (curl error $?)。${NC}"
     exit 1
 fi
 
