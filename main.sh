@@ -272,7 +272,7 @@ change_ports() {
     echo -e "当前端口 -> VMess: $PORT_VMESS, VLESS: $PORT_VLESS, SS: $PORT_SS"
     read -p "新 VMess 端口 (留空不改): " new_vm
     read -p "新 VLESS 端口 (留空不改): " new_vl
-    read -p "新 SS    端口 (留空不改): " new_ss
+    read -p "新 ShadowSocks 端口 (留空不改): " new_ss
     
     # 如果有输入则更新，否则保持原值
     [[ ! -z "$new_vm" ]] && sed -i "s/^PORT_VMESS=.*/PORT_VMESS=$new_vm/" "$CONF_FILE"
@@ -316,7 +316,7 @@ uninstall_xray() {
 # --- 主菜单 ---
 check_root
 
-echo -e "${BLUE}Xray-Proxya 管理脚本 v2.0${NC}"
+echo -e "${BLUE}Xray-Proxya 管理脚本 ${NC}"
 check_status
 echo -e ""
 echo -e "1. 安装 / 重置 Xray"
