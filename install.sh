@@ -20,7 +20,7 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 echo -e "⬇️  正在下载管理脚本..."
-curl -sSL -o "$INSTALL_PATH" "$REMOTE_SCRIPT_URL"
+curl -L -o "$INSTALL_PATH" "$REMOTE_SCRIPT_URL"
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}❌ 下载失败，请检查网络连接或 Github 链接。${NC}"
