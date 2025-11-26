@@ -5,7 +5,7 @@
 # ==================================================
 
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/main.sh"
-INSTALL_PATH="/usr/local/bin/xray-proxya"
+INSTALL_PATH="/usr/sbin/xray-proxya"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -23,6 +23,7 @@ elif [ -f "$INSTALL_PATH" ]; then
     rm -f "$INSTALL_PATH"
 fi
 
+rm -rf /usr/local/bin/xray-proxya
 echo -e "⬇️  下载脚本..."
 curl -sSL -o "$INSTALL_PATH" "$REMOTE_SCRIPT_URL"
 
