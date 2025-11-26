@@ -1,6 +1,6 @@
 # xray-proxya
 
-### 使用最新的 xray-core 部署令人放心的 ```VMess-AES-128-GCM``` 与 ```VLESS-XHTTP-Encryption```
+### 使用最新的 xray-core 部署令人放心的 ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768```
 附带 ShadowSocks-AES256-GCM
 
 
