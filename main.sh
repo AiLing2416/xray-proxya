@@ -4,6 +4,11 @@
 # Xray-Proxya Manager
 # ==================================================
 
+# --- 用户可配置变量 ---
+VMESS_CIPHER="chacha20-poly1305"
+SS_CIPHER="aes-256-gcm"
+# -----------------------------------------------
+
 CONF_DIR="/etc/xray-proxya"
 CONF_FILE="$CONF_DIR/config.env"
 XRAY_BIN="/usr/local/bin/xray-proxya-core/xray"
@@ -70,6 +75,7 @@ generate_config() {
     local enc_key=$7
     local dec_key=$8
     local ss_pass=$9
+    local ss_method=${10} # 第10个参数
 
     cat > "$JSON_FILE" <<EOF
 {
@@ -94,7 +100,7 @@ generate_config() {
       "port": $ss_p,
       "protocol": "shadowsocks",
       "settings": {
-        "method": "aes-256-gcm",
+        "method": "$ss_method",
         "password": "$ss_pass",
         "network": "tcp,udp"
       }
@@ -132,6 +138,7 @@ EOF
 
 install_xray() {
     echo -e "=== 安装向导 ==="
+    echo -e "加密配置: VMess [${YELLOW}$VMESS_CIPHER${NC}] | SS [${YELLOW}$SS_CIPHER${NC}]"
     
     read -p "VMess 端口 (默认 ${vmessp:-8081}): " port_vm
     read -p "VLESS 端口 (默认 ${vlessp:-8082}): " port_vl
@@ -166,6 +173,7 @@ install_xray() {
         return 1
     fi
 
+    # 保存配置到文件，包括当前使用的加密算法
     mkdir -p "$CONF_DIR"
     cat > "$CONF_FILE" <<EOF
 PORT_VMESS=$PORT_VMESS
@@ -177,9 +185,11 @@ PATH_VL=$PATH_VL
 PASS_SS=$PASS_SS
 ENC_KEY=$ENC_KEY
 DEC_KEY=$DEC_KEY
+CFG_VMESS_CIPHER=$VMESS_CIPHER
+CFG_SS_CIPHER=$SS_CIPHER
 EOF
 
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS"
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER"
     create_service
 
     echo -e "${GREEN}✅ 安装完成${NC}"
@@ -200,28 +210,31 @@ print_config_group() {
     local label=$2
     
     if [ -z "$ip_addr" ]; then return; fi
-
     local fmt_ip=$(format_ip "$ip_addr")
     
-    # VMess Link (aes-128-gcm)
+    # 使用配置文件中保存的算法变量
+    local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
+    local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
+
+    # VMess Link
     local vmess_json=$(jq -n \
-      --arg add "$ip_addr" --arg port "$PORT_VMESS" --arg id "$UUID" --arg path "$PATH_VM" \
-      '{v:"2", ps:"VMess-AES-128", add:$add, port:$port, id:$id, aid:"0", scy:"aes-128-gcm", net:"ws", type:"none", host:"", path:$path, tls:""}')
+      --arg add "$ip_addr" --arg port "$PORT_VMESS" --arg id "$UUID" --arg path "$PATH_VM" --arg scy "$vm_cipher" \
+      '{v:"2", ps:("VMess-" + $scy), add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
     local vmess_link="vmess://$(echo -n "$vmess_json" | base64 -w 0)"
 
     # VLESS Link
     local vless_link="vless://$UUID@$fmt_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#VLESS-XHTTP-ENC"
 
-    # Shadowsocks Link (aes-256-gcm)
-    local ss_auth=$(echo -n "aes-256-gcm:$PASS_SS" | base64 -w 0)
-    local ss_link="ss://$ss_auth@$fmt_ip:$PORT_SS#SS-AES-256"
+    # Shadowsocks Link
+    local ss_auth=$(echo -n "${ss_cipher}:$PASS_SS" | base64 -w 0)
+    local ss_link="ss://$ss_auth@$fmt_ip:$PORT_SS#SS-Xray"
 
     echo -e "\n${BLUE}--- $label ($ip_addr) ---${NC}"
-    echo -e "1️⃣  VMess (AES-128-GCM):"
+    echo -e "1️⃣  VMess ($vm_cipher):"
     echo -e "    ${GREEN}$vmess_link${NC}"
     echo -e "2️⃣  VLESS (XHTTP-ENC):"
     echo -e "    ${GREEN}$vless_link${NC}"
-    echo -e "3️⃣  Shadowsocks (AES-256-GCM):"
+    echo -e "3️⃣  Shadowsocks ($ss_cipher):"
     echo -e "    ${GREEN}$ss_link${NC}"
 }
 
@@ -262,7 +275,11 @@ change_ports() {
     [[ ! -z "$new_ss" ]] && sed -i "s/^PORT_SS=.*/PORT_SS=$new_ss/" "$CONF_FILE"
     
     source "$CONF_FILE"
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS"
+    # 使用保存的加密配置，防止修改端口时丢失加密设置
+    local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
+    local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
+    
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher"
     systemctl restart xray-proxya
     echo -e "${GREEN}✅ 端口已更新并重启${NC}"
 }
