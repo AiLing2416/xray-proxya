@@ -18,6 +18,9 @@ SERVICE_FILE="/etc/systemd/system/xray-proxya.service"
 ROTATOR_SERVICE="/etc/systemd/system/xray-ipv6-rotate.service"
 ROTATOR_BIN="/usr/local/bin/xray-ipv6-rotator"
 JSON_FILE="$XRAY_DIR/config.json"
+# 日志文件路径
+LOG_ACCESS="/var/log/xray-access.log"
+LOG_ERROR="/var/log/xray-error.log"
 LOG_IPV6="/var/log/xray-ipv6.log"
 
 RED='\033[0;31m'
@@ -34,7 +37,7 @@ check_root() {
 }
 
 install_deps() {
-    echo -e "${BLUE}📦 安装依赖 (curl, jq, python3)...${NC}"
+    echo -e "${BLUE}📦 安装依赖...${NC}"
     apt-get update -qq >/dev/null
     apt-get install -y curl jq unzip openssl python3 >/dev/null 2>&1
 }
@@ -52,11 +55,9 @@ check_status() {
         echo -e "🔴 Xray 服务: ${RED}未运行${NC}"
     fi
 
-    # 2. IPv6 轮换状态与连通性验证
+    # 2. IPv6 轮换状态
     if systemctl is-active --quiet xray-ipv6-rotate; then
         echo -ne "🟢 IPv6 轮换: ${GREEN}运行中${NC}"
-        
-        # 获取最新 IP
         local current_ip=""
         if [ -f "$LOG_IPV6" ]; then
             current_ip=$(tail -n 1 "$LOG_IPV6" | awk '{print $NF}')
@@ -73,15 +74,15 @@ check_status() {
 
             # 真实模拟验证 (通过本地 Socks5 代理)
             if [ -n "$debug_port" ]; then
-                local check_res=$(curl -s -6 --max-time 5 -x socks5h://127.0.0.1:$debug_port https://ipconfig.me 2>/dev/null)
+                # 增加 -L (Follow Redirects) 和更长的超时
+                local check_res=$(curl -s -L -6 --max-time 8 -x socks5h://127.0.0.1:$debug_port https://ipconfig.me 2>/dev/null)
                 
-                # 检查返回的 IP 是否包含我们的目标 IP (部分匹配即可，应对 subnet 格式差异)
                 if [[ "$check_res" == *"$current_ip"* ]]; then
                     echo -e " [${GREEN}✅ 验证通过${NC}]"
                 elif [[ -z "$check_res" ]]; then
                     echo -e " [${RED}❌ 连接超时${NC}]"
                 else
-                    echo -e " [${YELLOW}⚠️  IP不匹配: $check_res${NC}]"
+                    echo -e " [${YELLOW}⚠️  IP不匹配: ${check_res:0:20}...${NC}]"
                 fi
             else
                 echo -e " (无调试端口)"
@@ -113,11 +114,15 @@ generate_config() {
     local enc_key=$7; local dec_key=$8; local ss_pass=$9; local ss_method=${10}
     local debug_p=${11}
 
-    # 注意: outbound 增加了 sockopt: mark 255
-    # 这确保只有 Xray 的流量被标记，用于 ip6tables 路由，防止断开 SSH
+    # 变更: 启用日志文件，级别 info
+    # 变更: Freedom 增加 UseIP 策略
     cat > "$JSON_FILE" <<EOF
 {
-  "log": { "loglevel": "warning" },
+  "log": {
+    "loglevel": "info",
+    "access": "$LOG_ACCESS",
+    "error": "$LOG_ERROR"
+  },
   "inbounds": [
     {
       "tag": "vmess-in", "port": $vmess_p, "protocol": "vmess",
@@ -141,6 +146,7 @@ generate_config() {
   "outbounds": [ 
     { 
       "protocol": "freedom",
+      "settings": { "domainStrategy": "UseIP" },
       "streamSettings": { "sockopt": { "mark": 255 } }
     } 
   ]
@@ -149,6 +155,7 @@ EOF
 }
 
 create_service() {
+    # 变更: ExecStartPre 清空日志
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Xray-Proxya Service
@@ -159,6 +166,7 @@ User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
+ExecStartPre=/bin/sh -c 'truncate -s 0 $LOG_ACCESS $LOG_ERROR'
 ExecStart=$XRAY_BIN run -c $JSON_FILE
 Restart=on-failure
 RestartPreventExitStatus=23
@@ -178,7 +186,6 @@ EOF
 generate_rotator_script() {
     cat > "$ROTATOR_BIN" <<'EOF'
 #!/bin/bash
-# Xray IPv6 Rotator
 CONF_FILE="/etc/xray-proxya/rotator.env"
 LOG_FILE="/var/log/xray-ipv6.log"
 
@@ -188,9 +195,8 @@ source "$CONF_FILE"
 echo "--- Service Started $(date) ---" > "$LOG_FILE"
 
 cleanup() {
-    echo "Stopping rotation..." >> "$LOG_FILE"
+    echo "Stopping..." >> "$LOG_FILE"
     if [ ! -z "$CURRENT_IP" ]; then
-        # 删除带有 mark 255 的规则
         ip6tables -t nat -D POSTROUTING -m mark --mark 255 -j SNAT --to-source "$CURRENT_IP" 2>/dev/null
     fi
     ip route del local "$CIDR" dev lo 2>/dev/null
@@ -208,7 +214,7 @@ while true; do
         echo "Gen IP Error" >> "$LOG_FILE"; sleep 60; continue
     fi
 
-    # 关键修改: 仅匹配 mark 255 (Xray流量)，保护 SSH
+    # 仅针对 Mark 255 (Xray流量) 进行 SNAT
     ip6tables -t nat -I POSTROUTING 1 -m mark --mark 255 -j SNAT --to-source "$NEW_IP"
     echo "$(date '+%Y-%m-%d %H:%M:%S') Rotated to: $NEW_IP" >> "$LOG_FILE"
 
@@ -250,24 +256,21 @@ configure_ipv6_rotate() {
     fi
 
     echo -e "=== 配置 IPv6 轮换 ==="
-    echo -e "${BLUE}本机 IPv6 检测:${NC}"
+    echo -e "${BLUE}本机 IPv6:${NC}"
     ip -6 addr show scope global | grep inet6 | awk '{print "   " $2}'
     echo ""
     
     if [ -n "$old_cidr" ]; then
-        echo -e "当前配置: CIDR=[${GREEN}$old_cidr${NC}] 间隔=[${GREEN}$old_int${NC}分]"
+        echo -e "当前: CIDR=[${GREEN}$old_cidr${NC}] 间隔=[${GREEN}$old_int${NC}分]"
         read -p "是否重新配置? (y/n): " reconf
         if [[ "$reconf" != "y" ]]; then return; fi
     fi
 
     echo -e "\n请输入 IPv6 CIDR (例: 2001:db8:abcd::/64)"
     read -p "CIDR: " input_cidr
-    
-    if [[ ! "$input_cidr" =~ .*:.*\/[0-9]+ ]]; then
-        echo -e "${RED}❌ 格式错误${NC}"; return
-    fi
+    if [[ ! "$input_cidr" =~ .*:.*\/[0-9]+ ]]; then echo -e "${RED}格式错误${NC}"; return; fi
 
-    read -p "轮换间隔 (分钟，建议 60): " input_interval
+    read -p "轮换间隔 (分钟): " input_interval
     if [[ ! "$input_interval" =~ ^[0-9]+$ ]]; then input_interval=60; fi
 
     mkdir -p "$CONF_DIR"
@@ -277,9 +280,42 @@ configure_ipv6_rotate() {
     generate_rotator_script
     systemctl enable xray-ipv6-rotate >/dev/null 2>&1
     systemctl restart xray-ipv6-rotate
-    
-    echo -e "${GREEN}✅ 轮换服务已启动/更新${NC}"
+    echo -e "${GREEN}✅ 轮换服务已启动${NC}"
     sleep 1
+}
+
+# --- 调试菜单 ---
+
+debug_info_menu() {
+    local key
+    while true; do
+        clear
+        echo -e "${BLUE}=== Xray 调试信息 ===${NC}"
+        echo -e "📅 时间: $(date)"
+        echo -e "💿 系统: $(cat /etc/debian_version 2>/dev/null || echo 'Unknown')"
+        echo -e "---------------------------------"
+        echo -e "⚙️  [配置变量] ($CONF_FILE)"
+        if [ -f "$CONF_FILE" ]; then cat "$CONF_FILE"; else echo "无配置文件"; fi
+        echo -e "---------------------------------"
+        echo -e "📂 [目录/文件]"
+        echo -e "Bin: $XRAY_BIN"
+        echo -e "Cfg: $JSON_FILE"
+        echo -e "Log: $LOG_ACCESS ($(du -h $LOG_ACCESS 2>/dev/null | cut -f1))"
+        echo -e "Log: $LOG_ERROR ($(du -h $LOG_ERROR 2>/dev/null | cut -f1))"
+        echo -e "---------------------------------"
+        echo -e "🔄 [SNAT 规则 (IPv6 NAT Table)]"
+        ip6tables -t nat -L POSTROUTING -n -v | grep -E "SNAT|mark" | head -n 5
+        echo -e "---------------------------------"
+        echo -e "🛤️  [IPv6 路由表 (Local)]"
+        ip -6 route show table local | grep "dev lo" | head -n 5
+        echo -e "---------------------------------"
+        echo -e "🏃 [服务进程]"
+        ps -ef | grep -E "xray|rotator" | grep -v grep
+        echo -e "---------------------------------"
+        echo -e "按 ${YELLOW}q${NC} 返回主菜单，按 ${GREEN}r${NC} 刷新"
+        read -n 1 -s key
+        if [[ "$key" == "q" ]]; then return; fi
+    done
 }
 
 # --- 菜单逻辑 ---
@@ -294,23 +330,10 @@ ipv6_menu() {
         echo "3. 查看轮换日志"
         echo "0. 返回主菜单"
         read -p "选择: " v6_choice
-        
         case "$v6_choice" in
             1) configure_ipv6_rotate ;;
-            2) 
-                systemctl stop xray-ipv6-rotate
-                systemctl disable xray-ipv6-rotate
-                echo -e "${YELLOW}已禁用 IPv6 轮换${NC}" 
-                ;;
-            3) 
-                if [ -f "$LOG_IPV6" ]; then
-                    echo -e "${BLUE}--- 最新 10 条日志 ---${NC}"
-                    tail -n 10 "$LOG_IPV6"
-                    echo -e "${BLUE}---------------------${NC}"
-                else
-                    echo "暂无日志"
-                fi
-                ;;
+            2) systemctl stop xray-ipv6-rotate; systemctl disable xray-ipv6-rotate; echo -e "${YELLOW}已禁用${NC}" ;;
+            3) if [ -f "$LOG_IPV6" ]; then echo -e "${BLUE}--- Log ---${NC}"; tail -n 10 "$LOG_IPV6"; else echo "无日志"; fi ;;
             0) return ;;
             *) echo -e "${RED}无效${NC}" ;;
         esac
@@ -320,31 +343,28 @@ ipv6_menu() {
 xray_maintenance_menu() {
     while true; do
         echo -e "\n=== Xray 维护 ==="
-        echo "1. 启动服务 (Start)"
-        echo "2. 停止服务 (Stop)"
-        echo "3. 重启服务 (Restart)"
-        echo "4. 开机自启 (Enable)"
-        echo "5. 取消自启 (Disable)"
+        echo "1. 启动 (Start)"
+        echo "2. 停止 (Stop)"
+        echo "3. 重启 (Restart)"
+        echo "4. 自启 (Enable)"
+        echo "5. 禁自启 (Disable)"
         echo "0. 返回"
         read -p "选择: " m_choice
         case "$m_choice" in
-            1) systemctl start xray-proxya && echo -e "${GREEN}Done${NC}" ;;
-            2) systemctl stop xray-proxya && echo -e "${RED}Stopped${NC}" ;;
-            3) systemctl restart xray-proxya && echo -e "${GREEN}Restarted${NC}" ;;
-            4) systemctl enable xray-proxya && echo -e "${GREEN}Enabled${NC}" ;;
-            5) systemctl disable xray-proxya && echo -e "${YELLOW}Disabled${NC}" ;;
+            1) systemctl start xray-proxya && echo "Done" ;;
+            2) systemctl stop xray-proxya && echo "Stopped" ;;
+            3) systemctl restart xray-proxya && echo "Restarted" ;;
+            4) systemctl enable xray-proxya && echo "Enabled" ;;
+            5) systemctl disable xray-proxya && echo "Disabled" ;;
             0) return ;;
             *) echo -e "${RED}无效${NC}" ;;
         esac
     done
 }
 
-# --- 常规安装流程 ---
-
 install_xray() {
     echo -e "=== 安装向导 ==="
     echo -e "加密: VMess [${YELLOW}$VMESS_CIPHER${NC}] | SS [${YELLOW}$SS_CIPHER${NC}]"
-    
     read -p "VMess 端口 (${vmessp:-8081}): " port_vm; PORT_VMESS=${port_vm:-${vmessp:-8081}}
     read -p "VLESS 端口 (${vlessp:-8082}): " port_vl; PORT_VLESS=${port_vl:-${vlessp:-8082}}
     read -p "SS    端口 (${ssocks:-8083}): " port_ss; PORT_SS=${port_ss:-${ssocks:-8083}}
@@ -361,7 +381,6 @@ install_xray() {
     PATH_VM="/$(openssl rand -hex 12)"
     PATH_VL="/$(openssl rand -hex 12)"
     PASS_SS=$(generate_random 24)
-    # 生成随机调试端口 (40000-60000)
     PORT_DEBUG=$((RANDOM % 20000 + 40000))
     
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc)
@@ -388,7 +407,6 @@ EOF
 
     generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER" "$PORT_DEBUG"
     create_service
-
     echo -e "${GREEN}✅ 安装完成${NC}"
     show_links
 }
@@ -455,12 +473,12 @@ uninstall_xray() {
     systemctl stop xray-proxya xray-ipv6-rotate
     systemctl disable xray-proxya xray-ipv6-rotate
     rm "$SERVICE_FILE" "$ROTATOR_SERVICE" "$ROTATOR_BIN"
-    rm -rf "$XRAY_DIR" "$CONF_DIR"
+    rm -rf "$XRAY_DIR" "$CONF_DIR" "$LOG_ACCESS" "$LOG_ERROR" "$LOG_IPV6"
     systemctl daemon-reload
     echo -e "${GREEN}✅ 已卸载${NC}"
 }
 
-# --- 主菜单 (Loop) ---
+# --- 主菜单 ---
 check_root
 while true; do
     echo -e "\n${BLUE}Xray-Proxya Manager${NC}"
@@ -471,6 +489,7 @@ while true; do
     echo "3. 修改端口"
     echo "4. Xray 维护 (启停)"
     echo "5. IPv6 轮换配置"
+    echo "d. 调试信息 (Debug)"
     echo ""
     echo "9. 卸载"
     echo "0. 退出"
@@ -482,6 +501,7 @@ while true; do
         3) change_ports ;;
         4) xray_maintenance_menu ;;
         5) ipv6_menu ;;
+        d) debug_info_menu ;;
         9) uninstall_xray ;;
         0) exit 0 ;;
         *) echo -e "${RED}无效${NC}" ;;
