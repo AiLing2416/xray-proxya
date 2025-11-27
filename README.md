@@ -8,3 +8,6 @@
 ```
 bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh)
 ```
+
+### 推荐用法
+root 用户安装，使用普通用户通过 ```sudo xray-proxya``` 运行。
