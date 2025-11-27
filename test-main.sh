@@ -18,7 +18,7 @@ SERVICE_FILE="/etc/systemd/system/xray-proxya.service"
 ROTATOR_SERVICE="/etc/systemd/system/xray-ipv6-rotate.service"
 ROTATOR_BIN="/usr/local/bin/xray-ipv6-rotator"
 JSON_FILE="$XRAY_DIR/config.json"
-# 日志文件路径
+# 日志文件
 LOG_ACCESS="/var/log/xray-access.log"
 LOG_ERROR="/var/log/xray-error.log"
 LOG_IPV6="/var/log/xray-ipv6.log"
@@ -37,9 +37,10 @@ check_root() {
 }
 
 install_deps() {
-    echo -e "${BLUE}📦 安装依赖...${NC}"
+    echo -e "${BLUE}📦 安装依赖 (iptables, python3, etc)...${NC}"
     apt-get update -qq >/dev/null
-    apt-get install -y curl jq unzip openssl python3 >/dev/null 2>&1
+    # 增加 iptables 依赖，防止 ip6tables 命令缺失
+    apt-get install -y curl jq unzip openssl python3 iptables >/dev/null 2>&1
 }
 
 generate_random() {
@@ -48,14 +49,14 @@ generate_random() {
 }
 
 check_status() {
-    # 1. Xray 服务状态
+    # 1. Xray 服务
     if systemctl is-active --quiet xray-proxya; then
         echo -e "🟢 Xray 服务: ${GREEN}运行中${NC}"
     else
         echo -e "🔴 Xray 服务: ${RED}未运行${NC}"
     fi
 
-    # 2. IPv6 轮换状态
+    # 2. IPv6 轮换
     if systemctl is-active --quiet xray-ipv6-rotate; then
         echo -ne "🟢 IPv6 轮换: ${GREEN}运行中${NC}"
         local current_ip=""
@@ -64,28 +65,17 @@ check_status() {
         fi
 
         if [ -n "$current_ip" ]; then
-            echo -ne " | 目标 IP: ${YELLOW}$current_ip${NC}"
+            echo -ne " | 目标: ${YELLOW}$current_ip${NC}"
             
-            # 读取调试端口
-            local debug_port=""
+            # 简易状态检查 (详细检查在调试菜单)
             if [ -f "$CONF_FILE" ]; then
-                debug_port=$(grep "PORT_DEBUG" "$CONF_FILE" | cut -d= -f2)
-            fi
-
-            # 真实模拟验证 (通过本地 Socks5 代理)
-            if [ -n "$debug_port" ]; then
-                # 增加 -L (Follow Redirects) 和更长的超时
-                local check_res=$(curl -s -L -6 --max-time 8 -x socks5h://127.0.0.1:$debug_port https://ipconfig.me 2>/dev/null)
-                
-                if [[ "$check_res" == *"$current_ip"* ]]; then
-                    echo -e " [${GREEN}✅ 验证通过${NC}]"
-                elif [[ -z "$check_res" ]]; then
-                    echo -e " [${RED}❌ 连接超时${NC}]"
+                local dbg=$(grep "PORT_DEBUG" "$CONF_FILE" | cut -d= -f2)
+                # 仅做极快检查 (1s)
+                if curl -s -6 --max-time 1 -x socks5h://127.0.0.1:$dbg https://ipconfig.me >/dev/null 2>&1; then
+                    echo -e " [${GREEN}OK${NC}]"
                 else
-                    echo -e " [${YELLOW}⚠️  IP不匹配: ${check_res:0:20}...${NC}]"
+                    echo -e " [${RED}Check Fail${NC}]"
                 fi
-            else
-                echo -e " (无调试端口)"
             fi
         else
             echo -e " (等待生成...)"
@@ -114,8 +104,7 @@ generate_config() {
     local enc_key=$7; local dec_key=$8; local ss_pass=$9; local ss_method=${10}
     local debug_p=${11}
 
-    # 变更: 启用日志文件，级别 info
-    # 变更: Freedom 增加 UseIP 策略
+    # 策略调整: UseIPv4v6 提高兼容性
     cat > "$JSON_FILE" <<EOF
 {
   "log": {
@@ -146,7 +135,7 @@ generate_config() {
   "outbounds": [ 
     { 
       "protocol": "freedom",
-      "settings": { "domainStrategy": "UseIP" },
+      "settings": { "domainStrategy": "UseIPv4v6" },
       "streamSettings": { "sockopt": { "mark": 255 } }
     } 
   ]
@@ -155,7 +144,6 @@ EOF
 }
 
 create_service() {
-    # 变更: ExecStartPre 清空日志
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Xray-Proxya Service
@@ -194,6 +182,11 @@ source "$CONF_FILE"
 
 echo "--- Service Started $(date) ---" > "$LOG_FILE"
 
+# 启动时清理残留规则，防止累积
+ip6tables -t nat -D POSTROUTING -m mark --mark 255 -j SNAT --to-source "$CURRENT_IP" 2>/dev/null
+# 暴力清理可能存在的旧规则 (循环删除直到报错)
+while ip6tables -t nat -D POSTROUTING -m mark --mark 255 2>/dev/null; do :; done
+
 cleanup() {
     echo "Stopping..." >> "$LOG_FILE"
     if [ ! -z "$CURRENT_IP" ]; then
@@ -214,7 +207,7 @@ while true; do
         echo "Gen IP Error" >> "$LOG_FILE"; sleep 60; continue
     fi
 
-    # 仅针对 Mark 255 (Xray流量) 进行 SNAT
+    # 仅针对 Xray Mark 255 流量
     ip6tables -t nat -I POSTROUTING 1 -m mark --mark 255 -j SNAT --to-source "$NEW_IP"
     echo "$(date '+%Y-%m-%d %H:%M:%S') Rotated to: $NEW_IP" >> "$LOG_FILE"
 
@@ -284,35 +277,59 @@ configure_ipv6_rotate() {
     sleep 1
 }
 
-# --- 调试菜单 ---
+# --- 调试菜单 (Debug Menu) ---
 
 debug_info_menu() {
+    local dbg_port="未知"
+    if [ -f "$CONF_FILE" ]; then
+        dbg_port=$(grep "PORT_DEBUG" "$CONF_FILE" | cut -d= -f2)
+    fi
+
     local key
     while true; do
         clear
-        echo -e "${BLUE}=== Xray 调试信息 ===${NC}"
-        echo -e "📅 时间: $(date)"
-        echo -e "💿 系统: $(cat /etc/debian_version 2>/dev/null || echo 'Unknown')"
-        echo -e "---------------------------------"
-        echo -e "⚙️  [配置变量] ($CONF_FILE)"
-        if [ -f "$CONF_FILE" ]; then cat "$CONF_FILE"; else echo "无配置文件"; fi
-        echo -e "---------------------------------"
-        echo -e "📂 [目录/文件]"
+        echo -e "${BLUE}=== Xray 调试与诊断 ===${NC}"
+        echo -e "🔧 本地调试代理: socks5://127.0.0.1:${YELLOW}${dbg_port}${NC}"
+        echo -e "----------------------------------------------------"
+        
+        echo -e "📡 [连通性测试 (通过本地代理)]"
+        
+        # IPv4 测试
+        echo -ne "IPv4 出站: "
+        local v4_res=$(curl -s -4 --max-time 3 -x socks5h://127.0.0.1:$dbg_port https://ipconfig.me 2>&1)
+        if [[ "$v4_res" =~ ^[0-9]+\. ]]; then
+            echo -e "${GREEN}$v4_res${NC}"
+        else
+            echo -e "${RED}失败 ($v4_res)${NC}"
+        fi
+
+        # IPv6 测试
+        echo -ne "IPv6 出站: "
+        local v6_res=$(curl -s -6 --max-time 5 -x socks5h://127.0.0.1:$dbg_port https://ipconfig.me 2>&1)
+        if [[ "$v6_res" =~ : ]]; then
+            echo -e "${GREEN}$v6_res${NC}"
+        else
+            echo -e "${RED}不可用${NC}"
+            echo -e "   ➥ 原因可能: 1.CIDR未路由(On-link)需NDP代理 2.网关不支持AnyIP 3.本机无IPv6"
+        fi
+        
+        echo -e "----------------------------------------------------"
+        echo -e "⚙️  [配置文件]"
         echo -e "Bin: $XRAY_BIN"
-        echo -e "Cfg: $JSON_FILE"
         echo -e "Log: $LOG_ACCESS ($(du -h $LOG_ACCESS 2>/dev/null | cut -f1))"
-        echo -e "Log: $LOG_ERROR ($(du -h $LOG_ERROR 2>/dev/null | cut -f1))"
-        echo -e "---------------------------------"
-        echo -e "🔄 [SNAT 规则 (IPv6 NAT Table)]"
-        ip6tables -t nat -L POSTROUTING -n -v | grep -E "SNAT|mark" | head -n 5
-        echo -e "---------------------------------"
-        echo -e "🛤️  [IPv6 路由表 (Local)]"
-        ip -6 route show table local | grep "dev lo" | head -n 5
-        echo -e "---------------------------------"
-        echo -e "🏃 [服务进程]"
-        ps -ef | grep -E "xray|rotator" | grep -v grep
-        echo -e "---------------------------------"
-        echo -e "按 ${YELLOW}q${NC} 返回主菜单，按 ${GREEN}r${NC} 刷新"
+        if [ -f "$ROTATOR_CONF" ]; then
+            source "$ROTATOR_CONF"
+            echo -e "Rotator: CIDR=$CIDR (Interval=${INTERVAL}m)"
+        fi
+        echo -e "----------------------------------------------------"
+        echo -e "🔥 [NAT 规则 (SNAT)]"
+        ip6tables -t nat -L POSTROUTING -n -v | grep -E "SNAT|mark" | head -n 3
+        echo -e "----------------------------------------------------"
+        echo -e "🛤️  [路由表 (Local)]"
+        ip -6 route show table local | grep "dev lo" | head -n 3
+        echo -e "----------------------------------------------------"
+        echo -e "按 ${YELLOW}q${NC} 返回，按 ${GREEN}r${NC} 刷新"
+        
         read -n 1 -s key
         if [[ "$key" == "q" ]]; then return; fi
     done
@@ -489,7 +506,7 @@ while true; do
     echo "3. 修改端口"
     echo "4. Xray 维护 (启停)"
     echo "5. IPv6 轮换配置"
-    echo "d. 调试信息 (Debug)"
+    echo "d. 调试与诊断 (Debug)"
     echo ""
     echo "9. 卸载"
     echo "0. 退出"
