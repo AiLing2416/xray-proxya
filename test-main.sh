@@ -284,12 +284,12 @@ debug_info_menu() {
         echo -e "Port: ${YELLOW}$debug_port${NC}"
         
         echo -ne "IPv4 (via Proxy): "
-        local v4_res=$(curl -s -4 --max-time 3 -x socks5h://127.0.0.1:$debug_port https://ipconfig.me 2>/dev/null)
+        local v4_res=$(curl -s -4 --max-time 3 -x socks5h://127.0.0.1:$debug_port https://iconfig.me 2>/dev/null)
         if [ -n "$v4_res" ]; then echo -e "${GREEN}$v4_res${NC}"; else echo -e "${RED}失败${NC}"; fi
         
         echo -ne "IPv6 (via Proxy): "
         # 捕获 curl 的错误输出和状态码
-        local v6_out=$(curl -v -6 --max-time 5 -x socks5h://127.0.0.1:$debug_port https://ipconfig.me 2>&1)
+        local v6_out=$(curl -v -6 --max-time 5 -x socks5h://127.0.0.1:$debug_port https://iconfig.me 2>&1)
         local v6_res=$(echo "$v6_out" | grep -v "*" | tail -n 1) # 尝试提取最后一行作为IP
         
         # 检查是否是 IP 地址格式
@@ -439,7 +439,7 @@ show_links() {
     source "$CONF_FILE"
     echo -e "🔑 UUID: ${YELLOW}$UUID${NC} | 📂 VLESS Path: $PATH_VL"
     
-    local ipv4=$(curl -s -4 --max-time 2 https://ipconfig.me || curl -s -4 --max-time 2 https://ifconfig.co)
+    local ipv4=$(curl -s -4 --max-time 2 https://iconfig.me || curl -s -4 --max-time 2 https://ifconfig.co)
     local ipv6=$(curl -s -6 --max-time 2 https://ifconfig.co)
     if [ -n "$ipv4" ]; then print_config_group "$ipv4" "IPv4"; fi
     if [ -n "$ipv6" ]; then print_config_group "$ipv6" "IPv6"; fi
