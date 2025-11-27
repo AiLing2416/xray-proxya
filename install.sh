@@ -32,7 +32,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-chmod 700 "$INSTALL_PATH"
+chmod 755 "$INSTALL_PATH"
 
 echo -e "${GREEN}✅ 安装成功${NC}"
 echo -e "请运行: ${GREEN}xray-proxya${NC}"
