@@ -59,24 +59,35 @@ check_status() {
         # 获取最新 IP
         local current_ip=""
         if [ -f "$LOG_IPV6" ]; then
-            # 日志格式: Date Time Rotated to: IP
             current_ip=$(tail -n 1 "$LOG_IPV6" | awk '{print $NF}')
         fi
 
         if [ -n "$current_ip" ]; then
-            echo -ne " | 当前 IP: ${YELLOW}$current_ip${NC}"
+            echo -ne " | 目标 IP: ${YELLOW}$current_ip${NC}"
             
-            # 实时验证
-            # 使用 --interface 强制指定出口 IP，检查是否通畅
-            local check_res=$(curl -s -6 --max-time 3 --interface "$current_ip" https://ipconfig.me 2>/dev/null)
-            
-            if [[ "$check_res" == *"$current_ip"* ]]; then
-                echo -e " [${GREEN}✅ 验证无误${NC}]"
+            # 读取调试端口
+            local debug_port=""
+            if [ -f "$CONF_FILE" ]; then
+                debug_port=$(grep "PORT_DEBUG" "$CONF_FILE" | cut -d= -f2)
+            fi
+
+            # 真实模拟验证 (通过本地 Socks5 代理)
+            if [ -n "$debug_port" ]; then
+                local check_res=$(curl -s -6 --max-time 5 -x socks5h://127.0.0.1:$debug_port https://ipconfig.me 2>/dev/null)
+                
+                # 检查返回的 IP 是否包含我们的目标 IP (部分匹配即可，应对 subnet 格式差异)
+                if [[ "$check_res" == *"$current_ip"* ]]; then
+                    echo -e " [${GREEN}✅ 验证通过${NC}]"
+                elif [[ -z "$check_res" ]]; then
+                    echo -e " [${RED}❌ 连接超时${NC}]"
+                else
+                    echo -e " [${YELLOW}⚠️  IP不匹配: $check_res${NC}]"
+                fi
             else
-                echo -e " [${RED}⚠️  验证失败${NC}]"
+                echo -e " (无调试端口)"
             fi
         else
-            echo -e " (等待生成 IP...)"
+            echo -e " (等待生成...)"
         fi
     else
         echo -e "⚪ IPv6 轮换: 未启用"
@@ -100,7 +111,10 @@ generate_config() {
     local vmess_p=$1; local vless_p=$2; local ss_p=$3; local uuid=$4
     local vmess_path=$5; local vless_path=$6
     local enc_key=$7; local dec_key=$8; local ss_pass=$9; local ss_method=${10}
+    local debug_p=${11}
 
+    # 注意: outbound 增加了 sockopt: mark 255
+    # 这确保只有 Xray 的流量被标记，用于 ip6tables 路由，防止断开 SSH
     cat > "$JSON_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -118,9 +132,18 @@ generate_config() {
     {
       "tag": "shadowsocks-in", "port": $ss_p, "protocol": "shadowsocks",
       "settings": { "method": "$ss_method", "password": "$ss_pass", "network": "tcp,udp" }
+    },
+    {
+      "tag": "debug-in", "port": $debug_p, "listen": "127.0.0.1", "protocol": "socks",
+      "settings": { "udp": true }
     }
   ],
-  "outbounds": [ { "protocol": "freedom" } ]
+  "outbounds": [ 
+    { 
+      "protocol": "freedom",
+      "streamSettings": { "sockopt": { "mark": 255 } }
+    } 
+  ]
 }
 EOF
 }
@@ -153,7 +176,6 @@ EOF
 # --- IPv6 轮换模块 ---
 
 generate_rotator_script() {
-    # 生成 Python 辅助脚本用于 IP 计算
     cat > "$ROTATOR_BIN" <<'EOF'
 #!/bin/bash
 # Xray IPv6 Rotator
@@ -163,39 +185,35 @@ LOG_FILE="/var/log/xray-ipv6.log"
 if [ ! -f "$CONF_FILE" ]; then echo "No config"; exit 1; fi
 source "$CONF_FILE"
 
-# 启动时清空旧日志
 echo "--- Service Started $(date) ---" > "$LOG_FILE"
 
-# 清理函数
 cleanup() {
     echo "Stopping rotation..." >> "$LOG_FILE"
     if [ ! -z "$CURRENT_IP" ]; then
-        ip6tables -t nat -D POSTROUTING -s "$CIDR" -j SNAT --to-source "$CURRENT_IP" 2>/dev/null
+        # 删除带有 mark 255 的规则
+        ip6tables -t nat -D POSTROUTING -m mark --mark 255 -j SNAT --to-source "$CURRENT_IP" 2>/dev/null
     fi
     ip route del local "$CIDR" dev lo 2>/dev/null
     exit 0
 }
 trap cleanup SIGTERM SIGINT
 
-# 添加路由
 ip route add local "$CIDR" dev lo 2>/dev/null
 CURRENT_IP=""
 
 while true; do
-    # 计算 IP
     NEW_IP=$(python3 -c "import ipaddress, random; net = ipaddress.IPv6Network('$CIDR'); print(net[random.randint(1, net.num_addresses - 1)])")
     
     if [ -z "$NEW_IP" ]; then
         echo "Gen IP Error" >> "$LOG_FILE"; sleep 60; continue
     fi
 
-    # 插入新规则
-    ip6tables -t nat -I POSTROUTING 1 -s "$CIDR" -j SNAT --to-source "$NEW_IP"
+    # 关键修改: 仅匹配 mark 255 (Xray流量)，保护 SSH
+    ip6tables -t nat -I POSTROUTING 1 -m mark --mark 255 -j SNAT --to-source "$NEW_IP"
     echo "$(date '+%Y-%m-%d %H:%M:%S') Rotated to: $NEW_IP" >> "$LOG_FILE"
 
-    # 删除旧规则
     if [ ! -z "$CURRENT_IP" ]; then
-        ip6tables -t nat -D POSTROUTING -s "$CIDR" -j SNAT --to-source "$CURRENT_IP" 2>/dev/null
+        ip6tables -t nat -D POSTROUTING -m mark --mark 255 -j SNAT --to-source "$CURRENT_IP" 2>/dev/null
     fi
     
     CURRENT_IP="$NEW_IP"
@@ -223,7 +241,6 @@ EOF
 }
 
 configure_ipv6_rotate() {
-    # 读取旧配置用于回显
     local old_cidr=""
     local old_int=""
     if [ -f "$ROTATOR_CONF" ]; then
@@ -253,7 +270,6 @@ configure_ipv6_rotate() {
     read -p "轮换间隔 (分钟，建议 60): " input_interval
     if [[ ! "$input_interval" =~ ^[0-9]+$ ]]; then input_interval=60; fi
 
-    # 写入配置
     mkdir -p "$CONF_DIR"
     echo "CIDR=$input_cidr" > "$ROTATOR_CONF"
     echo "INTERVAL=$input_interval" >> "$ROTATOR_CONF"
@@ -271,7 +287,7 @@ configure_ipv6_rotate() {
 ipv6_menu() {
     while true; do
         echo -e "\n=== IPv6 轮换配置 ==="
-        check_status # 在子菜单也显示状态
+        check_status
         echo ""
         echo "1. 启用 / 修改 CIDR 配置"
         echo "2. 禁用 / 停止 轮换"
@@ -345,6 +361,8 @@ install_xray() {
     PATH_VM="/$(openssl rand -hex 12)"
     PATH_VL="/$(openssl rand -hex 12)"
     PASS_SS=$(generate_random 24)
+    # 生成随机调试端口 (40000-60000)
+    PORT_DEBUG=$((RANDOM % 20000 + 40000))
     
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc)
     DEC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "Authentication: ML-KEM-768" | grep '"decryption":' | cut -d '"' -f 4)
@@ -357,6 +375,7 @@ install_xray() {
 PORT_VMESS=$PORT_VMESS
 PORT_VLESS=$PORT_VLESS
 PORT_SS=$PORT_SS
+PORT_DEBUG=$PORT_DEBUG
 UUID=$UUID
 PATH_VM=$PATH_VM
 PATH_VL=$PATH_VL
@@ -367,7 +386,7 @@ CFG_VMESS_CIPHER=$VMESS_CIPHER
 CFG_SS_CIPHER=$SS_CIPHER
 EOF
 
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER"
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER" "$PORT_DEBUG"
     create_service
 
     echo -e "${GREEN}✅ 安装完成${NC}"
@@ -423,7 +442,8 @@ change_ports() {
     source "$CONF_FILE"
     local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
     local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher"
+    local dbg_port=${PORT_DEBUG:-55555}
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher" "$dbg_port"
     systemctl restart xray-proxya
     echo -e "${GREEN}✅ 已重启${NC}"
 }
@@ -440,28 +460,30 @@ uninstall_xray() {
     echo -e "${GREEN}✅ 已卸载${NC}"
 }
 
-# --- 主菜单 ---
+# --- 主菜单 (Loop) ---
 check_root
-echo -e "${BLUE}Xray-Proxya Manager${NC}"
-check_status
-echo -e ""
-echo "1. 安装 / 重置"
-echo "2. 查看链接"
-echo "3. 修改端口"
-echo "4. Xray 维护 (启停)"
-echo "5. IPv6 轮换配置"
-echo ""
-echo "9. 卸载"
-echo "0. 退出"
-read -p "选择: " choice
+while true; do
+    echo -e "\n${BLUE}Xray-Proxya Manager${NC}"
+    check_status
+    echo -e ""
+    echo "1. 安装 / 重置"
+    echo "2. 查看链接"
+    echo "3. 修改端口"
+    echo "4. Xray 维护 (启停)"
+    echo "5. IPv6 轮换配置"
+    echo ""
+    echo "9. 卸载"
+    echo "0. 退出"
+    read -p "选择: " choice
 
-case "$choice" in
-    1) install_xray ;;
-    2) show_links ;;
-    3) change_ports ;;
-    4) xray_maintenance_menu ;;
-    5) ipv6_menu ;;
-    9) uninstall_xray ;;
-    0) exit 0 ;;
-    *) echo -e "${RED}无效${NC}" ;;
-esac
+    case "$choice" in
+        1) install_xray ;;
+        2) show_links ;;
+        3) change_ports ;;
+        4) xray_maintenance_menu ;;
+        5) ipv6_menu ;;
+        9) uninstall_xray ;;
+        0) exit 0 ;;
+        *) echo -e "${RED}无效${NC}" ;;
+    esac
+done
