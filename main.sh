@@ -223,7 +223,7 @@ print_config_group() {
     local vmess_link="vmess://$(echo -n "$vmess_json" | base64 -w 0)"
 
     # VLESS Link
-    local vless_link="vless://$UUID@$fmt_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#VLESS-XHTTP-ENC"
+    local vless_link="vless://$UUID@$fmt_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#VLess-ML-KEM-768"
 
     # Shadowsocks Link
     local ss_auth=$(echo -n "${ss_cipher}:$PASS_SS" | base64 -w 0)
