@@ -1,23 +1,22 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager (BETA)
+# Xray-Proxya Manager (Beta)
 # ==================================================
 
-# --- 配置区 ---
+# --- 加密套件配置 ---
 VMESS_CIPHER="aes-128-gcm"
 SS_CIPHER="aes-256-gcm"
+# ------------------
 
 CONF_DIR="/etc/xray-proxya"
 CONF_FILE="$CONF_DIR/config.env"
-IPV6_STATE_FILE="$CONF_DIR/ipv6_state"
+ROTATION_CONF="$CONF_DIR/rotation.env"
 XRAY_DIR="/usr/local/bin/xray-proxya-core"
 XRAY_BIN="$XRAY_DIR/xray"
 SERVICE_FILE="/etc/systemd/system/xray-proxya.service"
 JSON_FILE="$XRAY_DIR/config.json"
-TIMER_FILE="/etc/systemd/system/xray-proxya-rotate.timer"
-ROTATOR_SCRIPT="/usr/local/bin/xray-proxya-rotate"
-TEST_PORT=10085
+HTTP_TEST_PORT=10086
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,98 +24,116 @@ YELLOW='\033[0;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-# --- 基础工具 ---
-
 check_root() {
-    [[ "$EUID" -ne 0 ]] && echo -e "${RED}❌ 错误: 需要 root 权限${NC}" && exit 1
-}
-
-get_iface() {
-    # 优先检测 IPv4 默认路由，其次 IPv6
-    local iface=$(ip route show default | grep default | awk '{print $5}' | head -n 1)
-    if [[ -z "$iface" ]]; then
-        iface=$(ip -6 route show default | grep default | awk '{print $5}' | head -n 1)
+    if [ "$EUID" -ne 0 ]; then
+        echo -e "${RED}❌ 错误: 需要 root 权限${NC}"
+        exit 1
     fi
-    echo "$iface"
 }
 
-# --- 核心安装与依赖 ---
-
-install_core_and_deps() {
-    echo -e "${BLUE}📦 检查系统依赖...${NC}"
-    apt-get update -qq >/dev/null
+# 严格依赖检查与架构识别
+check_env_and_deps() {
+    echo -e "${BLUE}🔍 检查系统环境与依赖...${NC}"
     
-    # 严格检查并安装依赖 (Python3 必选)
-    DEPS="curl jq unzip openssl python3"
-    for dep in $DEPS; do
-        if ! command -v $dep &> /dev/null; then
-            echo -e "正在安装 $dep ..."
-            apt-get install -y $dep >/dev/null 2>&1
-            if ! command -v $dep &> /dev/null; then
-                echo -e "${RED}❌ 严重错误: 无法安装依赖 $dep${NC}"
-                exit 1
-            fi
-        fi
-    done
+    # 1. 自动识别网卡
+    DEFAULT_IFACE=$(ip route show default | awk '/default/ {print $5}' | head -n 1)
+    if [ -z "$DEFAULT_IFACE" ]; then
+        # 尝试由 IPv6 路由获取
+        DEFAULT_IFACE=$(ip -6 route show default | awk '/default/ {print $5}' | head -n 1)
+    fi
+    
+    if [ -z "$DEFAULT_IFACE" ]; then
+        echo -e "${RED}❌ 无法自动检测网络接口，请检查网络配置。${NC}"
+        exit 1
+    fi
+    echo -e "   检测到主网卡: ${GREEN}$DEFAULT_IFACE${NC}"
+    
+    # 2. 打印现有 IPv6
+    echo -e "   当前 IPv6 地址:"
+    ip -6 addr show dev "$DEFAULT_IFACE" scope global | grep "inet6" | awk '{print "   - " $2}'
 
-    # 架构检测
-    ARCH=$(uname -m)
-    case $ARCH in
-        x86_64)  XRAY_ARCH="64" ;;
-        aarch64) XRAY_ARCH="arm64-v8a" ;;
-        armv7l)  XRAY_ARCH="arm32-v7a" ;;
-        *)       echo -e "${RED}❌ 不支持的架构: $ARCH${NC}"; exit 1 ;;
+    # 3. 安装基础工具
+    local deps=("curl" "jq" "unzip" "openssl")
+    local install_list=""
+    for dep in "${deps[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then install_list="$install_list $dep"; fi
+    done
+    
+    # 4. 特别检查 Python3 (Debian Cloud-init 可能缺失)
+    if ! command -v python3 &> /dev/null; then install_list="$install_list python3"; fi
+
+    if [ -n "$install_list" ]; then
+        echo -e "${YELLOW}📦 正在安装缺失依赖:$install_list ...${NC}"
+        apt-get update -qq >/dev/null
+        apt-get install -y $install_list >/dev/null 2>&1
+        if [ $? -ne 0 ]; then
+            echo -e "${RED}❌ 依赖安装失败，脚本终止。${NC}"
+            exit 1
+        fi
+    fi
+}
+
+# IPv6 Only 兼容下载逻辑
+download_xray() {
+    echo -e "${BLUE}⬇️  正在获取 Xray 最新版本...${NC}"
+    
+    # 1. 架构检测
+    local arch=$(uname -m)
+    local xray_arch=""
+    case "$arch" in
+        x86_64) xray_arch="64" ;;
+        aarch64) xray_arch="arm64-v8a" ;;
+        *) echo -e "${RED}❌ 不支持的架构: $arch${NC}"; return 1 ;;
     esac
 
-    echo -e "${BLUE}⬇️  下载 Xray Core ($XRAY_ARCH)...${NC}"
+    # 2. 获取版本号 (不使用 API，通过重定向 URL 获取，支持 IPv6)
+    # GitHub Web 支持 IPv6，api.github.com 不支持
+    local latest_url=$(curl -Ls -o /dev/null -w %{url_effective} https://github.com/XTLS/Xray-core/releases/latest)
+    local version_tag=$(basename "$latest_url")
+
+    if [[ -z "$version_tag" || "$version_tag" == "latest" ]]; then
+        echo -e "${RED}❌ 无法获取版本号，请检查网络。${NC}"
+        return 1
+    fi
+
+    local download_link="https://github.com/XTLS/Xray-core/releases/download/${version_tag}/Xray-linux-${xray_arch}.zip"
+    echo -e "   检测到版本: ${GREEN}$version_tag${NC} (架构: $xray_arch)"
+    echo -e "   下载链接: $download_link"
+
+    # 3. 下载与解压
+    systemctl stop xray-proxya 2>/dev/null
     mkdir -p "$XRAY_DIR"
     
-    # 下载策略: GitHub Redirect -> Mirror
-    DOWNLOAD_URL="https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-${XRAY_ARCH}.zip"
-    MIRROR_URL="https://mirror.ghproxy.com/$DOWNLOAD_URL"
-
-    if curl -L -s -o /tmp/xray.zip "$DOWNLOAD_URL"; then
-        echo -e "${GREEN}✅ GitHub 下载成功${NC}"
-    else
-        echo -e "${YELLOW}⚠️  GitHub 下载失败，尝试镜像源...${NC}"
-        if curl -L -s -o /tmp/xray.zip "$MIRROR_URL"; then
-             echo -e "${GREEN}✅ 镜像源下载成功${NC}"
-        else
-             echo -e "${RED}❌ 严重错误: Xray 下载失败，请检查网络${NC}"
-             exit 1
-        fi
+    if ! curl -L -o /tmp/xray.zip "$download_link"; then
+        echo -e "${RED}❌ 下载失败。${NC}"
+        return 1
     fi
 
     unzip -o /tmp/xray.zip -d "$XRAY_DIR" >/dev/null 2>&1
     rm /tmp/xray.zip
     chmod +x "$XRAY_BIN"
-    
-    # 验证二进制
-    if ! "$XRAY_BIN" version >/dev/null 2>&1; then
-        echo -e "${RED}❌ Xray 二进制文件损坏或无法执行${NC}"
-        exit 1
-    fi
+    echo -e "${GREEN}✅ Xray Core 安装完成${NC}"
 }
 
-# --- IPv6 计算引擎 (Python) ---
-
-generate_ipv6_from_cidr() {
+# Python 辅助生成随机 IP
+python_gen_ip() {
     local cidr=$1
     python3 -c "
 import ipaddress, random, sys
 try:
     net = ipaddress.IPv6Network('$cidr', strict=False)
-    # 排除网络号，在范围内随机取
-    rand_int = random.randint(1, net.num_addresses - 1)
-    addr = net[rand_int]
-    print(str(addr))
+    # 排除子网路由任播地址等，简单起见在范围内随机
+    # 限制随机范围防止溢出，生成 64位 interface ID 即可满足绝大多数情况
+    rand_int = random.getrandbits(64)
+    # 确保生成的 IP 在子网内
+    ip_int = int(net.network_address) + (rand_int % int(net.num_addresses))
+    print(ipaddress.IPv6Address(ip_int))
 except Exception as e:
-    sys.exit(1)
+    print('ERROR')
 "
 }
 
-# --- 配置生成 ---
-
+# 生成配置文件 (双栈 + 自检支持)
 generate_config() {
     local vmess_p=$1
     local vless_p=$2
@@ -127,213 +144,194 @@ generate_config() {
     local enc_key=$7
     local dec_key=$8
     local ss_pass=$9
-    local priority=${10} # 4=IPv4优先, 6=IPv6优先
-    local v6_addr=${11}  # 动态IPv6地址(可选)
+    local ss_method=${10}
+    local ipv6_out=${11} # 如果有轮换 IP，传入此 IP，否则为空
+    local priority=${12} # "4" or "6"
 
     # 路由规则构建
-    local routing_rules=""
-    if [[ "$priority" == "6" ]]; then
-        # IPv6 优先: 默认走 out-v6 (如果 v6_addr 存在), 失败回退 out-v4
-        routing_rules='{ "type": "field", "network": "tcp,udp", "outboundTag": "out-v6" }'
+    local routing_rule=""
+    if [ "$priority" == "6" ]; then
+        # IPv6 优先：默认走 ipv6 出站，ipv4 回退
+        routing_rule='"rules": [ { "type": "field", "outboundTag": "out-ipv6", "network": "udp,tcp" } ]'
     else
-        # IPv4 优先: 默认走 out-v4, 特定域名可走 out-v6 (此处简化为默认v4)
-        routing_rules='{ "type": "field", "network": "tcp,udp", "outboundTag": "out-v4" }'
+        # IPv4 优先 (默认)：默认走 ipv4
+        routing_rule='"rules": [ { "type": "field", "outboundTag": "out-ipv4", "network": "udp,tcp" } ]'
     fi
 
-    # 出站构建
-    # out-v6: 如果有轮换IP，则添加 sendThrough
-    local send_through_field=""
-    [[ -n "$v6_addr" ]] && send_through_field="\"sendThrough\": \"$v6_addr\","
+    # IPv6 出站配置
+    local v6_settings="{}"
+    if [ -n "$ipv6_out" ]; then
+        v6_settings="{ \"domainStrategy\": \"UseIPv6\", \"sendThrough\": \"$ipv6_out\" }"
+    else
+        v6_settings="{ \"domainStrategy\": \"UseIPv6\" }"
+    fi
 
     cat > "$JSON_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
   "inbounds": [
     {
-      "tag": "vmess-in", "port": $vmess_p, "protocol": "vmess",
+      "tag": "vmess-in",
+      "port": $vmess_p,
+      "protocol": "vmess",
       "settings": { "clients": [ { "id": "$uuid", "level": 0 } ] },
       "streamSettings": { "network": "ws", "wsSettings": { "path": "$vmess_path" } }
     },
     {
-      "tag": "vless-enc-in", "port": $vless_p, "protocol": "vless",
+      "tag": "vless-enc-in",
+      "port": $vless_p,
+      "protocol": "vless",
       "settings": { "clients": [ { "id": "$uuid", "level": 0 } ], "decryption": "$dec_key" },
       "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "$vless_path" } }
     },
     {
-      "tag": "shadowsocks-in", "port": $ss_p, "protocol": "shadowsocks",
-      "settings": { "method": "$SS_CIPHER", "password": "$ss_pass", "network": "tcp,udp" }
+      "tag": "shadowsocks-in",
+      "port": $ss_p,
+      "protocol": "shadowsocks",
+      "settings": { "method": "$ss_method", "password": "$ss_pass", "network": "tcp,udp" }
     },
     {
-      "tag": "test-in", "listen": "127.0.0.1", "port": $TEST_PORT, "protocol": "http"
+      "tag": "http-test",
+      "listen": "127.0.0.1",
+      "port": $HTTP_TEST_PORT,
+      "protocol": "http"
     }
   ],
   "outbounds": [
-    { "tag": "out-v4", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4" } },
-    { "tag": "out-v6", "protocol": "freedom", $send_through_field "settings": { "domainStrategy": "UseIPv6" } }
+    { "tag": "out-ipv4", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4" } },
+    { "tag": "out-ipv6", "protocol": "freedom", "settings": $v6_settings }
   ],
   "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [
-      { "type": "field", "inboundTag": ["test-in"], "outboundTag": "out-v6" },
-      $routing_rules
-    ]
+    $routing_rule
   }
 }
 EOF
 }
 
-# --- IPv6 轮换逻辑 ---
-
-rotate_ipv6_action() {
-    # 核心轮换执行函数 (被 systemd 或手动调用)
-    if [ ! -f "$IPV6_STATE_FILE" ] || [ ! -f "$CONF_FILE" ]; then return; fi
-    source "$IPV6_STATE_FILE"
+# 核心：执行 IP 轮换与测试
+rotate_ip_now() {
+    if [ ! -f "$ROTATION_CONF" ] || [ ! -f "$CONF_FILE" ]; then
+        echo -e "${RED}❌ 未配置轮换或基础配置丢失${NC}"; return 1
+    fi
     source "$CONF_FILE"
+    source "$ROTATION_CONF"
 
-    IFACE=$(get_iface)
-    if [ -z "$IFACE" ]; then echo "无法获取网卡接口"; return; fi
+    echo -e "${BLUE}🔄 开始执行 IPv6 轮换...${NC}"
 
     # 1. 生成新 IP
-    NEW_IP=$(generate_ipv6_from_cidr "$ROT_CIDR")
-    if [ -z "$NEW_IP" ]; then echo "IP 生成失败"; return; fi
+    local NEW_IP=$(python_gen_ip "$ROT_CIDR")
+    if [ "$NEW_IP" == "ERROR" ] || [ -z "$NEW_IP" ]; then
+        echo -e "${RED}❌ IP 生成失败，检查 CIDR 格式。${NC}"; return 1
+    fi
+    echo -e "   生成 IP: $NEW_IP"
 
-    echo "生成的 IP: $NEW_IP"
+    # 2. 绑定到网卡
+    if ! ip -6 addr add "$NEW_IP/${ROT_CIDR##*/}" dev "$ROT_IFACE"; then
+        echo -e "${RED}❌ 绑定 IP 失败。${NC}"; return 1
+    fi
 
-    # 2. 绑定新 IP
-    ip -6 addr add "$NEW_IP/$ROT_MASK" dev "$IFACE"
-    
-    # 3. 更新 Xray 配置 (传入新 IP)
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" \
-                    "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$PRIORITY" "$NEW_IP"
-    
-    # 4. 重载服务
+    # 3. 更新 Xray 配置
+    local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
+    local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
+    # 强制优先使用 IPv6 出站以测试
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher" "$NEW_IP" "$ROT_PRIORITY"
     systemctl restart xray-proxya
-    
-    # 5. 测试连接 (Self-Test)
-    # 尝试通过本地代理访问检测 IP
-    CHECK_IP=$(curl -x "127.0.0.1:$TEST_PORT" -s -L --max-time 5 https://ipconfig.me || echo "Fail")
-    
-    if [[ "$CHECK_IP" == "$NEW_IP" ]]; then
-        echo "✅ 自检通过: $CHECK_IP"
-        # 6. 清理旧 IP (如果存在且不同)
-        if [[ -n "$CURRENT_V6" && "$CURRENT_V6" != "$NEW_IP" ]]; then
-             ip -6 addr del "$CURRENT_V6/$ROT_MASK" dev "$IFACE" 2>/dev/null
+
+    # 4. 自检
+    echo -e "   正在验证连通性 (curl -L https://ipconfig.me)..."
+    sleep 2 # 等待服务就绪
+    local TEST_IP=$(curl -x "http://127.0.0.1:$HTTP_TEST_PORT" -L -s --max-time 5 https://ipconfig.me)
+
+    echo -e "   [测试结果] 目标: $NEW_IP | 实际: $TEST_IP"
+
+    if [[ "$TEST_IP" == *"$NEW_IP"* ]]; then
+        echo -e "${GREEN}✅ 验证通过！新 IP 已生效。${NC}"
+        
+        # 清理旧 IP
+        if [ -n "$CURRENT_ROT_IP" ]; then
+            ip -6 addr del "$CURRENT_ROT_IP/${ROT_CIDR##*/}" dev "$ROT_IFACE" 2>/dev/null
         fi
-        # 更新状态文件
-        sed -i "s|^CURRENT_V6=.*|CURRENT_V6=$NEW_IP|" "$IPV6_STATE_FILE"
+        
+        # 保存状态
+        sed -i '/CURRENT_ROT_IP=/d' "$ROTATION_CONF"
+        echo "CURRENT_ROT_IP=$NEW_IP" >> "$ROTATION_CONF"
     else
-        echo "❌ 自检失败: 预期 $NEW_IP, 实际 $CHECK_IP. 回滚..."
-        # 回滚操作: 删除新 IP (如果不是 fail)，恢复旧配置? 
-        # 简化处理: 暂时保留新 IP 但输出警告，等待下一次轮换。或者在此处不做配置回滚，防止死循环。
+        echo -e "${RED}❌ 验证失败！回滚配置...${NC}"
+        # 回滚 Xray
+        generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher" "$CURRENT_ROT_IP" "$ROT_PRIORITY"
+        systemctl restart xray-proxya
+        # 删除无效的 IP
+        ip -6 addr del "$NEW_IP/${ROT_CIDR##*/}" dev "$ROT_IFACE" 2>/dev/null
     fi
 }
 
-setup_rotation() {
-    echo -e "=== IPv6 轮换设置 (Beta) ==="
-    IFACE=$(get_iface)
-    echo -e "检测到的网卡: ${GREEN}$IFACE${NC}"
-    echo -e "现有 IPv6 地址:"
-    ip -6 addr show dev "$IFACE" scope global | grep inet6 | awk '{print $2}'
-    echo ""
+# 轮换菜单
+ipv6_rotation_menu() {
+    check_env_and_deps
     
-    read -p "请输入 CIDR (如 2001:db8::/64): " cidr_input
-    # 验证 CIDR
-    TEST_GEN=$(generate_ipv6_from_cidr "$cidr_input")
-    if [ -z "$TEST_GEN" ]; then echo -e "${RED}❌ 无效的 CIDR${NC}"; return; fi
-    
-    read -p "轮换间隔 (分钟): " interval
-    read -p "优先级 (4=IPv4优先, 6=IPv6优先): " prio_input
-    [[ "$prio_input" != "6" ]] && prio_input="4"
-
-    # 保存状态
-    # 提取掩码长度用于 ip addr add
-    MASK_LEN=$(echo "$cidr_input" | awk -F'/' '{print $2}')
-    
-    mkdir -p "$CONF_DIR"
-    cat > "$IPV6_STATE_FILE" <<EOF
-ROT_CIDR=$cidr_input
-ROT_MASK=$MASK_LEN
-CURRENT_V6=
-EOF
-    # 更新主配置的优先级
-    if grep -q "PRIORITY=" "$CONF_FILE"; then
-        sed -i "s/^PRIORITY=.*/PRIORITY=$prio_input/" "$CONF_FILE"
+    echo -e "\n=== IPv6 动态轮换 (Beta) ==="
+    echo -e "当前网卡: ${GREEN}$DEFAULT_IFACE${NC}"
+    if [ -f "$ROTATION_CONF" ]; then
+        source "$ROTATION_CONF"
+        echo -e "状态: ${GREEN}已配置${NC} (CIDR: $ROT_CIDR, 间隔: ${ROT_INTERVAL}m, 优先: ipv$ROT_PRIORITY)"
     else
-        echo "PRIORITY=$prio_input" >> "$CONF_FILE"
+        echo -e "状态: ${YELLOW}未配置${NC}"
     fi
+    echo "--------------------------"
+    echo "1. 配置/更新 轮换策略"
+    echo "2. 立即执行一次轮换 (测试)"
+    echo "3. 停止并清除轮换"
+    echo "0. 返回"
+    read -p "选择: " r_choice
 
-    # 创建轮换脚本
-    cat > "$ROTATOR_SCRIPT" <<EOF
-#!/bin/bash
-source $REMOTE_SCRIPT_URL 2>/dev/null || true # 占位
-# 实际逻辑由主脚本函数提供，此处调用主脚本的 export 功能
-# 为简化，直接复制 rotate_ipv6_action 的核心依赖
-bash -c "source $0; rotate_ipv6_action"
+    case "$r_choice" in
+        1)
+            read -p "输入 CIDR (如 2001:db8::/64): " cidr_in
+            # 简单验证
+            local test_gen=$(python_gen_ip "$cidr_in")
+            if [ "$test_gen" == "ERROR" ]; then echo -e "${RED}无效的 CIDR${NC}"; return; fi
+            
+            read -p "优先使用 IPv4 还是 IPv6? (4/6): " pri_in
+            [[ "$pri_in" != "6" ]] && pri_in="4"
+            
+            read -p "轮换间隔 (分钟): " interval_in
+            
+            # 保存配置
+            cat > "$ROTATION_CONF" <<EOF
+ROT_IFACE=$DEFAULT_IFACE
+ROT_CIDR=$cidr_in
+ROT_PRIORITY=$pri_in
+ROT_INTERVAL=$interval_in
 EOF
-    # 由于 bash source $0 在此处不可靠，我们将 rotator 指向主脚本带参数运行
-    echo "#!/bin/bash" > "$ROTATOR_SCRIPT"
-    echo "$0 --rotate" >> "$ROTATOR_SCRIPT"
-    chmod +x "$ROTATOR_SCRIPT"
-
-    # 创建 Timer
-    cat > "$TIMER_FILE" <<EOF
-[Unit]
-Description=Run Xray IPv6 Rotation
-
-[Timer]
-OnBootSec=1min
-OnUnitActiveSec=${interval}min
-
-[Install]
-WantedBy=timers.target
-EOF
-
-    # 创建 Service (被 Timer 调用)
-    cat > "/etc/systemd/system/xray-proxya-rotate.service" <<EOF
-[Unit]
-Description=Xray IPv6 Rotation Service
-
-[Service]
-Type=oneshot
-ExecStart=$ROTATOR_SCRIPT
-EOF
-
-    systemctl daemon-reload
-    systemctl enable --now xray-proxya-rotate.timer
-    
-    echo -e "${GREEN}✅ 轮换任务已设定。正在执行首次轮换测试...${NC}"
-    $ROTATOR_SCRIPT
+            echo -e "${GREEN}配置已保存。请选择 [2] 进行测试并激活。${NC}"
+            ;;
+        2)
+            rotate_ip_now
+            ;;
+        3)
+            if [ -f "$ROTATION_CONF" ]; then
+                source "$ROTATION_CONF"
+                if [ -n "$CURRENT_ROT_IP" ]; then
+                    ip -6 addr del "$CURRENT_ROT_IP/${ROT_CIDR##*/}" dev "$ROT_IFACE" 2>/dev/null
+                fi
+                rm "$ROTATION_CONF"
+                # 恢复默认配置
+                source "$CONF_FILE"
+                local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
+                local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
+                generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher" "" "4"
+                systemctl restart xray-proxya
+                echo -e "${GREEN}轮换已关闭，恢复默认 IPv4 优先。${NC}"
+            fi
+            ;;
+    esac
 }
 
-# --- 服务管理与安装 ---
-
-create_service() {
-    cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Xray-Proxya Service (Beta)
-After=network.target
-
-[Service]
-User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ExecStart=$XRAY_BIN run -c $JSON_FILE
-Restart=on-failure
-LimitNPROC=10000
-LimitNOFILE=1000000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable xray-proxya >/dev/null 2>&1
-    systemctl restart xray-proxya
-}
-
+# 安装逻辑
 install_xray() {
-    install_core_and_deps # 此处失败会直接退出
-
+    check_env_and_deps
+    
+    echo -e "=== 安装向导 (Beta) ==="
     read -p "VMess 端口 (默认 ${vmessp:-8081}): " port_vm
     read -p "VLESS 端口 (默认 ${vlessp:-8082}): " port_vl
     read -p "SS    端口 (默认 ${ssocks:-8083}): " port_ss
@@ -342,18 +340,24 @@ install_xray() {
     PORT_VLESS=${port_vl:-${vlessp:-8082}}
     PORT_SS=${port_ss:-${ssocks:-8083}}
 
-    for p in $PORT_VMESS $PORT_VLESS $PORT_SS $TEST_PORT; do
+    for p in $PORT_VMESS $PORT_VLESS $PORT_SS; do
         if ss -lnt | grep -q ":$p "; then echo -e "${RED}⚠️  端口 $p 被占用${NC}"; return; fi
     done
 
+    download_xray || return
+
+    echo -e "${BLUE}🔑 生成密钥 (24位强密码)...${NC}"
     UUID=$("$XRAY_BIN" uuid)
     PATH_VM="/$(openssl rand -hex 12)"
     PATH_VL="/$(openssl rand -hex 12)"
-    PASS_SS=$(openssl rand -base64 24 | tr -dc 'a-zA-Z0-9')
+    # 生成 24字符 SS 密码
+    PASS_SS=$(openssl rand -base64 48 | tr -dc 'a-zA-Z0-9' | head -c 24)
     
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc)
     DEC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "Authentication: ML-KEM-768" | grep '"decryption":' | cut -d '"' -f 4)
     ENC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "Authentication: ML-KEM-768" | grep '"encryption":' | cut -d '"' -f 4)
+
+    if [ -z "$DEC_KEY" ]; then echo -e "${RED}❌ 密钥生成失败${NC}"; return 1; fi
 
     mkdir -p "$CONF_DIR"
     cat > "$CONF_FILE" <<EOF
@@ -366,85 +370,176 @@ PATH_VL=$PATH_VL
 PASS_SS=$PASS_SS
 ENC_KEY=$ENC_KEY
 DEC_KEY=$DEC_KEY
-PRIORITY=4
+CFG_VMESS_CIPHER=$VMESS_CIPHER
+CFG_SS_CIPHER=$SS_CIPHER
 EOF
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "4" ""
-    create_service
+
+    # 初始安装，无轮换，默认 IPv4 优先
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER" "" "4"
+    
+    # Systemd Service
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Xray-Proxya Service
+After=network.target
+
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=$XRAY_BIN run -c $JSON_FILE
+Restart=on-failure
+RestartPreventExitStatus=23
+LimitNPROC=10000
+LimitNOFILE=1000000
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable xray-proxya >/dev/null 2>&1
+    systemctl restart xray-proxya
 
     echo -e "${GREEN}✅ 安装完成${NC}"
     show_links
 }
 
-# --- 链接展示 ---
+format_ip() {
+    local ip=$1
+    if [[ "$ip" =~ .*:.* ]]; then echo "[$ip]"; else echo "$ip"; fi
+}
+
+print_config_group() {
+    local ip_addr=$1
+    local label=$2
+    if [ -z "$ip_addr" ]; then return; fi
+    local fmt_ip=$(format_ip "$ip_addr")
+    
+    local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
+    local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
+
+    local vmess_json=$(jq -n --arg add "$ip_addr" --arg port "$PORT_VMESS" --arg id "$UUID" --arg path "$PATH_VM" --arg scy "$vm_cipher" \
+      '{v:"2", ps:("VMess-"+$scy), add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
+    local vmess_link="vmess://$(echo -n "$vmess_json" | base64 -w 0)"
+    local vless_link="vless://$UUID@$fmt_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#VLESS-XHTTP-ENC"
+    local ss_auth=$(echo -n "${ss_cipher}:$PASS_SS" | base64 -w 0)
+    local ss_link="ss://$ss_auth@$fmt_ip:$PORT_SS#SS-Xray"
+
+    echo -e "\n${BLUE}--- $label ($ip_addr) ---${NC}"
+    echo -e "1️⃣  VMess ($vm_cipher):"
+    echo -e "    ${GREEN}$vmess_link${NC}"
+    echo -e "2️⃣  VLESS (XHTTP-ENC):"
+    echo -e "    ${GREEN}$vless_link${NC}"
+    echo -e "3️⃣  Shadowsocks ($ss_cipher):"
+    echo -e "    ${GREEN}$ss_link${NC}"
+}
 
 show_links() {
-    [[ ! -f "$CONF_FILE" ]] && echo -e "${RED}未安装${NC}" && return
+    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}未安装${NC}"; return; fi
     source "$CONF_FILE"
-    source "$IPV6_STATE_FILE" 2>/dev/null
-
+    
     echo -e "🔑 UUID: ${YELLOW}$UUID${NC}"
     echo -e "🔐 SS 密码: ${YELLOW}$PASS_SS${NC}"
-    [[ -n "$CURRENT_V6" ]] && echo -e "🔄 当前轮换 IPv6: ${BLUE}$CURRENT_V6${NC}"
 
     local ipv4=$(curl -s -4 --max-time 2 https://ipconfig.me || curl -s -4 --max-time 2 https://ifconfig.co)
     local ipv6=$(curl -s -6 --max-time 2 https://ifconfig.co)
 
-    # 打印函数
-    p_link() {
-        local ip=$1; local type=$2
-        [[ "$ip" =~ .*:.* ]] && ip="[$ip]"
-        local vm_json=$(jq -n --arg ip "$1" --arg pt "$PORT_VMESS" --arg id "$UUID" --arg pa "$PATH_VM" --arg sc "$VMESS_CIPHER" '{v:"2",ps:("VMess-"+$sc),add:$ip,port:$pt,id:$id,aid:"0",scy:$sc,net:"ws",path:$pa,tls:""}')
-        local vl_link="vless://$UUID@$ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#VLESS-XHTTP"
-        local ss_link="ss://$(echo -n "$SS_CIPHER:$PASS_SS" | base64 -w 0)@$ip:$PORT_SS#SS-Xray"
-        
-        echo -e "\n${BLUE}--- $type ($1) ---${NC}"
-        echo -e "VMess: vmess://$(echo -n "$vm_json" | base64 -w 0)"
-        echo -e "VLESS: $vl_link"
-        echo -e "SS:    $ss_link"
-    }
-
-    [[ -n "$ipv4" ]] && p_link "$ipv4" "IPv4"
-    [[ -n "$ipv6" ]] && p_link "$ipv6" "IPv6"
+    if [ -n "$ipv4" ]; then print_config_group "$ipv4" "IPv4 入口"; fi
+    if [ -n "$ipv6" ]; then print_config_group "$ipv6" "IPv6 入口"; fi
 }
 
-# --- 入口 ---
+change_ports() {
+    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}未安装${NC}"; return; fi
+    source "$CONF_FILE"
+    read -p "新 VMess (回车跳过): " new_vm
+    read -p "新 VLESS (回车跳过): " new_vl
+    read -p "新 SS    (回车跳过): " new_ss
+    [[ ! -z "$new_vm" ]] && sed -i "s/^PORT_VMESS=.*/PORT_VMESS=$new_vm/" "$CONF_FILE"
+    [[ ! -z "$new_vl" ]] && sed -i "s/^PORT_VLESS=.*/PORT_VLESS=$new_vl/" "$CONF_FILE"
+    [[ ! -z "$new_ss" ]] && sed -i "s/^PORT_SS=.*/PORT_SS=$new_ss/" "$CONF_FILE"
+    source "$CONF_FILE"
+    
+    # 保持当前的轮换状态
+    local cur_ip=""
+    local cur_pri="4"
+    if [ -f "$ROTATION_CONF" ]; then
+        source "$ROTATION_CONF"
+        cur_ip=$CURRENT_ROT_IP
+        cur_pri=$ROT_PRIORITY
+    fi
+    local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
+    local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
 
-# 隐藏参数：轮换脚本调用
-if [[ "$1" == "--rotate" ]]; then
-    rotate_ipv6_action
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$ss_cipher" "$cur_ip" "$cur_pri"
+    systemctl restart xray-proxya
+    echo -e "${GREEN}✅ 端口已更新${NC}"
+}
+
+maintenance_menu() {
+    while true; do
+        echo -e "\n=== 维护 ==="
+        echo "1. 启动 (Start)"
+        echo "2. 停止 (Stop)"
+        echo "3. 重启 (Restart)"
+        echo "4. 开启自启 (Enable)"
+        echo "5. 关闭自启 (Disable)"
+        echo "0. 返回"
+        read -p "选择: " m_choice
+        case "$m_choice" in
+            1) systemctl start xray-proxya && echo "Done" ;;
+            2) systemctl stop xray-proxya && echo "Done" ;;
+            3) systemctl restart xray-proxya && echo "Done" ;;
+            4) systemctl enable xray-proxya && echo "Done" ;;
+            5) systemctl disable xray-proxya && echo "Done" ;;
+            0) return ;;
+            *) echo "无效" ;;
+        esac
+    done
+}
+
+uninstall_xray() {
+    read -p "确认卸载? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then return; fi
+    systemctl stop xray-proxya
+    systemctl disable xray-proxya
+    rm "$SERVICE_FILE"
+    rm -rf "$XRAY_DIR"
+    rm -rf "$CONF_DIR"
+    systemctl daemon-reload
+    echo -e "${GREEN}✅ 已卸载${NC}"
+}
+
+# 命令行参数支持 (用于定时任务)
+if [ "$1" == "rotate" ]; then
+    rotate_ip_now
     exit 0
 fi
 
 check_root
+echo -e "${BLUE}Xray-Proxya Manager (Beta)${NC}"
+if systemctl is-active --quiet xray-proxya; then
+    echo -e "🟢 运行中"
+else
+    echo -e "🔴 未运行"
+fi
 
-echo -e "${BLUE}Xray-Proxya Manager (BETA)${NC}"
 echo "1. 安装 / 重置"
 echo "2. 查看链接"
 echo "3. 修改端口"
 echo "4. 服务维护"
-echo "5. IPv6 轮换设置 (Beta)"
-echo "6. 卸载"
+echo "5. 卸载"
+echo "6. IPv6 轮换设置 (Beta)"
 echo "0. 退出"
 read -p "选择: " choice
 
 case "$choice" in
     1) install_xray ;;
     2) show_links ;;
-    3) echo "功能开发中...请使用重置" ;; # 简化脚本体积，复用安装逻辑
-    4) 
-       read -p "1.Start 2.Stop 3.Restart : " svc_c
-       [[ "$svc_c" == "1" ]] && systemctl start xray-proxya
-       [[ "$svc_c" == "2" ]] && systemctl stop xray-proxya
-       [[ "$svc_c" == "3" ]] && systemctl restart xray-proxya
-       ;;
-    5) setup_rotation ;;
-    6) 
-       systemctl stop xray-proxya
-       systemctl disable xray-proxya-rotate.timer 2>/dev/null
-       rm -rf "$XRAY_DIR" "$CONF_DIR" "$SERVICE_FILE"
-       systemctl daemon-reload
-       echo "已卸载"
-       ;;
+    3) change_ports ;;
+    4) maintenance_menu ;;
+    5) uninstall_xray ;;
+    6) ipv6_rotation_menu ;;
     0) exit 0 ;;
     *) echo "无效" ;;
 esac
