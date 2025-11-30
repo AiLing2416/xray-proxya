@@ -4,7 +4,7 @@
 # Xray-Proxya Bootstrap (Beta)
 # ==================================================
 
-REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/test-install.sh"
+REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/test-main.sh"
 INSTALL_PATH="/usr/local/sbin/xray-proxya" # 使用 sbin
 OLD_PATH="/usr/local/bin/xray-proxya"
 
