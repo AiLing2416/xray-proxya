@@ -1,14 +1,22 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager (Beta v5)
+# Xray-Proxya Manager (Beta v6)
 # ==================================================
 
 # --- 用户配置变量 ---
+# 外部获取 IP 的 API 地址
+IP_API_URL="https://iconfig.me"
+
+# 加密算法配置
 VMESS_CIPHER="aes-128-gcm"
 SS_CIPHER="aes-256-gcm"
-TEST_PORT=57280  # 本地回环测试端口
-FORCE_IFACE=""   # 如自动识别失败，在此填入如 "eth0"
+
+# 本地回环测试端口
+TEST_PORT=57280
+
+# 强制指定物理网卡 (若自动识别错误，请在此填入如 "eth0")
+FORCE_IFACE=""
 # ------------------
 
 CONF_DIR="/etc/xray-proxya"
@@ -29,7 +37,7 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 
 check_root() {
-    if [ "$EUID" -ne 0 ]; then echo -e "${RED}❌ 需要 root 权限${NC}"; exit 1; fi
+    if [ "$EUID" -ne 0 ]; then echo -e "${RED}❌ 错误: 需要 root 权限${NC}"; exit 1; fi
 }
 
 check_deps() {
@@ -41,7 +49,7 @@ check_deps() {
     done
 }
 
-# --- 网络探测 (纯本地，不进行 curl) ---
+# --- 网络探测 ---
 
 identify_interface() {
     if [ -n "$FORCE_IFACE" ]; then
@@ -72,36 +80,39 @@ show_dashboard() {
     get_phy_info
     
     # 获取理论配置的出站 IP (读取文件)
+    # 逻辑: 如果轮换 Timer 激活且有记录文件，则显示轮换 IP，否则显示默认
     if [ -f "$CONF_DIR/current_ipv6" ] && systemctl is-active --quiet xray-rotate.timer; then
         CFG_OUT_IPV6=$(cat "$CONF_DIR/current_ipv6")
-        ROTATION_STATUS="${GREEN}运行中${NC}"
+        ROTATION_STATE="${GREEN}运行中${NC}"
+        OUTBOUND_DISPLAY="${GREEN}$CFG_OUT_IPV6${NC} (轮换中)"
     else
-        CFG_OUT_IPV6="${PHY_IPV6} (静态/未轮换)"
-        ROTATION_STATUS="${CYAN}未启用${NC}"
+        CFG_OUT_IPV6="系统默认"
+        ROTATION_STATE="${CYAN}未启用${NC}"
+        OUTBOUND_DISPLAY="${YELLOW}系统默认 (未指定)${NC}"
     fi
 
     clear
     echo -e "${BLUE}==================================================${NC}"
-    echo -e "           Xray-Proxya 管理面板 (Beta)"
+    echo -e "           Xray-Proxya 管理面板 (Beta v6)"
     echo -e "${BLUE}==================================================${NC}"
     
-    echo -e "📡 物理接口: ${CYAN}$DEFAULT_IFACE${NC}"
+    echo -e "📡 物理接口信息 (${CYAN}$DEFAULT_IFACE${NC}):"
     echo -e "   物理 IPv4: ${YELLOW}${PHY_IPV4:-无}${NC}"
     echo -e "   物理 IPv6: ${YELLOW}${PHY_IPV6:-无}${NC}"
-    echo -e "   --------------------------------------------"
-    echo -e "🚀 理论出站 (配置值):"
-    echo -e "   IPv4: 默认路由 (系统/WARP)"
-    echo -e "   IPv6: ${GREEN}$CFG_OUT_IPV6${NC}"
+    echo -e ""
+    echo -e "🚀 当前配置出站 (理论值):"
+    echo -e "   IPv4 出站: 遵循系统路由 (或 WARP)"
+    echo -e "   IPv6 出站: $OUTBOUND_DISPLAY"
     echo -e "" 
     
     # 服务状态
-    echo -e "📊 服务状态:"
+    echo -e "📊 服务运行状态:"
     if systemctl is-active --quiet xray-proxya; then
         echo -e "   主服务:   [ ${GREEN}运行中${NC} ]"
     else
         echo -e "   主服务:   [ ${RED}已停止${NC} ]"
     fi
-    echo -e "   IPv6轮换: [ $ROTATION_STATUS ]"
+    echo -e "   IPv6轮换: [ $ROTATION_STATE ]"
     
     echo -e "${BLUE}==================================================${NC}"
 }
@@ -111,6 +122,7 @@ show_dashboard() {
 install_core() {
     if [ -f "$XRAY_BIN" ]; then return 0; fi
     echo -e "${BLUE}⬇️  准备 Xray Core...${NC}"
+    # 使用用户定义的 IP_API_URL 测试连通性或作为占位，实际上这里只测 GitHub API
     if ! curl -s -I --connect-timeout 5 https://api.github.com >/dev/null; then
         echo -e "${RED}⚠️  无法连接 GitHub API${NC}"
         echo -e "请手动上传 'xray' 文件到: ${YELLOW}$XRAY_DIR${NC}"
@@ -161,19 +173,25 @@ EOF
 enable_rotation() {
     echo -e "\n=== 启用/配置 IPv6 轮换 ==="
     identify_interface
+    
+    # 优化展示：列出当前接口的所有 IPv6 地址供参考
     echo -e "物理接口: ${GREEN}$DEFAULT_IFACE${NC}"
-    read -p "CIDR (如 2001:db8::/64): " user_cidr
+    echo -e "现有 IPv6 地址 (供参考 CIDR):"
+    ip -6 addr show dev "$DEFAULT_IFACE" scope global | grep inet6 | awk '{print "   - " $2}'
+    echo -e "------------------------------------------------"
+    
+    read -p "请输入 CIDR (如 2001:db8::/64): " user_cidr
     
     if ! python3 -c "import ipaddress; ipaddress.IPv6Network('$user_cidr', strict=False)" 2>/dev/null; then
-        echo -e "${RED}❌ CIDR 无效${NC}"; return
+        echo -e "${RED}❌ CIDR 格式无效${NC}"; return
     fi
     
-    echo -e "优先策略: [1] IPv4优先 [2] IPv6轮换优先"
+    echo -e "\n优先策略: [1] IPv4优先  [2] IPv6轮换优先"
     read -p "选择: " pri_choice
     local pri_val="ipv4"
     [[ "$pri_choice" == "2" ]] && pri_val="ipv6"
 
-    read -p "间隔 (分钟, 默认60): " interval
+    read -p "轮换间隔 (分钟, 默认60): " interval
     [[ ! "$interval" =~ ^[0-9]+$ ]] && interval=60
 
     # 生成轮换脚本
@@ -194,8 +212,8 @@ jq --arg ip "\$NEW_IP" '(.outbounds[] | select(.tag=="outbound-ipv6").sendThroug
 
 systemctl restart xray-proxya
 
-# 自检
-CHECK_IP=\$(curl -x http://127.0.0.1:$TEST_PORT -s --max-time 5 https://ipconfig.me || echo "fail")
+# 自检 (使用定义的 IP_API_URL)
+CHECK_IP=\$(curl -x http://127.0.0.1:$TEST_PORT -s --max-time 5 $IP_API_URL || echo "fail")
 
 if [[ "\$CHECK_IP" == *"\$NEW_IP"* ]]; then
     log "OK: \$NEW_IP"
@@ -240,29 +258,29 @@ EOF
 
 test_rotation() {
     echo -e "\n=== 轮换可用性测试 ==="
-    echo -e "正在通过本地代理 (127.0.0.1:$TEST_PORT) 请求 ipconfig.me ..."
+    echo -e "正在通过本地代理 (127.0.0.1:$TEST_PORT) 请求 $IP_API_URL ..."
     
     START_TIME=$(date +%s%3N)
-    RESULT=$(curl -x http://127.0.0.1:$TEST_PORT -s --max-time 8 https://ipconfig.me || echo "Error")
+    RESULT=$(curl -x http://127.0.0.1:$TEST_PORT -s --max-time 8 $IP_API_URL || echo "Error")
     END_TIME=$(date +%s%3N)
     DURATION=$((END_TIME - START_TIME))
     
     if [ -f "$CONF_DIR/current_ipv6" ]; then
         EXPECTED=$(cat "$CONF_DIR/current_ipv6")
-        echo -e "预期 IP: ${CYAN}$EXPECTED${NC}"
+        echo -e "理论配置 IP: ${CYAN}$EXPECTED${NC}"
     else
-        echo -e "预期 IP: (未知/未启用)"
+        echo -e "理论配置 IP: (未启用)"
     fi
     
-    echo -e "实际 IP: ${YELLOW}$RESULT${NC}"
-    echo -e "耗时: ${DURATION}ms"
+    echo -e "实际检测 IP: ${YELLOW}$RESULT${NC}"
+    echo -e "请求耗时:    ${DURATION}ms"
     
     if [[ "$RESULT" == *":"* ]]; then
-        echo -e "结果: ${GREEN}连接成功 (IPv6)${NC}"
+        echo -e "测试结果:    ${GREEN}连接成功 (IPv6)${NC}"
     elif [[ "$RESULT" == "Error" ]]; then
-        echo -e "结果: ${RED}连接失败${NC}"
+        echo -e "测试结果:    ${RED}连接失败 (超时或阻断)${NC}"
     else
-        echo -e "结果: ${YELLOW}连接成功 (IPv4? - 可能未走轮换)${NC}"
+        echo -e "测试结果:    ${YELLOW}连接成功 (但返回了 IPv4，可能未走轮换)${NC}"
     fi
     read -p "按回车返回..."
 }
@@ -289,13 +307,10 @@ disable_rotation() {
     rm -f "$ROTATION_SCRIPT" "/etc/systemd/system/xray-rotate.service" "/etc/systemd/system/xray-rotate.timer"
     systemctl daemon-reload
     
-    # 4. 重置 Xray 配置 (移除 sendThrough)
+    # 4. 重置 Xray 配置
     echo -e "正在重置 Xray 配置..."
     source "$CONF_FILE"
-    # 强制设为默认优先级 (ipv4)
     sed -i "s/^PRIORITY=.*/PRIORITY=ipv4/" "$CONF_FILE"
-    
-    # 重新生成不带 sendThrough 的配置 (generate_config 默认不加 sendThrough)
     generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER" "ipv4"
     
     systemctl restart xray-proxya
@@ -309,7 +324,7 @@ rotation_menu() {
         echo -e "${BLUE}=== IPv6 轮换管理 ===${NC}"
         if systemctl is-active --quiet xray-rotate.timer; then
             echo -e "状态: ${GREEN}已启用${NC}"
-            [ -f "$CONF_DIR/current_ipv6" ] && echo -e "当前 IP: $(cat $CONF_DIR/current_ipv6)"
+            [ -f "$CONF_DIR/current_ipv6" ] && echo -e "当前轮换 IP: $(cat $CONF_DIR/current_ipv6)"
         else
             echo -e "状态: ${YELLOW}未启用${NC}"
         fi
@@ -388,9 +403,9 @@ show_links() {
     source "$CONF_FILE"
     
     echo -e "\n🔑 UUID: ${YELLOW}$UUID${NC}"
-    # 这里需要联网获取公网IP，仅在查看链接时执行
-    local v4=$(curl -s -4 --max-time 3 https://ipconfig.me)
-    local v6=$(curl -s -6 --max-time 3 https://ifconfig.co)
+    # 使用变量 IP_API_URL
+    local v4=$(curl -s -4 --max-time 3 $IP_API_URL)
+    local v6=$(curl -s -6 --max-time 3 $IP_API_URL)
     
     print_l() {
         local ip=$1; local lbl=$2
@@ -407,7 +422,7 @@ show_links() {
 
 uninstall() {
     read -p "确认卸载? (y/n): " c; [[ "$c" != "y" ]] && return
-    disable_rotation <<< "y" >/dev/null 2>&1 # 先尝试停用轮换逻辑
+    disable_rotation <<< "y" >/dev/null 2>&1
     systemctl stop xray-proxya; systemctl disable xray-proxya
     rm -rf "$XRAY_DIR" "$CONF_DIR" "/etc/systemd/system/xray-proxya.service"
     systemctl daemon-reload
