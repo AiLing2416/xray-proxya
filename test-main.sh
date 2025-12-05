@@ -1,26 +1,26 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [TEST BRANCH]
+# Xray-Proxya Manager [STABLE FIX v4]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
-# Features: VMess, VLESS(ML-KEM), VLESS(Reality), SS
+# Fixed: Key parsing logic for Alpine output format
 # ==================================================
 
-# --- 默认配置变量 (可在此修改) ---
+# --- 默认配置变量 ---
 DEFAULT_PORT_VMESS=8081
 DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 
-# 加密算法配置
-VMESS_CIPHER="chacha20-poly1305"
+# 加密算法
+VMESS_CIPHER="aes-128-gcm"
 SS_CIPHER="aes-256-gcm"
 
-# Reality 伪装目标 (需支持 TLS1.3/H2)
-REALITY_DEST="apple.com:443"
-REALITY_SNI="apple.com"
+# Reality 配置
+REALITY_DEST="www.microsoft.com:443"
+REALITY_SNI="www.microsoft.com"
 
-# -----------------------------------------------
+# -----------------
 
 CONF_DIR="/etc/xray-proxya"
 CONF_FILE="$CONF_DIR/config.env"
@@ -60,7 +60,7 @@ install_deps() {
     echo -e "${BLUE}📦 安装/检查依赖...${NC}"
     if [ -f /etc/alpine-release ]; then
         apk update
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep >/dev/null 2>&1
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed awk >/dev/null 2>&1
     else
         apt-get update -qq >/dev/null
         apt-get install -y curl jq unzip openssl >/dev/null 2>&1
@@ -138,7 +138,6 @@ decode_base64() {
 }
 
 parse_link_to_json() {
-    # 简化的解析器，保留之前的逻辑
     local link="$1"
     if [[ "$link" == vmess://* ]]; then
         local b64="${link#vmess://}"
@@ -193,14 +192,12 @@ add_custom_outbound() {
         echo "UUID_CUSTOM=$UUID_CUSTOM" >> "$CONF_FILE"
     fi
     source "$CONF_FILE"
-    # 参数传递需要更新以包含 Reality 变量
     generate_config
     sys_restart
     echo -e "${GREEN}服务已重启，转发规则已生效${NC}"
 }
 
 generate_config() {
-    # 从配置文件或全局变量读取
     source "$CONF_FILE"
     
     local clients_direct="{ \"id\": \"$UUID\", \"email\": \"direct\", \"level\": 0 }"
@@ -307,7 +304,6 @@ EOF
 install_xray() {
     echo -e "=== 安装向导 ==="
     
-    # 交互式端口配置
     read -p "VMess-WS 入站端口 (默认 $DEFAULT_PORT_VMESS): " port_vm
     read -p "VLess-XHTTP-KEM768 (抗量子) 端口 (默认 $DEFAULT_PORT_VLESS_KEM): " port_vl
     read -p "VLess-XHTTP-Reality (TLS抗量子) 端口 (默认 $DEFAULT_PORT_REALITY): " port_rea
@@ -326,24 +322,41 @@ install_xray() {
     download_core
 
     echo -e "${BLUE}🔑 生成配置与密钥...${NC}"
+    
+    if ! "$XRAY_BIN" version >/dev/null 2>&1; then
+        echo -e "${RED}❌ Xray 无法运行!${NC} (可能缺少依赖)"
+        echo -e "Debug: $($XRAY_BIN version 2>&1)"
+        return 1
+    fi
+
     UUID=$("$XRAY_BIN" uuid)
     PATH_VM="/$(generate_random 12)"
     PATH_VL="/$(generate_random 12)"
     PATH_REALITY="/$(generate_random 12)"
     PASS_SS=$(generate_random 24)
     
-    # ML-KEM Keys
-    RAW_ENC_OUT=$("$XRAY_BIN" vlessenc)
-    DEC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "ML-KEM" | grep '"decryption":' | cut -d '"' -f 4)
-    ENC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "ML-KEM" | grep '"encryption":' | cut -d '"' -f 4)
+    # === 修复解析逻辑 ===
     
-    # Reality Keys
-    REALITY_KEYS=$("$XRAY_BIN" x25519)
-    REALITY_PK=$(echo "$REALITY_KEYS" | grep "Private" | awk '{print $3}')
-    REALITY_PUB=$(echo "$REALITY_KEYS" | grep "Public" | awk '{print $3}')
+    # 1. Reality Key Parsing
+    # Output: "PrivateKey: xxxx" (awk $2) or "Private Key: xxxx" (awk $3) or just use $NF (Last Field)
+    RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
+    REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "Private" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Public" | awk -F ": " '{print $NF}' | tr -d ' \r')
     REALITY_SID=$(openssl rand -hex 4)
+    
+    # 2. ML-KEM Key Parsing
+    # 使用 awk 定位 Block，然后提取 quotes 里的内容
+    RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
+    # 逻辑: 找到 "Authentication: ML-KEM-768" 这行，设置 flag。在 flag=1 时，找到 "decryption" 行，打印并退出 awk。
+    DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
+    ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
 
-    if [ -z "$DEC_KEY" ] || [ -z "$REALITY_PK" ]; then echo -e "${RED}❌ 密钥生成失败${NC}"; return 1; fi
+    if [ -z "$DEC_KEY" ] || [ -z "$REALITY_PK" ]; then
+        echo -e "${RED}❌ 密钥生成失败${NC}"
+        echo -e "--- Reality Debug ---\n$RAW_REALITY_OUT"
+        echo -e "--- ML-KEM Debug ---\n$RAW_ENC_OUT"
+        return 1
+    fi
 
     mkdir -p "$CONF_DIR"
     rm -f "$CUSTOM_OUT_FILE"
@@ -381,26 +394,20 @@ print_link_group() {
     if [ -z "$ip" ]; then return; fi
     local f_ip=$(format_ip "$ip")
     
-    # 别名格式: Protocol-Transport-Encryption-Port
-    
-    # 1. VMess
     local ps_vm="VMess-WS-${VMESS_CIPHER}-$PORT_VMESS"
-    if [ "$desc" == "Custom" ]; then ps_vm="转发-$ps_vm"; fi
+    [ "$desc" == "Custom" ] && ps_vm="转发-$ps_vm"
     local vm_j=$(jq -n --arg add "$ip" --arg port "$PORT_VMESS" --arg id "$target_uuid" --arg path "$PATH_VM" --arg scy "$VMESS_CIPHER" --arg ps "$ps_vm" \
       '{v:"2", ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
     local vm_l="vmess://$(echo -n "$vm_j" | base64 -w 0)"
     
-    # 2. VLESS ML-KEM
     local ps_vl="VLess-XHTTP-KEM768-$PORT_VLESS"
-    if [ "$desc" == "Custom" ]; then ps_vl="转发-$ps_vl"; fi
+    [ "$desc" == "Custom" ] && ps_vl="转发-$ps_vl"
     local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$ps_vl"
     
-    # 3. VLESS Reality
     local ps_rea="VLess-XHTTP-Reality-$PORT_REALITY"
-    if [ "$desc" == "Custom" ]; then ps_rea="转发-$ps_rea"; fi
+    [ "$desc" == "Custom" ] && ps_rea="转发-$ps_rea"
     local rea_l="vless://$target_uuid@$f_ip:$PORT_REALITY?security=reality&encryption=none&pbk=$REALITY_PUB&fp=chrome&type=xhttp&serviceName=&path=$PATH_REALITY&sni=$REALITY_SNI&sid=$REALITY_SID&spx=%2F#$ps_rea"
 
-    # 4. Shadowsocks (仅 Direct)
     local ss_l=""
     if [ "$desc" == "Direct" ]; then
         local ps_ss="SS-TCPUDP-${SS_CIPHER}-$PORT_SS"
