@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [STABLE FIX v4]
+# Xray-Proxya Manager [BATA]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # Fixed: Key parsing logic for Alpine output format
 # ==================================================
