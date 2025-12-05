@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [STABLE]
+# Xray-Proxya Manager [STABLE FIX v7]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # ==================================================
 
@@ -58,8 +58,12 @@ check_root() {
 install_deps() {
     echo -e "${BLUE}📦 安装/检查依赖...${NC}"
     if [ -f /etc/alpine-release ]; then
+        # Alpine: 移除静默模式以便调试
+        echo "正在运行 apk update..."
         apk update
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed awk >/dev/null 2>&1
+        echo "正在安装依赖..."
+        # 增加 unzip 包，避免 busybox unzip 问题
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed awk unzip
     else
         apt-get update -qq >/dev/null
         apt-get install -y curl jq unzip openssl >/dev/null 2>&1
@@ -119,16 +123,48 @@ generate_random() {
 }
 
 download_core() {
-    if [ -f "$XRAY_BIN" ]; then return; fi
+    if [ -f "$XRAY_BIN" ]; then return 0; fi
     echo -e "${BLUE}⬇️  获取 Xray-core...${NC}"
-    LATEST_URL=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
-    if [ -z "$LATEST_URL" ]; then echo -e "${RED}❌ 下载失败${NC}"; return 1; fi
+    
+    # 尝试获取下载链接
+    local api_response=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+    local download_url=""
+
+    # 优先使用 jq 解析
+    if command -v jq >/dev/null 2>&1; then
+        download_url=$(echo "$api_response" | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
+    fi
+
+    # Fallback: 如果 jq 失败或未安装，使用 grep/cut 解析
+    if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
+        echo -e "${YELLOW}⚠️  jq 解析失败，尝试使用 grep 回退...${NC}"
+        download_url=$(echo "$api_response" | grep -o '"browser_download_url": *"[^"]*Xray-linux-64.zip"' | head -n 1 | cut -d '"' -f 4)
+    fi
+
+    if [ -z "$download_url" ]; then
+        echo -e "${RED}❌ 无法获取下载链接。GitHub API 可能受限或网络不通。${NC}"
+        return 1
+    fi
+
+    echo -e "下载链接: $download_url"
+    
     sys_stop 2>/dev/null
     mkdir -p "$XRAY_DIR"
-    curl -L -o /tmp/xray.zip "$LATEST_URL"
-    unzip -o /tmp/xray.zip -d "$XRAY_DIR" >/dev/null 2>&1
-    rm /tmp/xray.zip
-    chmod +x "$XRAY_BIN"
+    
+    if curl -L -o /tmp/xray.zip "$download_url"; then
+        echo "解压中..."
+        if unzip -o /tmp/xray.zip -d "$XRAY_DIR" >/dev/null 2>&1; then
+            rm /tmp/xray.zip
+            chmod +x "$XRAY_BIN"
+            return 0
+        else
+            echo -e "${RED}❌ 解压失败 (unzip error)${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ 下载失败 (curl error)${NC}"
+        return 1
+    fi
 }
 
 decode_base64() {
@@ -343,7 +379,12 @@ install_xray() {
     done
 
     install_deps
-    download_core
+    
+    # 核心下载与检查
+    if ! download_core; then
+        echo -e "${RED}❌ 核心文件下载或安装失败，终止流程。${NC}"
+        return 1
+    fi
 
     echo -e "${BLUE}🔑 生成配置与密钥...${NC}"
     
@@ -359,15 +400,12 @@ install_xray() {
     PATH_REALITY="/$(generate_random 12)"
     PASS_SS=$(generate_random 24)
     
-    # === 解析逻辑 (兼容性修复) ===
+    # === 解析逻辑 ===
     
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
-    
-    # 尝试1: 标准格式 (Private key: ...)
     REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep -i "Private" | awk '{print $NF}' | tr -d ' \r')
     REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep -i "Public" | awk '{print $NF}' | tr -d ' \r')
     
-    # 尝试2: 特殊格式 (PrivateKey: ... / Password: ...)
     if [ -z "$REALITY_PK" ] || [ ${#REALITY_PK} -lt 40 ]; then
         REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "PrivateKey" | awk -F ": " '{print $NF}' | tr -d ' \r')
     fi
@@ -381,7 +419,6 @@ install_xray() {
     DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
     ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
 
-    # 关键检查
     if [ -z "$REALITY_PUB" ] || [ -z "$REALITY_PK" ]; then
         echo -e "${RED}❌ Reality 密钥生成失败${NC}"
         echo -e "Debug Output:\n$RAW_REALITY_OUT"
