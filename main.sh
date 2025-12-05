@@ -11,10 +11,11 @@ DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 
+# 加密算法
 VMESS_CIPHER="chacha20-poly1305"
 SS_CIPHER="aes-256-gcm"
 
-# Reality 配置
+# Reality 最佳实践配置
 REALITY_DEST="apple.com:443"
 REALITY_SNI="apple.com"
 
@@ -137,7 +138,6 @@ decode_base64() {
 
 parse_link_to_json() {
     local link="$1"
-    # VMess
     if [[ "$link" == vmess://* ]]; then
         local b64="${link#vmess://}"
         local json_str=$(decode_base64 "$b64")
@@ -154,7 +154,6 @@ parse_link_to_json() {
 EOF
         return 0
     fi
-    # VLESS
     if [[ "$link" == vless://* ]]; then
         local tmp="${link#vless://}"
         local uuid="${tmp%%@*}"
@@ -175,7 +174,6 @@ EOF
 EOF
         return 0
     fi
-    # Shadowsocks
     if [[ "$link" == ss://* ]]; then
         local raw="${link#ss://}"
         raw="${raw%%\#*}"
@@ -184,8 +182,6 @@ EOF
         local password=""
         local address=""
         local port=""
-        
-        # 尝试检测 Legacy 格式: decode(method:pass@host:port)
         if [[ "$decoded" == *:*@*:* ]]; then
             local auth="${decoded%%@*}"
             local addr_full="${decoded#*@}"
@@ -193,7 +189,6 @@ EOF
             password="${auth#*:}"
             address="${addr_full%%:*}"
             port="${addr_full##*:}"
-        # 尝试检测 SIP002 格式: decode(method:pass)@host:port
         elif [[ "$raw" == *@* ]]; then
             local b64_auth="${raw%%@*}"
             local addr_full="${raw#*@}"
@@ -203,14 +198,12 @@ EOF
             address="${addr_full%%:*}"
             port="${addr_full##*:}"
         fi
-
         if [ -z "$method" ] || [ -z "$address" ]; then return 1; fi
         cat <<-EOF
 { "tag": "custom-out", "protocol": "shadowsocks", "settings": { "servers": [{ "address": "$address", "port": $port, "method": "$method", "password": "$password" }] } }
 EOF
         return 0
     fi
-    
     return 1
 }
 
@@ -372,21 +365,29 @@ install_xray() {
     PATH_REALITY="/$(generate_random 12)"
     PASS_SS=$(generate_random 24)
     
-    # === 解析逻辑 ===
+    # === 解析逻辑 (Robust Extraction) ===
     
+    # Reality Keys: "Private key: ...", "Public key: ..." (using last field $NF)
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
-    REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "Private" | awk -F ": " '{print $NF}' | tr -d ' \r')
-    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Public" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep -i "Private" | awk '{print $NF}' | tr -d ' \r')
+    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep -i "Public" | awk '{print $NF}' | tr -d ' \r')
     REALITY_SID=$(openssl rand -hex 4)
     
+    # ML-KEM Keys
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
     DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
     ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
 
-    if [ -z "$DEC_KEY" ] || [ -z "$REALITY_PK" ]; then
-        echo -e "${RED}❌ 密钥生成失败${NC}"
-        echo -e "--- Reality Debug ---\n$RAW_REALITY_OUT"
-        echo -e "--- ML-KEM Debug ---\n$RAW_ENC_OUT"
+    # 公钥配置
+    if [ -z "$REALITY_PUB" ] || [ -z "$REALITY_PK" ]; then
+        echo -e "${RED}❌ Reality 密钥生成失败 (Public Key Missing)${NC}"
+        echo -e "Debug Output:\n$RAW_REALITY_OUT"
+        return 1
+    fi
+
+    if [ -z "$DEC_KEY" ]; then
+        echo -e "${RED}❌ ML-KEM 密钥生成失败${NC}"
+        echo -e "Debug Output:\n$RAW_ENC_OUT"
         return 1
     fi
 
@@ -426,23 +427,27 @@ print_link_group() {
     if [ -z "$ip" ]; then return; fi
     local f_ip=$(format_ip "$ip")
     
-    local ps_vm="VMess-WS-${VMESS_CIPHER}-$PORT_VMESS"
+    # VMess
+    local ps_vm="VMess-WS-${VMESS_CIPHER}-${PORT_VMESS}"
     [ "$desc" == "Custom" ] && ps_vm="转发-$ps_vm"
     local vm_j=$(jq -n --arg add "$ip" --arg port "$PORT_VMESS" --arg id "$target_uuid" --arg path "$PATH_VM" --arg scy "$VMESS_CIPHER" --arg ps "$ps_vm" \
       '{v:"2", ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
     local vm_l="vmess://$(echo -n "$vm_j" | base64 -w 0)"
     
-    local ps_vl="VLess-XHTTP-KEM768-$PORT_VLESS"
+    # VLESS ML-KEM
+    local ps_vl="VLess-XHTTP-KEM768-${PORT_VLESS}"
     [ "$desc" == "Custom" ] && ps_vl="转发-$ps_vl"
     local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$ps_vl"
     
-    local ps_rea="VLess-XHTTP-Reality-$PORT_REALITY"
+    # VLESS Reality
+    local ps_rea="VLess-XHTTP-Reality-${PORT_REALITY}"
     [ "$desc" == "Custom" ] && ps_rea="转发-$ps_rea"
     local rea_l="vless://$target_uuid@$f_ip:$PORT_REALITY?security=reality&encryption=none&pbk=$REALITY_PUB&fp=chrome&type=xhttp&serviceName=&path=$PATH_REALITY&sni=$REALITY_SNI&sid=$REALITY_SID&spx=%2F#$ps_rea"
 
+    # Shadowsocks
     local ss_l=""
     if [ "$desc" == "Direct" ]; then
-        local ps_ss="SS-TCPUDP-${SS_CIPHER}-$PORT_SS"
+        local ps_ss="SS-TCPUDP-${SS_CIPHER}-${PORT_SS}"
         local ss_auth=$(echo -n "${SS_CIPHER}:$PASS_SS" | base64 -w 0)
         ss_l="ss://$ss_auth@$f_ip:$PORT_SS#$ps_ss"
     fi
