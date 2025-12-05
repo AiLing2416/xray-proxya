@@ -63,7 +63,7 @@ install_deps() {
         apk update
         echo "正在安装依赖..."
         # 增加 unzip 包，避免 busybox unzip 问题
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed awk unzip
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip
     else
         apt-get update -qq >/dev/null
         apt-get install -y curl jq unzip openssl >/dev/null 2>&1
