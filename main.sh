@@ -450,4 +450,4 @@ print_link_group() {
     [ "$desc" == "Custom" ] && ps_vl="转发-$ps_vl"
     local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$ps_vl"
     
-    local ps_rea="VLess-XHTTP-Reality-$PORT_REALI"
+    local ps_rea="VLess-XHTTP-Reality-$PORT_REALITY"
