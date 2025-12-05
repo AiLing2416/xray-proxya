@@ -15,7 +15,7 @@ DEFAULT_PORT_SS=8083
 VMESS_CIPHER="chacha20-poly1305"
 SS_CIPHER="aes-256-gcm"
 
-# Reality 最佳实践配置
+# Reality 配置
 REALITY_DEST="apple.com:443"
 REALITY_SNI="apple.com"
 
@@ -138,6 +138,7 @@ decode_base64() {
 
 parse_link_to_json() {
     local link="$1"
+    # VMess
     if [[ "$link" == vmess://* ]]; then
         local b64="${link#vmess://}"
         local json_str=$(decode_base64 "$b64")
@@ -154,6 +155,7 @@ parse_link_to_json() {
 EOF
         return 0
     fi
+    # VLESS
     if [[ "$link" == vless://* ]]; then
         local tmp="${link#vless://}"
         local uuid="${tmp%%@*}"
@@ -174,29 +176,21 @@ EOF
 EOF
         return 0
     fi
+    # SS
     if [[ "$link" == ss://* ]]; then
         local raw="${link#ss://}"
         raw="${raw%%\#*}"
         local decoded=$(decode_base64 "$raw")
-        local method=""
-        local password=""
-        local address=""
-        local port=""
+        local method=""; local password=""; local address=""; local port=""
         if [[ "$decoded" == *:*@*:* ]]; then
-            local auth="${decoded%%@*}"
-            local addr_full="${decoded#*@}"
-            method="${auth%%:*}"
-            password="${auth#*:}"
-            address="${addr_full%%:*}"
-            port="${addr_full##*:}"
+            local auth="${decoded%%@*}"; local addr_full="${decoded#*@}"
+            method="${auth%%:*}"; password="${auth#*:}"
+            address="${addr_full%%:*}"; port="${addr_full##*:}"
         elif [[ "$raw" == *@* ]]; then
-            local b64_auth="${raw%%@*}"
-            local addr_full="${raw#*@}"
+            local b64_auth="${raw%%@*}"; local addr_full="${raw#*@}"
             local auth=$(decode_base64 "$b64_auth")
-            method="${auth%%:*}"
-            password="${auth#*:}"
-            address="${addr_full%%:*}"
-            port="${addr_full##*:}"
+            method="${auth%%:*}"; password="${auth#*:}"
+            address="${addr_full%%:*}"; port="${addr_full##*:}"
         fi
         if [ -z "$method" ] || [ -z "$address" ]; then return 1; fi
         cat <<-EOF
@@ -365,22 +359,31 @@ install_xray() {
     PATH_REALITY="/$(generate_random 12)"
     PASS_SS=$(generate_random 24)
     
-    # === 解析逻辑 (Robust Extraction) ===
+    # === 解析逻辑 (兼容性修复) ===
     
-    # Reality Keys: "Private key: ...", "Public key: ..." (using last field $NF)
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
+    
+    # 尝试1: 标准格式 (Private key: ...)
     REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep -i "Private" | awk '{print $NF}' | tr -d ' \r')
     REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep -i "Public" | awk '{print $NF}' | tr -d ' \r')
+    
+    # 尝试2: 特殊格式 (PrivateKey: ... / Password: ...)
+    if [ -z "$REALITY_PK" ] || [ ${#REALITY_PK} -lt 40 ]; then
+        REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "PrivateKey" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    fi
+    if [ -z "$REALITY_PUB" ] || [ ${#REALITY_PUB} -lt 40 ]; then
+        REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Password" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    fi
+
     REALITY_SID=$(openssl rand -hex 4)
     
-    # ML-KEM Keys
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
     DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
     ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
 
-    # 公钥配置
+    # 关键检查
     if [ -z "$REALITY_PUB" ] || [ -z "$REALITY_PK" ]; then
-        echo -e "${RED}❌ Reality 密钥生成失败 (Public Key Missing)${NC}"
+        echo -e "${RED}❌ Reality 密钥生成失败${NC}"
         echo -e "Debug Output:\n$RAW_REALITY_OUT"
         return 1
     fi
@@ -427,24 +430,20 @@ print_link_group() {
     if [ -z "$ip" ]; then return; fi
     local f_ip=$(format_ip "$ip")
     
-    # VMess
     local ps_vm="VMess-WS-${VMESS_CIPHER}-${PORT_VMESS}"
     [ "$desc" == "Custom" ] && ps_vm="转发-$ps_vm"
     local vm_j=$(jq -n --arg add "$ip" --arg port "$PORT_VMESS" --arg id "$target_uuid" --arg path "$PATH_VM" --arg scy "$VMESS_CIPHER" --arg ps "$ps_vm" \
       '{v:"2", ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
     local vm_l="vmess://$(echo -n "$vm_j" | base64 -w 0)"
     
-    # VLESS ML-KEM
     local ps_vl="VLess-XHTTP-KEM768-${PORT_VLESS}"
     [ "$desc" == "Custom" ] && ps_vl="转发-$ps_vl"
     local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$ps_vl"
     
-    # VLESS Reality
     local ps_rea="VLess-XHTTP-Reality-${PORT_REALITY}"
     [ "$desc" == "Custom" ] && ps_rea="转发-$ps_rea"
     local rea_l="vless://$target_uuid@$f_ip:$PORT_REALITY?security=reality&encryption=none&pbk=$REALITY_PUB&fp=chrome&type=xhttp&serviceName=&path=$PATH_REALITY&sni=$REALITY_SNI&sid=$REALITY_SID&spx=%2F#$ps_rea"
 
-    # Shadowsocks
     local ss_l=""
     if [ "$desc" == "Direct" ]; then
         local ps_ss="SS-TCPUDP-${SS_CIPHER}-${PORT_SS}"
