@@ -1,19 +1,19 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [Test Build]
+# Xray-Proxya Manager [TEST BRANCH]
 # ==================================================
 
-# --- 用户变量 ---
+# --- 用户配置区 ---
 VMESS_CIPHER="aes-128-gcm"
 SS_CIPHER="aes-256-gcm"
+# -----------------
 
-# --- 系统变量 ---
 CONF_DIR="/etc/xray-proxya"
 CONF_FILE="$CONF_DIR/config.env"
-CUSTOM_OUT_FILE="$CONF_DIR/custom_out.json"
-XRAY_BIN="/usr/local/sbin/xray-proxya-core/xray" # 为了 sudo 补全，此处也假设安装在 sbin 或 bin，由 install.sh 决定
-XRAY_DIR="/usr/local/sbin/xray-proxya-core"
+CUSTOM_OUT_FILE="$CONF_DIR/custom_outbound.json"
+XRAY_BIN="/usr/local/bin/xray-proxya-core/xray"
+XRAY_DIR="/usr/local/bin/xray-proxya-core"
 SERVICE_FILE="/etc/systemd/system/xray-proxya.service"
 JSON_FILE="$XRAY_DIR/config.json"
 
@@ -33,28 +33,28 @@ check_root() {
 }
 
 install_deps() {
-    if ! command -v jq &> /dev/null; then
-        echo -e "${BLUE}📦 安装依赖...${NC}"
-        apt-get update -qq >/dev/null
-        apt-get install -y curl jq unzip openssl >/dev/null 2>&1
-    fi
+    echo -e "${BLUE}📦 安装/检查依赖...${NC}"
+    apt-get update -qq >/dev/null
+    apt-get install -y curl jq unzip openssl >/dev/null 2>&1
 }
 
 generate_random() {
-    local length=$1
-    openssl rand -base64 $((length * 2)) | tr -dc 'a-zA-Z0-9' | head -c $length
+    openssl rand -base64 $(( $1 * 2 )) | tr -dc 'a-zA-Z0-9' | head -c $1
 }
 
-# --- 核心逻辑 ---
+check_status() {
+    if systemctl is-active --quiet xray-proxya; then
+        echo -e "🟢 服务状态: ${GREEN}运行中${NC}"
+    else
+        echo -e "🔴 服务状态: ${RED}未运行${NC}"
+    fi
+}
 
 download_core() {
+    if [ -f "$XRAY_BIN" ]; then return; fi
     echo -e "${BLUE}⬇️  获取 Xray-core...${NC}"
     LATEST_URL=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
-    
-    if [ -z "$LATEST_URL" ]; then
-        echo -e "${RED}❌ 下载失败${NC}"
-        return 1
-    fi
+    if [ -z "$LATEST_URL" ]; then echo -e "${RED}❌ 下载失败${NC}"; return 1; fi
 
     systemctl stop xray-proxya 2>/dev/null
     mkdir -p "$XRAY_DIR"
@@ -64,87 +64,146 @@ download_core() {
     chmod +x "$XRAY_BIN"
 }
 
-# 解析出站链接并生成 JSON 片段
-parse_outbound_link() {
-    local link=$1
-    local json_out=""
+# --- 链接解析与自定义出站 ---
 
+# 尝试将分享链接转换为 Outbound JSON
+parse_link_to_json() {
+    local link="$1"
+    
+    # VMess
     if [[ "$link" == vmess://* ]]; then
-        # VMess 解析
-        local b64=$(echo "${link#vmess://}" | base64 -d 2>/dev/null)
-        if [ $? -ne 0 ]; then echo "❌ Base64 解码失败"; return 1; fi
+        local b64="${link#vmess://}"
+        local json_str=$(echo "$b64" | base64 -d 2>/dev/null || echo "$b64" | base64 -d -i 2>/dev/null)
+        if [ -z "$json_str" ]; then return 1; fi
         
-        # 提取字段
-        local addr=$(echo "$b64" | jq -r '.add')
-        local port=$(echo "$b64" | jq -r '.port')
-        local id=$(echo "$b64" | jq -r '.id')
-        local net=$(echo "$b64" | jq -r '.net')
-        local path=$(echo "$b64" | jq -r '.path')
-        local tls=$(echo "$b64" | jq -r '.tls')
-        
+        # 提取关键字段
+        local add=$(echo "$json_str" | jq -r '.add')
+        local port=$(echo "$json_str" | jq -r '.port')
+        local id=$(echo "$json_str" | jq -r '.id')
+        local net=$(echo "$json_str" | jq -r '.net')
+        local path=$(echo "$json_str" | jq -r '.path')
+        local host=$(echo "$json_str" | jq -r '.host')
+        local tls=$(echo "$json_str" | jq -r '.tls')
+
         # 构建出站 JSON
-        json_out=$(jq -n \
-            --arg addr "$addr" --arg port "$port" --arg id "$id" --arg net "$net" --arg path "$path" --arg tls "$tls" \
-            '{
-                protocol: "vmess",
-                settings: { vnext: [{ address: $addr, port: ($port|tonumber), users: [{ id: $id }] }] },
-                streamSettings: { network: $net, security: $tls, wsSettings: { path: $path } }
-            }')
-
-    elif [[ "$link" == ss://* ]]; then
-        # SS 解析 (SIP002)
-        local body=${link#ss://}
-        body=${body%%#*} # 去掉备注
-        local decoded=$(echo "$body" | cut -d'@' -f1 | base64 -d 2>/dev/null)
-        local addr_part=$(echo "$body" | cut -d'@' -f2)
-        
-        local method=$(echo "$decoded" | cut -d':' -f1)
-        local pass=$(echo "$decoded" | cut -d':' -f2)
-        local addr=$(echo "$addr_part" | cut -d':' -f1)
-        local port=$(echo "$addr_part" | cut -d':' -f2)
-
-        json_out=$(jq -n \
-            --arg addr "$addr" --arg port "$port" --arg method "$method" --arg pass "$pass" \
-            '{
-                protocol: "shadowsocks",
-                settings: { servers: [{ address: $addr, port: ($port|tonumber), method: $method, password: $pass }] }
-            }')
-    else
-        echo "❌ 目前仅支持标准 VMess(base64) 和 SS(SIP002) 链接导入。"
-        return 1
+        cat <<EOF
+{
+  "tag": "custom-out",
+  "protocol": "vmess",
+  "settings": {
+    "vnext": [{ "address": "$add", "port": $port, "users": [{ "id": "$id" }] }]
+  },
+  "streamSettings": {
+    "network": "$net",
+    "security": "$tls",
+    "wsSettings": { "path": "$path", "headers": { "Host": "$host" } }
+  }
+}
+EOF
+        return 0
     fi
 
-    # 添加 tag
-    echo "$json_out" | jq '. + {tag: "custom_out"}' > "$CUSTOM_OUT_FILE"
-    return 0
+    # VLESS (简单解析)
+    if [[ "$link" == vless://* ]]; then
+        # 移除 vless://
+        local tmp="${link#vless://}"
+        # 提取 UUID
+        local uuid="${tmp%%@*}"
+        tmp="${tmp#*@}"
+        # 提取 Address:Port
+        local address_port="${tmp%%\?*}"
+        local address="${address_port%:*}"
+        local port="${address_port##*:}"
+        # 提取 Query Params
+        local query="${link#*\?}"
+        query="${query%%\#*}" # remove hash
+        
+        # 简单提取 query 中的值 (不完美，但可用)
+        local type=$(echo "$query" | grep -oP 'type=\K[^&]+')
+        local security=$(echo "$query" | grep -oP 'security=\K[^&]+')
+        local path=$(echo "$query" | grep -oP 'path=\K[^&]+' | sed 's/%2F/\//g')
+        
+        [ -z "$type" ] && type="tcp"
+        [ -z "$security" ] && security="none"
+
+        cat <<EOF
+{
+  "tag": "custom-out",
+  "protocol": "vless",
+  "settings": {
+    "vnext": [{ "address": "$address", "port": $port, "users": [{ "id": "$uuid" }] }]
+  },
+  "streamSettings": {
+    "network": "$type",
+    "security": "$security",
+    "$type\Settings": { "path": "$path" }
+  }
+}
+EOF
+        return 0
+    fi
+    
+    return 1
 }
 
-generate_config() {
-    local vmess_p=$1
-    local vless_p=$2
-    local ss_p=$3
-    local uuid=$4
-    local vmess_path=$5
-    local vless_path=$6
-    local enc_key=$7
-    local dec_key=$8
-    local ss_pass=$9
-    local ss_method=${10}
-    local uuid_custom=${11} # 第二个用户的 UUID (可选)
-
-    # 基础入站 (Client 0: Direct)
-    local vmess_clients="[ { \"id\": \"$uuid\", \"email\": \"direct\", \"level\": 0 }"
-    local vless_clients="[ { \"id\": \"$uuid\", \"email\": \"direct\", \"level\": 0 }"
-
-    # 如果有自定义出站用户，参加入站配置
-    if [ -n "$uuid_custom" ]; then
-        vmess_clients="$vmess_clients, { \"id\": \"$uuid_custom\", \"email\": \"custom\", \"level\": 0 }"
-        vless_clients="$vless_clients, { \"id\": \"$uuid_custom\", \"email\": \"custom\", \"level\": 0 }"
+add_custom_outbound() {
+    echo -e "\n=== 添加自定义出站 (流量转发) ==="
+    echo -e "${YELLOW}提示: 目前仅支持导入标准的 VMess(ws) 或 VLESS 链接。${NC}"
+    echo -e "该配置将用于新的转发用户，原用户不受影响。\n"
+    
+    read -p "请粘贴 Xray 分享链接: " link_str
+    
+    if [ -z "$link_str" ]; then echo -e "${RED}输入为空${NC}"; return; fi
+    
+    echo -e "${BLUE}正在尝试解析...${NC}"
+    PARSED_JSON=$(parse_link_to_json "$link_str")
+    
+    if [ $? -ne 0 ] || [ -z "$PARSED_JSON" ]; then
+        echo -e "${RED}❌ 解析失败或不支持该链接格式。${NC}"
+        echo -e "建议检查链接是否完整，目前暂不支持复杂的 Reality 或 SS 链接导入。"
+        return
     fi
-    vmess_clients="$vmess_clients ]"
-    vless_clients="$vless_clients ]"
+    
+    echo "$PARSED_JSON" > "$CUSTOM_OUT_FILE"
+    echo -e "${GREEN}✅ 解析成功！出站配置已保存。${NC}"
+    
+    # 确保有自定义用户 UUID
+    source "$CONF_FILE"
+    if [ -z "$UUID_CUSTOM" ]; then
+        UUID_CUSTOM=$("$XRAY_BIN" uuid)
+        echo "UUID_CUSTOM=$UUID_CUSTOM" >> "$CONF_FILE"
+        echo -e "已生成转发专用 UUID: $UUID_CUSTOM"
+    fi
+    
+    # 重新生成配置
+    source "$CONF_FILE"
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER"
+    systemctl restart xray-proxya
+    echo -e "${GREEN}服务已重启，转发规则已生效。${NC}"
+}
 
-    # 构建配置头
+# --- 核心配置生成 ---
+
+generate_config() {
+    # 参数 1-10 ...
+    local vmess_p=$1; local vless_p=$2; local ss_p=$3; local uuid_direct=$4
+    local vmess_path=$5; local vless_path=$6; local enc_key=$7; local dec_key=$8
+    local ss_pass=$9; local ss_method=${10}
+
+    # 读取自定义 UUID (如有)
+    local uuid_custom=${UUID_CUSTOM:-""}
+    
+    # 构建 Clients 数组
+    local clients_vmess="{ \"id\": \"$uuid_direct\", \"email\": \"direct\", \"level\": 0 }"
+    local clients_vless="{ \"id\": \"$uuid_direct\", \"email\": \"direct\", \"level\": 0 }"
+    
+    # 如果存在自定义 UUID，添加到 clients
+    if [ ! -z "$uuid_custom" ] && [ -f "$CUSTOM_OUT_FILE" ]; then
+        clients_vmess="$clients_vmess, { \"id\": \"$uuid_custom\", \"email\": \"custom\", \"level\": 0 }"
+        clients_vless="$clients_vless, { \"id\": \"$uuid_custom\", \"email\": \"custom\", \"level\": 0 }"
+    fi
+
+    # 开始写入 Config
     cat > "$JSON_FILE" <<EOF
 {
   "log": { "loglevel": "warning" },
@@ -153,105 +212,78 @@ generate_config() {
       "tag": "vmess-in",
       "port": $vmess_p,
       "protocol": "vmess",
-      "settings": { "clients": $vmess_clients },
+      "settings": { "clients": [ $clients_vmess ] },
       "streamSettings": { "network": "ws", "wsSettings": { "path": "$vmess_path" } }
     },
     {
       "tag": "vless-enc-in",
       "port": $vless_p,
       "protocol": "vless",
-      "settings": { "clients": $vless_clients, "decryption": "$dec_key" },
+      "settings": { "clients": [ $clients_vless ], "decryption": "$dec_key" },
       "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "$vless_path" } }
     },
     {
       "tag": "shadowsocks-in",
       "port": $ss_p,
       "protocol": "shadowsocks",
-      "settings": {
-        "method": "$ss_method",
-        "password": "$ss_pass",
-        "network": "tcp,udp"
-      }
+      "settings": { "method": "$ss_method", "password": "$ss_pass", "network": "tcp,udp" }
     }
   ],
-  "outbounds": [ 
-    { "tag": "freedom", "protocol": "freedom" }
+  "outbounds": [
+    { "tag": "direct", "protocol": "freedom" }
 EOF
 
-    # 插入自定义出站 (如果存在)
+    # 注入自定义出站 (如果存在)
     if [ -f "$CUSTOM_OUT_FILE" ]; then
-        echo "    ," >> "$JSON_FILE"
+        echo "," >> "$JSON_FILE"
         cat "$CUSTOM_OUT_FILE" >> "$JSON_FILE"
     fi
 
-    # 闭合出站并添加路由
+    # 闭合 Outbounds 并添加 Routing
     cat >> "$JSON_FILE" <<EOF
   ],
   "routing": {
     "rules": [
-      { "type": "field", "email": "custom", "outboundTag": "custom_out" },
-      { "type": "field", "email": "direct", "outboundTag": "freedom" }
+      { "type": "field", "user": ["direct"], "outboundTag": "direct" },
+      { "type": "field", "user": ["custom"], "outboundTag": "custom-out" }
     ]
   }
 }
 EOF
 }
 
-create_service() {
-    cat > "$SERVICE_FILE" <<EOF
-[Unit]
-Description=Xray-Proxya Service
-After=network.target
-
-[Service]
-User=root
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
-NoNewPrivileges=true
-ExecStart=$XRAY_BIN run -c $JSON_FILE
-Restart=on-failure
-RestartPreventExitStatus=23
-LimitNPROC=10000
-LimitNOFILE=1000000
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    systemctl daemon-reload
-    systemctl enable xray-proxya >/dev/null 2>&1
-    systemctl restart xray-proxya
-}
+# --- 安装与管理 ---
 
 install_xray() {
-    echo -e "=== 安装向导 [Test] ==="
-    
+    echo -e "=== 安装向导 ==="
     read -p "VMess 端口 (默认 ${vmessp:-8081}): " port_vm
     read -p "VLESS 端口 (默认 ${vlessp:-8082}): " port_vl
     read -p "SS    端口 (默认 ${ssocks:-8083}): " port_ss
-    
     PORT_VMESS=${port_vm:-${vmessp:-8081}}
     PORT_VLESS=${port_vl:-${vlessp:-8082}}
     PORT_SS=${port_ss:-${ssocks:-8083}}
 
-    # 端口检测省略以保持简洁，生产环境建议保留
+    for p in $PORT_VMESS $PORT_VLESS $PORT_SS; do
+        if ss -lnt | grep -q ":$p "; then echo -e "${RED}⚠️ 端口 $p 被占用${NC}"; return; fi
+    done
 
     install_deps
     download_core
 
-    echo -e "${BLUE}🔑 生成密钥...${NC}"
+    echo -e "${BLUE}🔑 生成配置...${NC}"
     UUID=$("$XRAY_BIN" uuid)
-    PATH_VM="/$(openssl rand -hex 12)"
-    PATH_VL="/$(openssl rand -hex 12)"
+    PATH_VM="/$(generate_random 12)"
+    PATH_VL="/$(generate_random 12)"
     PASS_SS=$(generate_random 24)
     
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc)
-    DEC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "Authentication: ML-KEM-768" | grep '"decryption":' | cut -d '"' -f 4)
-    ENC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "Authentication: ML-KEM-768" | grep '"encryption":' | cut -d '"' -f 4)
+    DEC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "ML-KEM" | grep '"decryption":' | cut -d '"' -f 4)
+    ENC_KEY=$(echo "$RAW_ENC_OUT" | grep -A 5 "ML-KEM" | grep '"encryption":' | cut -d '"' -f 4)
+    if [ -z "$DEC_KEY" ]; then echo -e "${RED}❌ 密钥生成失败${NC}"; return 1; fi
 
-    # 保存配置
     mkdir -p "$CONF_DIR"
-    # 如果已存在 custom_uuid 则保留
-    [ -f "$CONF_FILE" ] && grep "UUID_CUSTOM" "$CONF_FILE" > /tmp/xray_custom_uuid_backup
+    # 清除旧的 custom 配置防止混淆
+    rm -f "$CUSTOM_OUT_FILE"
     
     cat > "$CONF_FILE" <<EOF
 PORT_VMESS=$PORT_VMESS
@@ -266,179 +298,188 @@ DEC_KEY=$DEC_KEY
 CFG_VMESS_CIPHER=$VMESS_CIPHER
 CFG_SS_CIPHER=$SS_CIPHER
 EOF
-    
-    # 恢复 Custom UUID 如果有
-    if [ -f /tmp/xray_custom_uuid_backup ]; then
-        cat /tmp/xray_custom_uuid_backup >> "$CONF_FILE"
-        rm /tmp/xray_custom_uuid_backup
-    fi
-    
-    # 初次安装不生成 UUID_CUSTOM，除非通过 add_custom_outbound 添加
-    source "$CONF_FILE"
-    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER" "$UUID_CUSTOM"
-    create_service
 
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$SS_CIPHER"
+    
+    cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=Xray-Proxya Service
+After=network.target
+[Service]
+User=root
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+ExecStart=$XRAY_BIN run -c $JSON_FILE
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable xray-proxya >/dev/null 2>&1
+    systemctl restart xray-proxya
     echo -e "${GREEN}✅ 安装完成${NC}"
+    show_links_menu
 }
 
-add_custom_outbound() {
-    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}未安装${NC}"; return; fi
-    source "$CONF_FILE"
+# --- 链接展示逻辑 ---
 
-    echo -e "\n=== 添加自定义出站 (转发) ==="
-    echo -e "请输入 Xray 分享链接 (支持 VMess / Shadowsocks):"
-    read -r link_input
-    
-    if [ -z "$link_input" ]; then echo "取消操作"; return; fi
+format_ip() { [[ "$1" =~ .*:.* ]] && echo "[$1]" || echo "$1"; }
 
-    if parse_outbound_link "$link_input"; then
-        echo -e "${GREEN}✅ 链接解析成功${NC}"
-        
-        # 生成专用 UUID
-        if [ -z "$UUID_CUSTOM" ]; then
-            UUID_CUSTOM=$("$XRAY_BIN" uuid)
-            echo "UUID_CUSTOM=$UUID_CUSTOM" >> "$CONF_FILE"
-        fi
-        
-        # 重新生成配置
-        generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "$CFG_SS_CIPHER" "$UUID_CUSTOM"
-        systemctl restart xray-proxya
-        echo -e "${GREEN}✅ 配置已更新。${NC}"
-        echo -e "现在 '查看链接' 菜单中将包含自定义出站选项。"
-    else
-        echo -e "${RED}❌ 解析失败或不支持的链接格式${NC}"
-    fi
-    read -n 1 -s -r -p "按任意键返回..."
-}
-
-format_ip() {
-    local ip=$1
-    if [[ "$ip" =~ .*:.* ]]; then echo "[$ip]"; else echo "$ip"; fi
-}
-
-print_links_for_uuid() {
-    local target_uuid=$1
-    local title=$2
-    local ip_addr=$3
-    
-    local fmt_ip=$(format_ip "$ip_addr")
+print_link_group() {
+    local ip=$1; local label=$2; local target_uuid=$3; local desc=$4
+    if [ -z "$ip" ]; then return; fi
+    local f_ip=$(format_ip "$ip")
     local vm_cipher=${CFG_VMESS_CIPHER:-$VMESS_CIPHER}
-    
+    local ss_cipher=${CFG_SS_CIPHER:-$SS_CIPHER}
+
     # VMess
-    local vmess_json=$(jq -n \
-      --arg add "$ip_addr" --arg port "$PORT_VMESS" --arg id "$target_uuid" --arg path "$PATH_VM" --arg scy "$vm_cipher" --arg ps "$title" \
+    local vm_j=$(jq -n --arg add "$ip" --arg port "$PORT_VMESS" --arg id "$target_uuid" --arg path "$PATH_VM" --arg scy "$vm_cipher" --arg ps "$desc-VMess" \
       '{v:"2", ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
-    local vmess_link="vmess://$(echo -n "$vmess_json" | base64 -w 0)"
-
+    local vm_l="vmess://$(echo -n "$vm_j" | base64 -w 0)"
+    
     # VLESS
-    local vless_link="vless://$target_uuid@$fmt_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$title"
+    local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$desc-VLESS"
+    
+    # SS (仅 Direct 模式显示 SS，因为脚本未做 SS 多用户路由)
+    local ss_l=""
+    if [ "$desc" == "Direct" ]; then
+        local ss_auth=$(echo -n "${ss_cipher}:$PASS_SS" | base64 -w 0)
+        ss_l="ss://$ss_auth@$f_ip:$PORT_SS#$desc-SS"
+    fi
 
-    echo -e "   🔗 VMess:  ${GREEN}$vmess_link${NC}"
-    echo -e "   🔗 VLESS:  ${GREEN}$vless_link${NC}"
+    echo -e "\n${BLUE}--- $label ($ip) ---${NC}"
+    echo -e "1️⃣  VMess ($vm_cipher): ${GREEN}$vm_l${NC}"
+    echo -e "2️⃣  VLESS (XHTTP-ENC): ${GREEN}$vl_l${NC}"
+    [ ! -z "$ss_l" ] && echo -e "3️⃣  Shadowsocks:       ${GREEN}$ss_l${NC}"
+}
+
+show_links_logic() {
+    local target_uuid=$1
+    local desc_tag=$2
+    
+    local ipv4=$(curl -s -4 --max-time 2 https://ipconfig.me || curl -s -4 --max-time 2 https://ifconfig.co)
+    local ipv6=$(curl -s -6 --max-time 2 https://ifconfig.co)
+    
+    if [ -n "$ipv4" ]; then print_link_group "$ipv4" "IPv4" "$target_uuid" "$desc_tag"; fi
+    if [ -n "$ipv6" ]; then print_link_group "$ipv6" "IPv6" "$target_uuid" "$desc_tag"; fi
+    if [ -z "$ipv4" ] && [ -z "$ipv6" ]; then echo -e "${RED}❌ 无法获取 IP${NC}"; fi
 }
 
 show_links_menu() {
+    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}❌ 未配置${NC}"; return; fi
+    source "$CONF_FILE"
+
+    # 如果没有自定义出站配置，直接显示默认
+    if [ ! -f "$CUSTOM_OUT_FILE" ]; then
+        echo -e "\n=== 链接信息 (直接出站) ==="
+        show_links_logic "$UUID" "Direct"
+        return
+    fi
+
+    # 有自定义出站，显示子菜单
+    echo -e "\n=== 选择要查看的链接类型 ==="
+    echo "1. 直接出站 (本机 IP)"
+    echo "2. 自定义出站 (转发流量)"
+    echo "q. 返回"
+    read -p "选择: " sl_choice
+    
+    case "$sl_choice" in
+        1) show_links_logic "$UUID" "Direct" ;;
+        2) 
+           if [ -z "$UUID_CUSTOM" ]; then echo -e "${RED}错误: 未找到自定义用户配置${NC}"; return; fi
+           show_links_logic "$UUID_CUSTOM" "Custom" 
+           ;;
+        q|Q) return ;;
+        *) echo -e "${RED}无效${NC}" ;;
+    esac
+}
+
+# --- 其他功能 ---
+
+change_ports() {
     if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}未安装${NC}"; return; fi
     source "$CONF_FILE"
-    
-    local ipv4=$(curl -s -4 --max-time 2 https://ipconfig.me || echo "")
-    
-    # 判断是否有自定义出站
-    if [ -n "$UUID_CUSTOM" ] && [ -f "$CUSTOM_OUT_FILE" ]; then
-        while true; do
-            echo -e "\n--- 选择出站模式 ---"
-            echo "1. 直接出站 (Direct)"
-            echo "2. 自定义出站 (转发)"
-            echo "q. 返回上级"
-            read -p "选择: " sl_choice
-            
-            case "$sl_choice" in
-                1) 
-                    echo -e "\n${BLUE}--- 直接出站 (IPv4: $ipv4) ---${NC}"
-                    print_links_for_uuid "$UUID" "Direct-Out" "$ipv4"
-                    # SS 仅用于直连
-                    local ss_auth=$(echo -n "${CFG_SS_CIPHER}:$PASS_SS" | base64 -w 0)
-                    echo -e "   🔗 SS:     ${GREEN}ss://$ss_auth@$(format_ip $ipv4):$PORT_SS#SS-Direct${NC}"
-                    read -n 1 -s -r -p "按任意键..."
-                    ;;
-                2)
-                    echo -e "\n${BLUE}--- 自定义转发 (IPv4: $ipv4) ---${NC}"
-                    echo -e "${YELLOW}注: 仅 VMess/VLESS 支持自定义转发路由${NC}"
-                    print_links_for_uuid "$UUID_CUSTOM" "Custom-Out" "$ipv4"
-                    read -n 1 -s -r -p "按任意键..."
-                    ;;
-                q) return ;;
-                *) echo "无效" ;;
-            esac
-        done
-    else
-        # 仅直接出站
-        echo -e "\n${BLUE}--- 配置链接 (IPv4: $ipv4) ---${NC}"
-        print_links_for_uuid "$UUID" "Direct-Out" "$ipv4"
-        local ss_auth=$(echo -n "${CFG_SS_CIPHER}:$PASS_SS" | base64 -w 0)
-        echo -e "   🔗 SS:     ${GREEN}ss://$ss_auth@$(format_ip $ipv4):$PORT_SS#SS-Direct${NC}"
-        read -n 1 -s -r -p "按任意键返回..."
-    fi
+    echo -e "当前: VMess=$PORT_VMESS, VLESS=$PORT_VLESS, SS=$PORT_SS"
+    read -p "新 VMess (回车跳过): " new_vm
+    read -p "新 VLESS (回车跳过): " new_vl
+    read -p "新 SS    (回车跳过): " new_ss
+    [[ ! -z "$new_vm" ]] && sed -i "s/^PORT_VMESS=.*/PORT_VMESS=$new_vm/" "$CONF_FILE"
+    [[ ! -z "$new_vl" ]] && sed -i "s/^PORT_VLESS=.*/PORT_VLESS=$new_vl/" "$CONF_FILE"
+    [[ ! -z "$new_ss" ]] && sed -i "s/^PORT_SS=.*/PORT_SS=$new_ss/" "$CONF_FILE"
+    source "$CONF_FILE"
+    generate_config "$PORT_VMESS" "$PORT_VLESS" "$PORT_SS" "$UUID" "$PATH_VM" "$PATH_VL" "$ENC_KEY" "$DEC_KEY" "$PASS_SS" "${CFG_SS_CIPHER:-$SS_CIPHER}"
+    systemctl restart xray-proxya
+    echo -e "${GREEN}✅ 已更新并重启${NC}"
+}
+
+maintenance_menu() {
+    while true; do
+        echo -e "\n=== 维护 ==="
+        echo "1. 启动 (Start)"
+        echo "2. 停止 (Stop)"
+        echo "3. 重启 (Restart)"
+        echo "4. 开机自启 (Enable)"
+        echo "5. 取消自启 (Disable)"
+        echo "q. 返回"
+        read -p "选择: " m_choice
+        case "$m_choice" in
+            1) systemctl start xray-proxya && echo "✅" ;;
+            2) systemctl stop xray-proxya && echo "✅" ;;
+            3) systemctl restart xray-proxya && echo "✅" ;;
+            4) systemctl enable xray-proxya && echo "✅" ;;
+            5) systemctl disable xray-proxya && echo "✅" ;;
+            q|Q) return ;;
+            *) echo "❌" ;;
+        esac
+    done
 }
 
 uninstall_xray() {
-    echo -e "${YELLOW}⚠️  警告: 将卸载 Xray 服务。${NC}"
-    read -p "默认保留配置和核心文件? (N 删除核心 / y 仅删服务) [N/y]: " keep_core
-    # 逻辑反转：Prompt说默认N (即删除)，这里按通常习惯 N=No Keep=Delete All?
-    # 按照 Prompt: "默认 N (即不保留?不，通常 No 是 default answer)，需要清除系统服务，并询问是否移除 Core"
-    
+    echo -e "${YELLOW}⚠️  警告: 将停止服务并删除配置。${NC}"
+    read -p "确认卸载? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then return; fi
+
     systemctl stop xray-proxya
     systemctl disable xray-proxya
     rm "$SERVICE_FILE"
+    rm -rf "$CONF_DIR"
     systemctl daemon-reload
-    echo -e "${GREEN}服务文件已移除。${NC}"
+    echo -e "${GREEN}✅ 服务与配置已移除。${NC}"
 
-    if [[ "$keep_core" =~ ^[Yy]$ ]]; then
-        echo "Xray 核心文件已保留。"
-    else
+    # 询问移除核心
+    read -p "是否同时删除 Xray 核心文件 ($XRAY_DIR)? (y/N): " del_core
+    if [[ "$del_core" == "y" ]]; then
         rm -rf "$XRAY_DIR"
-        rm -rf "$CONF_DIR"
-        echo "Xray 核心与配置已移除。"
+        echo -e "${GREEN}✅ 核心文件已移除。${NC}"
+    else
+        echo -e "核心文件已保留。"
     fi
-    echo -e "${GREEN}✅ 卸载完成${NC}"
-    exit 0
 }
 
-# --- 主菜单 ---
+# --- 主循环 ---
 check_root
-
 while true; do
-    echo -e "\n${BLUE}Xray-Proxya [Test Build]${NC}"
-    if systemctl is-active --quiet xray-proxya; then
-        echo -e "状态: ${GREEN}运行中${NC}"
-    else
-        echo -e "状态: ${RED}停止${NC}"
-    fi
-    
+    echo -e "\n${BLUE}Xray-Proxya 管理 [TEST]${NC}"
+    check_status
     echo "1. 安装 / 重置"
     echo "2. 查看链接"
-    echo "3. 添加自定义出站 (转发)"
-    echo "4. 服务维护"
-    echo "0. 卸载"
+    echo "3. 修改端口"
+    echo "4. 维护菜单"
+    echo "5. 卸载 Xray"
+    echo "6. 添加/更新 自定义出站"
     echo "q. 退出"
+    echo "0. 卸载 (快捷)"
     read -p "选择: " choice
 
     case "$choice" in
         1) install_xray ;;
         2) show_links_menu ;;
-        3) add_custom_outbound ;;
-        4) 
-           echo "1.Start 2.Stop 3.Restart q.Back"
-           read -p "> " svc_c
-           case "$svc_c" in
-             1) systemctl start xray-proxya ;;
-             2) systemctl stop xray-proxya ;;
-             3) systemctl restart xray-proxya ;;
-             q) ;;
-           esac
-           ;;
-        0) uninstall_xray ;;
-        q) exit 0 ;;
-        *) echo "无效" ;;
+        3) change_ports ;;
+        4) maintenance_menu ;;
+        5|0) uninstall_xray ;;
+        6) add_custom_outbound ;;
+        q|Q) exit 0 ;;
+        *) echo -e "${RED}无效${NC}" ;;
     esac
 done
