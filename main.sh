@@ -2,7 +2,7 @@
 
 # ==================================================
 # Xray-Proxya Manager [STABLE]
-# Supports: Debian/Ubuntu (SystemCtl) & Alpine (OpenRC)
+# Supports: Debian/Ubuntu & Alpine (OpenRC)
 # ==================================================
 
 # --- 默认配置变量 ---
@@ -11,7 +11,6 @@ DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 
-# 加密算法
 VMESS_CIPHER="chacha20-poly1305"
 SS_CIPHER="aes-256-gcm"
 
@@ -138,7 +137,6 @@ decode_base64() {
 
 parse_link_to_json() {
     local link="$1"
-    
     # VMess
     if [[ "$link" == vmess://* ]]; then
         local b64="${link#vmess://}"
@@ -156,7 +154,6 @@ parse_link_to_json() {
 EOF
         return 0
     fi
-    
     # VLESS
     if [[ "$link" == vless://* ]]; then
         local tmp="${link#vless://}"
@@ -178,61 +175,52 @@ EOF
 EOF
         return 0
     fi
-
-    # Shadowsocks (新增支持)
+    # Shadowsocks
     if [[ "$link" == ss://* ]]; then
         local raw="${link#ss://}"
-        raw="${raw%%\#*}" # 移除 tag/hash
-        
+        raw="${raw%%\#*}"
+        local decoded=$(decode_base64 "$raw")
         local method=""
         local password=""
         local address=""
         local port=""
         
-        # 模式 1: SIP002 (base64(method:password)@host:port)
-        if [[ "$raw" == *@* ]]; then
+        # 尝试检测 Legacy 格式: decode(method:pass@host:port)
+        if [[ "$decoded" == *:*@*:* ]]; then
+            local auth="${decoded%%@*}"
+            local addr_full="${decoded#*@}"
+            method="${auth%%:*}"
+            password="${auth#*:}"
+            address="${addr_full%%:*}"
+            port="${addr_full##*:}"
+        # 尝试检测 SIP002 格式: decode(method:pass)@host:port
+        elif [[ "$raw" == *@* ]]; then
             local b64_auth="${raw%%@*}"
-            local hostport="${raw#*@}"
-            
-            # 解码认证部分
-            local auth_str=$(decode_base64 "$b64_auth")
-            
-            method="${auth_str%%:*}"
-            password="${auth_str#*:}"
-            address="${hostport%%:*}"
-            port="${hostport##*:}"
-        else
-            # 模式 2: 旧版格式 (base64(method:password@host:port))
-            local decoded=$(decode_base64 "$raw")
-            # 期望解出: method:password@host:port
-            if [[ "$decoded" == *:*@*:* ]]; then
-                local auth_part="${decoded%%@*}"
-                local host_part="${decoded#*@}"
-                method="${auth_part%%:*}"
-                password="${auth_part#*:}"
-                address="${host_part%%:*}"
-                port="${host_part##*:}"
-            fi
+            local addr_full="${raw#*@}"
+            local auth=$(decode_base64 "$b64_auth")
+            method="${auth%%:*}"
+            password="${auth#*:}"
+            address="${addr_full%%:*}"
+            port="${addr_full##*:}"
         fi
 
-        # 校验
-        if [ -z "$method" ] || [ -z "$address" ] || [ -z "$port" ]; then return 1; fi
-
+        if [ -z "$method" ] || [ -z "$address" ]; then return 1; fi
         cat <<-EOF
 { "tag": "custom-out", "protocol": "shadowsocks", "settings": { "servers": [{ "address": "$address", "port": $port, "method": "$method", "password": "$password" }] } }
 EOF
         return 0
     fi
-
+    
     return 1
 }
 
 add_custom_outbound() {
     echo -e "\n=== 添加自定义出站 (流量转发) ==="
-    read -p "请粘贴链接 (VMess/VLESS/SS): " link_str
+    echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), Shadowsocks${NC}"
+    read -p "请粘贴链接: " link_str
     if [ -z "$link_str" ]; then echo -e "${RED}输入为空${NC}"; return; fi
     PARSED_JSON=$(parse_link_to_json "$link_str")
-    if [ $? -ne 0 ] || [ -z "$PARSED_JSON" ]; then echo -e "${RED}❌ 解析失败${NC}"; return; fi
+    if [ $? -ne 0 ] || [ -z "$PARSED_JSON" ]; then echo -e "${RED}❌ 解析失败或不支持该格式${NC}"; return; fi
     echo "$PARSED_JSON" > "$CUSTOM_OUT_FILE"
     echo -e "${GREEN}✅ 解析成功${NC}"
     source "$CONF_FILE"
@@ -386,13 +374,11 @@ install_xray() {
     
     # === 解析逻辑 ===
     
-    # Reality Key Parsing
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
     REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "Private" | awk -F ": " '{print $NF}' | tr -d ' \r')
     REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Public" | awk -F ": " '{print $NF}' | tr -d ' \r')
     REALITY_SID=$(openssl rand -hex 4)
     
-    # ML-KEM Key Parsing
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
     DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
     ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
@@ -451,3 +437,138 @@ print_link_group() {
     local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$ps_vl"
     
     local ps_rea="VLess-XHTTP-Reality-$PORT_REALITY"
+    [ "$desc" == "Custom" ] && ps_rea="转发-$ps_rea"
+    local rea_l="vless://$target_uuid@$f_ip:$PORT_REALITY?security=reality&encryption=none&pbk=$REALITY_PUB&fp=chrome&type=xhttp&serviceName=&path=$PATH_REALITY&sni=$REALITY_SNI&sid=$REALITY_SID&spx=%2F#$ps_rea"
+
+    local ss_l=""
+    if [ "$desc" == "Direct" ]; then
+        local ps_ss="SS-TCPUDP-${SS_CIPHER}-$PORT_SS"
+        local ss_auth=$(echo -n "${SS_CIPHER}:$PASS_SS" | base64 -w 0)
+        ss_l="ss://$ss_auth@$f_ip:$PORT_SS#$ps_ss"
+    fi
+
+    echo -e "\n${BLUE}--- $label ($ip) ---${NC}"
+    echo -e "1️⃣  VMess (${VMESS_CIPHER}):\n    ${GREEN}$vm_l${NC}"
+    echo -e "2️⃣  VLESS (ML-KEM768):\n    ${GREEN}$vl_l${NC}"
+    echo -e "3️⃣  VLESS (Reality-TLS):\n    ${GREEN}$rea_l${NC}"
+    [ ! -z "$ss_l" ] && echo -e "4️⃣  Shadowsocks (${SS_CIPHER}):\n    ${GREEN}$ss_l${NC}"
+}
+
+show_links_logic() {
+    local target_uuid=$1; local desc_tag=$2
+    local ipv4=$(curl -s -4 --max-time 2 https://ipconfig.me || curl -s -4 --max-time 2 https://ifconfig.co)
+    local ipv6=$(curl -s -6 --max-time 2 https://ifconfig.co)
+    if [ -n "$ipv4" ]; then print_link_group "$ipv4" "IPv4" "$target_uuid" "$desc_tag"; fi
+    if [ -n "$ipv6" ]; then print_link_group "$ipv6" "IPv6" "$target_uuid" "$desc_tag"; fi
+    if [ -z "$ipv4" ] && [ -z "$ipv6" ]; then echo -e "${RED}❌ 无法获取 IP${NC}"; fi
+}
+
+show_links_menu() {
+    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}❌ 未配置${NC}"; return; fi
+    source "$CONF_FILE"
+    if [ ! -f "$CUSTOM_OUT_FILE" ]; then
+        echo -e "\n=== 链接信息 (直接出站) ==="
+        show_links_logic "$UUID" "Direct"
+        return
+    fi
+    echo -e "\n=== 选择要查看的链接类型 ==="
+    echo "1. 直接出站 (本机 IP)"
+    echo "2. 自定义出站 (转发流量)"
+    echo ""
+    echo "q. 返回"
+    read -p "选择: " sl_choice
+    case "$sl_choice" in
+        1) show_links_logic "$UUID" "Direct" ;;
+        2) [ -z "$UUID_CUSTOM" ] && { echo -e "${RED}错误${NC}"; return; }; show_links_logic "$UUID_CUSTOM" "Custom" ;;
+        q|Q) return ;;
+        *) echo -e "${RED}无效${NC}" ;;
+    esac
+}
+
+change_ports() {
+    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}未安装${NC}"; return; fi
+    source "$CONF_FILE"
+    echo -e "当前配置:"
+    echo "1. VMess     : $PORT_VMESS"
+    echo "2. VLESS(KEM): $PORT_VLESS"
+    echo "3. Reality   : $PORT_REALITY"
+    echo "4. SS        : $PORT_SS"
+    
+    read -p "新 VMess 端口 (回车跳过): " new_vm
+    read -p "新 VLESS(KEM) 端口 (回车跳过): " new_vl
+    read -p "新 Reality 端口 (回车跳过): " new_rea
+    read -p "新 SS 端口 (回车跳过): " new_ss
+    
+    [[ ! -z "$new_vm" ]] && sed -i "s/^PORT_VMESS=.*/PORT_VMESS=$new_vm/" "$CONF_FILE"
+    [[ ! -z "$new_vl" ]] && sed -i "s/^PORT_VLESS=.*/PORT_VLESS=$new_vl/" "$CONF_FILE"
+    [[ ! -z "$new_rea" ]] && sed -i "s/^PORT_REALITY=.*/PORT_REALITY=$new_rea/" "$CONF_FILE"
+    [[ ! -z "$new_ss" ]] && sed -i "s/^PORT_SS=.*/PORT_SS=$new_ss/" "$CONF_FILE"
+    
+    source "$CONF_FILE"
+    generate_config
+    sys_restart
+    echo -e "${GREEN}✅ 已更新并重启${NC}"
+}
+
+maintenance_menu() {
+    while true; do
+        echo -e "\n=== 维护 ==="
+        echo "1. 启动"
+        echo "2. 停止"
+        echo "3. 重启"
+        echo "4. 开机自启"
+        echo "5. 取消自启"
+        echo ""
+        echo "q. 返回"
+        read -p "选择: " m_choice
+        case "$m_choice" in
+            1) sys_start && echo "✅" ;;
+            2) sys_stop && echo "✅" ;;
+            3) sys_restart && echo "✅" ;;
+            4) sys_enable && echo "✅" ;;
+            5) sys_disable && echo "✅" ;;
+            q|Q) return ;;
+            *) echo "❌" ;;
+        esac
+    done
+}
+
+uninstall_xray() {
+    echo -e "${YELLOW}⚠️  警告: 将停止服务并删除配置。${NC}"
+    read -p "确认卸载? (y/n): " confirm
+    if [[ "$confirm" != "y" ]]; then return; fi
+    sys_stop 2>/dev/null
+    sys_disable 2>/dev/null
+    rm "$SERVICE_FILE"
+    rm -rf "$CONF_DIR"
+    sys_reload_daemon
+    echo -e "${GREEN}✅ 服务与配置已移除。${NC}"
+    read -p "是否同时删除 Xray 核心文件 ($XRAY_DIR)? (y/N): " del_core
+    if [[ "$del_core" == "y" ]]; then rm -rf "$XRAY_DIR"; echo -e "${GREEN}✅ 核心文件已移除。${NC}"; fi
+}
+
+check_root
+while true; do
+    echo -e "\n${BLUE}Xray-Proxya 管理${NC}"
+    check_status
+    echo "1. 安装 / 重置"
+    echo "2. 查看链接"
+    echo "3. 修改端口"
+    echo "4. 维护菜单"
+    echo "5. 卸载 Xray"
+    echo "6. 添加/更新 自定义出站"
+    echo ""
+    echo "q. 退出"
+    echo "0. 卸载 (快捷)"
+    read -p "选择: " choice
+    case "$choice" in
+        1) install_xray ;;
+        2) show_links_menu ;;
+        3) change_ports ;;
+        4) maintenance_menu ;;
+        5|0) uninstall_xray ;;
+        6) add_custom_outbound ;;
+        q|Q) exit 0 ;;
+        *) echo -e "${RED}无效${NC}" ;;
+    esac
+done
