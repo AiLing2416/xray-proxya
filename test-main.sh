@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [TEST BRANCH v2]
+# Xray-Proxya Manager [TEST BRANCH]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # Features: VMess, VLESS(ML-KEM), VLESS(Reality), SS
 # ==================================================
@@ -13,12 +13,12 @@ DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 
 # 加密算法配置
-VMESS_CIPHER="aes-128-gcm"
+VMESS_CIPHER="chacha20-poly1305"
 SS_CIPHER="aes-256-gcm"
 
 # Reality 伪装目标 (需支持 TLS1.3/H2)
-REALITY_DEST="www.microsoft.com:443"
-REALITY_SNI="www.microsoft.com"
+REALITY_DEST="apple.com:443"
+REALITY_SNI="apple.com"
 
 # -----------------------------------------------
 
