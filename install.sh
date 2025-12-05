@@ -4,7 +4,6 @@
 # Xray-Proxya Installer (Universal)
 # ==================================================
 
-# 请修改此处为您实际的仓库链接
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/main.sh"
 
 INSTALL_DIR="/usr/local/sbin"
@@ -54,7 +53,7 @@ fi
 # 5. 设置权限
 chmod 755 "$INSTALL_PATH"
 
-# 6. 完成提示 (使用 printf 修复显示问题)
+# 6. 完成提示
 printf "${GREEN}✅ Installation successful!${NC}\n"
 echo "You can now run the script with:"
 printf "   ${GREEN}xray-proxya${NC}   (as root)\n"
