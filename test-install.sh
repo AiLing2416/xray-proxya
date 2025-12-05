@@ -4,7 +4,6 @@
 # Xray-Proxya Installer (Alpine & Debian Universal)
 # ==================================================
 
-# 请修改此处为您实际的仓库链接
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/test-main.sh"
 
 INSTALL_DIR="/usr/local/sbin"
