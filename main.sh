@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [STABLE FIX v7]
+# Xray-Proxya Manager [STABLE]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # ==================================================
 
