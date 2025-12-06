@@ -1,10 +1,10 @@
 # xray-proxya
 
 ### 使用最新的 xray-core 部署令人放心的 ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768```
-附带 ShadowSocks-AES256-GCM
+附带 ShadowSocks-AES256-GCM 和 VLess-XHTTP-Reality-TLS1.3 (抗量子)
 
 
-### 立即安装
+### 立即安装，已支持: Debian/Ubuntu Alpine
 ```
 bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh)
 ```
@@ -12,11 +12,14 @@ bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/i
 ### 推荐用法
 使用 ```root``` 用户安装，使用普通用户通过 ```sudo xray-proxya``` 配置。
 
+使用 ```VLess-XHTTP-Reality-TLS1.3``` 时，伪装性能良好，无需接入 CDN 。
+
+
 使用 ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768``` 时，推荐接入 CDN 网络以降低潜在的封锁风险。
 
-UDP: ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768``` 均支持 UDP Over TCP ， ```VMess-ChaCha20-Poly1305``` 相比 ```VLESS-XHTTP-ML-KEM-768``` 延迟更低。
+UDP: ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768``` ```VLess-XHTTP-Reality-TLS1.3``` 均支持 UDP Over TCP ， ```VMess-ChaCha20-Poly1305``` 与 ```VLess-XHTTP-Reality-TLS1.3``` 相比 ```VLESS-XHTTP-ML-KEM-768``` 延迟更低。
 
-### 测试尝鲜
+### 测试版 不推荐
 ```
 bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/test-install.sh)
 ```
