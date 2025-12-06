@@ -4,7 +4,7 @@
 附带 ShadowSocks-AES256-GCM 和 VLess-XHTTP-Reality-TLS1.3 (抗量子)
 
 
-### 立即安装，已支持: Debian/Ubuntu Alpine
+### 立即安装 已支持: Debian/Ubuntu Alpine
 ```
 bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh)
 ```
@@ -17,7 +17,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/i
 
 使用 ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768``` 时，推荐接入 CDN 网络以降低潜在的封锁风险。
 
-UDP: ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768``` ```VLess-XHTTP-Reality-TLS1.3``` 均支持 UDP Over TCP ， ```VMess-ChaCha20-Poly1305``` 与 ```VLess-XHTTP-Reality-TLS1.3``` 相比 ```VLESS-XHTTP-ML-KEM-768``` 延迟更低。
+UDP: ```VMess-ChaCha20-Poly1305``` ```VLESS-XHTTP-ML-KEM-768``` ```VLess-XHTTP-Reality-TLS1.3``` 均支持 UDP Over TCP ， ```VMess-ChaCha20-Poly1305``` 与 ```VLess-XHTTP-Reality-TLS1.3``` 相比 ```VLESS-XHTTP-ML-KEM-768``` 延迟更低。
 
 ### 测试版 不推荐
 ```
