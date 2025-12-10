@@ -82,6 +82,21 @@ check_port_occupied() {
     return 1
 }
 
+validate_port() {
+    local port=$1
+    local default=$2
+    if [ -z "$port" ]; then
+        echo "$default"
+        return 0
+    fi
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        echo -e "${RED}❌ 错误: 端口必须是 1-65535 之间的数字${NC}" >&2
+        return 1
+    fi
+    echo "$port"
+    return 0
+}
+
 # --- 服务管理 ---
 
 sys_enable() {
@@ -215,12 +230,15 @@ parse_link_to_json() {
         query="${query%%\#*}"
         
         # Use simple grep to extract query params, but rely on jq for JSON construction
-        # Note: Previous grep -oP might be problematic on some systems, but we keep the logic for now as requested, 
-        # just fixing the JSON generation part.
-        local type=$(echo "$query" | grep -oP 'type=\K[^&]+' || echo "tcp")
-        local security=$(echo "$query" | grep -oP 'security=\K[^&]+' || echo "none")
-        local path=$(echo "$query" | grep -oP 'path=\K[^&]+' | sed 's/%2F/\//g')
-        local sni=$(echo "$query" | grep -oP 'sni=\K[^&]+')
+        # Use sed for portability instead of grep -oP
+        local type=$(echo "$query" | sed -n 's/.*type=\([^&]*\).*/\1/p')
+        [ -z "$type" ] && type="tcp"
+        
+        local security=$(echo "$query" | sed -n 's/.*security=\([^&]*\).*/\1/p')
+        [ -z "$security" ] && security="none"
+        
+        local path=$(echo "$query" | sed -n 's/.*path=\([^&]*\).*/\1/p' | sed 's/%2F/\//g')
+        local sni=$(echo "$query" | sed -n 's/.*sni=\([^&]*\).*/\1/p')
 
         jq -n -c \
             --arg address "$address" \
@@ -323,7 +341,17 @@ generate_config() {
     # Ensure uuid_custom is always passed, defaulting to empty string
     local u_custom="${UUID_CUSTOM:-}"
     
+
+    # Validating custom outbound file existence
+    local co_args=()
+    if [ -f "$CUSTOM_OUT_FILE" ] && [ -s "$CUSTOM_OUT_FILE" ]; then
+         co_args=("--slurpfile" "custom_outbound" "$CUSTOM_OUT_FILE")
+    else
+         co_args=("--argjson" "custom_outbound" "[]")
+    fi
+
     jq -n \
+        "${co_args[@]}" \
         --arg log_level "warning" \
         --arg port_vmess "$PORT_VMESS" \
         --arg path_vm "$PATH_VM" \
@@ -341,7 +369,6 @@ generate_config() {
         --arg pass_ss "$PASS_SS" \
         --arg uuid "$UUID" \
         --arg uuid_custom "$u_custom" \
-        --slurpfile custom_outbound "$CUSTOM_OUT_FILE" \
     '
     {
         log: { loglevel: $log_level },
@@ -467,10 +494,10 @@ install_xray() {
     read -p "VLess-XHTTP-Reality (TLS抗量子) 端口 (默认 $DEFAULT_PORT_REALITY): " port_rea
     read -p "Shadowsocks-$SS_CIPHER 端口 (默认 $DEFAULT_PORT_SS): " port_ss
     
-    PORT_VMESS=${port_vm:-$DEFAULT_PORT_VMESS}
-    PORT_VLESS=${port_vl:-$DEFAULT_PORT_VLESS_KEM}
-    PORT_REALITY=${port_rea:-$DEFAULT_PORT_REALITY}
-    PORT_SS=${port_ss:-$DEFAULT_PORT_SS}
+    PORT_VMESS=$(validate_port "$port_vm" "$DEFAULT_PORT_VMESS") || return 1
+    PORT_VLESS=$(validate_port "$port_vl" "$DEFAULT_PORT_VLESS_KEM") || return 1
+    PORT_REALITY=$(validate_port "$port_rea" "$DEFAULT_PORT_REALITY") || return 1
+    PORT_SS=$(validate_port "$port_ss" "$DEFAULT_PORT_SS") || return 1
 
     for p in $PORT_VMESS $PORT_VLESS $PORT_REALITY $PORT_SS; do
         if check_port_occupied $p; then echo -e "${RED}⚠️ 端口 $p 被占用${NC}"; return; fi
@@ -530,7 +557,9 @@ install_xray() {
     fi
 
     mkdir -p "$CONF_DIR"
-    rm -f "$CUSTOM_OUT_FILE"
+    mkdir -p "$CONF_DIR"
+    # Create empty custom outbound file if not exists to satisfy other checks, though generate_config handles it now
+    if [ ! -f "$CUSTOM_OUT_FILE" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; fi
     
     cat > "$CONF_FILE" <<-EOF
 PORT_VMESS=$PORT_VMESS
@@ -686,28 +715,30 @@ uninstall_xray() {
     if [[ "$del_core" == "y" ]]; then rm -rf "$XRAY_DIR"; echo -e "${GREEN}✅ 核心文件已移除。${NC}"; fi
 }
 
-check_root
-while true; do
-    echo -e "\n${BLUE}Xray-Proxya 管理${NC}"
-    check_status
-    echo "1. 安装 / 重置"
-    echo "2. 查看链接"
-    echo "3. 修改端口"
-    echo "4. 维护菜单"
-    echo "5. 卸载 Xray"
-    echo "6. 添加/更新 自定义出站"
-    echo ""
-    echo "q. 退出"
-    echo "0. 卸载 (快捷)"
-    read -p "选择: " choice
-    case "$choice" in
-        1) install_xray ;;
-        2) show_links_menu ;;
-        3) change_ports ;;
-        4) maintenance_menu ;;
-        5|0) uninstall_xray ;;
-        6) add_custom_outbound ;;
-        q|Q) exit 0 ;;
-        *) echo -e "${RED}无效${NC}" ;;
-    esac
-done
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    check_root
+    while true; do
+        echo -e "\n${BLUE}Xray-Proxya 管理${NC}"
+        check_status
+        echo "1. 安装 / 重置"
+        echo "2. 查看链接"
+        echo "3. 修改端口"
+        echo "4. 维护菜单"
+        echo "5. 卸载 Xray"
+        echo "6. 添加/更新 自定义出站"
+        echo ""
+        echo "q. 退出"
+        echo "0. 卸载 (快捷)"
+        read -p "选择: " choice
+        case "$choice" in
+            1) install_xray ;;
+            2) show_links_menu ;;
+            3) change_ports ;;
+            4) maintenance_menu ;;
+            5|0) uninstall_xray ;;
+            6) add_custom_outbound ;;
+            q|Q) exit 0 ;;
+            *) echo -e "${RED}无效${NC}" ;;
+        esac
+    done
+fi
