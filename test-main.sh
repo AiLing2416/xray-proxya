@@ -189,6 +189,11 @@ decode_base64() {
     echo "$str" | base64 -d 2>/dev/null || echo "$str" | base64 -d -i 2>/dev/null
 }
 
+url_decode() {
+    local url_encoded="${1//+/ }"
+    printf '%b' "${url_encoded//%/\\x}"
+}
+
 parse_link_to_json() {
     local link="$1"
     # VMess
@@ -233,12 +238,17 @@ parse_link_to_json() {
         # Use sed for portability instead of grep -oP
         local type=$(echo "$query" | sed -n 's/.*type=\([^&]*\).*/\1/p')
         [ -z "$type" ] && type="tcp"
+        type=$(url_decode "$type")
         
         local security=$(echo "$query" | sed -n 's/.*security=\([^&]*\).*/\1/p')
         [ -z "$security" ] && security="none"
+        security=$(url_decode "$security")
         
-        local path=$(echo "$query" | sed -n 's/.*path=\([^&]*\).*/\1/p' | sed 's/%2F/\//g')
-        local sni=$(echo "$query" | sed -n 's/.*sni=\([^&]*\).*/\1/p')
+        local path_enc=$(echo "$query" | sed -n 's/.*path=\([^&]*\).*/\1/p')
+        local path=$(url_decode "$path_enc")
+        
+        local sni_enc=$(echo "$query" | sed -n 's/.*sni=\([^&]*\).*/\1/p')
+        local sni=$(url_decode "$sni_enc")
 
         jq -n -c \
             --arg address "$address" \
