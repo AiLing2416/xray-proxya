@@ -75,7 +75,7 @@ show_scroll_log() {
     local title="$1"
     local command="$2"
     
-    # Calculate height: 40% of screen height, min 10
+    # 计算高度: 屏幕高度的 40%, 最小 10
     local height=$(tput lines)
     height=$(( height * 2 / 5 ))
     [ "$height" -lt 10 ] && height=10
@@ -85,10 +85,10 @@ show_scroll_log() {
     
     if command -v dialog >/dev/null 2>&1; then
         eval "$command" 2>&1 | dialog --title "$title" --programbox $height $width
-        # Clear screen after dialog adds artifacts
+        # 清除屏幕残影
         clear
     else
-        # Fallback if dialog install failed
+        # 如果 dialog 安装失败则回退
         echo "--- $title ---"
         eval "$command"
         echo "----------------"
@@ -97,12 +97,38 @@ show_scroll_log() {
 
 check_port_occupied() {
     local port=$1
+    local output=""
+    local pid=""
+    # 检查端口是否正在监听
+    # 优先尝试 ss
     if command -v ss >/dev/null 2>&1; then
-        if ss -lnt | grep -q ":$port "; then return 0; fi
+        output=$(ss -lntp 2>/dev/null | grep ":$port ")
     elif command -v netstat >/dev/null 2>&1; then
-        if netstat -lnt | grep -q ":$port "; then return 0; fi
+        output=$(netstat -lntp 2>/dev/null | grep ":$port ")
     fi
-    return 1
+
+    if [ -n "$output" ]; then
+        # 使用 sed 提取 PID. 匹配模式 "pid=123" 或 "123/name"
+        # ss: users:(("xray",pid=123,fd=4))
+        # netstat: 123/xray
+        
+        if echo "$output" | grep -q "pid="; then
+            pid=$(echo "$output" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
+        elif echo "$output" | grep -q "/"; then
+            pid=$(echo "$output" | sed -n 's/[^0-9]*\([0-9]*\)\/.*/\1/p' | awk '{print $NF}') # netstat format often at end
+        fi
+
+        # 如果找到 PID, 检查其执行路径
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+            local exe_link=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
+            # 如果二进制路径匹配我们的 XRAY_BIN 或目录, 则视为自身
+            if [[ "$exe_link" == "$XRAY_BIN" ]]; then
+                return 1 # 是我们自己, 忽略冲突 (视为未占用)
+            fi
+        fi
+        return 0 # 被其他人占用
+    fi
+    return 1 # 未被占用 (空闲)
 }
 
 validate_port() {
@@ -175,7 +201,7 @@ download_core() {
         download_url=$(echo "$api_response" | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
     fi
 
-    # Fallback: 如果 jq 失败或未安装，使用 grep/cut 解析
+    # 回退方案: 如果 jq 失败或未安装, 使用 grep/cut 解析
     if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
         echo -e "${YELLOW}⚠️  jq 解析失败，尝试使用 grep 回退...${NC}"
         download_url=$(echo "$api_response" | grep -o '"browser_download_url": *"[^"]*Xray-linux-64.zip"' | head -n 1 | cut -d '"' -f 4)
@@ -191,18 +217,21 @@ download_core() {
     sys_stop 2>/dev/null
     mkdir -p "$XRAY_DIR"
     
-    if curl -L -o /tmp/xray.zip "$download_url"; then
+    local tmp_file=$(mktemp)
+    if curl -L -o "$tmp_file" "$download_url"; then
         echo "解压中..."
-        if unzip -o /tmp/xray.zip -d "$XRAY_DIR" >/dev/null 2>&1; then
-            rm /tmp/xray.zip
+        if unzip -o "$tmp_file" -d "$XRAY_DIR" >/dev/null 2>&1; then
+            rm "$tmp_file"
             chmod +x "$XRAY_BIN"
             return 0
         else
             echo -e "${RED}❌ 解压失败 (unzip error)${NC}"
+            rm "$tmp_file"
             return 1
         fi
     else
         echo -e "${RED}❌ 下载失败 (curl error)${NC}"
+        rm -f "$tmp_file"
         return 1
     fi
 }
@@ -212,7 +241,7 @@ reinstall_core() {
     sys_stop 2>/dev/null
     rm -rf "$XRAY_DIR"
     
-    # Run download with scroll log
+    # 运行下载并显示滚动日志
     if show_scroll_log "核心下载与安装" download_core; then
         sys_start
         echo -e "${GREEN}✅ 核心重装完成并已重启服务。${NC}"
@@ -238,7 +267,7 @@ parse_link_to_json() {
         local b64="${link#vmess://}"
         local json_str=$(decode_base64 "$b64")
         if [ -z "$json_str" ]; then return 1; fi
-        # Use jq to safely extract and rebuild the JSON
+        # 使用 jq 安全地提取并重建 JSON
         echo "$json_str" | jq -c '{
             tag: "custom-out",
             protocol: "vmess",
@@ -271,8 +300,8 @@ parse_link_to_json() {
         local query="${link#*\?}"
         query="${query%%\#*}"
         
-        # Use simple grep to extract query params, but rely on jq for JSON construction
-        # Use sed for portability instead of grep -oP
+        # 简单提取查询参数, 构建 JSON 依赖 jq
+        # 使用 sed 替代 grep -oP 以提高兼容性
         local type=$(echo "$query" | sed -n 's/.*type=\([^&]*\).*/\1/p')
         [ -z "$type" ] && type="tcp"
         type=$(url_decode "$type")
@@ -377,19 +406,19 @@ add_custom_outbound() {
 generate_config() {
     source "$CONF_FILE"
 
-    # Construct internal client objects
-    # Note: JSON logic for constructing arrays/objects is shifted to jq for safety
+    # 构建内部客户端对象
+    # 注意: 构建数组/对象的逻辑已移至 jq 以确保安全
 
-    # Check for custom outbound
-    # Logic moved to jq argument passing
+    # 检查自定义出站
+    # 逻辑移至 jq 参数传递
     
-    # We will build the entire config using jq
-    # We pass all variables as arguments to avoid injection
-    # Ensure uuid_custom is always passed, defaulting to empty string
+    # 我们将使用 jq 构建整个配置
+    # 我们将所有变量作为参数传递以避免注入
+    # 确保 uuid_custom 始终传递, 默认为空字符串
     local u_custom="${UUID_CUSTOM:-}"
     
 
-    # Validating custom outbound file existence
+    # 验证自定义出站文件是否存在
     local co_args=()
     if [ -f "$CUSTOM_OUT_FILE" ] && [ -s "$CUSTOM_OUT_FILE" ]; then
          co_args=("--slurpfile" "custom_outbound" "$CUSTOM_OUT_FILE")
@@ -605,7 +634,8 @@ install_xray() {
 
     mkdir -p "$CONF_DIR"
     mkdir -p "$CONF_DIR"
-    # Create empty custom outbound file if not exists to satisfy other checks, though generate_config handles it now
+    mkdir -p "$CONF_DIR"
+    # 如果不存在则创建空的自定义出站文件, 以满足其他检查 (尽管 generate_config 现在已处理)
     if [ ! -f "$CUSTOM_OUT_FILE" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; fi
     
     cat > "$CONF_FILE" <<-EOF
@@ -639,7 +669,7 @@ format_ip() { [[ "$1" =~ .*:.* ]] && echo "[$1]" || echo "$1"; }
 print_link_group() {
     local ip=$1; local label=$2; local target_uuid=$3; local desc=$4
     if [ -z "$ip" ]; then return; fi
-    # Validate IP address format (simple regex for IPv4/IPv6)
+    # 验证 IP 地址格式 (简单的 IPv4/IPv6 正则)
     if ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! [[ "$ip" =~ : ]]; then
         echo -e "${YELLOW}⚠️  跳过无效 IP: $ip${NC}"
         return
@@ -778,7 +808,6 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "4. 维护菜单"
         echo "5. 自定义出站"
         echo "6. 重装内核"
-        echo "7. 卸载 Xray"
         echo ""
         echo "q. 退出"
         echo "0. 卸载"
@@ -790,7 +819,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             4) maintenance_menu ;;
             5) add_custom_outbound ;;
             6) reinstall_core ;;
-            7|0) uninstall_xray ;;
+            0) uninstall_xray ;;
             q|Q) exit 0 ;;
             *) echo -e "${RED}无效${NC}" ;;
         esac
