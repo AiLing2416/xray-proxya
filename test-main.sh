@@ -10,6 +10,7 @@ DEFAULT_PORT_VMESS=8081
 DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
+DEFAULT_GEN_LEN=16
 
 # 加密算法
 VMESS_CIPHER="chacha20-poly1305"
@@ -60,15 +61,37 @@ check_root() {
 install_deps() {
     echo -e "${BLUE}📦 安装/检查依赖...${NC}"
     if [ -f /etc/alpine-release ]; then
-        # Alpine: 移除静默模式以便调试
         echo "正在运行 apk update..."
         apk update
         echo "正在安装依赖..."
-        # 增加 unzip 包，避免 busybox unzip 问题
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog
     else
-        apt-get update -qq >/dev/null
-        apt-get install -y curl jq unzip openssl >/dev/null 2>&1
+        apt-get update
+        apt-get install -y curl jq unzip openssl dialog
+    fi
+}
+
+show_scroll_log() {
+    local title="$1"
+    local command="$2"
+    
+    # Calculate height: 40% of screen height, min 10
+    local height=$(tput lines)
+    height=$(( height * 2 / 5 ))
+    [ "$height" -lt 10 ] && height=10
+    
+    local width=$(tput cols)
+    width=$(( width - 4 ))
+    
+    if command -v dialog >/dev/null 2>&1; then
+        eval "$command" 2>&1 | dialog --title "$title" --programbox $height $width
+        # Clear screen after dialog adds artifacts
+        clear
+    else
+        # Fallback if dialog install failed
+        echo "--- $title ---"
+        eval "$command"
+        echo "----------------"
     fi
 }
 
@@ -181,6 +204,20 @@ download_core() {
     else
         echo -e "${RED}❌ 下载失败 (curl error)${NC}"
         return 1
+    fi
+}
+
+reinstall_core() {
+    echo -e "${BLUE}🔄 正在重装 Xray 核心...${NC}"
+    sys_stop 2>/dev/null
+    rm -rf "$XRAY_DIR"
+    
+    # Run download with scroll log
+    if show_scroll_log "核心下载与安装" download_core; then
+        sys_start
+        echo -e "${GREEN}✅ 核心重装完成并已重启服务。${NC}"
+    else
+        echo -e "${RED}❌ 重装失败${NC}"
     fi
 }
 
@@ -516,7 +553,7 @@ install_xray() {
     install_deps
     
     # 核心下载与检查
-    if ! download_core; then
+    if ! show_scroll_log "Xray 核心下载" download_core; then
         echo -e "${RED}❌ 核心文件下载或安装失败，终止流程。${NC}"
         return 1
     fi
@@ -530,10 +567,10 @@ install_xray() {
     fi
 
     UUID=$("$XRAY_BIN" uuid)
-    PATH_VM="/$(generate_random 12)"
-    PATH_VL="/$(generate_random 12)"
-    PATH_REALITY="/$(generate_random 12)"
-    PASS_SS=$(generate_random 24)
+    PATH_VM="/$(generate_random $DEFAULT_GEN_LEN)"
+    PATH_VL="/$(generate_random $DEFAULT_GEN_LEN)"
+    PATH_REALITY="/$(generate_random $DEFAULT_GEN_LEN)"
+    PASS_SS=$(generate_random $DEFAULT_GEN_LEN)
     
     # === 解析逻辑 ===
     
@@ -602,6 +639,11 @@ format_ip() { [[ "$1" =~ .*:.* ]] && echo "[$1]" || echo "$1"; }
 print_link_group() {
     local ip=$1; local label=$2; local target_uuid=$3; local desc=$4
     if [ -z "$ip" ]; then return; fi
+    # Validate IP address format (simple regex for IPv4/IPv6)
+    if ! [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! [[ "$ip" =~ : ]]; then
+        echo -e "${YELLOW}⚠️  跳过无效 IP: $ip${NC}"
+        return
+    fi
     local f_ip=$(format_ip "$ip")
     
     local ps_vm="VMess-WS-${VMESS_CIPHER}-${PORT_VMESS}"
@@ -734,8 +776,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "2. 查看链接"
         echo "3. 修改端口"
         echo "4. 维护菜单"
-        echo "5. 卸载 Xray"
-        echo "6. 添加/更新 自定义出站"
+        echo "5. 自定义出站"
+        echo "6. 重装内核"
+        echo "7. 卸载 Xray"
         echo ""
         echo "q. 退出"
         echo "0. 卸载 (快捷)"
@@ -745,8 +788,9 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             2) show_links_menu ;;
             3) change_ports ;;
             4) maintenance_menu ;;
-            5|0) uninstall_xray ;;
-            6) add_custom_outbound ;;
+            5) add_custom_outbound ;;
+            6) reinstall_core ;;
+            7|0) uninstall_xray ;;
             q|Q) exit 0 ;;
             *) echo -e "${RED}无效${NC}" ;;
         esac
