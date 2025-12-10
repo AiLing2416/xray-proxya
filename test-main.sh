@@ -338,7 +338,7 @@ parse_link_to_json() {
                     network: $type,
                     security: $security,
                     tlsSettings: { serverName: $sni },
-                    ($type + "Settings"): { path: $path }
+    ($type + "Settings"): { path: $path }
                 }
             }'
         return 0
@@ -380,12 +380,60 @@ parse_link_to_json() {
             }'
         return 0
     fi
+    # WireGuard 协议 (自定义格式)
+    # wireguard://<Priv>@<EndpointIP>:<EndpointPort>?publickey=<Pub>&address=<LocalIP/Mask>&mtu=<MTU>
+    if [[ "$link" == wireguard://* ]]; then
+        local tmp="${link#wireguard://}"
+        local priv_enc="${tmp%%@*}"
+        tmp="${tmp#*@}"
+        local end_addr_port="${tmp%%\?*}"
+        local end_addr="${end_addr_port%:*}"
+        local end_port="${end_addr_port##*:}"
+        
+        local query="${link#*\?}"
+        # Parse query params, ensuring extraction stops at '&' OR end of string/hash
+        # Use simple sed matching, stripping potential #fragment
+        local pub_enc=$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')
+        local addr_enc=$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')
+        local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p')
+        [ -z "$mtu" ] && mtu=1280
+        
+        # URL Decode critical fields
+        local priv_key=$(url_decode "$priv_enc")
+        local pub_key=$(url_decode "$pub_enc")
+        local local_addr=$(url_decode "$addr_enc")
+
+        if [ -z "$pub_key" ] || [ -z "$priv_key" ] || [ -z "$end_addr" ]; then return 1; fi
+
+        jq -n -c \
+            --arg pub "$pub_key" \
+            --arg priv "$priv_key" \
+            --arg addr "$end_addr" \
+            --arg port "$end_port" \
+            --arg local "$local_addr" \
+            --arg mtu "$mtu" \
+            '{
+                tag: "custom-out",
+                protocol: "wireguard",
+                settings: {
+                    secretKey: $priv,
+                    address: [$local],
+                    peers: [{
+                        publicKey: $pub,
+                        endpoint: ($addr + ":" + $port),
+                        keepAlive: 25
+                    }],
+                    mtu: ($mtu | tonumber)
+                }
+            }'
+        return 0
+    fi
     return 1
 }
 
 add_custom_outbound() {
     echo -e "\n=== 添加自定义出站 (流量转发) ==="
-    echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), Shadowsocks${NC}"
+    echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), Shadowsocks, WireGuard${NC}"
     read -p "请粘贴链接: " link_str
     if [ -z "$link_str" ]; then echo -e "${RED}输入为空${NC}"; return; fi
     PARSED_JSON=$(parse_link_to_json "$link_str")
