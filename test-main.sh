@@ -781,7 +781,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "7. 卸载 Xray"
         echo ""
         echo "q. 退出"
-        echo "0. 卸载 (快捷)"
+        echo "0. 卸载"
         read -p "选择: " choice
         case "$choice" in
             1) install_xray ;;
