@@ -1,9 +1,8 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [BATA]
+# Xray-Proxya Manager [TEST]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
-# Fixed: Key parsing logic for Alpine output format
 # ==================================================
 
 # --- 默认配置变量 ---
@@ -13,17 +12,19 @@ DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 
 # 加密算法
-VMESS_CIPHER="aes-128-gcm"
+VMESS_CIPHER="chacha20-poly1305"
 SS_CIPHER="aes-256-gcm"
 
 # Reality 配置
-REALITY_DEST="www.microsoft.com:443"
-REALITY_SNI="www.microsoft.com"
+REALITY_DEST="apple.com:443"
+REALITY_SNI="apple.com"
 
 # -----------------
 
 CONF_DIR="/etc/xray-proxya"
-CONF_FILE="$CONF_DIR/config.env"
+CONF_FILE="$CONF_DIR/config.env"A backup is currently in progress. Most actions are disabled until the backup completes.
+
+
 CUSTOM_OUT_FILE="$CONF_DIR/custom_outbound.json"
 XRAY_BIN="/usr/local/bin/xray-proxya-core/xray"
 XRAY_DIR="/usr/local/bin/xray-proxya-core"
@@ -59,8 +60,12 @@ check_root() {
 install_deps() {
     echo -e "${BLUE}📦 安装/检查依赖...${NC}"
     if [ -f /etc/alpine-release ]; then
+        # Alpine: 移除静默模式以便调试
+        echo "正在运行 apk update..."
         apk update
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed awk >/dev/null 2>&1
+        echo "正在安装依赖..."
+        # 增加 unzip 包，避免 busybox unzip 问题
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip
     else
         apt-get update -qq >/dev/null
         apt-get install -y curl jq unzip openssl >/dev/null 2>&1
@@ -120,16 +125,48 @@ generate_random() {
 }
 
 download_core() {
-    if [ -f "$XRAY_BIN" ]; then return; fi
+    if [ -f "$XRAY_BIN" ]; then return 0; fi
     echo -e "${BLUE}⬇️  获取 Xray-core...${NC}"
-    LATEST_URL=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
-    if [ -z "$LATEST_URL" ]; then echo -e "${RED}❌ 下载失败${NC}"; return 1; fi
+    
+    # 尝试获取下载链接
+    local api_response=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest)
+    local download_url=""
+
+    # 优先使用 jq 解析
+    if command -v jq >/dev/null 2>&1; then
+        download_url=$(echo "$api_response" | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
+    fi
+
+    # Fallback: 如果 jq 失败或未安装，使用 grep/cut 解析
+    if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
+        echo -e "${YELLOW}⚠️  jq 解析失败，尝试使用 grep 回退...${NC}"
+        download_url=$(echo "$api_response" | grep -o '"browser_download_url": *"[^"]*Xray-linux-64.zip"' | head -n 1 | cut -d '"' -f 4)
+    fi
+
+    if [ -z "$download_url" ]; then
+        echo -e "${RED}❌ 无法获取下载链接。GitHub API 可能受限或网络不通。${NC}"
+        return 1
+    fi
+
+    echo -e "下载链接: $download_url"
+    
     sys_stop 2>/dev/null
     mkdir -p "$XRAY_DIR"
-    curl -L -o /tmp/xray.zip "$LATEST_URL"
-    unzip -o /tmp/xray.zip -d "$XRAY_DIR" >/dev/null 2>&1
-    rm /tmp/xray.zip
-    chmod +x "$XRAY_BIN"
+    
+    if curl -L -o /tmp/xray.zip "$download_url"; then
+        echo "解压中..."
+        if unzip -o /tmp/xray.zip -d "$XRAY_DIR" >/dev/null 2>&1; then
+            rm /tmp/xray.zip
+            chmod +x "$XRAY_BIN"
+            return 0
+        else
+            echo -e "${RED}❌ 解压失败 (unzip error)${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}❌ 下载失败 (curl error)${NC}"
+        return 1
+    fi
 }
 
 decode_base64() {
@@ -139,22 +176,34 @@ decode_base64() {
 
 parse_link_to_json() {
     local link="$1"
+    # VMess
     if [[ "$link" == vmess://* ]]; then
         local b64="${link#vmess://}"
         local json_str=$(decode_base64 "$b64")
         if [ -z "$json_str" ]; then return 1; fi
-        local add=$(echo "$json_str" | jq -r '.add')
-        local port=$(echo "$json_str" | jq -r '.port')
-        local id=$(echo "$json_str" | jq -r '.id')
-        local net=$(echo "$json_str" | jq -r '.net')
-        local path=$(echo "$json_str" | jq -r '.path')
-        local host=$(echo "$json_str" | jq -r '.host')
-        local tls=$(echo "$json_str" | jq -r '.tls')
-        cat <<-EOF
-{ "tag": "custom-out", "protocol": "vmess", "settings": { "vnext": [{ "address": "$add", "port": $port, "users": [{ "id": "$id" }] }] }, "streamSettings": { "network": "$net", "security": "$tls", "wsSettings": { "path": "$path", "headers": { "Host": "$host" } } } }
-EOF
+        # Use jq to safely extract and rebuild the JSON
+        echo "$json_str" | jq -c '{
+            tag: "custom-out",
+            protocol: "vmess",
+            settings: {
+                vnext: [{
+                    address: .add,
+                    port: (.port | tonumber),
+                    users: [{ id: .id }]
+                }]
+            },
+            streamSettings: {
+                network: .net,
+                security: .tls,
+                wsSettings: {
+                    path: .path,
+                    headers: { Host: .host }
+                }
+            }
+        }'
         return 0
     fi
+    # VLESS
     if [[ "$link" == vless://* ]]; then
         local tmp="${link#vless://}"
         local uuid="${tmp%%@*}"
@@ -164,15 +213,77 @@ EOF
         local port="${address_port##*:}"
         local query="${link#*\?}"
         query="${query%%\#*}"
-        local type=$(echo "$query" | grep -oP 'type=\K[^&]+')
-        local security=$(echo "$query" | grep -oP 'security=\K[^&]+')
+        
+        # Use simple grep to extract query params, but rely on jq for JSON construction
+        # Note: Previous grep -oP might be problematic on some systems, but we keep the logic for now as requested, 
+        # just fixing the JSON generation part.
+        local type=$(echo "$query" | grep -oP 'type=\K[^&]+' || echo "tcp")
+        local security=$(echo "$query" | grep -oP 'security=\K[^&]+' || echo "none")
         local path=$(echo "$query" | grep -oP 'path=\K[^&]+' | sed 's/%2F/\//g')
         local sni=$(echo "$query" | grep -oP 'sni=\K[^&]+')
-        [ -z "$type" ] && type="tcp"
-        [ -z "$security" ] && security="none"
-        cat <<-EOF
-{ "tag": "custom-out", "protocol": "vless", "settings": { "vnext": [{ "address": "$address", "port": $port, "users": [{ "id": "$uuid" }] }] }, "streamSettings": { "network": "$type", "security": "$security", "tlsSettings": { "serverName": "$sni" }, "$type\Settings": { "path": "$path" } } }
-EOF
+
+        jq -n -c \
+            --arg address "$address" \
+            --arg port "$port" \
+            --arg uuid "$uuid" \
+            --arg type "$type" \
+            --arg security "$security" \
+            --arg sni "$sni" \
+            --arg path "$path" \
+            '{
+                tag: "custom-out",
+                protocol: "vless",
+                settings: {
+                    vnext: [{
+                        address: $address,
+                        port: ($port | tonumber),
+                        users: [{ id: $uuid }]
+                    }]
+                },
+                streamSettings: {
+                    network: $type,
+                    security: $security,
+                    tlsSettings: { serverName: $sni },
+                    ($type + "Settings"): { path: $path }
+                }
+            }'
+        return 0
+    fi
+    # SS
+    if [[ "$link" == ss://* ]]; then
+        local raw="${link#ss://}"
+        raw="${raw%%\#*}"
+        local decoded=$(decode_base64 "$raw")
+        local method=""; local password=""; local address=""; local port=""
+        if [[ "$decoded" == *:*@*:* ]]; then
+            local auth="${decoded%%@*}"; local addr_full="${decoded#*@}"
+            method="${auth%%:*}"; password="${auth#*:}"
+            address="${addr_full%%:*}"; port="${addr_full##*:}"
+        elif [[ "$raw" == *@* ]]; then
+            local b64_auth="${raw%%@*}"; local addr_full="${raw#*@}"
+            local auth=$(decode_base64 "$b64_auth")
+            method="${auth%%:*}"; password="${auth#*:}"
+            address="${addr_full%%:*}"; port="${addr_full##*:}"
+        fi
+        if [ -z "$method" ] || [ -z "$address" ]; then return 1; fi
+        
+        jq -n -c \
+            --arg address "$address" \
+            --arg port "$port" \
+            --arg method "$method" \
+            --arg password "$password" \
+            '{
+                tag: "custom-out",
+                protocol: "shadowsocks",
+                settings: {
+                    servers: [{
+                        address: $address,
+                        port: ($port | tonumber),
+                        method: $method,
+                        password: $password
+                    }]
+                }
+            }'
         return 0
     fi
     return 1
@@ -180,10 +291,11 @@ EOF
 
 add_custom_outbound() {
     echo -e "\n=== 添加自定义出站 (流量转发) ==="
-    read -p "请粘贴分享链接 (VMess/VLESS): " link_str
+    echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), Shadowsocks${NC}"
+    read -p "请粘贴链接: " link_str
     if [ -z "$link_str" ]; then echo -e "${RED}输入为空${NC}"; return; fi
     PARSED_JSON=$(parse_link_to_json "$link_str")
-    if [ $? -ne 0 ] || [ -z "$PARSED_JSON" ]; then echo -e "${RED}❌ 解析失败${NC}"; return; fi
+    if [ $? -ne 0 ] || [ -z "$PARSED_JSON" ]; then echo -e "${RED}❌ 解析失败或不支持该格式${NC}"; return; fi
     echo "$PARSED_JSON" > "$CUSTOM_OUT_FILE"
     echo -e "${GREEN}✅ 解析成功${NC}"
     source "$CONF_FILE"
@@ -199,69 +311,115 @@ add_custom_outbound() {
 
 generate_config() {
     source "$CONF_FILE"
+
+    # Construct internal client objects
+    # Note: JSON logic for constructing arrays/objects is shifted to jq for safety
+
+    # Check for custom outbound
+    # Logic moved to jq argument passing
     
-    local clients_direct="{ \"id\": \"$UUID\", \"email\": \"direct\", \"level\": 0 }"
-    local clients_custom=""
-    if [ ! -z "$UUID_CUSTOM" ] && [ -f "$CUSTOM_OUT_FILE" ]; then
-        clients_custom=", { \"id\": \"$UUID_CUSTOM\", \"email\": \"custom\", \"level\": 0 }"
-    fi
-    local clients_all="[ $clients_direct $clients_custom ]"
-
-    cat > "$JSON_FILE" <<-EOF
-{
-  "log": { "loglevel": "warning" },
-  "inbounds": [
+    # We will build the entire config using jq
+    # We pass all variables as arguments to avoid injection
+    # Ensure uuid_custom is always passed, defaulting to empty string
+    local u_custom="${UUID_CUSTOM:-}"
+    
+    jq -n \
+        --arg log_level "warning" \
+        --arg port_vmess "$PORT_VMESS" \
+        --arg path_vm "$PATH_VM" \
+        --arg port_vless "$PORT_VLESS" \
+        --arg dec_key "$DEC_KEY" \
+        --arg path_vl "$PATH_VL" \
+        --arg port_reality "$PORT_REALITY" \
+        --arg reality_dest "$REALITY_DEST" \
+        --arg reality_sni "$REALITY_SNI" \
+        --arg reality_pk "$REALITY_PK" \
+        --arg reality_sid "$REALITY_SID" \
+        --arg path_reality "$PATH_REALITY" \
+        --arg port_ss "$PORT_SS" \
+        --arg ss_cipher "$SS_CIPHER" \
+        --arg pass_ss "$PASS_SS" \
+        --arg uuid "$UUID" \
+        --arg uuid_custom "$u_custom" \
+        --slurpfile custom_outbound "$CUSTOM_OUT_FILE" \
+    '
     {
-      "tag": "vmess-in", "port": $PORT_VMESS, "protocol": "vmess",
-      "settings": { "clients": $clients_all },
-      "streamSettings": { "network": "ws", "wsSettings": { "path": "$PATH_VM" } }
-    },
-    {
-      "tag": "vless-enc-in", "port": $PORT_VLESS, "protocol": "vless",
-      "settings": { "clients": $clients_all, "decryption": "$DEC_KEY" },
-      "streamSettings": { "network": "xhttp", "xhttpSettings": { "path": "$PATH_VL" } }
-    },
-    {
-      "tag": "vless-reality-in", "port": $PORT_REALITY, "protocol": "vless",
-      "settings": { "clients": $clients_all, "decryption": "none" },
-      "streamSettings": {
-        "network": "xhttp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "$REALITY_DEST",
-          "xver": 0,
-          "serverNames": [ "$REALITY_SNI" ],
-          "privateKey": "$REALITY_PK",
-          "shortIds": [ "$REALITY_SID" ]
-        },
-        "xhttpSettings": { "path": "$PATH_REALITY" }
-      }
-    },
-    {
-      "tag": "shadowsocks-in", "port": $PORT_SS, "protocol": "shadowsocks",
-      "settings": { "method": "$SS_CIPHER", "password": "$PASS_SS", "network": "tcp,udp" }
-    }
-  ],
-  "outbounds": [
-    { "tag": "direct", "protocol": "freedom" }
-EOF
-
-    if [ -f "$CUSTOM_OUT_FILE" ]; then
-        echo "," >> "$JSON_FILE"
-        cat "$CUSTOM_OUT_FILE" >> "$JSON_FILE"
-    fi
-
-    cat >> "$JSON_FILE" <<-EOF
-  ],
-  "routing": {
-    "rules": [
-      { "type": "field", "user": ["direct"], "outboundTag": "direct" },
-      { "type": "field", "user": ["custom"], "outboundTag": "custom-out" }
-    ]
-  }
-}
-EOF
+        log: { loglevel: $log_level },
+        inbounds: [
+            {
+                tag: "vmess-in",
+                port: ($port_vmess | tonumber),
+                protocol: "vmess",
+                settings: {
+                    clients: ([
+                        { id: $uuid, email: "direct", level: 0 }
+                    ] + (if $uuid_custom != "" and ($custom_outbound | length > 0) then [{ id: $uuid_custom, email: "custom", level: 0 }] else [] end))
+                },
+                streamSettings: {
+                    network: "ws",
+                    wsSettings: { path: $path_vm }
+                }
+            },
+            {
+                tag: "vless-enc-in",
+                port: ($port_vless | tonumber),
+                protocol: "vless",
+                settings: {
+                     clients: ([
+                        { id: $uuid, email: "direct", level: 0 }
+                    ] + (if $uuid_custom != "" and ($custom_outbound | length > 0) then [{ id: $uuid_custom, email: "custom", level: 0 }] else [] end)),
+                    decryption: $dec_key
+                },
+                streamSettings: {
+                    network: "xhttp",
+                    xhttpSettings: { path: $path_vl }
+                }
+            },
+            {
+                tag: "vless-reality-in",
+                port: ($port_reality | tonumber),
+                protocol: "vless",
+                settings: {
+                     clients: ([
+                        { id: $uuid, email: "direct", level: 0 }
+                    ] + (if $uuid_custom != "" and ($custom_outbound | length > 0) then [{ id: $uuid_custom, email: "custom", level: 0 }] else [] end)),
+                    decryption: "none"
+                },
+                streamSettings: {
+                    network: "xhttp",
+                    security: "reality",
+                    realitySettings: {
+                        show: false,
+                        dest: $reality_dest,
+                        xver: 0,
+                        serverNames: [$reality_sni],
+                        privateKey: $reality_pk,
+                        shortIds: [$reality_sid]
+                    },
+                    xhttpSettings: { path: $path_reality }
+                }
+            },
+            {
+                tag: "shadowsocks-in",
+                port: ($port_ss | tonumber),
+                protocol: "shadowsocks",
+                settings: {
+                    method: $ss_cipher,
+                    password: $pass_ss,
+                    network: "tcp,udp"
+                }
+            }
+        ],
+        outbounds: ([
+            { tag: "direct", protocol: "freedom" }
+        ] + (if ($custom_outbound | length > 0) then $custom_outbound else [] end)),
+        routing: {
+            rules: [
+                { type: "field", user: ["direct"], outboundTag: "direct" },
+                { type: "field", user: ["custom"], outboundTag: "custom-out" }
+            ]
+        }
+    }' > "$JSON_FILE"
 }
 
 create_service() {
@@ -304,10 +462,10 @@ EOF
 install_xray() {
     echo -e "=== 安装向导 ==="
     
-    read -p "VMess-WS 入站端口 (默认 $DEFAULT_PORT_VMESS): " port_vm
+    read -p "VMess-WS-$VMESS_CIPHER 入站端口 (默认 $DEFAULT_PORT_VMESS): " port_vm
     read -p "VLess-XHTTP-KEM768 (抗量子) 端口 (默认 $DEFAULT_PORT_VLESS_KEM): " port_vl
     read -p "VLess-XHTTP-Reality (TLS抗量子) 端口 (默认 $DEFAULT_PORT_REALITY): " port_rea
-    read -p "Shadowsocks-AES256 端口 (默认 $DEFAULT_PORT_SS): " port_ss
+    read -p "Shadowsocks-$SS_CIPHER 端口 (默认 $DEFAULT_PORT_SS): " port_ss
     
     PORT_VMESS=${port_vm:-$DEFAULT_PORT_VMESS}
     PORT_VLESS=${port_vl:-$DEFAULT_PORT_VLESS_KEM}
@@ -319,7 +477,12 @@ install_xray() {
     done
 
     install_deps
-    download_core
+    
+    # 核心下载与检查
+    if ! download_core; then
+        echo -e "${RED}❌ 核心文件下载或安装失败，终止流程。${NC}"
+        return 1
+    fi
 
     echo -e "${BLUE}🔑 生成配置与密钥...${NC}"
     
@@ -335,26 +498,34 @@ install_xray() {
     PATH_REALITY="/$(generate_random 12)"
     PASS_SS=$(generate_random 24)
     
-    # === 修复解析逻辑 ===
+    # === 解析逻辑 ===
     
-    # 1. Reality Key Parsing
-    # Output: "PrivateKey: xxxx" (awk $2) or "Private Key: xxxx" (awk $3) or just use $NF (Last Field)
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
-    REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "Private" | awk -F ": " '{print $NF}' | tr -d ' \r')
-    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Public" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep -i "Private" | awk '{print $NF}' | tr -d ' \r')
+    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep -i "Public" | awk '{print $NF}' | tr -d ' \r')
+    
+    if [ -z "$REALITY_PK" ] || [ ${#REALITY_PK} -lt 40 ]; then
+        REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "PrivateKey" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    fi
+    if [ -z "$REALITY_PUB" ] || [ ${#REALITY_PUB} -lt 40 ]; then
+        REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Password" | awk -F ": " '{print $NF}' | tr -d ' \r')
+    fi
+
     REALITY_SID=$(openssl rand -hex 4)
     
-    # 2. ML-KEM Key Parsing
-    # 使用 awk 定位 Block，然后提取 quotes 里的内容
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
-    # 逻辑: 找到 "Authentication: ML-KEM-768" 这行，设置 flag。在 flag=1 时，找到 "decryption" 行，打印并退出 awk。
     DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
     ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
 
-    if [ -z "$DEC_KEY" ] || [ -z "$REALITY_PK" ]; then
-        echo -e "${RED}❌ 密钥生成失败${NC}"
-        echo -e "--- Reality Debug ---\n$RAW_REALITY_OUT"
-        echo -e "--- ML-KEM Debug ---\n$RAW_ENC_OUT"
+    if [ -z "$REALITY_PUB" ] || [ -z "$REALITY_PK" ]; then
+        echo -e "${RED}❌ Reality 密钥生成失败${NC}"
+        echo -e "Debug Output:\n$RAW_REALITY_OUT"
+        return 1
+    fi
+
+    if [ -z "$DEC_KEY" ]; then
+        echo -e "${RED}❌ ML-KEM 密钥生成失败${NC}"
+        echo -e "Debug Output:\n$RAW_ENC_OUT"
         return 1
     fi
 
@@ -394,23 +565,23 @@ print_link_group() {
     if [ -z "$ip" ]; then return; fi
     local f_ip=$(format_ip "$ip")
     
-    local ps_vm="VMess-WS-${VMESS_CIPHER}-$PORT_VMESS"
+    local ps_vm="VMess-WS-${VMESS_CIPHER}-${PORT_VMESS}"
     [ "$desc" == "Custom" ] && ps_vm="转发-$ps_vm"
     local vm_j=$(jq -n --arg add "$ip" --arg port "$PORT_VMESS" --arg id "$target_uuid" --arg path "$PATH_VM" --arg scy "$VMESS_CIPHER" --arg ps "$ps_vm" \
       '{v:"2", ps:$ps, add:$add, port:$port, id:$id, aid:"0", scy:$scy, net:"ws", type:"none", host:"", path:$path, tls:""}')
     local vm_l="vmess://$(echo -n "$vm_j" | base64 -w 0)"
     
-    local ps_vl="VLess-XHTTP-KEM768-$PORT_VLESS"
+    local ps_vl="VLess-XHTTP-KEM768-${PORT_VLESS}"
     [ "$desc" == "Custom" ] && ps_vl="转发-$ps_vl"
     local vl_l="vless://$target_uuid@$f_ip:$PORT_VLESS?security=none&encryption=$ENC_KEY&type=xhttp&path=$PATH_VL&headerType=none#$ps_vl"
     
-    local ps_rea="VLess-XHTTP-Reality-$PORT_REALITY"
+    local ps_rea="VLess-XHTTP-Reality-${PORT_REALITY}"
     [ "$desc" == "Custom" ] && ps_rea="转发-$ps_rea"
     local rea_l="vless://$target_uuid@$f_ip:$PORT_REALITY?security=reality&encryption=none&pbk=$REALITY_PUB&fp=chrome&type=xhttp&serviceName=&path=$PATH_REALITY&sni=$REALITY_SNI&sid=$REALITY_SID&spx=%2F#$ps_rea"
 
     local ss_l=""
     if [ "$desc" == "Direct" ]; then
-        local ps_ss="SS-TCPUDP-${SS_CIPHER}-$PORT_SS"
+        local ps_ss="SS-TCPUDP-${SS_CIPHER}-${PORT_SS}"
         local ss_auth=$(echo -n "${SS_CIPHER}:$PASS_SS" | base64 -w 0)
         ss_l="ss://$ss_auth@$f_ip:$PORT_SS#$ps_ss"
     fi
@@ -442,6 +613,7 @@ show_links_menu() {
     echo -e "\n=== 选择要查看的链接类型 ==="
     echo "1. 直接出站 (本机 IP)"
     echo "2. 自定义出站 (转发流量)"
+    echo ""
     echo "q. 返回"
     read -p "选择: " sl_choice
     case "$sl_choice" in
@@ -485,6 +657,7 @@ maintenance_menu() {
         echo "3. 重启"
         echo "4. 开机自启"
         echo "5. 取消自启"
+        echo ""
         echo "q. 返回"
         read -p "选择: " m_choice
         case "$m_choice" in
@@ -515,14 +688,15 @@ uninstall_xray() {
 
 check_root
 while true; do
-    echo -e "\n${BLUE}Xray-Proxya 管理 [TEST]${NC}"
+    echo -e "\n${BLUE}Xray-Proxya 管理${NC}"
     check_status
     echo "1. 安装 / 重置"
     echo "2. 查看链接"
     echo "3. 修改端口"
     echo "4. 维护菜单"
     echo "5. 卸载 Xray"
-    echo "6. 添加/更新 自定义出站 (转发)"
+    echo "6. 添加/更新 自定义出站"
+    echo ""
     echo "q. 退出"
     echo "0. 卸载 (快捷)"
     read -p "选择: " choice
