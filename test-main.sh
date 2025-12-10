@@ -604,21 +604,20 @@ install_xray() {
     # === 解析逻辑 ===
     
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
-    REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep -i "Private" | awk '{print $NF}' | tr -d ' \r')
-    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep -i "Public" | awk '{print $NF}' | tr -d ' \r')
-    
-    if [ -z "$REALITY_PK" ] || [ ${#REALITY_PK} -lt 40 ]; then
-        REALITY_PK=$(echo "$RAW_REALITY_OUT" | grep "PrivateKey" | awk -F ": " '{print $NF}' | tr -d ' \r')
-    fi
-    if [ -z "$REALITY_PUB" ] || [ ${#REALITY_PUB} -lt 40 ]; then
-        REALITY_PUB=$(echo "$RAW_REALITY_OUT" | grep "Password" | awk -F ": " '{print $NF}' | tr -d ' \r')
-    fi
+    RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
+    # 使用 awk 一次性解析私钥和公钥 (支持 output 变体)
+    # 查找包含 "Private" 或 "Public" 的行, 去除 key/value 分隔符, 提取最后一个字段
+    REALITY_PK=$(echo "$RAW_REALITY_OUT" | awk -F: 'tolower($0) ~ /private/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
+    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | awk -F: 'tolower($0) ~ /public/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
 
     REALITY_SID=$(openssl rand -hex 4)
     
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
-    DEC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $0; exit}' | cut -d '"' -f 4)
-    ENC_KEY=$(echo "$RAW_ENC_OUT" | awk '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $0; exit}' | cut -d '"' -f 4)
+    RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
+    # 使用 awk 处理多行 JSON/结构化输出
+    # 定位 "Authentication: ML-KEM-768" 块, 提取 encryption/decryption 字段的值
+    DEC_KEY=$(echo "$RAW_ENC_OUT" | awk -F'"' '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $4; exit}')
+    ENC_KEY=$(echo "$RAW_ENC_OUT" | awk -F'"' '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $4; exit}')
 
     if [ -z "$REALITY_PUB" ] || [ -z "$REALITY_PK" ]; then
         echo -e "${RED}❌ Reality 密钥生成失败${NC}"
