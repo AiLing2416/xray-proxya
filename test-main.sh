@@ -23,8 +23,7 @@ REALITY_SNI="apple.com"
 # -----------------
 
 CONF_DIR="/etc/xray-proxya"
-CONF_FILE="$CONF_DIR/config.env"A backup is currently in progress. Most actions are disabled until the backup completes.
-
+CONF_FILE="$CONF_DIR/config.env"
 
 CUSTOM_OUT_FILE="$CONF_DIR/custom_outbound.json"
 XRAY_BIN="/usr/local/bin/xray-proxya-core/xray"
@@ -51,6 +50,38 @@ NC='\033[0m'
 
 # --- 基础函数 ---
 
+get_runtime_formatted() {
+    local pid=$1
+    if [ -z "$pid" ]; then return; fi
+    
+    local runtime_str=""
+    
+    if [ -f "/proc/uptime" ] && [ -f "/proc/$pid/stat" ]; then
+        local uptime=$(awk '{print $1}' /proc/uptime)
+        local start_ticks=$(awk '{print $22}' "/proc/$pid/stat")
+        local clk_tck=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        
+        runtime_str=$(awk -v up="$uptime" -v st="$start_ticks" -v clk="$clk_tck" 'BEGIN {
+            run_sec = int(up - (st / clk));
+            d = int(run_sec / 86400);
+            h = int((run_sec % 86400) / 3600);
+            m = int((run_sec % 3600) / 60);
+            printf "%dd/%dh/%dm", d, h, m
+        }')
+    fi
+
+    if [ -z "$runtime_str" ] && command -v ps >/dev/null 2>&1; then
+         local etime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
+         if [ -n "$etime" ]; then
+             runtime_str="running($etime)"
+         fi
+    fi
+    
+    echo "$runtime_str"
+}
+
+
+
 check_root() {
     if [ "$EUID" -ne 0 ]; then
         echo -e "${RED}❌ 错误: 需要 root 权限${NC}"
@@ -64,10 +95,10 @@ install_deps() {
         echo "正在运行 apk update..."
         apk update
         echo "正在安装依赖..."
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog ncurses
     else
         apt-get update
-        apt-get install -y curl jq unzip openssl dialog
+        apt-get install -y curl jq unzip openssl dialog ncurses-bin
     fi
 }
 
@@ -75,23 +106,42 @@ show_scroll_log() {
     local title="$1"
     local command="$2"
     
-    # 计算高度: 屏幕高度的 40%, 最小 10
-    local height=$(tput lines)
-    height=$(( height * 2 / 5 ))
-    [ "$height" -lt 10 ] && height=10
-    
-    local width=$(tput cols)
-    width=$(( width - 4 ))
-    
-    if command -v dialog >/dev/null 2>&1; then
-        eval "$command" 2>&1 | dialog --title "$title" --programbox $height $width
-        # 清除屏幕残影
-        clear
-    else
-        # 如果 dialog 安装失败则回退
-        echo "--- $title ---"
+    if ! command -v tput >/dev/null 2>&1; then
         eval "$command"
-        echo "----------------"
+        return $?
+    fi
+
+    local log_file=$(mktemp)
+    
+    echo -e "${BLUE}=== $title ===${NC}"
+    # Pre-allocate 5 lines for scrolling area
+    for i in {1..5}; do echo ""; done
+    
+    eval "$command" >"$log_file" 2>&1 &
+    local pid=$!
+    
+    while kill -0 $pid 2>/dev/null; do
+        tput cuu 5
+        tput ed
+        tail -n 5 "$log_file"
+        sleep 0.2
+    done
+    wait $pid
+    local ret=$?
+    
+    if [ $ret -ne 0 ]; then
+        tput cuu 5
+        tput ed
+        echo -e "${RED}❌ $title 失败，详细日志如下:${NC}"
+        cat "$log_file"
+        rm "$log_file"
+        return $ret
+    else
+        tput cuu 5
+        tput ed
+        echo -e "${GREEN}✅ $title 完成${NC}"
+        rm "$log_file"
+        return 0
     fi
 }
 
@@ -99,8 +149,6 @@ check_port_occupied() {
     local port=$1
     local output=""
     local pid=""
-    # 检查端口是否正在监听
-    # 优先尝试 ss
     if command -v ss >/dev/null 2>&1; then
         output=$(ss -lntp 2>/dev/null | grep ":$port ")
     elif command -v netstat >/dev/null 2>&1; then
@@ -108,27 +156,21 @@ check_port_occupied() {
     fi
 
     if [ -n "$output" ]; then
-        # 使用 sed 提取 PID. 匹配模式 "pid=123" 或 "123/name"
-        # ss: users:(("xray",pid=123,fd=4))
-        # netstat: 123/xray
-        
         if echo "$output" | grep -q "pid="; then
             pid=$(echo "$output" | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
         elif echo "$output" | grep -q "/"; then
             pid=$(echo "$output" | sed -n 's/[^0-9]*\([0-9]*\)\/.*/\1/p' | awk '{print $NF}') # netstat format often at end
         fi
 
-        # 如果找到 PID, 检查其执行路径
         if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
             local exe_link=$(readlink -f "/proc/$pid/exe" 2>/dev/null)
-            # 如果二进制路径匹配我们的 XRAY_BIN 或目录, 则视为自身
             if [[ "$exe_link" == "$XRAY_BIN" ]]; then
-                return 1 # 是我们自己, 忽略冲突 (视为未占用)
+                return 1
             fi
         fi
-        return 0 # 被其他人占用
+        return 0
     fi
-    return 1 # 未被占用 (空闲)
+    return 1
 }
 
 validate_port() {
@@ -167,18 +209,29 @@ sys_reload_daemon() {
     [ $IS_OPENRC -eq 0 ] && systemctl daemon-reload
 }
 check_status() {
+    local pid=""
+
+    if [ -f "/var/run/xray-proxya.pid" ]; then
+        pid=$(cat /var/run/xray-proxya.pid)
+    elif command -v pgrep >/dev/null; then
+        pid=$(pgrep -f "xray-proxya-core/xray")
+    fi
+    
+    local is_running=0
     if [ $IS_OPENRC -eq 1 ]; then
-        if rc-service xray-proxya status 2>/dev/null | grep -q "started"; then
-            echo -e "🟢 服务状态: ${GREEN}运行中 (OpenRC)${NC}"
-        else
-            echo -e "🔴 服务状态: ${RED}未运行${NC}"
-        fi
+        if rc-service xray-proxya status 2>/dev/null | grep -q "started"; then is_running=1; fi
     else
-        if systemctl is-active --quiet xray-proxya; then
-            echo -e "🟢 服务状态: ${GREEN}运行中 (Systemd)${NC}"
-        else
-            echo -e "🔴 服务状态: ${RED}未运行${NC}"
+        if systemctl is-active --quiet xray-proxya; then is_running=1; fi
+    fi
+
+    if [ $is_running -eq 1 ]; then
+        local runtime=""
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+             runtime="($(get_runtime_formatted "$pid"))"
         fi
+        echo -e "🟢 服务状态: ${GREEN}运行中${NC} $runtime"
+    else
+        echo -e "🔴 服务状态: ${RED}未运行${NC}"
     fi
 }
 
@@ -191,17 +244,14 @@ generate_random() {
 download_core() {
     if [ -f "$XRAY_BIN" ]; then return 0; fi
     echo -e "${BLUE}⬇️  获取 Xray-core...${NC}"
-    
-    # 尝试获取下载链接
+
     local api_response=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest)
     local download_url=""
 
-    # 优先使用 jq 解析
     if command -v jq >/dev/null 2>&1; then
         download_url=$(echo "$api_response" | jq -r '.assets[] | select(.name=="Xray-linux-64.zip") | .browser_download_url')
     fi
 
-    # 回退方案: 如果 jq 失败或未安装, 使用 grep/cut 解析
     if [ -z "$download_url" ] || [ "$download_url" == "null" ]; then
         echo -e "${YELLOW}⚠️  jq 解析失败，尝试使用 grep 回退...${NC}"
         download_url=$(echo "$api_response" | grep -o '"browser_download_url": *"[^"]*Xray-linux-64.zip"' | head -n 1 | cut -d '"' -f 4)
@@ -240,8 +290,7 @@ reinstall_core() {
     echo -e "${BLUE}🔄 正在重装 Xray 核心...${NC}"
     sys_stop 2>/dev/null
     rm -rf "$XRAY_DIR"
-    
-    # 运行下载并显示滚动日志
+
     if show_scroll_log "核心下载与安装" download_core; then
         sys_start
         echo -e "${GREEN}✅ 核心重装完成并已重启服务。${NC}"
@@ -252,6 +301,14 @@ reinstall_core() {
 
 decode_base64() {
     local str="$1"
+    local mod=$((${#str} % 4))
+    if [ $mod -eq 3 ]; then
+        str="${str}="
+    elif [ $mod -eq 2 ]; then
+        str="${str}=="
+    elif [ $mod -eq 1 ]; then
+        str="${str}==="
+    fi
     echo "$str" | base64 -d 2>/dev/null || echo "$str" | base64 -d -i 2>/dev/null
 }
 
@@ -267,7 +324,6 @@ parse_link_to_json() {
         local b64="${link#vmess://}"
         local json_str=$(decode_base64 "$b64")
         if [ -z "$json_str" ]; then return 1; fi
-        # 使用 jq 安全地提取并重建 JSON
         echo "$json_str" | jq -c '{
             tag: "custom-out",
             protocol: "vmess",
@@ -289,7 +345,6 @@ parse_link_to_json() {
         }'
         return 0
     fi
-    # VLESS
     if [[ "$link" == vless://* ]]; then
         local tmp="${link#vless://}"
         local uuid="${tmp%%@*}"
@@ -299,9 +354,7 @@ parse_link_to_json() {
         local port="${address_port##*:}"
         local query="${link#*\?}"
         query="${query%%\#*}"
-        
-        # 简单提取查询参数, 构建 JSON 依赖 jq
-        # 使用 sed 替代 grep -oP 以提高兼容性
+
         local type=$(echo "$query" | sed -n 's/.*type=\([^&]*\).*/\1/p')
         [ -z "$type" ] && type="tcp"
         type=$(url_decode "$type")
@@ -315,6 +368,29 @@ parse_link_to_json() {
         
         local sni_enc=$(echo "$query" | sed -n 's/.*sni=\([^&]*\).*/\1/p')
         local sni=$(url_decode "$sni_enc")
+        
+        local flow=$(echo "$query" | sed -n 's/.*flow=\([^&]*\).*/\1/p')
+        flow=$(url_decode "$flow")
+        
+        local pbk=$(echo "$query" | sed -n 's/.*pbk=\([^&]*\).*/\1/p')
+        pbk=$(url_decode "$pbk")
+        
+        local fp=$(echo "$query" | sed -n 's/.*fp=\([^&]*\).*/\1/p')
+        fp=$(url_decode "$fp")
+        
+        local sid=$(echo "$query" | sed -n 's/.*sid=\([^&]*\).*/\1/p')
+        sid=$(url_decode "$sid")
+        
+        local spx=$(echo "$query" | sed -n 's/.*spx=\([^&]*\).*/\1/p')
+        spx=$(url_decode "$spx")
+        
+        local encryption=$(echo "$query" | sed -n 's/.*encryption=\([^&]*\).*/\1/p')
+        encryption=$(url_decode "$encryption")
+        [ -z "$encryption" ] && encryption="none"
+        
+        if [[ "$type" != "tcp" ]]; then
+            flow=""
+        fi
 
         jq -n -c \
             --arg address "$address" \
@@ -324,6 +400,12 @@ parse_link_to_json() {
             --arg security "$security" \
             --arg sni "$sni" \
             --arg path "$path" \
+            --arg flow "$flow" \
+            --arg pbk "$pbk" \
+            --arg fp "$fp" \
+            --arg sid "$sid" \
+            --arg spx "$spx" \
+            --arg encryption "$encryption" \
             '{
                 tag: "custom-out",
                 protocol: "vless",
@@ -331,14 +413,27 @@ parse_link_to_json() {
                     vnext: [{
                         address: $address,
                         port: ($port | tonumber),
-                        users: [{ id: $uuid }]
+                        users: ([{ 
+                            id: $uuid,
+                            encryption: $encryption
+                        } + (if $flow != "" then {flow: $flow} else {} end)])
                     }]
                 },
                 streamSettings: {
                     network: $type,
                     security: $security,
-                    tlsSettings: { serverName: $sni },
-    ($type + "Settings"): { path: $path }
+                    (if $security == "reality" then "realitySettings" else "tlsSettings" end): (
+                        if $security == "reality" then ({
+                            show: false,
+                            fingerprint: $fp,
+                            serverName: $sni,
+                            publicKey: $pbk,
+                            shortId: $sid
+                        } + (if $spx != "" then {spiderX: $spx} else {} end)) else {
+                            serverName: $sni
+                        } end
+                    ),
+                    ($type + "Settings"): { path: $path }
                 }
             }'
         return 0
@@ -391,14 +486,11 @@ parse_link_to_json() {
         local end_port="${end_addr_port##*:}"
         
         local query="${link#*\?}"
-        # Parse query params, ensuring extraction stops at '&' OR end of string/hash
-        # Use simple sed matching, stripping potential #fragment
         local pub_enc=$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')
         local addr_enc=$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')
         local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p')
         [ -z "$mtu" ] && mtu=1280
         
-        # URL Decode critical fields
         local priv_key=$(url_decode "$priv_enc")
         local pub_key=$(url_decode "$pub_enc")
         local local_addr=$(url_decode "$addr_enc")
@@ -428,18 +520,100 @@ parse_link_to_json() {
             }'
         return 0
     fi
+
+    # SOCKS5 (socks://user:pass@host:port#tag)
+    if [[ "$link" == socks://* ]]; then
+        local raw="${link#socks://}"
+        raw="${raw%%\#*}" # Strip tag
+        
+        local user=""
+        local pass=""
+        local addr_port=""
+        
+        if [[ "$raw" == *@* ]]; then
+             # Has auth
+             local auth_b64="${raw%%@*}"
+             addr_port="${raw#*@}"
+             
+             # Decode auth
+             local decoded=$(decode_base64 "$auth_b64")
+             if [[ "$decoded" == *:* ]]; then
+                 user="${decoded%%:*}"
+                 pass="${decoded#*:}"
+             fi
+        else
+             # No auth
+             addr_port="$raw"
+        fi
+        
+        local address="${addr_port%%:*}"
+        local port="${addr_port##*:}"
+        
+        if [ -z "$address" ] || [ -z "$port" ]; then return 1; fi
+        
+        # Build JSON using jq
+        # Logic: If user/pass exist, include them in users array
+        jq -n -c \
+            --arg addr "$address" \
+            --arg port "$port" \
+            --arg user "$user" \
+            --arg pass "$pass" \
+            '{
+                tag: "custom-out",
+                protocol: "socks",
+                settings: {
+                    servers: [{
+                        address: $addr,
+                        port: ($port | tonumber),
+                        users: (if $user != "" then [{user: $user, pass: $pass, level: 0}] else [] end)
+                    }]
+                }
+            }'
+        return 0
+    fi
     return 1
+}
+
+test_custom_outbound() {
+    echo -e "\n=== 测试自定义出站连通性 ==="
+    if [ ! -f "$CONF_FILE" ]; then echo -e "${RED}未安装或配置文件丢失${NC}"; return; fi
+    source "$CONF_FILE"
+    
+    if [ -z "$PORT_TEST" ]; then
+        echo -e "${YELLOW}⚠️  未找到测试端口配置，正在修复...${NC}"
+        generate_config
+        source "$CONF_FILE"
+    fi
+    
+    # 检查是否有自定义配置
+    if [ ! -f "$CUSTOM_OUT_FILE" ] || [ ! -s "$CUSTOM_OUT_FILE" ] || [ "$(cat "$CUSTOM_OUT_FILE")" == "[]" ]; then
+         echo -e "${RED}❌ 未配置自定义出站节点。请先添加节点 (选项 5)${NC}"
+         return
+    fi
+    
+    echo -e "正在通过本地测试端口 ($PORT_TEST) 连接 Google..."
+    echo -e "${BLUE}Cmd: curl -I --proxy socks5h://127.0.0.1:$PORT_TEST https://www.google.com${NC}"
+    
+    # 使用 curl 测试，超时时间 10秒
+    if curl -I -s --max-time 10 --proxy "socks5h://127.0.0.1:$PORT_TEST" "https://www.google.com" | grep -q "HTTP/"; then
+        echo -e "${GREEN}✅ 连通性测试通过! (能够访问 Google)${NC}"
+    else
+        echo -e "${RED}❌ 连接失败或超时。${NC}"
+        echo -e "建议检查: 节点有效性 / 系统时间 / DNS (虽然socks5h由远程解析)"
+    fi
+    read -p "按回车继续..."
 }
 
 add_custom_outbound() {
     echo -e "\n=== 添加自定义出站 (流量转发) ==="
-    echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), Shadowsocks, WireGuard${NC}"
+    echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), Shadowsocks, WireGuard, SOCKS5${NC}"
     read -p "请粘贴链接: " link_str
     if [ -z "$link_str" ]; then echo -e "${RED}输入为空${NC}"; return; fi
     PARSED_JSON=$(parse_link_to_json "$link_str")
     if [ $? -ne 0 ] || [ -z "$PARSED_JSON" ]; then echo -e "${RED}❌ 解析失败或不支持该格式${NC}"; return; fi
     echo "$PARSED_JSON" > "$CUSTOM_OUT_FILE"
     echo -e "${GREEN}✅ 解析成功${NC}"
+    
     source "$CONF_FILE"
     if [ -z "$UUID_CUSTOM" ]; then
         UUID_CUSTOM=$("$XRAY_BIN" uuid)
@@ -447,6 +621,7 @@ add_custom_outbound() {
     fi
     source "$CONF_FILE"
     generate_config
+    sleep 0.5
     sys_restart
     echo -e "${GREEN}服务已重启，转发规则已生效${NC}"
 }
@@ -454,19 +629,19 @@ add_custom_outbound() {
 generate_config() {
     source "$CONF_FILE"
 
-    # 构建内部客户端对象
-    # 注意: 构建数组/对象的逻辑已移至 jq 以确保安全
+    if [ -z "$PORT_TEST" ]; then
+        while :; do
+            local rnd_port=$((RANDOM % 55000 + 10000))
+            if ! check_port_occupied $rnd_port; then
+                PORT_TEST=$rnd_port
+                break
+            fi
+        done
+        echo "PORT_TEST=$PORT_TEST" >> "$CONF_FILE"
+    fi
 
-    # 检查自定义出站
-    # 逻辑移至 jq 参数传递
-    
-    # 我们将使用 jq 构建整个配置
-    # 我们将所有变量作为参数传递以避免注入
-    # 确保 uuid_custom 始终传递, 默认为空字符串
     local u_custom="${UUID_CUSTOM:-}"
     
-
-    # 验证自定义出站文件是否存在
     local co_args=()
     if [ -f "$CUSTOM_OUT_FILE" ] && [ -s "$CUSTOM_OUT_FILE" ]; then
          co_args=("--slurpfile" "custom_outbound" "$CUSTOM_OUT_FILE")
@@ -493,6 +668,7 @@ generate_config() {
         --arg pass_ss "$PASS_SS" \
         --arg uuid "$UUID" \
         --arg uuid_custom "$u_custom" \
+        --arg port_test "$PORT_TEST" \
     '
     {
         log: { loglevel: $log_level },
@@ -559,15 +735,24 @@ generate_config() {
                     password: $pass_ss,
                     network: "tcp,udp"
                 }
+            },
+            {
+                tag: "test-in-socks",
+                listen: "127.0.0.1",
+                port: ($port_test | tonumber),
+                protocol: "socks",
+                settings: { auth: "noauth", udp: true }
             }
         ],
         outbounds: ([
-            { tag: "direct", protocol: "freedom" }
-        ] + (if ($custom_outbound | length > 0) then $custom_outbound else [] end)),
+            { tag: "direct", protocol: "freedom" },
+            { tag: "blocked", protocol: "blackhole" }
+        ] + ($custom_outbound | flatten(1))),
         routing: {
             rules: [
                 { type: "field", user: ["direct"], outboundTag: "direct" },
-                { type: "field", user: ["custom"], outboundTag: "custom-out" }
+                { type: "field", user: ["custom"], outboundTag: "custom-out" },
+                { type: "field", inboundTag: ["test-in-socks"], outboundTag: "custom-out" }
             ]
         }
     }' > "$JSON_FILE"
@@ -653,17 +838,13 @@ install_xray() {
     
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
     RAW_REALITY_OUT=$("$XRAY_BIN" x25519 2>&1)
-    # 使用 awk 一次性解析私钥和公钥 (支持 output 变体)
-    # 查找包含 "Private" 或 "Public" 的行, 去除 key/value 分隔符, 提取最后一个字段
     REALITY_PK=$(echo "$RAW_REALITY_OUT" | awk -F: 'tolower($0) ~ /private/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
-    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | awk -F: 'tolower($0) ~ /public/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
+    REALITY_PUB=$(echo "$RAW_REALITY_OUT" | awk -F: 'tolower($0) ~ /public|password/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
 
     REALITY_SID=$(openssl rand -hex 4)
     
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
     RAW_ENC_OUT=$("$XRAY_BIN" vlessenc 2>&1)
-    # 使用 awk 处理多行 JSON/结构化输出
-    # 定位 "Authentication: ML-KEM-768" 块, 提取 encryption/decryption 字段的值
     DEC_KEY=$(echo "$RAW_ENC_OUT" | awk -F'"' '/Authentication: ML-KEM-768/{flag=1} flag && /"decryption":/{print $4; exit}')
     ENC_KEY=$(echo "$RAW_ENC_OUT" | awk -F'"' '/Authentication: ML-KEM-768/{flag=1} flag && /"encryption":/{print $4; exit}')
 
@@ -682,7 +863,6 @@ install_xray() {
     mkdir -p "$CONF_DIR"
     mkdir -p "$CONF_DIR"
     mkdir -p "$CONF_DIR"
-    # 如果不存在则创建空的自定义出站文件, 以满足其他检查 (尽管 generate_config 现在已处理)
     if [ ! -f "$CUSTOM_OUT_FILE" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; fi
     
     cat > "$CONF_FILE" <<-EOF
@@ -704,9 +884,18 @@ REALITY_SNI=$REALITY_SNI
 REALITY_DEST=$REALITY_DEST
 EOF
     generate_config
+    
+    if ! "$XRAY_BIN" run -test -c "$JSON_FILE" >/dev/null 2>&1; then
+        echo -e "${RED}❌ 配置文件验证失败!${NC}"
+        "$XRAY_BIN" run -test -c "$JSON_FILE"
+        return 1
+    fi
+
     create_service
     echo -e "${GREEN}✅ 安装完成${NC}"
-    show_links_menu
+    
+    echo -e "\n=== 链接信息 ==="
+    show_links_logic "$UUID" "Direct"
 }
 
 # --- 链接展示 ---
@@ -768,6 +957,22 @@ show_links_menu() {
         show_links_logic "$UUID" "Direct"
         return
     fi
+
+    # 检查是否有有效的自定义配置
+    local has_custom=0
+    if [ -f "$CUSTOM_OUT_FILE" ]; then
+        if [ -s "$CUSTOM_OUT_FILE" ] && [ "$(cat "$CUSTOM_OUT_FILE")" != "[]" ]; then
+            has_custom=1
+        fi
+    fi
+    
+    # 如果没有自定义出站配置，直接显示直连，不进入菜单
+    if [ $has_custom -eq 0 ]; then
+        echo -e "\n=== 链接信息 (直接出站) ==="
+        show_links_logic "$UUID" "Direct"
+        return
+    fi
+
     echo -e "\n=== 选择要查看的链接类型 ==="
     echo "1. 直接出站 (本机 IP)"
     echo "2. 自定义出站 (转发流量)"
@@ -854,10 +1059,11 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "3. 修改端口"
         echo "4. 维护菜单"
         echo "5. 自定义出站"
-        echo "6. 重装内核"
+        echo "6. 测试出站连通性"
         echo ""
-        echo "q. 退出"
+        echo "9. 重装内核"
         echo "0. 卸载"
+        echo "q. 退出"
         read -p "选择: " choice
         case "$choice" in
             1) install_xray ;;
@@ -865,7 +1071,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             3) change_ports ;;
             4) maintenance_menu ;;
             5) add_custom_outbound ;;
-            6) reinstall_core ;;
+            6) test_custom_outbound ;;
+            9) reinstall_core ;;
             0) uninstall_xray ;;
             q|Q) exit 0 ;;
             *) echo -e "${RED}无效${NC}" ;;
