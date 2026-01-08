@@ -10,6 +10,7 @@ DEFAULT_PORT_VMESS=8081
 DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
+SERVICE_AUTO_RESTART="true"
 
 # 加密算法
 VMESS_CIPHER="chacha20-poly1305"
@@ -30,7 +31,7 @@ JSON_FILE="$XRAY_DIR/config.json"
 
 # 系统检测
 IS_OPENRC=0
-if [ -f /etc/alpine-release ]; then
+if [ -f /etc/alpine-release ] && command -v rc-service >/dev/null 2>&1; then
     IS_OPENRC=1
 fi
 
@@ -63,7 +64,7 @@ install_deps() {
         apk update
         echo "正在安装依赖..."
         # 增加 unzip 包，避免 busybox unzip 问题
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog ncurses tzdata
     else
         apt-get update -qq >/dev/null
         apt-get install -y curl jq unzip openssl >/dev/null 2>&1
@@ -215,10 +216,16 @@ parse_link_to_json() {
         # Use simple grep to extract query params, but rely on jq for JSON construction
         # Note: Previous grep -oP might be problematic on some systems, but we keep the logic for now as requested, 
         # just fixing the JSON generation part.
-        local type=$(echo "$query" | grep -oP 'type=\K[^&]+' || echo "tcp")
-        local security=$(echo "$query" | grep -oP 'security=\K[^&]+' || echo "none")
-        local path=$(echo "$query" | grep -oP 'path=\K[^&]+' | sed 's/%2F/\//g')
-        local sni=$(echo "$query" | grep -oP 'sni=\K[^&]+')
+        local type=$(echo "$query" | sed -n 's/.*type=\([^&]*\).*/\1/p')
+        [ -z "$type" ] && type="tcp"
+        
+        local security=$(echo "$query" | sed -n 's/.*security=\([^&]*\).*/\1/p')
+        [ -z "$security" ] && security="none"
+
+        local path_enc=$(echo "$query" | sed -n 's/.*path=\([^&]*\).*/\1/p')
+        local path=$(echo "$path_enc" | sed 's/%2F/\//g')
+        
+        local sni=$(echo "$query" | sed -n 's/.*sni=\([^&]*\).*/\1/p')
 
         jq -n -c \
             --arg address "$address" \
@@ -422,7 +429,26 @@ generate_config() {
 
 create_service() {
     if [ $IS_OPENRC -eq 1 ]; then
-        cat > "$SERVICE_FILE" <<-EOF
+        if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
+            cat > "$SERVICE_FILE" <<-EOF
+#!/sbin/openrc-run
+name="xray-proxya"
+description="Xray-Proxya Service"
+supervisor="supervise-daemon"
+command="$XRAY_BIN"
+command_args="run -c $JSON_FILE"
+pidfile="/run/xray-proxya.pid"
+rc_ulimit="-n 30000"
+respawn_delay=5
+respawn_max=0
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+        else
+            cat > "$SERVICE_FILE" <<-EOF
 #!/sbin/openrc-run
 name="xray-proxya"
 description="Xray-Proxya Service"
@@ -430,24 +456,35 @@ command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 command_background=true
 pidfile="/run/xray-proxya.pid"
+rc_ulimit="-n 30000"
+
 depend() {
     need net
     after firewall
 }
 EOF
+        fi
         chmod +x "$SERVICE_FILE"
     else
+        local restart_conf=""
+        if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
+            restart_conf="Restart=on-failure\nRestartSec=5s"
+        fi
+        
         cat > "$SERVICE_FILE" <<-EOF
 [Unit]
 Description=Xray-Proxya Service
 After=network.target
+
 [Service]
 User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
-Restart=on-failure
+$(echo -e "$restart_conf")
+LimitNOFILE=30000
+
 [Install]
 WantedBy=multi-user.target
 EOF
