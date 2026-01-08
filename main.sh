@@ -11,6 +11,7 @@ DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 DEFAULT_GEN_LEN=16
+SERVICE_AUTO_RESTART="true"
 
 # 日志配置
 DEFAULT_ENABLE_LOG=true
@@ -38,7 +39,7 @@ JSON_FILE="$XRAY_DIR/config.json"
 
 # 系统检测
 IS_OPENRC=0
-if [ -f /etc/alpine-release ]; then
+if [ -f /etc/alpine-release ] && command -v rc-service >/dev/null 2>&1; then
     IS_OPENRC=1
 fi
 
@@ -100,7 +101,7 @@ install_deps() {
         echo "正在运行 apk update..."
         apk update
         echo "正在安装依赖..."
-        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog ncurses
+        apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog ncurses tzdata
     else
         apt-get update
         apt-get install -y curl jq unzip openssl dialog ncurses-bin
@@ -1165,7 +1166,26 @@ generate_config() {
 
 create_service() {
     if [ $IS_OPENRC -eq 1 ]; then
-        cat > "$SERVICE_FILE" <<-EOF
+        if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
+            cat > "$SERVICE_FILE" <<-EOF
+#!/sbin/openrc-run
+name="xray-proxya"
+description="Xray-Proxya Service"
+supervisor="supervise-daemon"
+command="$XRAY_BIN"
+command_args="run -c $JSON_FILE"
+pidfile="/run/xray-proxya.pid"
+rc_ulimit="-n 30000"
+respawn_delay=5
+respawn_max=0
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+        else
+            cat > "$SERVICE_FILE" <<-EOF
 #!/sbin/openrc-run
 name="xray-proxya"
 description="Xray-Proxya Service"
@@ -1173,24 +1193,35 @@ command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 command_background=true
 pidfile="/run/xray-proxya.pid"
+rc_ulimit="-n 30000"
+
 depend() {
     need net
     after firewall
 }
 EOF
+        fi
         chmod +x "$SERVICE_FILE"
     else
+        local restart_conf=""
+        if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
+            restart_conf="Restart=on-failure\nRestartSec=5s"
+        fi
+        
         cat > "$SERVICE_FILE" <<-EOF
 [Unit]
 Description=Xray-Proxya Service
 After=network.target
+
 [Service]
 User=root
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
-Restart=on-failure
+$(echo -e "$restart_conf")
+LimitNOFILE=30000
+
 [Install]
 WantedBy=multi-user.target
 EOF
