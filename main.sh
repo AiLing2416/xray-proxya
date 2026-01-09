@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [STABLE]
+# Xray-Proxya Manager
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # ==================================================
 
@@ -12,6 +12,17 @@ DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8083
 DEFAULT_GEN_LEN=16
 SERVICE_AUTO_RESTART="true"
+
+# 内存与资源管理 (防止 OOM)
+# HIGH_PERFORMANCE_MODE: true 为高性能(高并发)模式, false 为低功耗(小内存)模式
+HIGH_PERFORMANCE_MODE="false"
+# MEM_LIMIT: Go 运行时强制回收内存的目标 (建议设为总 RAM 的 60-80%)
+MEM_LIMIT="320MiB"
+# BUFFER_SIZE: 每条连接的缓冲区大小 (KB), 越小越省内存, 但极限速度会下降
+# 算法: 最大连接数 ≈ (MEM_LIMIT - 50MB) / (BUFFER_SIZE * 2)
+BUFFER_SIZE=16
+# CONN_IDLE: 空闲连接超时自动断开 (秒), 建议 1800 (30分钟) 以保持长连接稳定
+CONN_IDLE=1800
 
 # 日志配置
 DEFAULT_ENABLE_LOG=true
@@ -1027,8 +1038,12 @@ generate_config() {
         --arg uuid "$UUID" \
         --arg port_test "$PORT_TEST" \
         --arg port_api "$PORT_API" \
+        --arg buffer_size "${BUFFER_SIZE:-16}" \
+        --arg conn_idle "${CONN_IDLE:-1800}" \
     '
     ($custom_list | flatten(1)) as $cl |
+    ($buffer_size | tonumber * 1024) as $buf_bytes |
+    ($conn_idle | tonumber) as $idle |
     
     # Generate clients list for inbounds
     # Structure: { id: uuid, email: "custom-"+alias, level: 0 }
@@ -1057,7 +1072,7 @@ generate_config() {
         stats: {},
         policy: {
             levels: {
-                "0": { statsUserUplink: true, statsUserDownlink: true }
+                "0": { handshake: 4, connIdle: $idle, uplinkOnly: 2, downlinkOnly: 4, bufferSize: ($buf_bytes / 1024), statsUserUplink: true, statsUserDownlink: true }
             },
             system: {
                 statsInboundUplink: true,
@@ -1165,6 +1180,10 @@ generate_config() {
 }
 
 create_service() {
+    source "$CONF_FILE"
+    local mem_env=""; [ -n "$MEM_LIMIT" ] && mem_env="GOMEMLIMIT=$MEM_LIMIT"
+    local ulimit_val=2048; [ "$HIGH_PERFORMANCE_MODE" == "true" ] && ulimit_val=30000
+
     if [ $IS_OPENRC -eq 1 ]; then
         if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
             cat > "$SERVICE_FILE" <<-EOF
@@ -1174,15 +1193,12 @@ description="Xray-Proxya Service"
 supervisor="supervise-daemon"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
+command_env="$mem_env"
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 30000"
+rc_ulimit="-n $ulimit_val"
 respawn_delay=5
 respawn_max=0
-
-depend() {
-    need net
-    after firewall
-}
+depend() { need net; after firewall; }
 EOF
         else
             cat > "$SERVICE_FILE" <<-EOF
@@ -1191,37 +1207,29 @@ name="xray-proxya"
 description="Xray-Proxya Service"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
+command_env="$mem_env"
 command_background=true
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 30000"
-
-depend() {
-    need net
-    after firewall
-}
+rc_ulimit="-n $ulimit_val"
+depend() { need net; after firewall; }
 EOF
         fi
         chmod +x "$SERVICE_FILE"
     else
-        local restart_conf=""
-        if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
-            restart_conf="Restart=on-failure\nRestartSec=5s"
-        fi
-        
+        local restart_conf=""; [ "$SERVICE_AUTO_RESTART" == "true" ] && restart_conf="Restart=on-failure\nRestartSec=5s"
         cat > "$SERVICE_FILE" <<-EOF
 [Unit]
 Description=Xray-Proxya Service
 After=network.target
-
 [Service]
 User=root
+Environment=$mem_env
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
 $(echo -e "$restart_conf")
-LimitNOFILE=30000
-
+LimitNOFILE=$ulimit_val
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1317,6 +1325,10 @@ REALITY_SNI=$REALITY_SNI
 REALITY_DEST=$REALITY_DEST
 ENABLE_LOG=$DEFAULT_ENABLE_LOG
 LOG_DIR=$DEFAULT_LOG_DIR
+HIGH_PERFORMANCE_MODE=$HIGH_PERFORMANCE_MODE
+MEM_LIMIT=$MEM_LIMIT
+BUFFER_SIZE=$BUFFER_SIZE
+CONN_IDLE=$CONN_IDLE
 EOF
     generate_config
     
