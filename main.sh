@@ -13,6 +13,9 @@ DEFAULT_PORT_SS=8083
 DEFAULT_GEN_LEN=16
 SERVICE_AUTO_RESTART="true"
 
+# 为 true 时覆盖下方所有性能参数, 由 Xray 核心自行管理资源
+AUTO_CONFIG="true"
+
 # 内存与资源管理 (防止 OOM)
 # HIGH_PERFORMANCE_MODE: true 为高性能(高并发)模式, false 为低功耗(小内存)模式
 HIGH_PERFORMANCE_MODE="false"
@@ -1040,6 +1043,7 @@ generate_config() {
         --arg port_api "$PORT_API" \
         --arg buffer_size "${BUFFER_SIZE:-16}" \
         --arg conn_idle "${CONN_IDLE:-1800}" \
+        --arg auto_config "${AUTO_CONFIG:-false}" \
     '
     ($custom_list | flatten(1)) as $cl |
     ($buffer_size | tonumber * 1024) as $buf_bytes |
@@ -1070,7 +1074,7 @@ generate_config() {
             services: [ "StatsService" ]
         },
         stats: {},
-        policy: {
+        policy: (if $auto_config == "true" then {} else {
             levels: {
                 "0": { handshake: 4, connIdle: $idle, uplinkOnly: 2, downlinkOnly: 4, bufferSize: ($buf_bytes / 1024), statsUserUplink: true, statsUserDownlink: true }
             },
@@ -1080,7 +1084,7 @@ generate_config() {
                 statsOutboundUplink: true,
                 statsOutboundDownlink: true
             }
-        },
+        } end),
         inbounds: [
             {
                 tag: "vmess-in",
@@ -1181,8 +1185,8 @@ generate_config() {
 
 create_service() {
     source "$CONF_FILE"
-    local mem_env=""; [ -n "$MEM_LIMIT" ] && mem_env="GOMEMLIMIT=$MEM_LIMIT"
-    local ulimit_val=2048; [ "$HIGH_PERFORMANCE_MODE" == "true" ] && ulimit_val=30000
+    local mem_env=""; [ "$AUTO_CONFIG" != "true" ] && [ -n "$MEM_LIMIT" ] && mem_env="GOMEMLIMIT=$MEM_LIMIT"
+    local ulimit_val=1024; [ "$AUTO_CONFIG" == "true" ] && ulimit_val=1024 || { [ "$HIGH_PERFORMANCE_MODE" == "true" ] && ulimit_val=30000 || ulimit_val=2048; }
 
     if [ $IS_OPENRC -eq 1 ]; then
         if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
@@ -1325,6 +1329,7 @@ REALITY_SNI=$REALITY_SNI
 REALITY_DEST=$REALITY_DEST
 ENABLE_LOG=$DEFAULT_ENABLE_LOG
 LOG_DIR=$DEFAULT_LOG_DIR
+AUTO_CONFIG=$AUTO_CONFIG
 HIGH_PERFORMANCE_MODE=$HIGH_PERFORMANCE_MODE
 MEM_LIMIT=$MEM_LIMIT
 BUFFER_SIZE=$BUFFER_SIZE
@@ -1613,6 +1618,17 @@ uninstall_xray() {
     if [[ "$del_core" == "y" ]]; then rm -rf "$XRAY_DIR"; echo -e "${GREEN}✅ 核心文件已移除。${NC}"; fi
 }
 
+apply_refresh() {
+    echo -e "${BLUE}🔄 正在从脚本头部同步变量并重载服务...${NC}"
+    [ -n "$AUTO_CONFIG" ] && sed -i "s/^AUTO_CONFIG=.*/AUTO_CONFIG=$AUTO_CONFIG/" "$CONF_FILE"
+    [ -n "$HIGH_PERFORMANCE_MODE" ] && sed -i "s/^HIGH_PERFORMANCE_MODE=.*/HIGH_PERFORMANCE_MODE=$HIGH_PERFORMANCE_MODE/" "$CONF_FILE"
+    [ -n "$MEM_LIMIT" ] && sed -i "s/^MEM_LIMIT=.*/MEM_LIMIT=$MEM_LIMIT/" "$CONF_FILE"
+    [ -n "$BUFFER_SIZE" ] && sed -i "s/^BUFFER_SIZE=.*/BUFFER_SIZE=$BUFFER_SIZE/" "$CONF_FILE"
+    [ -n "$CONN_IDLE" ] && sed -i "s/^CONN_IDLE=.*/CONN_IDLE=$CONN_IDLE/" "$CONF_FILE"
+    source "$CONF_FILE"; generate_config; create_service
+    echo -e "${GREEN}✅ 配置已刷新并重启${NC}"; sleep 1
+}
+
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     check_root
     
@@ -1634,6 +1650,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "4. 维护菜单"
         echo "5. 自定义出站"
         echo "6. 测试自定义出站"
+        echo "7. 刷新配置"
         echo ""
         echo "9. 重装内核"
         echo "0. 卸载"
@@ -1646,6 +1663,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             4) maintenance_menu ;;
             5) custom_outbound_menu ;;
             6) test_custom_outbound ;;
+            7) apply_refresh ;;
             9) reinstall_core ;;
             0) uninstall_xray ;;
             q|Q) exit 0 ;;
