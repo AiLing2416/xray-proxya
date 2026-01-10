@@ -231,9 +231,20 @@ parse_link_to_json() {
         local query="${link#*\?}"
         local pub=$(url_decode "$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')")
         local local_addr=$(url_decode "$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')")
+        local reserved=$(url_decode "$(echo "$query" | sed -n 's/.*reserved=\([^&#]*\).*/\1/p')")
         local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p'); [ -z "$mtu" ] && mtu=1280
-        jq -n -c --arg pub "$pub" --arg priv "$(url_decode "$priv_enc")" --arg addr "$end_addr" --arg port "$end_port" --arg local "$local_addr" --arg mtu "$mtu" \
-            '{tag: "custom-out", protocol: "wireguard", settings: { secretKey: $priv, address: [$local], peers: [{ publicKey: $pub, endpoint: ($addr + ":" + $port), keepAlive: 25 }], mtu: ($mtu | tonumber) } }'
+        jq -n -c --arg pub "$pub" --arg priv "$(url_decode "$priv_enc")" --arg addr "$end_addr" --arg port "$end_port" --arg local "$local_addr" --arg res "$reserved" --arg mtu "$mtu" \
+            '{
+                tag: "custom-out", 
+                protocol: "wireguard", 
+                settings: { 
+                    secretKey: $priv, 
+                    address: ($local | split(",")), 
+                    reserved: (if $res != "" then ($res | split(",") | map(tonumber)) else null end),
+                    peers: [{ publicKey: $pub, endpoint: ($addr + ":" + $port), keepAlive: 25 }], 
+                    mtu: ($mtu | tonumber) 
+                } 
+            } | del(..|nulls)'
         return 0
     fi
     return 1
