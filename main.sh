@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager
+# Xray-Proxya Manager [MAIN]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # ==================================================
 
@@ -563,8 +563,8 @@ parse_link_to_json() {
             }'
         return 0
     fi
-    # WireGuard 协议 (自定义格式)
-    # wireguard://<Priv>@<EndpointIP>:<EndpointPort>?publickey=<Pub>&address=<LocalIP/Mask>&mtu=<MTU>
+    # WireGuard
+    # wireguard://<Priv>@<EndpointIP>:<EndpointPort>?publickey=<Pub>&reserved=<Res>&address=<LocalIP/Mask>&mtu=<MTU>
     if [[ "$link" == wireguard://* ]]; then
         local tmp="${link#wireguard://}"
         local priv_enc="${tmp%%@*}"
@@ -576,12 +576,14 @@ parse_link_to_json() {
         local query="${link#*\?}"
         local pub_enc=$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')
         local addr_enc=$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')
+        local res_enc=$(echo "$query" | sed -n 's/.*reserved=\([^&#]*\).*/\1/p')
         local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p')
         [ -z "$mtu" ] && mtu=1280
         
         local priv_key=$(url_decode "$priv_enc")
         local pub_key=$(url_decode "$pub_enc")
         local local_addr=$(url_decode "$addr_enc")
+        local reserved=$(url_decode "$res_enc")
 
         if [ -z "$pub_key" ] || [ -z "$priv_key" ] || [ -z "$end_addr" ]; then return 1; fi
 
@@ -591,13 +593,15 @@ parse_link_to_json() {
             --arg addr "$end_addr" \
             --arg port "$end_port" \
             --arg local "$local_addr" \
+            --arg res "$reserved" \
             --arg mtu "$mtu" \
             '{
                 tag: "custom-out",
                 protocol: "wireguard",
                 settings: {
                     secretKey: $priv,
-                    address: [$local],
+                    address: ($local | split(",")),
+                    reserved: (if $res != "" then ($res | split(",") | map(tonumber)) else null end),
                     peers: [{
                         publicKey: $pub,
                         endpoint: ($addr + ":" + $port),
@@ -605,7 +609,7 @@ parse_link_to_json() {
                     }],
                     mtu: ($mtu | tonumber)
                 }
-            }'
+            } | del(..|nulls)'
         return 0
     fi
 
@@ -693,24 +697,27 @@ parse_wg_conf() {
         conf_content=$(cat)
     fi
     
-    local private_key=$(echo "$conf_content" | grep -i "^PrivateKey" | awk -F= '{print $2}' | tr -d ' \r\t')
-    local address_line=$(echo "$conf_content" | grep -i "^Address" | awk -F= '{print $2}' | tr -d ' \r\t')
+    local private_key=$(echo "$conf_content" | grep -i "^PrivateKey" | cut -d'=' -f2- | tr -d ' \r\t')
+    local address_line=$(echo "$conf_content" | grep -i "^Address" | cut -d'=' -f2- | tr -d ' \r\t')
     
-    local public_key=$(echo "$conf_content" | grep -i "^PublicKey" | awk -F= '{print $2}' | tr -d ' \r\t')
-    local endpoint=$(echo "$conf_content" | grep -i "^Endpoint" | awk -F= '{print $2}' | tr -d ' \r\t')
-    local preshared_key=$(echo "$conf_content" | grep -i "^PresharedKey" | awk -F= '{print $2}' | tr -d ' \r\t')
+    local public_key=$(echo "$conf_content" | grep -i "^PublicKey" | cut -d'=' -f2- | tr -d ' \r\t')
+    local endpoint=$(echo "$conf_content" | grep -i "^Endpoint" | cut -d'=' -f2- | tr -d ' \r\t')
+    local preshared_key=$(echo "$conf_content" | grep -i "^PresharedKey" | cut -d'=' -f2- | tr -d ' \r\t')
+    
+    local reserved_line=$(echo "$conf_content" | grep -i "^Reserved" | cut -d'=' -f2- | tr -d ' \r\t')
     
     if [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$endpoint" ]; then
         return 1
     fi
     
     local addr_json=$(echo "$address_line" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "\"%s\"%s", $i, (i==NF?"":","); printf "]"}')
+    local res_json="null"
+    if [ -n "$reserved_line" ]; then
+        res_json=$(echo "$reserved_line" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "%s%s", $i, (i==NF?"":","); printf "]"}')
+    fi
     
     local host="${endpoint%:*}"
     local port="${endpoint##*:}"
-    
-    local psk_arg=""
-    if [ -n "$preshared_key" ]; then psk_arg="--arg psk $preshared_key"; fi
     
     jq -n -c \
         --arg pk "$private_key" \
@@ -718,20 +725,22 @@ parse_wg_conf() {
         --arg host "$host" \
         --arg port "$port" \
         --argjson addr "$addr_json" \
-        $psk_arg \
+        --argjson res "$res_json" \
+        --arg psk "$preshared_key" \
     '{
         tag: "custom-out",
         protocol: "wireguard",
         settings: {
             secretKey: $pk,
             address: $addr,
+            reserved: $res,
             peers: [{
                 publicKey: $pub,
                 endpoint: ($host + ":" + $port),
-                preSharedKey: $psk
+                preSharedKey: (if $psk != "" then $psk else null end)
             }]
         }
-    }'
+    } | del(..|nulls)'
 }
 
 migrate_custom_config() {
