@@ -360,6 +360,10 @@ custom_outbound_menu() {
 }
 
 generate_config() {
+    # 确保必要目录存在
+    mkdir -p "$CONF_DIR" "$XRAY_DIR"
+    if [ ! -f "$CUSTOM_OUT_FILE" ] || [ ! -s "$CUSTOM_OUT_FILE" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; fi
+
     source "$CONF_FILE"
 
     # 自动探测网络栈
@@ -562,7 +566,7 @@ EOF
     echo -e "${BLUE}📦 下载并部署维护脚本...${NC}"
     local maintenance_url="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/maintain.sh"
     local maintenance_dst="/usr/local/bin/xray-proxya-maintenance"
-    if curl -sSL -o "$maintenance_dst" "$maintenance_url"; then
+    if curl -sSfL -o "$maintenance_dst" "$maintenance_url"; then
         chmod +x "$maintenance_dst"
         echo -e "${GREEN}✅ 维护脚本已就绪${NC}"
     else
