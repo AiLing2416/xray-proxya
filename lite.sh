@@ -345,7 +345,7 @@ custom_outbound_menu() {
             *) continue ;;
         esac
 
-        if [ -n "$parsed_json" ]; then
+        if [ -n "$parsed_json" ] && [ "$parsed_json" != "null" ]; then
             echo "$parsed_json" > "$CUSTOM_OUT_FILE"
             echo -e "${GREEN}✅ 配置已解析并保存${NC}"
             source "$CONF_FILE"
