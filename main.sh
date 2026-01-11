@@ -1081,7 +1081,7 @@ generate_config() {
         --arg conn_idle "${CONN_IDLE:-1800}" \
         --arg auto_config "${AUTO_CONFIG:-false}" \
         --arg dns_strategy "$dns_strategy" \
-        --arg disable_direct "${DISABLE_DIRECT:-false}" \
+        --arg direct_outbound "${DIRECT_OUTBOUND:-true}" \
     '
     ($custom_list | flatten(1)) as $cl |
     ($buffer_size | tonumber * 1024) as $buf_bytes |
@@ -1134,7 +1134,7 @@ generate_config() {
                 protocol: "vmess",
                 settings: {
                     clients: (
-                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct", level: 0 }] end)
+                        (if $direct_outbound == "true" then [{ id: $uuid, email: "direct", level: 0 }] else [] end)
                         + $custom_clients
                     )
                 },
@@ -1149,7 +1149,7 @@ generate_config() {
                 protocol: "vless",
                 settings: {
                      clients: (
-                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct", level: 0 }] end)
+                        (if $direct_outbound == "true" then [{ id: $uuid, email: "direct", level: 0 }] else [] end)
                         + $custom_clients
                     ),
                     decryption: $dec_key
@@ -1165,7 +1165,7 @@ generate_config() {
                 protocol: "vless",
                 settings: {
                      clients: (
-                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct", level: 0 }] end)
+                        (if $direct_outbound == "true" then [{ id: $uuid, email: "direct", level: 0 }] else [] end)
                         + $custom_clients
                     ),
                     decryption: "none"
@@ -1202,7 +1202,7 @@ generate_config() {
                 settings: { 
                     auth: "password", 
                     accounts: (
-                        (if $disable_direct == "true" then [] else [{user: "direct", pass: "test"}] end)
+                        (if $direct_outbound == "true" then [{user: "direct", pass: "test"}] else [] end)
                         + ($custom_clients | map({user: .email, pass: "test"}))
                     ),
                     udp: true 
@@ -1224,13 +1224,13 @@ generate_config() {
             domainStrategy: "IPIfNonMatch",
             rules: ([
                 { type: "field", inboundTag: ["api-in"], outboundTag: "api" },
-                (if $disable_direct == "true" then 
-                    { type: "field", user: ["direct"], outboundTag: "blocked" } 
-                 else 
+                (if $direct_outbound == "true" then 
                     { type: "field", user: ["direct"], outboundTag: "direct" } 
+                 else 
+                    { type: "field", user: ["direct"], outboundTag: "blocked" } 
                  end)
             ] + $custom_rules + [
-                { type: "field", inboundTag: ["test-in-socks"], outboundTag: (if $disable_direct == "true" then "blocked" else "direct" end) }
+                { type: "field", inboundTag: ["test-in-socks"], outboundTag: (if $direct_outbound == "true" then "direct" else "blocked" end) }
             ])
         }
     }' > "$JSON_FILE"
@@ -1640,19 +1640,20 @@ CRON_EXAMPLE
 
 toggle_direct_listening() {
     source "$CONF_FILE"
-    if [ "$DISABLE_DIRECT" == "true" ]; then
-        DISABLE_DIRECT="false"
+    if [ "${DIRECT_OUTBOUND:-true}" == "true" ]; then
+        DIRECT_OUTBOUND="false"
     else
-        DISABLE_DIRECT="true"
+        DIRECT_OUTBOUND="true"
     fi
-    if grep -q "DISABLE_DIRECT=" "$CONF_FILE"; then
-        sed -i "s/DISABLE_DIRECT=.*/DISABLE_DIRECT=$DISABLE_DIRECT/" "$CONF_FILE"
+    if grep -q "DIRECT_OUTBOUND=" "$CONF_FILE"; then
+        sed -i "s/DIRECT_OUTBOUND=.*/DIRECT_OUTBOUND=$DIRECT_OUTBOUND/" "$CONF_FILE"
     else
-        echo "DISABLE_DIRECT=$DISABLE_DIRECT" >> "$CONF_FILE"
+        echo "DIRECT_OUTBOUND=$DIRECT_OUTBOUND" >> "$CONF_FILE"
     fi
+    
     generate_config
     sys_restart
-    echo -e "${GREEN}✅ 已切换直接出站监听状态为: $DISABLE_DIRECT${NC}"
+    echo -e "${GREEN}✅ 已切换直接出站监听状态为: $DIRECT_OUTBOUND${NC}"
     sleep 1
 }
 
@@ -1660,7 +1661,7 @@ maintenance_menu() {
     while true; do
         source "$CONF_FILE" 2>/dev/null
         local direct_status="开启"
-        [ "$DISABLE_DIRECT" == "true" ] && direct_status="关闭 (纯中转模式)"
+        [ "${DIRECT_OUTBOUND:-true}" == "false" ] && direct_status="关闭"
 
         echo -e "\n=== 维护 ==="
         echo "1. 服务操作 (启动/停止/重启...)"
