@@ -530,6 +530,7 @@ parse_link_to_json() {
     if [[ "$link" == ss://* ]]; then
         local raw="${link#ss://}"
         raw="${raw%%\#*}"
+        raw="${raw%%\?*}"
         local decoded=$(decode_base64 "$raw")
         local method=""; local password=""; local address=""; local port=""
         if [[ "$decoded" == *:*@*:* ]]; then
@@ -617,6 +618,7 @@ parse_link_to_json() {
     if [[ "$link" == socks://* ]]; then
         local raw="${link#socks://}"
         raw="${raw%%\#*}" # Strip tag
+        raw="${raw%%\?*}" # Strip query
         
         local user=""
         local pass=""
@@ -990,6 +992,19 @@ print_custom_link() {
 generate_config() {
     source "$CONF_FILE"
 
+    # 自动探测网络栈
+    local has_ipv4=0
+    local has_ipv6=0
+    if ip -4 route show default 2>/dev/null | grep -q "."; then has_ipv4=1; fi
+    if ip -6 route show default 2>/dev/null | grep -q "."; then has_ipv6=1; fi
+    
+    local dns_strategy="UseIP"
+    if [ $has_ipv4 -eq 1 ] && [ $has_ipv6 -eq 0 ]; then
+        dns_strategy="UseIPv4"
+    elif [ $has_ipv4 -eq 0 ] && [ $has_ipv6 -eq 1 ]; then
+        dns_strategy="UseIPv6"
+    fi
+
     if [ -z "$PORT_TEST" ]; then
         while :; do
             local rnd_port=$((RANDOM % 55000 + 10000))
@@ -1053,6 +1068,7 @@ generate_config() {
         --arg buffer_size "${BUFFER_SIZE:-16}" \
         --arg conn_idle "${CONN_IDLE:-1800}" \
         --arg auto_config "${AUTO_CONFIG:-false}" \
+        --arg dns_strategy "$dns_strategy" \
     '
     ($custom_list | flatten(1)) as $cl |
     ($buffer_size | tonumber * 1024) as $buf_bytes |
@@ -1078,6 +1094,10 @@ generate_config() {
 
     {
         log: (if $enable_log == "true" then { loglevel: $log_level, access: $log_path, error: $log_path } else { loglevel: "none" } end),
+        dns: {
+            servers: ["8.8.8.8", "1.1.1.1", "8.8.4.4", "2001:4860:4860::8888", "2606:4700:4700::1111"],
+            queryStrategy: $dns_strategy
+        },
         api: {
             tag: "api",
             services: [ "StatsService" ]
@@ -1182,6 +1202,7 @@ generate_config() {
             { tag: "blocked", protocol: "blackhole" }
         ] + $custom_outbounds),
         routing: {
+            domainStrategy: "IPIfNonMatch",
             rules: ([
                 { type: "field", user: ["direct"], outboundTag: "direct" },
                 { type: "field", inboundTag: ["api-in"], outboundTag: "api" }
