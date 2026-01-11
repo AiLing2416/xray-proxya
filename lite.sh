@@ -309,6 +309,10 @@ test_custom_outbound() {
 }
 
 custom_outbound_menu() {
+    if [ ! -f "$CONF_FILE" ]; then
+        echo -e "${RED}❌ 错误: 请先执行 '1. 安装 / 重置' 以生成基本配置。${NC}"
+        sleep 2; return
+    fi
     while true; do
         echo -e "\n=== 自定义出站 (Lite 单路) ==="
         echo "1. 通过链接导入 (SS, Socks5, VLESS, WireGuard)"
@@ -391,6 +395,7 @@ generate_config() {
         --arg buffer_size "${BUFFER_SIZE:-16}" --arg conn_idle "${CONN_IDLE:-1800}" \
         --arg auto_config "${AUTO_CONFIG:-false}" \
         --arg dns_strategy "$dns_strategy" \
+        --arg disable_direct "${DISABLE_DIRECT:-false}" \
     '
     ($custom_outbound | flatten(1)) as $co |
     ($buffer_size | tonumber * 1024) as $buf_bytes |
@@ -411,7 +416,10 @@ generate_config() {
             {
                 tag: "vless-enc-in", port: ($port_vless | tonumber), protocol: "vless",
                 settings: { 
-                    clients: ([{ id: $uuid, email: "direct" }] + (if $uuid_custom != "" then [{ id: $uuid_custom, email: "custom" }] else [] end)),
+                    clients: (
+                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct" }] end)
+                        + (if $uuid_custom != "" then [{ id: $uuid_custom, email: "custom" }] else [] end)
+                    ),
                     decryption: $dec_key 
                 },
                 streamSettings: { network: "xhttp", xhttpSettings: { path: $path_vl } }
@@ -419,7 +427,10 @@ generate_config() {
             {
                 tag: "vless-reality-in", port: ($port_reality | tonumber), protocol: "vless",
                 settings: { 
-                    clients: ([{ id: $uuid, email: "direct" }] + (if $uuid_custom != "" then [{ id: $uuid_custom, email: "custom" }] else [] end)),
+                    clients: (
+                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct" }] end)
+                        + (if $uuid_custom != "" then [{ id: $uuid_custom, email: "custom" }] else [] end)
+                    ),
                     decryption: "none" 
                 },
                 streamSettings: {
@@ -434,18 +445,32 @@ generate_config() {
             },
             {
                 tag: "test-in-socks", listen: "127.0.0.1", port: ($port_test | tonumber), protocol: "socks",
-                settings: { auth: "password", accounts: [{user: "direct", pass: "test"}, {user: "custom", pass: "test"}], udp: true }
+                settings: { 
+                    auth: "password", 
+                    accounts: (
+                        (if $disable_direct == "true" then [] else [{user: "direct", pass: "test"}] end)
+                        + [{user: "custom", pass: "test"}]
+                    ),
+                    udp: true 
+                }
             },
             {
                 tag: "api-in", listen: "127.0.0.1", port: ($port_api | tonumber), protocol: "dokodemo-door",
                 settings: { address: "127.0.0.1" }
             }
         ],
-        outbounds: ( [{ tag: "direct", protocol: "freedom" }] + $co ),
+        outbounds: ( 
+            [{ tag: "direct", protocol: "freedom" }, { tag: "blocked", protocol: "blackhole" }] 
+            + $co 
+        ),
         routing: {
             domainStrategy: "IPIfNonMatch",
             rules: [
-                { type: "field", user: ["direct"], outboundTag: "direct" },
+                (if $disable_direct == "true" then 
+                    { type: "field", user: ["direct"], outboundTag: "blocked" } 
+                 else 
+                    { type: "field", user: ["direct"], outboundTag: "direct" } 
+                 end),
                 { type: "field", user: ["custom"], outboundTag: "custom-out" }
             ]
         }
@@ -725,19 +750,44 @@ clear_config() {
     fi
 }
 
+toggle_direct_listening() {
+    source "$CONF_FILE"
+    if [ "$DISABLE_DIRECT" == "true" ]; then
+        DISABLE_DIRECT="false"
+    else
+        DISABLE_DIRECT="true"
+    fi
+    if grep -q "DISABLE_DIRECT=" "$CONF_FILE"; then
+        sed -i "s/DISABLE_DIRECT=.*/DISABLE_DIRECT=$DISABLE_DIRECT/" "$CONF_FILE"
+    else
+        echo "DISABLE_DIRECT=$DISABLE_DIRECT" >> "$CONF_FILE"
+    fi
+    generate_config
+    sys_restart
+    echo -e "${GREEN}✅ 已切换直接出站监听状态为: $DISABLE_DIRECT${NC}"
+    sleep 1
+}
+
 maintenance_menu() {
     while true; do
+        source "$CONF_FILE" 2>/dev/null
+        local direct_status="开启"
+        [ "$DISABLE_DIRECT" == "true" ] && direct_status="关闭 (纯中转模式)"
+
         echo -e "\n=== 维护 ==="
         echo "1. 服务操作 (启动/停止/重启...)"
         echo "2. 自动化维护 (定时任务)"
-        echo "3. 清除配置"
+        echo -e "3. 直接出站监听: [${BLUE}${direct_status}${NC}] (切换)"
+        echo ""
+        echo "0. 清除配置"
         echo ""
         echo "q. 返回"
         read -p "选择: " m_choice
         case "$m_choice" in
             1) service_menu ;;
             2) auto_maintenance_menu ;;
-            3) clear_config ;;
+            3) toggle_direct_listening ;;
+            0) clear_config ;;
             q|Q) return ;;
             *) echo "❌" ;;
         esac
