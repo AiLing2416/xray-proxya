@@ -192,6 +192,7 @@ parse_link_to_json() {
     # Shadowsocks
     if [[ "$link" == ss://* ]]; then
         local raw="${link#ss://}"; raw="${raw%%\#*}"
+        raw="${raw%%\?*}"
         local decoded=$(decode_base64 "$raw")
         local method=""; local password=""; local address=""; local port=""
         if [[ "$decoded" == *:*@*:* ]]; then
@@ -212,6 +213,7 @@ parse_link_to_json() {
     # Socks
     if [[ "$link" == socks://* ]]; then
         local raw="${link#socks://}"; raw="${raw%%\#*}"
+        raw="${raw%%\?*}"
         local user=""; local pass=""; local addr_port=""
         if [[ "$raw" == *@* ]]; then
              local auth_b64="${raw%%@*}"; addr_port="${raw#*@}"
@@ -359,6 +361,19 @@ custom_outbound_menu() {
 
 generate_config() {
     source "$CONF_FILE"
+
+    # 自动探测网络栈
+    local has_ipv4=0
+    local has_ipv6=0
+    if ip -4 route show default 2>/dev/null | grep -q "."; then has_ipv4=1; fi
+    if ip -6 route show default 2>/dev/null | grep -q "."; then has_ipv6=1; fi
+    
+    local dns_strategy="UseIP"
+    if [ $has_ipv4 -eq 1 ] && [ $has_ipv6 -eq 0 ]; then
+        dns_strategy="UseIPv4"
+    elif [ $has_ipv4 -eq 0 ] && [ $has_ipv6 -eq 1 ]; then
+        dns_strategy="UseIPv6"
+    fi
     local co_args=("--argjson" "custom_outbound" "[]")
     [ -f "$CUSTOM_OUT_FILE" ] && [ -s "$CUSTOM_OUT_FILE" ] && co_args=("--slurpfile" "custom_outbound" "$CUSTOM_OUT_FILE")
 
@@ -371,12 +386,17 @@ generate_config() {
         --arg uuid "$UUID" --arg uuid_custom "$UUID_CUSTOM" \
         --arg buffer_size "${BUFFER_SIZE:-16}" --arg conn_idle "${CONN_IDLE:-1800}" \
         --arg auto_config "${AUTO_CONFIG:-false}" \
+        --arg dns_strategy "$dns_strategy" \
     '
     ($custom_outbound | flatten(1)) as $co |
     ($buffer_size | tonumber * 1024) as $buf_bytes |
     ($conn_idle | tonumber) as $idle |
     {
         log: { loglevel: "warning" },
+        dns: {
+            servers: ["8.8.8.8", "1.1.1.1", "2001:4860:4860::8888", "2606:4700:4700::1111"],
+            queryStrategy: $dns_strategy
+        },
         policy: (if $auto_config == "true" then {} else {
             levels: {
                 "0": { handshake: 4, connIdle: $idle, uplinkOnly: 2, downlinkOnly: 4, bufferSize: ($buf_bytes / 1024) }
@@ -419,6 +439,7 @@ generate_config() {
         ],
         outbounds: ( [{ tag: "direct", protocol: "freedom" }] + $co ),
         routing: {
+            domainStrategy: "IPIfNonMatch",
             rules: [
                 { type: "field", user: ["direct"], outboundTag: "direct" },
                 { type: "field", user: ["custom"], outboundTag: "custom-out" }
@@ -537,6 +558,17 @@ BUFFER_SIZE=$BUFFER_SIZE
 CONN_IDLE=$CONN_IDLE
 EOF
     generate_config; create_service
+    
+    echo -e "${BLUE}📦 下载并部署维护脚本...${NC}"
+    local maintenance_url="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/maintain.sh"
+    local maintenance_dst="/usr/local/bin/xray-proxya-maintenance"
+    if curl -sSL -o "$maintenance_dst" "$maintenance_url"; then
+        chmod +x "$maintenance_dst"
+        echo -e "${GREEN}✅ 维护脚本已就绪${NC}"
+    else
+        echo -e "${YELLOW}⚠️  维护脚本下载失败，定时维护功能将受限${NC}"
+    fi
+
     echo -e "${GREEN}✅ 安装完成${NC}"; show_links_menu
 }
 
@@ -606,13 +638,104 @@ change_ports() {
     echo -e "${GREEN}✅ 已更新并重启${NC}"
 }
 
-maintenance_menu() {
+service_menu() {
     while true; do
-        echo -e "\n=== 维护 ===\n1. 启动\n2. 停止\n3. 重启\n4. 开机自启\n5. 取消自启\nq. 返回"
-        read -p "选择: " m_choice
-        case "$m_choice" in
+        echo -e "\n=== 服务操作 ==="
+        check_status
+        echo "1. 启动"
+        echo "2. 停止"
+        echo "3. 重启"
+        echo "4. 开机自启"
+        echo "5. 取消自启"
+        echo ""
+        echo "q. 返回上级"
+        read -p "选择: " s_choice
+        case "$s_choice" in
             1) sys_start ;; 2) sys_stop ;; 3) sys_restart ;; 4) sys_enable ;; 5) sys_disable ;;
             q|Q) return ;; *) echo "❌" ;;
+        esac
+    done
+}
+
+auto_maintenance_menu() {
+    local maintenance_script="/usr/local/bin/xray-proxya-maintenance"
+    while true; do
+        local timezone=$(timedatectl 2>/dev/null | grep "Time zone" | awk '{print $3}' || cat /etc/timezone 2>/dev/null || echo "Unknown")
+        local current_time=$(date '+%Y-%m-%d %H:%M:%S')
+        echo -e "\n=== 自动化维护 ==="
+        echo -e "| 时区: ${BLUE}${timezone}${NC} | 时间: ${BLUE}${current_time}${NC} |"
+        echo ""
+        echo "1. 添加 Crontab 示例"
+        echo "2. 查看当前定时任务"
+        echo "3. 移除所有定时任务"
+        echo "4. 编辑 Crontab"
+        echo ""
+        echo "q. 返回上级"
+        read -p "选择: " am_choice
+        case "$am_choice" in
+            1)
+                echo -e "\n${YELLOW}正在添加 Crontab 示例...${NC}"
+                if crontab -l 2>/dev/null | grep -q "Xray-Proxya 自动化维护示例"; then
+                    echo -e "${YELLOW}⚠️  已存在示例，是否覆盖？(y/N)${NC}"
+                    read -p "选择: " overwrite
+                    if [[ "$overwrite" != "y" && "$overwrite" != "Y" ]]; then continue; fi
+                    crontab -l 2>/dev/null | sed '/# ======================================/,/# ======================================/d' | sed '/xray-proxya-auto-/d' | crontab -
+                fi
+                (crontab -l 2>/dev/null; cat <<'CRON_EXAMPLE'
+# ======================================
+# Xray-Proxya 自动化维护示例
+# ======================================
+# 定时重启服务 (示例: 每天凌晨 4 点)
+# 0 4 * * * /usr/local/bin/xray-proxya-maintenance restart # xray-proxya-auto-restart
+#
+# 定时清理日志 (示例: 每周日凌晨 3 点)
+# 0 3 * * 0 /usr/local/bin/xray-proxya-maintenance clean-logs # xray-proxya-auto-clean
+#
+# 定时更新内核 (示例: 每周一凌晨 2 点)
+# 0 2 * * 1 /usr/local/bin/xray-proxya-maintenance update-core # xray-proxya-auto-update
+# ======================================
+CRON_EXAMPLE
+) | crontab -
+                echo -e "${GREEN}✅ 已添加示例${NC}"
+                ;;
+            2)
+                echo -e "\n${BLUE}=== 当前 Crontab 任务 ===${NC}"
+                crontab -l 2>/dev/null | grep -E "(xray-proxya-auto-|Xray-Proxya 自动化维护)" || echo "无相关任务"
+                ;;
+            3)
+                echo -e "\n${YELLOW}确认移除所有 Xray-Proxya 相关任务？(y/N)${NC}"
+                read -p "确认: " cf; [[ "$cf" == "y" || "$cf" == "Y" ]] && { crontab -l 2>/dev/null | sed '/# ======================================/,/# ======================================/d' | grep -v "xray-proxya-auto-" | crontab -; echo -e "${GREEN}✅ 已移除${NC}"; }
+                ;;
+            4) crontab -e ;;
+            q|Q) return ;; *) echo "❌" ;;
+        esac
+    done
+}
+
+clear_config() {
+    echo -e "${YELLOW}⚠️  警告: 将停止服务并删除所有配置。${NC}"
+    read -p "确认清除? (y/N): " confirm
+    if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+        sys_stop 2>/dev/null; rm -rf "$CONF_DIR"
+        echo -e "${GREEN}✅ 配置已清除${NC}"
+    fi
+}
+
+maintenance_menu() {
+    while true; do
+        echo -e "\n=== 维护 ==="
+        echo "1. 服务操作 (启动/停止/重启...)"
+        echo "2. 自动化维护 (定时任务)"
+        echo "3. 清除配置"
+        echo ""
+        echo "q. 返回"
+        read -p "选择: " m_choice
+        case "$m_choice" in
+            1) service_menu ;;
+            2) auto_maintenance_menu ;;
+            3) clear_config ;;
+            q|Q) return ;;
+            *) echo "❌" ;;
         esac
     done
 }
