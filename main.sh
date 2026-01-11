@@ -828,6 +828,10 @@ test_custom_outbound() {
 }
 
 custom_outbound_menu() {
+    if [ ! -f "$CONF_FILE" ]; then
+        echo -e "${RED}❌ 错误: 请先执行 '1. 安装 / 重置' 以生成基本配置。${NC}"
+        sleep 2; return
+    fi
     migrate_custom_config
     
     while true; do
@@ -1077,6 +1081,7 @@ generate_config() {
         --arg conn_idle "${CONN_IDLE:-1800}" \
         --arg auto_config "${AUTO_CONFIG:-false}" \
         --arg dns_strategy "$dns_strategy" \
+        --arg disable_direct "${DISABLE_DIRECT:-false}" \
     '
     ($custom_list | flatten(1)) as $cl |
     ($buffer_size | tonumber * 1024) as $buf_bytes |
@@ -1128,9 +1133,10 @@ generate_config() {
                 port: ($port_vmess | tonumber),
                 protocol: "vmess",
                 settings: {
-                    clients: ([
-                        { id: $uuid, email: "direct", level: 0 }
-                    ] + $custom_clients)
+                    clients: (
+                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct", level: 0 }] end)
+                        + $custom_clients
+                    )
                 },
                 streamSettings: {
                     network: "ws",
@@ -1142,9 +1148,10 @@ generate_config() {
                 port: ($port_vless | tonumber),
                 protocol: "vless",
                 settings: {
-                     clients: ([
-                        { id: $uuid, email: "direct", level: 0 }
-                    ] + $custom_clients),
+                     clients: (
+                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct", level: 0 }] end)
+                        + $custom_clients
+                    ),
                     decryption: $dec_key
                 },
                 streamSettings: {
@@ -1157,9 +1164,10 @@ generate_config() {
                 port: ($port_reality | tonumber),
                 protocol: "vless",
                 settings: {
-                     clients: ([
-                        { id: $uuid, email: "direct", level: 0 }
-                    ] + $custom_clients),
+                     clients: (
+                        (if $disable_direct == "true" then [] else [{ id: $uuid, email: "direct", level: 0 }] end)
+                        + $custom_clients
+                    ),
                     decryption: "none"
                 },
                 streamSettings: {
@@ -1193,7 +1201,10 @@ generate_config() {
                 protocol: "socks",
                 settings: { 
                     auth: "password", 
-                    accounts: ([{user: "direct", pass: "test"}] + ($custom_clients | map({user: .email, pass: "test"}))),
+                    accounts: (
+                        (if $disable_direct == "true" then [] else [{user: "direct", pass: "test"}] end)
+                        + ($custom_clients | map({user: .email, pass: "test"}))
+                    ),
                     udp: true 
                 }
             },
@@ -1212,10 +1223,14 @@ generate_config() {
         routing: {
             domainStrategy: "IPIfNonMatch",
             rules: ([
-                { type: "field", user: ["direct"], outboundTag: "direct" },
-                { type: "field", inboundTag: ["api-in"], outboundTag: "api" }
+                { type: "field", inboundTag: ["api-in"], outboundTag: "api" },
+                (if $disable_direct == "true" then 
+                    { type: "field", user: ["direct"], outboundTag: "blocked" } 
+                 else 
+                    { type: "field", user: ["direct"], outboundTag: "direct" } 
+                 end)
             ] + $custom_rules + [
-                { type: "field", inboundTag: ["test-in-socks"], outboundTag: "direct" }
+                { type: "field", inboundTag: ["test-in-socks"], outboundTag: (if $disable_direct == "true" then "blocked" else "direct" end) }
             ])
         }
     }' > "$JSON_FILE"
@@ -1623,19 +1638,44 @@ CRON_EXAMPLE
     done
 }
 
+toggle_direct_listening() {
+    source "$CONF_FILE"
+    if [ "$DISABLE_DIRECT" == "true" ]; then
+        DISABLE_DIRECT="false"
+    else
+        DISABLE_DIRECT="true"
+    fi
+    if grep -q "DISABLE_DIRECT=" "$CONF_FILE"; then
+        sed -i "s/DISABLE_DIRECT=.*/DISABLE_DIRECT=$DISABLE_DIRECT/" "$CONF_FILE"
+    else
+        echo "DISABLE_DIRECT=$DISABLE_DIRECT" >> "$CONF_FILE"
+    fi
+    generate_config
+    sys_restart
+    echo -e "${GREEN}✅ 已切换直接出站监听状态为: $DISABLE_DIRECT${NC}"
+    sleep 1
+}
+
 maintenance_menu() {
     while true; do
+        source "$CONF_FILE" 2>/dev/null
+        local direct_status="开启"
+        [ "$DISABLE_DIRECT" == "true" ] && direct_status="关闭 (纯中转模式)"
+
         echo -e "\n=== 维护 ==="
         echo "1. 服务操作 (启动/停止/重启...)"
         echo "2. 自动化维护 (定时任务)"
-        echo "3. 清除配置"
+        echo -e "3. 直接出站监听: [${BLUE}${direct_status}${NC}] (切换)"
+        echo ""
+        echo "0. 清除配置"
         echo ""
         echo "q. 返回"
         read -p "选择: " m_choice
         case "$m_choice" in
             1) service_menu ;;
             2) auto_maintenance_menu ;;
-            3) clear_config ;;
+            3) toggle_direct_listening ;;
+            0) clear_config ;;
             q|Q) return ;;
             *) echo "❌" ;;
         esac
