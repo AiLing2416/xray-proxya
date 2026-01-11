@@ -746,8 +746,8 @@ parse_wg_conf() {
 }
 
 migrate_custom_config() {
-    if [ ! -f "$CUSTOM_OUT_FILE" ]; then return; fi
-    if [ ! -s "$CUSTOM_OUT_FILE" ] || [ "$(cat "$CUSTOM_OUT_FILE")" == "[]" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; return; fi
+    [ ! -f "$CUSTOM_OUT_FILE" ] && return
+    if [ ! -s "$CUSTOM_OUT_FILE" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; return; fi
     
     local first_char=$(jq -r 'type' "$CUSTOM_OUT_FILE" 2>/dev/null)
     if [ "$first_char" != "array" ]; then
@@ -831,7 +831,7 @@ custom_outbound_menu() {
     migrate_custom_config
     
     while true; do
-        if [ ! -f "$CUSTOM_OUT_FILE" ]; then echo "[]" > "$CUSTOM_OUT_FILE"; fi
+        if [ ! -s "$CUSTOM_OUT_FILE" ] || ! grep -q "[^[:space:]]" "$CUSTOM_OUT_FILE" 2>/dev/null; then echo "[]" > "$CUSTOM_OUT_FILE"; fi
         
         echo -e "\n=== 自定义出站管理 ==="
         echo -e "${YELLOW}支持最多 9 个出站配置${NC}"
@@ -928,12 +928,16 @@ add_new_custom_outbound() {
     local tag_name="custom-out-$alias"
     
     local tmp=$(mktemp)
-    jq --arg alias "$alias" --arg uuid "$new_uuid" --arg tag "$tag_name" --argjson newconf "$parsed_json" \
+    if jq --arg alias "$alias" --arg uuid "$new_uuid" --arg tag "$tag_name" --argjson newconf "$parsed_json" \
        '. + [{ alias: $alias, uuid: $uuid, config: ($newconf | .tag=$tag) }]' \
-       "$CUSTOM_OUT_FILE" > "$tmp" && mv "$tmp" "$CUSTOM_OUT_FILE"
-       
-    echo -e "${GREEN}✅ 添加成功${NC}"
-    apply_config_changes
+       "$CUSTOM_OUT_FILE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+        mv "$tmp" "$CUSTOM_OUT_FILE"
+        echo -e "${GREEN}✅ 添加成功${NC}"
+        apply_config_changes
+    else
+        rm -f "$tmp"
+        echo -e "${RED}❌ 保存配置失败，请检查链接格式${NC}"
+    fi
 }
 
 manage_single_outbound() {
