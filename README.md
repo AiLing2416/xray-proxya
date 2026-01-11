@@ -1,26 +1,31 @@
-# xray-proxya
+# Xray-Proxya
 
-### 使用最新的 xray-core 部署令人放心的 ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768```
-附带 ShadowSocks-AES256-GCM 和 VLess-XHTTP-Reality-TLS1.3 (抗量子)
+基于 Xray-core 的自动化代理部署与管理脚本，专注于抗量子安全与受限环境兼容性。
 
+### 核心特性
+- **先进协议支持**：默认部署 VLESS-XHTTP-KEM768 (抗量子) 、Reality-TLS 及 VMess-WS。
+- **转发管理**：支持从 URL 导入自定义出站 (SS, Socks5, VMess, VLESS, WireGuard)。
+- **自动化维护**：完善的定时任务接口，支持自动重启、清理日志及核心更新。
+- **性能调优**：内置 `GOMEMLIMIT` 与缓冲区管理，默认使用 Xray 自动管理。
+- **跨平台支持**：支持 Debian/Ubuntu 及 Alpine Linux (OpenRC)。
 
-### 立即安装 已支持: Debian/Ubuntu Alpine
-```
+### 快速安装
+
+**标准版** (功能完整)：
+```bash
 bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh)
 ```
 
-### 推荐用法
-使用 ```root``` 用户安装，使用普通用户通过 ```sudo xray-proxya``` 配置。
-
-使用 ```VLess-XHTTP-Reality-TLS1.3``` 时，伪装性能良好，无需接入 CDN 。
-
-
-使用 ```VMess-ChaCha20-Poly1305``` 与 ```VLESS-XHTTP-ML-KEM-768``` 时，推荐接入 CDN 网络以降低潜在的封锁风险。
-
-UDP: ```VMess-ChaCha20-Poly1305``` ```VLESS-XHTTP-ML-KEM-768``` ```VLess-XHTTP-Reality-TLS1.3``` 均支持 UDP Over TCP ， ```VMess-ChaCha20-Poly1305``` 与 ```VLess-XHTTP-Reality-TLS1.3``` 相比 ```VLESS-XHTTP-ML-KEM-768``` 延迟更低。
-
-### 测试版 不推荐
+**轻量版** (低内存适配)：
+```bash
+bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/lite_install.sh)
 ```
-bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/test-install.sh)
-```
-### 一切由使用本项目测试版脚本造成的问题项目所有者与任何参与者概不负责。
+
+### 使用指南
+- 安装完成后使用 `xray-proxya` 调用管理菜单。
+- 推荐使用 `VLESS-XHTTP-KEM768` 实现抗量子安全。
+- 若不使用卸载功能就切换版本，可能导致意料之外的后果。
+
+### 协议说明
+- **UDP**: 所有 XHTTP 协议均支持 UDP over TCP。
+- **安全**: 建议在受限环境下结合 CDN 使用 VMess/VLESS-KEM，或直连使用 Reality。
