@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==================================================
-# Xray-Proxya Manager [STABLE]
+# Xray-Proxya Manager [LIB]
 # Supports: Debian/Ubuntu & Alpine (OpenRC)
 # ==================================================
 
@@ -625,3 +625,4 @@ print_link_group() {
     echo -e "1️⃣  VMess (${VMESS_CIPHER}):\n    ${GREEN}$vm_l${NC}"
     echo -e "2️⃣  VLESS (ML-KEM768):\n    ${GREEN}$vl_l${NC}"
     echo -e "3️⃣  VLESS (Reality-TLS):\n    ${GREEN}$rea_l${NC}"
+}
