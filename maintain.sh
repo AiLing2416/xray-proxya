@@ -11,7 +11,7 @@ set -e
 CONF_DIR="/etc/xray-proxya"
 CONF_FILE="$CONF_DIR/config.env"
 SCRIPT_DIR="/opt/xray-proxya"
-MAIN_LIB="$SCRIPT_DIR/main_lib.sh"
+MAIN_LIB="$SCRIPT_DIR/lib.sh"
 
 # 检测系统类型
 IS_OPENRC=0
@@ -77,7 +77,7 @@ update_core() {
     
     # 检查 main_lib.sh 是否存在
     if [ ! -f "$MAIN_LIB" ]; then
-        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ 找不到 main_lib.sh: $MAIN_LIB" >&2
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ 找不到 lib.sh: $MAIN_LIB" >&2
         exit 1
     fi
     
