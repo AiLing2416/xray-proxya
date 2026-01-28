@@ -13,20 +13,6 @@ DEFAULT_PORT_SS=8083
 DEFAULT_GEN_LEN=16
 SERVICE_AUTO_RESTART="true"
 
-# 为 true 时覆盖下方所有性能参数, 由 Xray 核心自行管理资源
-AUTO_CONFIG="true"
-
-# 内存与资源管理 (防止 OOM)
-# HIGH_PERFORMANCE_MODE: true 为高性能(高并发)模式, false 为低功耗(小内存)模式
-HIGH_PERFORMANCE_MODE="false"
-# MEM_LIMIT: Go 运行时强制回收内存的目标 (建议设为总 RAM 的 60-80%)
-MEM_LIMIT="320MiB"
-# BUFFER_SIZE: 每条连接的缓冲区大小 (KB), 越小越省内存, 但极限速度会下降
-# 算法: 最大连接数 ≈ (MEM_LIMIT - 50MB) / (BUFFER_SIZE * 2)
-BUFFER_SIZE=16
-# CONN_IDLE: 空闲连接超时自动断开 (秒), 建议 1800 (30分钟) 以保持长连接稳定
-CONN_IDLE=1800
-
 # 日志配置
 DEFAULT_ENABLE_LOG=true
 DEFAULT_LOG_DIR="/var/log/xray-proxya"
@@ -83,10 +69,15 @@ get_runtime_formatted() {
         local clk_tck=$(getconf CLK_TCK 2>/dev/null || echo 100)
         runtime_str=$(awk -v up="$uptime" -v st="$start_ticks" -v clk="$clk_tck" 'BEGIN {
             run_sec = int(up - (st / clk));
+            if (run_sec < 0) run_sec = 0;
             d = int(run_sec / 86400);
             h = int((run_sec % 86400) / 3600);
             m = int((run_sec % 3600) / 60);
-            printf "%dd/%dh/%dm", d, h, m
+            s = int(run_sec % 60);
+            if (d > 0) printf "%dd/%dh/%dm", d, h, m;
+            else if (h > 0) printf "%dh/%dm", h, m;
+            else if (m > 0) printf "%dm/%ds", m, s;
+            else printf "%ds", s;
         }')
     fi
 
@@ -289,10 +280,16 @@ sys_reload_daemon() {
 check_status() {
     local pid=""
     
-    if [ -f "/var/run/xray-proxya.pid" ]; then
-        pid=$(cat /var/run/xray-proxya.pid)
-    elif command -v pgrep >/dev/null; then
-        pid=$(pgrep -f "xray-proxya-core/xray")
+    # Try to get PID from pidfile first (OpenRC uses this)
+    if [ -f "/run/xray-proxya.pid" ]; then
+        pid=$(cat /run/xray-proxya.pid 2>/dev/null)
+    fi
+    
+    # Fallback to pgrep if no PID from pidfile (systemd doesn't use pidfile)
+    if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+        if command -v pgrep >/dev/null; then
+            pid=$(pgrep -f "xray-proxya-core/xray" | head -n1)
+        fi
     fi
     
     local is_running=0
@@ -583,8 +580,12 @@ parse_link_to_json() {
         
         local priv_key=$(url_decode "$priv_enc")
         local pub_key=$(url_decode "$pub_enc")
-        local local_addr=$(url_decode "$addr_enc")
+        local local_addr_raw=$(url_decode "$addr_enc")
+        local local_addr="${local_addr_raw%%/*}"  # Strip CIDR
         local reserved=$(url_decode "$res_enc")
+        
+        local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p')
+        [ -z "$mtu" ] && mtu=1280
 
         if [ -z "$pub_key" ] || [ -z "$priv_key" ] || [ -z "$end_addr" ]; then return 1; fi
 
@@ -602,7 +603,7 @@ parse_link_to_json() {
                 settings: {
                     secretKey: $priv,
                     address: ($local | split(",")),
-                    reserved: (if $res != "" then ($res | split(",") | map(tonumber)) else null end),
+                    reserved: (if $res != null then ($res | split(",") | map(tonumber)) else null end),
                     peers: [{
                         publicKey: $pub,
                         endpoint: ($addr + ":" + $port),
@@ -708,11 +709,22 @@ parse_wg_conf() {
     
     local reserved_line=$(echo "$conf_content" | grep -i "^Reserved" | cut -d'=' -f2- | tr -d ' \r\t')
     
+    local mtu=$(echo "$conf_content" | grep -i "^MTU" | cut -d'=' -f2- | tr -d ' \r\t')
+    [ -z "$mtu" ] && mtu=1280
+
     if [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$endpoint" ]; then
         return 1
     fi
     
-    local addr_json=$(echo "$address_line" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "\"%s\"%s", $i, (i==NF?"":","); printf "]"}')
+    # Strip CIDR from addresses
+    local addr_cleaned=$(echo "$address_line" | awk -F, '{
+        for(i=1;i<=NF;i++) {
+            split($i, a, "/"); 
+            printf "%s%s", a[1], (i==NF?"":",") 
+        }
+    }')
+    
+    local addr_json=$(echo "$addr_cleaned" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "\"%s\"%s", $i, (i==NF?"":","); printf "]"}')
     local res_json="null"
     if [ -n "$reserved_line" ]; then
         res_json=$(echo "$reserved_line" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "%s%s", $i, (i==NF?"":","); printf "]"}')
@@ -729,18 +741,40 @@ parse_wg_conf() {
         --argjson addr "$addr_json" \
         --argjson res "$res_json" \
         --arg psk "$preshared_key" \
+        --arg mtu "$mtu" \
     '{
         tag: "custom-out",
         protocol: "wireguard",
         settings: {
             secretKey: $pk,
             address: $addr,
-            reserved: $res,
+            reserved: (if $res != null then ($res | split(",") | map(tonumber)) else null end),
             peers: [{
                 publicKey: $pub,
                 endpoint: ($host + ":" + $port),
                 preSharedKey: (if $psk != "" then $psk else null end)
-            }]
+            }],
+            mtu: ($mtu | tonumber)
+        }
+    } | del(..|nulls)'
+}
+
+parse_interface_bind() {
+    local iface="$1"
+    local bind_addr="$2"
+    if [ -z "$iface" ]; then return 1; fi
+    
+    jq -n -c --arg iface "$iface" --arg addr "$bind_addr" \
+    '{
+        tag: "custom-out",
+        protocol: "freedom",
+        sendThrough: (if $addr != "" then $addr else null end),
+        settings: {},
+        streamSettings: {
+            sockopt: {
+                interface: $iface,
+                mark: 255
+            }
         }
     } | del(..|nulls)'
 }
@@ -890,6 +924,7 @@ add_new_custom_outbound() {
     echo "1. 粘贴分享链接 (VMess/VLESS/SS/SOCKS/WG-URI)"
     echo "2. HTTP 代理账号导入 (格式: Username:Password@Host:Port)"
     echo "3. WireGuard 配置文件导入 (多行文本)"
+    echo "4. 绑定本地网络接口 (Interface Bind)"
     echo "q. 返回"
     read -p "选择: " method
     
@@ -919,6 +954,16 @@ add_new_custom_outbound() {
             parsed_json=$(parse_wg_conf "$wg_content")
             ret_code=$?
             ;;
+        4)
+            echo -e "${YELLOW}请输入要绑定的本地接口名称 (例如: wg0, tun1, eth1):${NC}"
+            read -p "接口名: " iface_name
+            [ -z "$iface_name" ] && return
+            echo -e "${YELLOW}请输入要绑定的本地 IP (可选, 留空则系统自动选择):${NC}"
+            echo -e "提示: WireGuard 场景建议填入在该网卡上的本地 IP (如: 10.5.0.2)"
+            read -p "绑定 IP: " local_ip
+            parsed_json=$(parse_interface_bind "$iface_name" "$local_ip")
+            ret_code=$?
+            ;;
         q|Q) return ;;
         *) echo -e "${RED}无效选择${NC}"; return ;;
     esac
@@ -932,14 +977,24 @@ add_new_custom_outbound() {
     local tag_name="custom-out-$alias"
     
     local tmp=$(mktemp)
+    cp "$CUSTOM_OUT_FILE" "${CUSTOM_OUT_FILE}.bak"
+    
     if jq --arg alias "$alias" --arg uuid "$new_uuid" --arg tag "$tag_name" --argjson newconf "$parsed_json" \
        '. + [{ alias: $alias, uuid: $uuid, config: ($newconf | .tag=$tag) }]' \
        "$CUSTOM_OUT_FILE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
         mv "$tmp" "$CUSTOM_OUT_FILE"
-        echo -e "${GREEN}✅ 添加成功${NC}"
-        apply_config_changes
+        
+        if apply_config_changes; then
+            echo -e "${GREEN}✅ 添加成功${NC}"
+            rm -f "${CUSTOM_OUT_FILE}.bak"
+        else
+            echo -e "${RED}❌ 配置生效失败，正在回滚...${NC}"
+            mv "${CUSTOM_OUT_FILE}.bak" "$CUSTOM_OUT_FILE"
+            apply_config_changes
+        fi
     else
         rm -f "$tmp"
+        rm -f "${CUSTOM_OUT_FILE}.bak"
         echo -e "${RED}❌ 保存配置失败，请检查链接格式${NC}"
     fi
 }
@@ -965,10 +1020,21 @@ manage_single_outbound() {
                 read -p "确定删除 $alias ? (y/N): " confirm
                 if [[ "$confirm" == "y" ]]; then
                     local tmp=$(mktemp)
-                    jq "del(.[$idx])" "$CUSTOM_OUT_FILE" > "$tmp" && mv "$tmp" "$CUSTOM_OUT_FILE"
-                    echo -e "${GREEN}✅ 已删除${NC}"
-                    apply_config_changes
-                    return
+                    cp "$CUSTOM_OUT_FILE" "${CUSTOM_OUT_FILE}.bak"
+                    if jq "del(.[$idx])" "$CUSTOM_OUT_FILE" > "$tmp" && mv "$tmp" "$CUSTOM_OUT_FILE"; then
+                        if apply_config_changes; then
+                            echo -e "${GREEN}✅ 已删除${NC}"
+                            rm -f "${CUSTOM_OUT_FILE}.bak"
+                            return
+                        else
+                            echo -e "${RED}❌ 配置生效失败，正在回滚...${NC}"
+                            mv "${CUSTOM_OUT_FILE}.bak" "$CUSTOM_OUT_FILE"
+                            apply_config_changes
+                        fi
+                    else
+                        rm -f "${CUSTOM_OUT_FILE}.bak"
+                        echo -e "${RED}❌ 删除失败${NC}"
+                    fi
                 fi
                 ;;
             q|Q) return ;;
@@ -978,9 +1044,14 @@ manage_single_outbound() {
 }
 
 apply_config_changes() {
-    generate_config
-    sys_restart
-    echo -e "${GREEN}配置已更新并重启服务${NC}"
+    if generate_config; then
+        sys_restart
+        echo -e "${GREEN}配置已更新并重启服务${NC}"
+        return 0
+    else
+        echo -e "${RED}❌ 配置文件生成失败 (jq error)${NC}"
+        return 1
+    fi
 }
 
 print_custom_link() {
@@ -1077,15 +1148,10 @@ generate_config() {
         --arg uuid "$UUID" \
         --arg port_test "$PORT_TEST" \
         --arg port_api "$PORT_API" \
-        --arg buffer_size "${BUFFER_SIZE:-16}" \
-        --arg conn_idle "${CONN_IDLE:-1800}" \
-        --arg auto_config "${AUTO_CONFIG:-false}" \
         --arg dns_strategy "$dns_strategy" \
         --arg direct_outbound "${DIRECT_OUTBOUND:-true}" \
     '
     ($custom_list | flatten(1)) as $cl |
-    ($buffer_size | tonumber * 1024) as $buf_bytes |
-    ($conn_idle | tonumber) as $idle |
     
     # Generate clients list for inbounds
     # Structure: { id: uuid, email: "custom-"+alias, level: 0 }
@@ -1106,131 +1172,134 @@ generate_config() {
      else [] end) as $custom_rules |
 
     {
-        log: (if $enable_log == "true" then { loglevel: $log_level, access: $log_path, error: $log_path } else { loglevel: "none" } end),
-        dns: {
-            servers: ["8.8.8.8", "1.1.1.1", "8.8.4.4", "2001:4860:4860::8888", "2606:4700:4700::1111"],
-            queryStrategy: $dns_strategy
+        "log": {
+            "access": $log_path,
+            "error": $log_path,
+            "loglevel": $log_level
         },
-        api: {
-            tag: "api",
-            services: [ "StatsService" ]
+        "api": {
+            "tag": "api",
+            "services": ["HandlerService", "LoggerService", "StatsService"]
         },
-        stats: {},
-        policy: (if $auto_config == "true" then {} else {
-            levels: {
-                "0": { handshake: 4, connIdle: $idle, uplinkOnly: 2, downlinkOnly: 4, bufferSize: ($buf_bytes / 1024), statsUserUplink: true, statsUserDownlink: true }
+        "stats": {},
+        "policy": {
+            "levels": {
+                "0": {
+                    "statsUserUplink": true,
+                    "statsUserDownlink": true
+                }
             },
-            system: {
-                statsInboundUplink: true,
-                statsInboundDownlink: true,
-                statsOutboundUplink: true,
-                statsOutboundDownlink: true
+            "system": {
+                "statsInboundUplink": true,
+                "statsInboundDownlink": true,
+                "statsOutboundUplink": true,
+                "statsOutboundDownlink": true
             }
-        } end),
-        inbounds: [
+        },
+        "inbounds": [
             {
-                tag: "vmess-in",
-                port: ($port_vmess | tonumber),
-                protocol: "vmess",
-                settings: {
-                    clients: (
-                        (if $direct_outbound == "true" then [{ id: $uuid, email: "direct", level: 0 }] else [] end)
-                        + $custom_clients
-                    )
-                },
-                streamSettings: {
-                    network: "ws",
-                    wsSettings: { path: $path_vm }
-                }
+                "tag": "vmess-in",
+            "port": ($port_vmess | tonumber),
+            "protocol": "vmess",
+            "settings": {
+                "clients": (
+                    (if $direct_outbound == "true" then [{ "id": $uuid, "email": "direct", "level": 0 }] else [] end)
+                    + $custom_clients
+                )
             },
-            {
-                tag: "vless-enc-in",
-                port: ($port_vless | tonumber),
-                protocol: "vless",
-                settings: {
-                     clients: (
-                        (if $direct_outbound == "true" then [{ id: $uuid, email: "direct", level: 0 }] else [] end)
-                        + $custom_clients
-                    ),
-                    decryption: $dec_key
-                },
-                streamSettings: {
-                    network: "xhttp",
-                    xhttpSettings: { path: $path_vl }
-                }
-            },
-            {
-                tag: "vless-reality-in",
-                port: ($port_reality | tonumber),
-                protocol: "vless",
-                settings: {
-                     clients: (
-                        (if $direct_outbound == "true" then [{ id: $uuid, email: "direct", level: 0 }] else [] end)
-                        + $custom_clients
-                    ),
-                    decryption: "none"
-                },
-                streamSettings: {
-                    network: "xhttp",
-                    security: "reality",
-                    realitySettings: {
-                        show: false,
-                        dest: $reality_dest,
-                        xver: 0,
-                        serverNames: [$reality_sni],
-                        privateKey: $reality_pk,
-                        shortIds: [$reality_sid]
-                    },
-                    xhttpSettings: { path: $path_reality }
-                }
-            },
-            {
-                tag: "shadowsocks-in",
-                port: ($port_ss | tonumber),
-                protocol: "shadowsocks",
-                settings: {
-                    method: $ss_cipher,
-                    password: $pass_ss,
-                    network: "tcp,udp"
-                }
-            },
-            {
-                tag: "test-in-socks",
-                listen: "127.0.0.1",
-                port: ($port_test | tonumber),
-                protocol: "socks",
-                settings: { 
-                    auth: "password", 
-                    accounts: (
-                        (if $direct_outbound == "true" then [{user: "direct", pass: "test"}] else [] end)
-                        + ($custom_clients | map({user: .email, pass: "test"}))
-                    ),
-                    udp: true 
-                }
-            },
-            {
-               tag: "api-in",
-               listen: "127.0.0.1",
-               port: ($port_api | tonumber),
-               protocol: "dokodemo-door",
-               settings: { address: "127.0.0.1" }
+            "streamSettings": {
+                "network": "ws",
+                "wsSettings": { "path": $path_vm }
             }
+        },
+        {
+            "tag": "vless-enc-in",
+            "port": ($port_vless | tonumber),
+            "protocol": "vless",
+            "settings": {
+                 "clients": (
+                    (if $direct_outbound == "true" then [{ "id": $uuid, "email": "direct", "level": 0 }] else [] end)
+                    + $custom_clients
+                ),
+                "decryption": $dec_key
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "xhttpSettings": { "path": $path_vl }
+            }
+        },
+        {
+            "tag": "vless-reality-in",
+            "port": ($port_reality | tonumber),
+            "protocol": "vless",
+            "settings": {
+                 "clients": (
+                    (if $direct_outbound == "true" then [{ "id": $uuid, "email": "direct", "level": 0 }] else [] end)
+                    + $custom_clients
+                ),
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": $reality_dest,
+                    "xver": 0,
+                    "serverNames": [$reality_sni],
+                    "privateKey": $reality_pk,
+                    "shortIds": [$reality_sid]
+                },
+                "xhttpSettings": { "path": $path_reality }
+            }
+        },
+        {
+            "tag": "shadowsocks-in",
+            "port": ($port_ss | tonumber),
+            "protocol": "shadowsocks",
+            "settings": {
+                "method": $ss_cipher,
+                "password": $pass_ss,
+                "network": "tcp,udp"
+            }
+        },
+        {
+            "tag": "test-in-socks",
+            "listen": "127.0.0.1",
+            "port": ($port_test | tonumber),
+            "protocol": "socks",
+            "settings": { 
+                "auth": "password", 
+                "accounts": (
+                    (if $direct_outbound == "true" then [{ "user": "direct", "pass": "test" }] else [] end)
+                    + ($custom_clients | map({ "user": .email, "pass": "test" }))
+                ),
+                "udp": true 
+            }
+        },
+        {
+           "tag": "api-in",
+           "listen": "127.0.0.1",
+           "port": ($port_api | tonumber),
+           "protocol": "dokodemo-door",
+           "settings": { "address": "127.0.0.1" }
+        }
         ],
-        outbounds: ([
-            { tag: "direct", protocol: "freedom" },
-            { tag: "blocked", protocol: "blackhole" }
+        "outbounds": ([
+            { "protocol": "freedom", "tag": "direct", "streamSettings": { "sockopt": { "mark": 255 } } },
+            { "tag": "blocked", "protocol": "blackhole" }
         ] + $custom_outbounds),
-        routing: {
-            domainStrategy: "IPIfNonMatch",
-            rules: ([
-                { type: "field", inboundTag: ["api-in"], outboundTag: "api" },
+        "routing": {
+            "domainStrategy": "IPIfNonMatch",
+            "rules": ([
+                { "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" },
                 (if $direct_outbound == "true" then 
-                    { type: "field", user: ["direct"], outboundTag: "direct" } 
+                    { "type": "field", "user": ["direct"], "outboundTag": "direct" } 
                  else 
-                    { type: "field", user: ["direct"], outboundTag: "blocked" } 
+                    { "type": "field", "user": ["direct"], "outboundTag": "blocked" } 
                  end)
             ] + $custom_rules + [
-                { type: "field", inboundTag: ["test-in-socks"], outboundTag: (if $direct_outbound == "true" then "direct" else "blocked" end) }
+                { "type": "field", "inboundTag": ["test-in-socks"], "outboundTag": (if $direct_outbound == "true" then "direct" else "blocked" end) }
             ])
         }
     }' > "$JSON_FILE"
@@ -1238,9 +1307,6 @@ generate_config() {
 
 create_service() {
     source "$CONF_FILE"
-    local mem_env=""; [ "$AUTO_CONFIG" != "true" ] && [ -n "$MEM_LIMIT" ] && mem_env="GOMEMLIMIT=$MEM_LIMIT"
-    local ulimit_val=1024; [ "$AUTO_CONFIG" == "true" ] && ulimit_val=1024 || { [ "$HIGH_PERFORMANCE_MODE" == "true" ] && ulimit_val=30000 || ulimit_val=2048; }
-
     if [ $IS_OPENRC -eq 1 ]; then
         if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
             cat > "$SERVICE_FILE" <<-EOF
@@ -1250,9 +1316,8 @@ description="Xray-Proxya Service"
 supervisor="supervise-daemon"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
-command_env="$mem_env"
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n $ulimit_val"
+rc_ulimit="-n 2048"
 respawn_delay=5
 respawn_max=0
 depend() { need net; after firewall; }
@@ -1264,10 +1329,9 @@ name="xray-proxya"
 description="Xray-Proxya Service"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
-command_env="$mem_env"
 command_background=true
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n $ulimit_val"
+rc_ulimit="-n 2048"
 depend() { need net; after firewall; }
 EOF
         fi
@@ -1280,13 +1344,12 @@ Description=Xray-Proxya Service
 After=network.target
 [Service]
 User=root
-Environment=$mem_env
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
 $(echo -e "$restart_conf")
-LimitNOFILE=$ulimit_val
+LimitNOFILE=2048
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1410,6 +1473,9 @@ EOF
         echo -e "${YELLOW}   自动化维护功能可能不可用${NC}"
     fi
     
+    # 初始应用防火墙规则 (如果开启)
+    setup_firewall_rules
+    
     echo -e "${GREEN}✅ 安装完成${NC}"
     
     echo -e "\n=== 链接信息 ==="
@@ -1532,7 +1598,7 @@ service_menu() {
         case "$s_choice" in
             1) sys_start && echo "✅" ;;
             2) sys_stop && echo "✅" ;;
-            3) sys_restart && echo "✅" ;;
+            3) generate_config; sys_restart && echo "✅" ;;
             4) sys_enable && echo "✅" ;;
             5) sys_disable && echo "✅" ;;
             q|Q) return ;;
@@ -1704,7 +1770,11 @@ apply_refresh() {
     [ -n "$MEM_LIMIT" ] && sed -i "s/^MEM_LIMIT=.*/MEM_LIMIT=$MEM_LIMIT/" "$CONF_FILE"
     [ -n "$BUFFER_SIZE" ] && sed -i "s/^BUFFER_SIZE=.*/BUFFER_SIZE=$BUFFER_SIZE/" "$CONF_FILE"
     [ -n "$CONN_IDLE" ] && sed -i "s/^CONN_IDLE=.*/CONN_IDLE=$CONN_IDLE/" "$CONF_FILE"
-    source "$CONF_FILE"; generate_config; create_service
+    # 同步新变量
+    [ -n "$TUN_TPROXY_MODE" ] && sed -i "s/^TUN_TPROXY_MODE=.*/TUN_TPROXY_MODE=$TUN_TPROXY_MODE/" "$CONF_FILE"
+    [ -n "$LOCAL_LISTENER_MODE" ] && sed -i "s/^LOCAL_LISTENER_MODE=.*/LOCAL_LISTENER_MODE=$LOCAL_LISTENER_MODE/" "$CONF_FILE"
+    [ -n "$TUN_TPROXY_TARGET" ] && sed -i "s/^TUN_TPROXY_TARGET=.*/TUN_TPROXY_TARGET=$TUN_TPROXY_TARGET/" "$CONF_FILE"
+    source "$CONF_FILE"; generate_config; setup_firewall_rules; create_service
     echo -e "${GREEN}✅ 配置已刷新并重启${NC}"; sleep 1
 }
 
@@ -1729,10 +1799,10 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
         echo "4. 维护菜单"
         echo "5. 自定义出站"
         echo "6. 测试自定义出站"
-        echo "7. 刷新配置"
         echo ""
-        echo "9. 重装内核"
-        echo "0. 卸载"
+        echo "7. 刷新配置"
+        echo "8. 重装内核"
+        echo "9. 卸载"
         echo "q. 退出"
         read -p "选择: " choice
         case "$choice" in
@@ -1743,8 +1813,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             5) custom_outbound_menu ;;
             6) test_custom_outbound ;;
             7) apply_refresh ;;
-            9) reinstall_core ;;
-            0) uninstall_xray ;;
+            8) reinstall_core ;;
+            9) uninstall_xray ;;
             q|Q) exit 0 ;;
             *) echo -e "${RED}无效${NC}" ;;
         esac
