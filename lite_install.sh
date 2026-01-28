@@ -6,19 +6,17 @@
 
 REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/lite.sh"
 REMOTE_MAINTAIN_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/maintain.sh"
-REMOTE_LIB_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/main_lib.sh"
+REMOTE_LIB_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/lib.sh"
 
 INSTALL_DIR="/usr/local/sbin"
-INSTALL_FILENAME="xray-proxya-lite"
+INSTALL_FILENAME="xray-proxya"
 INSTALL_PATH="$INSTALL_DIR/$INSTALL_FILENAME"
 
 MAINTAIN_DIR="/usr/local/bin"
 MAINTAIN_FILENAME="xray-proxya-maintenance"
 MAINTAIN_PATH="$MAINTAIN_DIR/$MAINTAIN_FILENAME"
 
-# 库文件目录 (maintain.sh 会在这里寻找 main_lib.sh)
-LIB_DIR="/opt/xray-proxya"
-LIB_PATH="$LIB_DIR/main_lib.sh"
+LIB_PATH="$LIB_DIR/lib.sh"
 
 # 颜色定义
 GREEN='\033[0;32m'
@@ -52,14 +50,16 @@ fi
 
 # 4. 清理与下载
 echo "⬇️  Downloading manager script (Lite)..."
-curl -sSL -o "$INSTALL_PATH" "$REMOTE_SCRIPT_URL"
+# 清理旧库文件 (兼容性迁移)
+[ -f "/opt/xray-proxya/main_lib.sh" ] && rm -f "/opt/xray-proxya/main_lib.sh" && echo "🧹 Removed legacy main_lib.sh"
+curl -sSfL -o "$INSTALL_PATH" "$REMOTE_SCRIPT_URL"
 if [ $? -ne 0 ]; then
     printf "${RED}❌ Download lite script failed!${NC}\n"
     exit 1
 fi
 
 echo "⬇️  Downloading maintenance script..."
-curl -sSL -o "$MAINTAIN_PATH" "$REMOTE_MAINTAIN_URL"
+curl -sSfL -o "$MAINTAIN_PATH" "$REMOTE_MAINTAIN_URL"
 if [ $? -ne 0 ]; then
     printf "${YELLOW}⚠️  Download maintenance script failed, skipping...${NC}\n"
 else
@@ -67,7 +67,7 @@ else
 fi
 
 echo "⬇️  Downloading library..."
-curl -sSL -o "$LIB_PATH" "$REMOTE_LIB_URL"
+curl -sSfL -o "$LIB_PATH" "$REMOTE_LIB_URL"
 if [ $? -ne 0 ]; then
     printf "${YELLOW}⚠️  Download library failed, automated updates might not work.${NC}\n"
 else
