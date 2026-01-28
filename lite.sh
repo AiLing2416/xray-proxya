@@ -11,19 +11,7 @@ DEFAULT_PORT_REALITY=8443
 DEFAULT_PORT_SS=8082
 SERVICE_AUTO_RESTART="true"
 
-# 为 true 时覆盖下方所有性能参数, 由 Xray 核心自行管理资源
-AUTO_CONFIG="true"
 
-# 内存与资源管理 (防止 OOM)
-# HIGH_PERFORMANCE_MODE: true 为高性能(高并发)模式, false 为低功耗(小内存)模式
-HIGH_PERFORMANCE_MODE="false"
-# MEM_LIMIT: Go 运行时强制回收内存的目标 (建议设为总 RAM 的 60-80%)
-MEM_LIMIT="96MiB"
-# BUFFER_SIZE: 每条连接的缓冲区大小 (KB), 越小越省内存, 但极限速度会下降
-# 算法: 最大连接数 ≈ (MEM_LIMIT - 50MB) / (BUFFER_SIZE * 2)
-BUFFER_SIZE=16
-# CONN_IDLE: 空闲连接超时自动断开 (秒), 建议 1800 (30分钟) 以保持长连接稳定
-CONN_IDLE=1800
 
 # 加密算法
 VMESS_CIPHER="chacha20-poly1305"
@@ -61,6 +49,74 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 # --- 基础函数 ---
+
+get_runtime_formatted() {
+    local pid=$1
+    if [ -z "$pid" ]; then return; fi
+    
+    local runtime_str=""
+    
+    if [ -f "/proc/uptime" ] && [ -f "/proc/$pid/stat" ]; then
+        local uptime=$(awk '{print $1}' /proc/uptime)
+        local start_ticks=$(awk '{print $22}' "/proc/$pid/stat")
+        local clk_tck=$(getconf CLK_TCK 2>/dev/null || echo 100)
+        runtime_str=$(awk -v up="$uptime" -v st="$start_ticks" -v clk="$clk_tck" 'BEGIN {
+            run_sec = int(up - (st / clk));
+            if (run_sec < 0) run_sec = 0;
+            d = int(run_sec / 86400);
+            h = int((run_sec % 86400) / 3600);
+            m = int((run_sec % 3600) / 60);
+            s = int(run_sec % 60);
+            if (d > 0) printf "%dd/%dh/%dm", d, h, m;
+            else if (h > 0) printf "%dh/%dm", h, m;
+            else if (m > 0) printf "%dm/%ds", m, s;
+            else printf "%ds", s;
+        }')
+    fi
+
+    if [ -z "$runtime_str" ] && command -v ps >/dev/null 2>&1; then
+         local etime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
+         if [ -n "$etime" ]; then
+             runtime_str="running($etime)"
+         fi
+    fi
+    
+    echo "$runtime_str"
+}
+
+human_readable() {
+    local bytes=$1
+    if [ -z "$bytes" ] || ! [[ "$bytes" =~ ^[0-9]+$ ]]; then echo "0 B"; return; fi
+    if [ $bytes -lt 1024 ]; then echo "${bytes} B"
+    elif [ $bytes -lt 1048576 ]; then echo "$(( (bytes * 100) / 1024 ))" | sed 's/..$/.\&/' | awk '{printf "%.2f KB", $0}'
+    elif [ $bytes -lt 1073741824 ]; then echo "$(( (bytes * 100) / 1048576 ))" | sed 's/..$/.\&/' | awk '{printf "%.2f MB", $0}'
+    else echo "$(( (bytes * 100) / 1073741824 ))" | sed 's/..$/.\&/' | awk '{printf "%.2f GB", $0}'
+    fi
+}
+
+get_xray_stats() {
+    local port_api=$1
+    if [ -z "$port_api" ]; then return; fi
+    
+    local conn_count=$(ss -nt 2>/dev/null | grep -c "ESTAB")
+    [ -z "$conn_count" ] && conn_count=0
+    
+    local in_up=0
+    local in_down=0
+    local tags=("vless-enc-in" "vless-reality-in" "shadowsocks-in")
+    
+    for tag in "${tags[@]}"; do
+        local u=$("$XRAY_BIN" api stats --server=127.0.0.1:$port_api -name "inbound>>>${tag}>>>traffic>>>uplink" 2>/dev/null | grep "value" | awk '{print $2}')
+        local d=$("$XRAY_BIN" api stats --server=127.0.0.1:$port_api -name "inbound>>>${tag}>>>traffic>>>downlink" 2>/dev/null | grep "value" | awk '{print $2}')
+        [ -n "$u" ] && in_up=$((in_up + u))
+        [ -n "$d" ] && in_down=$((in_down + d))
+    done
+    
+    local total_bytes=$((in_up + in_down))
+    local h_total=$(human_readable $total_bytes)
+    
+    echo "| 连接数: $conn_count | 总用量: $h_total |"
+}
 
 check_root() {
     if [ "$EUID" -ne 0 ]; then
@@ -111,17 +167,41 @@ sys_reload_daemon() {
     [ $IS_OPENRC -eq 0 ] && systemctl daemon-reload
 }
 check_status() {
-    if [ $IS_OPENRC -eq 1 ]; then
-        if rc-service xray-proxya status 2>/dev/null | grep -q "started"; then
-            echo -e "🟢 服务状态: ${GREEN}运行中 (OpenRC)${NC}"
-        else
-            echo -e "🔴 服务状态: ${RED}未运行${NC}"
+    local pid=""
+    
+    # Try to get PID from pidfile first (OpenRC uses this)
+    if [ -f "/run/xray-proxya.pid" ]; then
+        pid=$(cat /run/xray-proxya.pid 2>/dev/null)
+    fi
+    
+    # Fallback to pgrep if no PID from pidfile (systemd doesn't use pidfile)
+    if [ -z "$pid" ] || [ ! -d "/proc/$pid" ]; then
+        if command -v pgrep >/dev/null; then
+            pid=$(pgrep -f "xray-proxya-core/xray" | head -n1)
         fi
+    fi
+    
+    local is_running=0
+    if [ $IS_OPENRC -eq 1 ]; then
+        if rc-service xray-proxya status 2>/dev/null | grep -q "started"; then is_running=1; fi
     else
-        if systemctl is-active --quiet xray-proxya; then
-            echo -e "🟢 服务状态: ${GREEN}运行中 (Systemd)${NC}"
-        else
-            echo -e "🔴 服务状态: ${RED}未运行${NC}"
+        if systemctl is-active --quiet xray-proxya; then is_running=1; fi
+    fi
+    
+    if [ $is_running -eq 1 ]; then
+        local runtime=""
+        if [ -n "$pid" ] && [ -d "/proc/$pid" ]; then
+             runtime="($(get_runtime_formatted "$pid"))"
+        fi
+        echo -e "🟢 服务状态: ${GREEN}运行中${NC} $runtime"
+    else
+        echo -e "🔴 服务状态: ${RED}未运行${NC}"
+    fi
+    
+    if [ $is_running -eq 1 ] && [ -f "$CONF_FILE" ]; then
+        local api_port=$(grep "PORT_API=" "$CONF_FILE" | cut -d= -f2)
+        if [ -n "$api_port" ]; then
+             echo -e "$(get_xray_stats "$api_port")"
         fi
     fi
 }
@@ -232,9 +312,13 @@ parse_link_to_json() {
         local end_addr_port="${tmp%%\?*}"; local end_addr="${end_addr_port%:*}"; local end_port="${end_addr_port##*:}"
         local query="${link#*\?}"
         local pub=$(url_decode "$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')")
-        local local_addr=$(url_decode "$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')")
+        
+        local local_addr_raw=$(url_decode "$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')")
+        local local_addr="${local_addr_raw%%/*}"  # Strip CIDR
+        
         local reserved=$(url_decode "$(echo "$query" | sed -n 's/.*reserved=\([^&#]*\).*/\1/p')")
         local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p'); [ -z "$mtu" ] && mtu=1280
+        
         jq -n -c --arg pub "$pub" --arg priv "$(url_decode "$priv_enc")" --arg addr "$end_addr" --arg port "$end_port" --arg local "$local_addr" --arg res "$reserved" --arg mtu "$mtu" \
             '{
                 tag: "custom-out", 
@@ -242,7 +326,7 @@ parse_link_to_json() {
                 settings: { 
                     secretKey: $priv, 
                     address: ($local | split(",")), 
-                    reserved: (if $res != "" then ($res | split(",") | map(tonumber)) else null end),
+                    reserved: (if $res != null then ($res | split(",") | map(tonumber)) else null end),
                     peers: [{ publicKey: $pub, endpoint: ($addr + ":" + $port), keepAlive: 25 }], 
                     mtu: ($mtu | tonumber) 
                 } 
@@ -262,6 +346,26 @@ parse_http_proxy() {
     local user="${auth%%:*}"; local pass="${auth#*:}"
     jq -n -c --arg a "$host" --arg p "$port" --arg u "$user" --arg pass "$pass" \
         '{tag: "custom-out", protocol: "http", settings: { servers: [{ address: $a, port: ($p | tonumber), users: [{user: $u, pass: $pass}] }] } }'
+}
+
+parse_interface_bind() {
+    local iface="$1"
+    local bind_addr="$2"
+    if [ -z "$iface" ]; then return 1; fi
+    
+    jq -n -c --arg iface "$iface" --arg addr "$bind_addr" \
+    '{
+        tag: "custom-out",
+        protocol: "freedom",
+        sendThrough: (if $addr != "" then $addr else null end),
+        settings: {},
+        streamSettings: {
+            sockopt: {
+                interface: $iface,
+                mark: 255
+            }
+        }
+    } | del(..|nulls)'
 }
 
 reinstall_core() {
@@ -314,10 +418,10 @@ custom_outbound_menu() {
         sleep 2; return
     fi
     while true; do
-        echo -e "\n=== 自定义出站 (Lite 单路) ==="
         echo "1. 通过链接导入 (SS, Socks5, VLESS, WireGuard)"
         echo "2. 导入 HTTP 代理 (user:pass@host:port)"
-        echo "3. 清除当前出站"
+        echo "3. 绑定本地网络接口 (Interface Bind)"
+        echo "4. 清除当前出站"
         echo "q. 返回"
         read -p "选择: " choice_sub
         
@@ -341,6 +445,17 @@ custom_outbound_menu() {
                 fi
                 ;;
             3)
+                echo -e "${YELLOW}请输入要绑定的本地接口名称 (例如: wg0, tun1, eth1):${NC}"
+                read -p "接口名: " iface_name
+                if [ -n "$iface_name" ]; then
+                    echo -e "${YELLOW}请输入要绑定的本地 IP (可选, 留空则系统自动选择):${NC}"
+                    echo -e "提示: WireGuard 场景建议填入在该网卡上的本地 IP (如: 10.5.0.2)"
+                    read -p "绑定 IP: " local_ip
+                    parsed_json=$(parse_interface_bind "$iface_name" "$local_ip")
+                    [ $? -ne 0 ] && { echo -e "${RED}❌ 错误${NC}"; sleep 1; continue; }
+                fi
+                ;;
+            4)
                 rm -f "$CUSTOM_OUT_FILE"
                 echo -e "${GREEN}✅ 已清除自定义出站${NC}"
                 source "$CONF_FILE"; generate_config; sys_restart; return
@@ -350,6 +465,7 @@ custom_outbound_menu() {
         esac
 
         if [ -n "$parsed_json" ] && [ "$parsed_json" != "null" ]; then
+            cp "$CUSTOM_OUT_FILE" "${CUSTOM_OUT_FILE}.bak"
             echo "$parsed_json" > "$CUSTOM_OUT_FILE"
             echo -e "${GREEN}✅ 配置已解析并保存${NC}"
             source "$CONF_FILE"
@@ -357,8 +473,17 @@ custom_outbound_menu() {
                 export UUID_CUSTOM=$("$XRAY_BIN" uuid)
                 echo "UUID_CUSTOM=$UUID_CUSTOM" >> "$CONF_FILE"
             fi
-            generate_config; sys_restart
-            echo -e "${GREEN}服务已重启，规则已生效${NC}"; return
+            
+            if generate_config; then
+                sys_restart
+                echo -e "${GREEN}服务已重启，规则已生效${NC}"
+                rm -f "${CUSTOM_OUT_FILE}.bak"
+                return
+            else
+                echo -e "${RED}❌ 配置生效失败，正在回滚...${NC}"
+                mv "${CUSTOM_OUT_FILE}.bak" "$CUSTOM_OUT_FILE"
+                generate_config
+            fi
         fi
     done
 }
@@ -392,26 +517,35 @@ generate_config() {
         --arg port_ss "$PORT_SS" --arg ss_cipher "$SS_CIPHER" --arg pass_ss "$PASS_SS" \
         --arg port_test "${PORT_TEST:-10000}" --arg port_api "${PORT_API:-10001}" \
         --arg uuid "$UUID" --arg uuid_custom "$UUID_CUSTOM" \
-        --arg buffer_size "${BUFFER_SIZE:-16}" --arg conn_idle "${CONN_IDLE:-1800}" \
-        --arg auto_config "${AUTO_CONFIG:-false}" \
         --arg dns_strategy "$dns_strategy" \
         --arg direct_outbound "${DIRECT_OUTBOUND:-true}" \
     '
     ($custom_outbound | flatten(1)) as $co |
-    ($buffer_size | tonumber * 1024) as $buf_bytes |
-    ($conn_idle | tonumber) as $idle |
     {
         log: { loglevel: "warning" },
         dns: {
             servers: ["8.8.8.8", "1.1.1.1", "2001:4860:4860::8888", "2606:4700:4700::1111"],
             queryStrategy: $dns_strategy
         },
-        policy: (if $auto_config == "true" then {} else {
-            levels: {
-                "0": { handshake: 4, connIdle: $idle, uplinkOnly: 2, downlinkOnly: 4, bufferSize: ($buf_bytes / 1024) }
+        "api": {
+            "tag": "api",
+            "services": ["HandlerService", "LoggerService", "StatsService"]
+        },
+        "stats": {},
+        "policy": {
+            "levels": {
+                "0": {
+                    "statsUserUplink": true,
+                    "statsUserDownlink": true
+                }
             },
-            system: { statsOutboundUplink: true, statsOutboundDownlink: true }
-        } end),
+            "system": {
+                "statsInboundUplink": true,
+                "statsInboundDownlink": true,
+                "statsOutboundUplink": true,
+                "statsOutboundDownlink": true
+            }
+        },
         inbounds: [
             {
                 tag: "vless-enc-in", port: ($port_vless | tonumber), protocol: "vless",
@@ -466,6 +600,7 @@ generate_config() {
         routing: {
             domainStrategy: "IPIfNonMatch",
             rules: [
+                { type: "field", inboundTag: ["api-in"], outboundTag: "api" },
                 (if $direct_outbound == "true" then 
                     { type: "field", user: ["direct"], outboundTag: "direct" } 
                  else 
@@ -479,8 +614,7 @@ generate_config() {
 
 create_service() {
     source "$CONF_FILE"
-    local mem_env=""; [ "$AUTO_CONFIG" != "true" ] && [ -n "$MEM_LIMIT" ] && mem_env="GOMEMLIMIT=$MEM_LIMIT"
-    local ulimit_val=1024; [ "$AUTO_CONFIG" == "true" ] && ulimit_val=1024 || { [ "$HIGH_PERFORMANCE_MODE" == "true" ] && ulimit_val=30000 || ulimit_val=2048; }
+
 
     if [ $IS_OPENRC -eq 1 ]; then
         if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
@@ -491,9 +625,8 @@ description="Xray-Proxya Service (Lite)"
 supervisor="supervise-daemon"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
-command_env="$mem_env"
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n $ulimit_val"
+rc_ulimit="-n 2048"
 respawn_delay=5
 respawn_max=0
 depend() { need net; after firewall; }
@@ -505,10 +638,9 @@ name="xray-proxya"
 description="Xray-Proxya Service (Lite)"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
-command_env="$mem_env"
 command_background=true
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n $ulimit_val"
+rc_ulimit="-n 2048"
 depend() { need net; after firewall; }
 EOF
         fi
@@ -521,13 +653,12 @@ Description=Xray-Proxya Service (Lite)
 After=network.target
 [Service]
 User=root
-Environment=$mem_env
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
 $(echo -e "$restart_conf")
-LimitNOFILE=$ulimit_val
+LimitNOFILE=2048
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -680,7 +811,7 @@ service_menu() {
         echo "q. 返回上级"
         read -p "选择: " s_choice
         case "$s_choice" in
-            1) sys_start ;; 2) sys_stop ;; 3) sys_restart ;; 4) sys_enable ;; 5) sys_disable ;;
+            1) sys_start ;; 2) sys_stop ;; 3) generate_config; sys_restart ;; 4) sys_enable ;; 5) sys_disable ;;
             q|Q) return ;; *) echo "❌" ;;
         esac
     done
@@ -812,38 +943,47 @@ apply_refresh() {
     [ -n "$MEM_LIMIT" ] && sed -i "s/^MEM_LIMIT=.*/MEM_LIMIT=$MEM_LIMIT/" "$CONF_FILE"
     [ -n "$BUFFER_SIZE" ] && sed -i "s/^BUFFER_SIZE=.*/BUFFER_SIZE=$BUFFER_SIZE/" "$CONF_FILE"
     [ -n "$CONN_IDLE" ] && sed -i "s/^CONN_IDLE=.*/CONN_IDLE=$CONN_IDLE/" "$CONF_FILE"
-    source "$CONF_FILE"; generate_config; create_service
-    echo -e "${GREEN}✅ 配置已刷新并重启${NC}"; sleep 1
+    source "$CONF_FILE"
+    if generate_config; then
+        create_service
+        echo -e "${GREEN}✅ 配置已刷新并重启${NC}"; sleep 1
+    else
+        echo -e "${RED}❌ 刷新失败: 配置文件生成错误${NC}"
+    fi
 }
 
 
-check_root
-while true; do
-    echo -e "\n${BLUE}Xray-Proxya Lite 管理${NC}"
-    check_status
-    echo "1. 安装 / 重置"
-    echo "2. 查看链接"
-    echo "3. 修改端口"
-    echo "4. 维护菜单"
-    echo "5. 自定义出站"
-    echo "6. 测试自定义出站"
-    echo "7. 刷新配置"
-    echo ""
-    echo "9. 重装内核"
-    echo "0. 卸载"
-    echo "q. 退出"
-    read -p "选择: " choice
-    case "$choice" in
-        1) install_xray ;;
-        2) show_links_menu ;;
-        3) change_ports ;;
-        4) maintenance_menu ;;
-        5) custom_outbound_menu ;;
-        6) test_custom_outbound ;;
-        7) apply_refresh ;;
-        9) reinstall_core ;;
-        0) uninstall_xray ;;
-        q|Q) exit 0 ;;
-        *) echo -e "${RED}无效${NC}" ;;
-    esac
-done
+
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    check_root
+    while true; do
+        echo -e "\n${BLUE}Xray-Proxya Lite 管理${NC}"
+        check_status
+        echo "1. 安装 / 重置"
+        echo "2. 查看链接"
+        echo "3. 修改端口"
+        echo "4. 维护菜单"
+        echo "5. 自定义出站"
+        echo "6. 测试自定义出站"
+        echo "7. 刷新配置"
+        echo ""
+        echo "9. 重装内核"
+        echo "0. 卸载"
+        echo "q. 退出"
+        read -p "选择: " choice
+        case "$choice" in
+            1) install_xray ;;
+            2) show_links_menu ;;
+            3) change_ports ;;
+            4) maintenance_menu ;;
+            5) custom_outbound_menu ;;
+            6) test_custom_outbound ;;
+            7) apply_refresh ;;
+            9) reinstall_core ;;
+            0) uninstall_xray ;;
+            q|Q) exit 0 ;;
+            *) echo -e "${RED}无效${NC}" ;;
+        esac
+    done
+fi
