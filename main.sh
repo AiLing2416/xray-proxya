@@ -63,24 +63,27 @@ get_runtime_formatted() {
     
     local runtime_str=""
     
-    if [ -f "/proc/uptime" ] && [ -f "/proc/$pid/stat" ]; then
-        local uptime=$(awk '{print $1}' /proc/uptime)
-        local start_ticks=$(awk '{print $22}' "/proc/$pid/stat")
-        local clk_tck=$(getconf CLK_TCK 2>/dev/null || echo 100)
-        runtime_str=$(awk -v up="$uptime" -v st="$start_ticks" -v clk="$clk_tck" 'BEGIN {
-            run_sec = int(up - (st / clk));
-            if (run_sec < 0) run_sec = 0;
-            d = int(run_sec / 86400);
-            h = int((run_sec % 86400) / 3600);
-            m = int((run_sec % 3600) / 60);
-            s = int(run_sec % 60);
-            if (d > 0) printf "%dd/%dh/%dm", d, h, m;
-            else if (h > 0) printf "%dh/%dm", h, m;
-            else if (m > 0) printf "%dm/%ds", m, s;
-            else printf "%ds", s;
-        }')
+    # Method 1: Use directory modification time (More reliable on Alpine/Containers)
+    if [ -d "/proc/$pid" ]; then
+        local start_time=$(stat -c %Y "/proc/$pid" 2>/dev/null)
+        local now=$(date +%s)
+        
+        if [ -n "$start_time" ] && [ "$now" -ge "$start_time" ]; then
+            local run_sec=$((now - start_time))
+            local d=$((run_sec / 86400))
+            local h=$(( (run_sec % 86400) / 3600 ))
+            local m=$(( (run_sec % 3600) / 60 ))
+            local s=$(( run_sec % 60 ))
+            
+            if [ "$d" -gt 0 ]; then runtime_str=$(printf "%dd/%dh/%dm" "$d" "$h" "$m")
+            elif [ "$h" -gt 0 ]; then runtime_str=$(printf "%dh/%dm" "$h" "$m")
+            elif [ "$m" -gt 0 ]; then runtime_str=$(printf "%dm/%ds" "$m" "$s")
+            else runtime_str=$(printf "%ds" "$s")
+            fi
+        fi
     fi
 
+    # Method 2: Fallback to ps
     if [ -z "$runtime_str" ] && command -v ps >/dev/null 2>&1; then
          local etime=$(ps -o etime= -p "$pid" 2>/dev/null | tr -d ' ')
          if [ -n "$etime" ]; then
