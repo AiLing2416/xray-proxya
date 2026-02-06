@@ -16,6 +16,7 @@ MAINTAIN_DIR="/usr/local/bin"
 MAINTAIN_FILENAME="xray-proxya-maintenance"
 MAINTAIN_PATH="$MAINTAIN_DIR/$MAINTAIN_FILENAME"
 
+LIB_DIR="/opt/xray-proxya"
 LIB_PATH="$LIB_DIR/lib.sh"
 
 # 颜色定义
