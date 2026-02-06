@@ -91,9 +91,9 @@ human_readable() {
     local bytes=$1
     if [ -z "$bytes" ] || ! [[ "$bytes" =~ ^[0-9]+$ ]]; then echo "0 B"; return; fi
     if [ $bytes -lt 1024 ]; then echo "${bytes} B"
-    elif [ $bytes -lt 1048576 ]; then echo "$(( (bytes * 100) / 1024 ))" | sed 's/..$/.\&/' | awk '{printf "%.2f KB", $0}'
-    elif [ $bytes -lt 1073741824 ]; then echo "$(( (bytes * 100) / 1048576 ))" | sed 's/..$/.\&/' | awk '{printf "%.2f MB", $0}'
-    else echo "$(( (bytes * 100) / 1073741824 ))" | sed 's/..$/.\&/' | awk '{printf "%.2f GB", $0}'
+    elif [ $bytes -lt 1048576 ]; then echo "$(( (bytes * 100) / 1024 ))" | sed 's/..$/.&/' | awk '{printf "%.2f KB", $0}'
+    elif [ $bytes -lt 1073741824 ]; then echo "$(( (bytes * 100) / 1048576 ))" | sed 's/..$/.&/' | awk '{printf "%.2f MB", $0}'
+    else echo "$(( (bytes * 100) / 1073741824 ))" | sed 's/..$/.&/' | awk '{printf "%.2f GB", $0}'
     fi
 }
 
@@ -129,7 +129,15 @@ check_root() {
 }
 
 install_deps() {
-    echo -e "${BLUE}📦 安装/检查依赖...${NC}"
+    echo -e "${BLUE}📦 检查依赖...${NC}"
+    local deps_chk=("curl" "jq" "openssl" "unzip")
+    local need_install=0
+    for dep in "${deps_chk[@]}"; do
+        if ! command -v "$dep" >/dev/null 2>&1; then need_install=1; break; fi
+    done
+    if [ $need_install -eq 0 ]; then return 0; fi
+    
+    echo -e "${BLUE}🔨 安装依赖...${NC}"
     if [ -f /etc/alpine-release ]; then
         apk update
         apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog ncurses tzdata
@@ -137,6 +145,14 @@ install_deps() {
         apt-get update -qq >/dev/null
         apt-get install -y curl jq unzip openssl dialog ncurses-bin >/dev/null 2>&1
     fi
+}
+
+optimize_network() {
+    echo -e "${BLUE}🔧 优化网络 (UDP Buffer)...${NC}"
+    sysctl -w net.core.rmem_max=8388608 >/dev/null 2>&1
+    sysctl -w net.core.wmem_max=8388608 >/dev/null 2>&1
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
 }
 
 check_port_occupied() {
@@ -308,34 +324,7 @@ parse_link_to_json() {
             '{tag: "custom-out", protocol: "socks", settings: { servers: [{ address: $a, port: ($p | tonumber), users: (if $u != "" then [{user: $u, pass: $pass}] else [] end) }] } }'
         return 0
     fi
-    # WireGuard (Link Format)
-    if [[ "$link" == wireguard://* ]]; then
-        local tmp="${link#wireguard://}"
-        local priv_enc="${tmp%%@*}"; tmp="${tmp#*@}"
-        local end_addr_port="${tmp%%\?*}"; local end_addr="${end_addr_port%:*}"; local end_port="${end_addr_port##*:}"
-        local query="${link#*\?}"
-        local pub=$(url_decode "$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')")
-        
-        local local_addr_raw=$(url_decode "$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')")
-        local local_addr="${local_addr_raw%%/*}"  # Strip CIDR
-        
-        local reserved=$(url_decode "$(echo "$query" | sed -n 's/.*reserved=\([^&#]*\).*/\1/p')")
-        local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p'); [ -z "$mtu" ] && mtu=1280
-        
-        jq -n -c --arg pub "$pub" --arg priv "$(url_decode "$priv_enc")" --arg addr "$end_addr" --arg port "$end_port" --arg local "$local_addr" --arg res "$reserved" --arg mtu "$mtu" \
-            '{
-                tag: "custom-out", 
-                protocol: "wireguard", 
-                settings: { 
-                    secretKey: $priv, 
-                    address: ($local | split(",")), 
-                    reserved: (if $res != null then ($res | split(",") | map(tonumber)) else null end),
-                    peers: [{ publicKey: $pub, endpoint: ($addr + ":" + $port), keepAlive: 25 }], 
-                    mtu: ($mtu | tonumber) 
-                } 
-            } | del(..|nulls)'
-        return 0
-    fi
+
     return 1
 }
 
@@ -355,20 +344,11 @@ parse_interface_bind() {
     local iface="$1"
     local bind_addr="$2"
     if [ -z "$iface" ]; then return 1; fi
-    
+    if [ -z "$bind_addr" ]; then
+        bind_addr=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+    fi
     jq -n -c --arg iface "$iface" --arg addr "$bind_addr" \
-    '{
-        tag: "custom-out",
-        protocol: "freedom",
-        sendThrough: (if $addr != "" then $addr else null end),
-        settings: {},
-        streamSettings: {
-            sockopt: {
-                interface: $iface,
-                mark: 255
-            }
-        }
-    } | del(..|nulls)'
+    '{tag: "custom-out", protocol: "freedom", sendThrough: (if $addr != "" then $addr else null end), settings: {domainStrategy: "UseIP", userLevel: 0}, streamSettings: {sockopt: {interface: $iface}}} | del(..|nulls)'
 }
 
 reinstall_core() {
@@ -431,7 +411,7 @@ custom_outbound_menu() {
         local parsed_json=""
         case "$choice_sub" in
             1)
-                echo -e "${YELLOW}支持链接: SS, Socks5, VLESS, WireGuard${NC}"
+                echo -e "${YELLOW}支持链接: SS, Socks5, VLESS${NC}"
                 read -p "请粘贴链接: " link_str
                 if [ -n "$link_str" ]; then
                     parsed_json=$(parse_link_to_json "$link_str")
@@ -643,16 +623,15 @@ command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 command_background=true
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 2048"
+rc_ulimit="-n 524288"
 depend() { need net; after firewall; }
 EOF
         fi
         chmod +x "$SERVICE_FILE"
     else
-        local restart_conf=""; [ "$SERVICE_AUTO_RESTART" == "true" ] && restart_conf="Restart=on-failure\nRestartSec=5s"
         cat > "$SERVICE_FILE" <<-EOF
 [Unit]
-Description=Xray-Proxya Service (Lite)
+Description=Xray-Proxya Lite Service
 After=network.target
 [Service]
 User=root
@@ -660,8 +639,10 @@ CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
-$(echo -e "$restart_conf")
-LimitNOFILE=2048
+Restart=on-failure
+RestartSec=5s
+LimitNOFILE=524288
+LimitNPROC=524288
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -680,7 +661,7 @@ install_xray() {
     for p in $PORT_VLESS $PORT_REALITY $PORT_SS; do
         if check_port_occupied $p; then echo -e "${RED}⚠️ 端口 $p 被占用${NC}"; return; fi
     done
-    install_deps; download_core
+    install_deps; optimize_network; download_core
     echo -e "${BLUE}🔑 生成配置与密钥...${NC}"
     if ! "$XRAY_BIN" version >/dev/null 2>&1; then echo -e "${RED}❌ Xray 无法运行!${NC}"; return 1; fi
     UUID=$("$XRAY_BIN" uuid); PATH_VL="/$(generate_random 12)"; PATH_REALITY="/$(generate_random 12)"; PASS_SS=$(generate_random 24)
@@ -930,14 +911,17 @@ maintenance_menu() {
 }
 
 uninstall_xray() {
-    echo -e "${YELLOW}⚠️  警告: 将停止服务并删除配置。${NC}"
+    echo -e "${YELLOW}⚠️  警告: 将执行完全卸载 (服务、配置、日志、脚本文件)${NC}"
     read -p "确认卸载? (y/n): " confirm
     if [[ "$confirm" != "y" ]]; then return; fi
     sys_stop 2>/dev/null; sys_disable 2>/dev/null
-    rm -f "$SERVICE_FILE"; rm -rf "$CONF_DIR"
-    sys_reload_daemon; echo -e "${GREEN}✅ 服务与配置已移除。${NC}"
-    read -p "是否同时删除 Xray 核心文件 ($XRAY_DIR)? (y/N): " del_core
-    if [[ "$del_core" == "y" ]]; then rm -rf "$XRAY_DIR"; echo -e "${GREEN}✅ 核心文件已移除。${NC}"; fi
+    rm -f "$SERVICE_FILE"; rm -rf "$CONF_DIR"; rm -rf "$XRAY_DIR"
+    rm -f "/usr/local/bin/xray-proxya-maintenance"
+    [ -d "/opt/xray-proxya" ] && rm -rf "/opt/xray-proxya"
+    sys_reload_daemon
+    echo -e "${GREEN}✅ 卸载完成。正在自毁...${NC}"
+    rm -f "$0"
+    exit 0
 }
 apply_refresh() {
     echo -e "${BLUE}🔄 正在从脚本头部同步变量并重载服务...${NC}"
@@ -947,6 +931,7 @@ apply_refresh() {
     [ -n "$BUFFER_SIZE" ] && sed -i "s/^BUFFER_SIZE=.*/BUFFER_SIZE=$BUFFER_SIZE/" "$CONF_FILE"
     [ -n "$CONN_IDLE" ] && sed -i "s/^CONN_IDLE=.*/CONN_IDLE=$CONN_IDLE/" "$CONF_FILE"
     source "$CONF_FILE"
+    optimize_network
     if generate_config; then
         create_service
         echo -e "${GREEN}✅ 配置已刷新并重启${NC}"; sleep 1
@@ -960,6 +945,7 @@ apply_refresh() {
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     check_root
+    optimize_network
     while true; do
         echo -e "\n${BLUE}Xray-Proxya Lite 管理${NC}"
         check_status
