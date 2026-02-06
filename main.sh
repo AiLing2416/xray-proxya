@@ -104,16 +104,42 @@ check_root() {
 }
 
 install_deps() {
-    echo -e "${BLUE}📦 安装/检查依赖...${NC}"
+    echo -e "${BLUE}📦 检查依赖...${NC}"
+    local deps_chk=("curl" "jq" "openssl" "unzip")
+    local need_install=0
+    for dep in "${deps_chk[@]}"; do
+        if ! command -v "$dep" >/dev/null 2>&1; then
+            need_install=1
+            echo -e "${YELLOW}发现缺失依赖: $dep${NC}"
+        fi
+    done
+    
+    if [ $need_install -eq 0 ]; then
+         echo -e "${GREEN}✅ 所有依赖已安装${NC}"
+         return 0
+    fi
+    
+    echo -e "${BLUE}🔨 正在安装依赖...${NC}"
     if [ -f /etc/alpine-release ]; then
         echo "正在运行 apk update..."
         apk update
-        echo "正在安装依赖..."
         apk add curl jq openssl bash coreutils gcompat iproute2 grep libgcc libstdc++ sed gawk unzip dialog ncurses tzdata
     else
         apt-get update
         apt-get install -y curl jq unzip openssl dialog ncurses-bin
     fi
+}
+
+optimize_network() {
+    echo -e "${BLUE}🔧 正在优化网络参数 (Sysctl & UDP)...${NC}"
+    # UDP Buffer for QUIC/Cloudflared
+    sysctl -w net.core.rmem_max=8388608 >/dev/null 2>&1
+    sysctl -w net.core.wmem_max=8388608 >/dev/null 2>&1
+    sysctl -w net.core.rmem_default=2097152 >/dev/null 2>&1
+    sysctl -w net.core.wmem_default=2097152 >/dev/null 2>&1
+    # IP Forwarding
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1
 }
 
 show_scroll_log() {
@@ -566,57 +592,7 @@ parse_link_to_json() {
     fi
     # WireGuard
     # wireguard://<Priv>@<EndpointIP>:<EndpointPort>?publickey=<Pub>&reserved=<Res>&address=<LocalIP/Mask>&mtu=<MTU>
-    if [[ "$link" == wireguard://* ]]; then
-        local tmp="${link#wireguard://}"
-        local priv_enc="${tmp%%@*}"
-        tmp="${tmp#*@}"
-        local end_addr_port="${tmp%%\?*}"
-        local end_addr="${end_addr_port%:*}"
-        local end_port="${end_addr_port##*:}"
-        
-        local query="${link#*\?}"
-        local pub_enc=$(echo "$query" | sed -n 's/.*publickey=\([^&#]*\).*/\1/p')
-        local addr_enc=$(echo "$query" | sed -n 's/.*address=\([^&#]*\).*/\1/p')
-        local res_enc=$(echo "$query" | sed -n 's/.*reserved=\([^&#]*\).*/\1/p')
-        local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p')
-        [ -z "$mtu" ] && mtu=1280
-        
-        local priv_key=$(url_decode "$priv_enc")
-        local pub_key=$(url_decode "$pub_enc")
-        local local_addr_raw=$(url_decode "$addr_enc")
-        local local_addr="${local_addr_raw%%/*}"  # Strip CIDR
-        local reserved=$(url_decode "$res_enc")
-        
-        local mtu=$(echo "$query" | sed -n 's/.*mtu=\([^&#]*\).*/\1/p')
-        [ -z "$mtu" ] && mtu=1280
 
-        if [ -z "$pub_key" ] || [ -z "$priv_key" ] || [ -z "$end_addr" ]; then return 1; fi
-
-        jq -n -c \
-            --arg pub "$pub_key" \
-            --arg priv "$priv_key" \
-            --arg addr "$end_addr" \
-            --arg port "$end_port" \
-            --arg local "$local_addr" \
-            --arg res "$reserved" \
-            --arg mtu "$mtu" \
-            '{
-                tag: "custom-out",
-                protocol: "wireguard",
-                settings: {
-                    secretKey: $priv,
-                    address: ($local | split(",")),
-                    reserved: (if $res != null then ($res | split(",") | map(tonumber)) else null end),
-                    peers: [{
-                        publicKey: $pub,
-                        endpoint: ($addr + ":" + $port),
-                        keepAlive: 25
-                    }],
-                    mtu: ($mtu | tonumber)
-                }
-            } | del(..|nulls)'
-        return 0
-    fi
 
     # SOCKS5 (socks://user:pass@host:port#tag)
     if [[ "$link" == socks://* ]]; then
@@ -697,86 +673,30 @@ parse_http_proxy() {
     }'
 }
 
-parse_wg_conf() {
-    local conf_content="$1"
-    if [ -z "$conf_content" ]; then 
-        conf_content=$(cat)
-    fi
-    
-    local private_key=$(echo "$conf_content" | grep -i "^PrivateKey" | cut -d'=' -f2- | tr -d ' \r\t')
-    local address_line=$(echo "$conf_content" | grep -i "^Address" | cut -d'=' -f2- | tr -d ' \r\t')
-    
-    local public_key=$(echo "$conf_content" | grep -i "^PublicKey" | cut -d'=' -f2- | tr -d ' \r\t')
-    local endpoint=$(echo "$conf_content" | grep -i "^Endpoint" | cut -d'=' -f2- | tr -d ' \r\t')
-    local preshared_key=$(echo "$conf_content" | grep -i "^PresharedKey" | cut -d'=' -f2- | tr -d ' \r\t')
-    
-    local reserved_line=$(echo "$conf_content" | grep -i "^Reserved" | cut -d'=' -f2- | tr -d ' \r\t')
-    
-    local mtu=$(echo "$conf_content" | grep -i "^MTU" | cut -d'=' -f2- | tr -d ' \r\t')
-    [ -z "$mtu" ] && mtu=1280
 
-    if [ -z "$private_key" ] || [ -z "$public_key" ] || [ -z "$endpoint" ]; then
-        return 1
-    fi
-    
-    # Strip CIDR from addresses
-    local addr_cleaned=$(echo "$address_line" | awk -F, '{
-        for(i=1;i<=NF;i++) {
-            split($i, a, "/"); 
-            printf "%s%s", a[1], (i==NF?"":",") 
-        }
-    }')
-    
-    local addr_json=$(echo "$addr_cleaned" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "\"%s\"%s", $i, (i==NF?"":","); printf "]"}')
-    local res_json="null"
-    if [ -n "$reserved_line" ]; then
-        res_json=$(echo "$reserved_line" | awk -F, '{printf "["; for(i=1;i<=NF;i++) printf "%s%s", $i, (i==NF?"":","); printf "]"}')
-    fi
-    
-    local host="${endpoint%:*}"
-    local port="${endpoint##*:}"
-    
-    jq -n -c \
-        --arg pk "$private_key" \
-        --arg pub "$public_key" \
-        --arg host "$host" \
-        --arg port "$port" \
-        --argjson addr "$addr_json" \
-        --argjson res "$res_json" \
-        --arg psk "$preshared_key" \
-        --arg mtu "$mtu" \
-    '{
-        tag: "custom-out",
-        protocol: "wireguard",
-        settings: {
-            secretKey: $pk,
-            address: $addr,
-            reserved: (if $res != null then ($res | split(",") | map(tonumber)) else null end),
-            peers: [{
-                publicKey: $pub,
-                endpoint: ($host + ":" + $port),
-                preSharedKey: (if $psk != "" then $psk else null end)
-            }],
-            mtu: ($mtu | tonumber)
-        }
-    } | del(..|nulls)'
-}
 
 parse_interface_bind() {
     local iface="$1"
     local bind_addr="$2"
     if [ -z "$iface" ]; then return 1; fi
     
+    # Auto-detect IP if not provided
+    if [ -z "$bind_addr" ]; then
+        bind_addr=$(ip -4 addr show "$iface" 2>/dev/null | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n 1)
+    fi
+    
     jq -n -c --arg iface "$iface" --arg addr "$bind_addr" \
     '{
         tag: "custom-out",
         protocol: "freedom",
         sendThrough: (if $addr != "" then $addr else null end),
-        settings: {},
+        settings: {
+            domainStrategy: "UseIP",
+            userLevel: 0
+        },
         streamSettings: {
             sockopt: {
-                interface: $iface,
-                mark: 255
+                interface: $iface
             }
         }
     } | del(..|nulls)'
@@ -924,51 +844,46 @@ add_new_custom_outbound() {
     fi
     
     echo -e "\n请选择导入方式:"
-    echo "1. 粘贴分享链接 (VMess/VLESS/SS/SOCKS/WG-URI)"
-    echo "2. HTTP 代理账号导入 (格式: Username:Password@Host:Port)"
-    echo "3. WireGuard 配置文件导入 (多行文本)"
-    echo "4. 绑定本地网络接口 (Interface Bind)"
-    echo "q. 返回"
-    read -p "选择: " method
-    
-    local parsed_json=""
-    local ret_code=0
-    
-    case "$method" in
-        1)
-            echo -e "${YELLOW}支持链接: VMess(ws), VLESS(tcp/xhttp), SS, SOCKS5, WG${NC}"
-            read -p "请粘贴链接: " link_str
-            [ -z "$link_str" ] && return
-            parsed_json=$(parse_link_to_json "$link_str")
-            ret_code=$?
-            ;;
-        2)
-            echo -e "${YELLOW}格式: Username:Password@Host:Port (无需 Base64)${NC}"
-            echo -e "例如: user:pass@1.2.3.4:8080"
-            echo -e "提示: 密码可包含特殊字符 (除最后分割用的 @)"
-            read -p "请输入: " proxy_str
-            [ -z "$proxy_str" ] && return
-            parsed_json=$(parse_http_proxy "$proxy_str")
-            ret_code=$?
-            ;;
-        3)
-            echo -e "${YELLOW}请粘贴 WireGuard 配置文件内容 (完成后按 Ctrl+D):${NC}"
-            local wg_content=$(cat)
-            parsed_json=$(parse_wg_conf "$wg_content")
-            ret_code=$?
-            ;;
-        4)
-            echo -e "${YELLOW}请输入要绑定的本地接口名称 (例如: wg0, tun1, eth1):${NC}"
-            read -p "接口名: " iface_name
-            [ -z "$iface_name" ] && return
-            echo -e "${YELLOW}请输入要绑定的本地 IP (可选, 留空则系统自动选择):${NC}"
-            echo -e "提示: WireGuard 场景建议填入在该网卡上的本地 IP (如: 10.5.0.2)"
-            read -p "绑定 IP: " local_ip
-            parsed_json=$(parse_interface_bind "$iface_name" "$local_ip")
-            ret_code=$?
-            ;;
-        q|Q) return ;;
-        *) echo -e "${RED}无效选择${NC}"; return ;;
+        echo "1. 通过链接导入 (SS, Socks5, VMess, VLESS)"
+        echo "2. 导入 HTTP 代理 (user:pass@host:port)"
+        # echo "3. 导入 WireGuard (通过配置文件内容) [已废弃: 建议使用 Interface Bind]"
+        echo "4. 绑定本地网络接口 (Interface Bind)"
+        echo "5. 清除当前出站"
+        echo "q. 返回"
+        read -p "选择: " choice_sub
+        
+        local parsed_json=""
+        case "$choice_sub" in
+            1)
+                echo -e "${YELLOW}支持链接: SS, Socks5, VMess, VLESS${NC}"
+                read -p "请粘贴链接: " link_str
+                if [ -n "$link_str" ]; then
+                    parsed_json=$(parse_link_to_json "$link_str")
+                    [ $? -ne 0 ] && { echo -e "${RED}❌ 解析失败${NC}"; sleep 1; continue; }
+                fi
+                ;;
+            2)
+                echo -e "\n--- HTTP 代理导入 ---"
+                echo -e "${YELLOW}格式: user:pass@host:port${NC}"
+                read -p "请输入: " proxy_str
+                if [ -n "$proxy_str" ]; then
+                    parsed_json=$(parse_http_proxy "$proxy_str")
+                    [ $? -ne 0 ] && { echo -e "${RED}❌ 格式错误${NC}"; sleep 1; continue; }
+                fi
+                ;;
+            # 3) - Removed
+            4)
+                echo -e "${YELLOW}请输入要绑定的本地接口名称 (例如: wg0, tun1, eth1):${NC}"
+                read -p "接口名: " iface_name
+                if [ -n "$iface_name" ]; then
+                    echo -e "${YELLOW}请输入要绑定的本地 IP (可选, 留空则系统自动选择):${NC}"
+                    echo -e "提示: WireGuard 场景建议填入在该网卡上的本地 IP (如: 10.5.0.2)"
+                    read -p "绑定 IP: " local_ip
+                    parsed_json=$(parse_interface_bind "$iface_name" "$local_ip")
+                    [ $? -ne 0 ] && { echo -e "${RED}❌ 错误${NC}"; sleep 1; continue; }
+                fi
+                ;;
+            5) echo -e "${RED}无效选择${NC}"; return ;;
     esac
 
     if [ $ret_code -ne 0 ] || [ -z "$parsed_json" ] || [ "$parsed_json" == "null" ]; then 
@@ -1320,7 +1235,7 @@ supervisor="supervise-daemon"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 2048"
+rc_ulimit="-n 524288"
 respawn_delay=5
 respawn_max=0
 depend() { need net; after firewall; }
@@ -1334,7 +1249,7 @@ command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 command_background=true
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 2048"
+rc_ulimit="-n 524288"
 depend() { need net; after firewall; }
 EOF
         fi
@@ -1352,7 +1267,8 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ExecStart=$XRAY_BIN run -c $JSON_FILE
 $(echo -e "$restart_conf")
-LimitNOFILE=2048
+LimitNOFILE=524288
+LimitNPROC=524288
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -1380,6 +1296,7 @@ install_xray() {
     done
 
     install_deps
+    optimize_network
     
     if ! show_scroll_log "Xray 核心下载" download_core; then
         echo -e "${RED}❌ 核心文件下载或安装失败，终止流程。${NC}"
@@ -1476,8 +1393,6 @@ EOF
         echo -e "${YELLOW}   自动化维护功能可能不可用${NC}"
     fi
     
-    # 初始应用防火墙规则 (如果开启)
-    setup_firewall_rules
     
     echo -e "${GREEN}✅ 安装完成${NC}"
     
@@ -1753,17 +1668,31 @@ maintenance_menu() {
 }
 
 uninstall_xray() {
-    echo -e "${YELLOW}⚠️  警告: 将停止服务并删除配置。${NC}"
+    echo -e "${YELLOW}⚠️  警告: 将执行完全卸载 (服务、配置、日志、脚本文件)${NC}"
     read -p "确认卸载? (y/n): " confirm
     if [[ "$confirm" != "y" ]]; then return; fi
+    
+    echo -e "${BLUE}正在停止服务...${NC}"
     sys_stop 2>/dev/null
     sys_disable 2>/dev/null
-    rm "$SERVICE_FILE"
+    
+    echo -e "${BLUE}正在清理文件...${NC}"
+    rm -f "$SERVICE_FILE"
     rm -rf "$CONF_DIR"
+    rm -rf "$XRAY_DIR"
+    
+    # Defaults from manual variable reading if not sourced
+    local log_d="${LOG_DIR:-$DEFAULT_LOG_DIR}"
+    [ -d "$log_d" ] && rm -rf "$log_d"
+    
+    rm -f "/usr/local/bin/xray-proxya-maintenance"
+    [ -d "/opt/xray-proxya" ] && rm -rf "/opt/xray-proxya"
+
     sys_reload_daemon
-    echo -e "${GREEN}✅ 服务与配置已移除。${NC}"
-    read -p "是否同时删除 Xray 核心文件 ($XRAY_DIR)? (y/N): " del_core
-    if [[ "$del_core" == "y" ]]; then rm -rf "$XRAY_DIR"; echo -e "${GREEN}✅ 核心文件已移除。${NC}"; fi
+    
+    echo -e "${GREEN}✅ 卸载完成。正在自毁...${NC}"
+    rm -f "$0"
+    exit 0
 }
 
 apply_refresh() {
@@ -1773,16 +1702,14 @@ apply_refresh() {
     [ -n "$MEM_LIMIT" ] && sed -i "s/^MEM_LIMIT=.*/MEM_LIMIT=$MEM_LIMIT/" "$CONF_FILE"
     [ -n "$BUFFER_SIZE" ] && sed -i "s/^BUFFER_SIZE=.*/BUFFER_SIZE=$BUFFER_SIZE/" "$CONF_FILE"
     [ -n "$CONN_IDLE" ] && sed -i "s/^CONN_IDLE=.*/CONN_IDLE=$CONN_IDLE/" "$CONF_FILE"
-    # 同步新变量
-    [ -n "$TUN_TPROXY_MODE" ] && sed -i "s/^TUN_TPROXY_MODE=.*/TUN_TPROXY_MODE=$TUN_TPROXY_MODE/" "$CONF_FILE"
-    [ -n "$LOCAL_LISTENER_MODE" ] && sed -i "s/^LOCAL_LISTENER_MODE=.*/LOCAL_LISTENER_MODE=$LOCAL_LISTENER_MODE/" "$CONF_FILE"
-    [ -n "$TUN_TPROXY_TARGET" ] && sed -i "s/^TUN_TPROXY_TARGET=.*/TUN_TPROXY_TARGET=$TUN_TPROXY_TARGET/" "$CONF_FILE"
-    source "$CONF_FILE"; generate_config; setup_firewall_rules; create_service
+    optimize_network
+    source "$CONF_FILE"; generate_config; create_service
     echo -e "${GREEN}✅ 配置已刷新并重启${NC}"; sleep 1
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     check_root
+    optimize_network
     
     if [ -f "$CONF_FILE" ]; then
         source "$CONF_FILE"
