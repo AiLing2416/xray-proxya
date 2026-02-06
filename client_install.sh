@@ -9,6 +9,8 @@ BLUE='\033[0;34m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+REMOTE_SCRIPT_URL="https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/client.sh"
+
 echo -e "${BLUE}=== 安装 Xray-Proxya Client (proxya) ===${NC}"
 
 if [ "$EUID" -ne 0 ]; then
@@ -21,13 +23,14 @@ DEST_FILE="$DEST_DIR/proxya"
 SOURCE_SCRIPT="client.sh"
 
 # 检查当前目录下是否有 client.sh
+# 检查当前目录下是否有 client.sh
 if [ ! -f "$SOURCE_SCRIPT" ]; then
-    # 如果不存在，尝试从 GitHub 下载 (假设仓库结构)
-    # 这里假设安装脚本通常与 client.sh 一起分发，或者从 git 仓库运行
-    # 如果是独立运行，可能需要 curl 下载
-    echo -e "${RED}错误: 未找到 $SOURCE_SCRIPT${NC}"
-    echo "请确保 client.sh 与安装脚本在同一目录下"
-    exit 1
+    echo -e "${BLUE}本地未找到 $SOURCE_SCRIPT，尝试从远程下载...${NC}"
+    curl -sSfL -o "$SOURCE_SCRIPT" "$REMOTE_SCRIPT_URL"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}错误: 下载失败${NC}"
+        exit 1
+    fi
 fi
 
 echo -e "${BLUE}正在安装 proxya 到 $DEST_FILE ...${NC}"
