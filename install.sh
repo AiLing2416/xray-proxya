@@ -16,6 +16,7 @@ MAINTAIN_DIR="/usr/local/bin"
 MAINTAIN_FILENAME="xray-proxya-maintenance"
 MAINTAIN_PATH="$MAINTAIN_DIR/$MAINTAIN_FILENAME"
 
+LIB_DIR="/opt/xray-proxya"
 LIB_PATH="$LIB_DIR/lib.sh"
 
 # 颜色定义
@@ -83,4 +84,3 @@ printf "   ${GREEN}xray-proxya${NC}   (as root)\n"
 printf "   ${GREEN}sudo xray-proxya${NC} (if using sudo)\n"
 echo "Maintenance script: $MAINTAIN_PATH"
 echo "Library path: $LIB_PATH"
-
