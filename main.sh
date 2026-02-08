@@ -549,7 +549,7 @@ parse_link_to_json() {
                     ),
                     ($type + "Settings"): { path: $path }
                 }
-            }'
+            }' || return 1
         return 0
     fi
     # SS
@@ -587,7 +587,7 @@ parse_link_to_json() {
                         password: $password
                     }]
                 }
-            }'
+            }' || return 1
         return 0
     fi
     # WireGuard
@@ -636,7 +636,7 @@ parse_link_to_json() {
                         users: (if $user != "" then [{user: $user, pass: $pass, level: 0}] else [] end)
                     }]
                 }
-            }'
+            }' || return 1
         return 0
     fi
     return 1
@@ -670,7 +670,7 @@ parse_http_proxy() {
                 users: [{ user: $user, pass: $pass }]
             }]
         }
-    }'
+    }' || return 1
 }
 
 
@@ -886,7 +886,7 @@ add_new_custom_outbound() {
             5) echo -e "${RED}无效选择${NC}"; return ;;
     esac
 
-    if [ $ret_code -ne 0 ] || [ -z "$parsed_json" ] || [ "$parsed_json" == "null" ]; then 
+    if [ -z "$parsed_json" ] || [ "$parsed_json" == "null" ]; then 
         echo -e "${RED}❌ 解析失败或不支持该格式${NC}"
         return
     fi
