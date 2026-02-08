@@ -490,16 +490,26 @@ generate_config() {
     elif [ $has_ipv4 -eq 0 ] && [ $has_ipv6 -eq 1 ]; then
         dns_strategy="UseIPv6"
     fi
+
+    
+    # Apply defaults for core variables to prevent jq errors if config is partial
+    local port_vless="${PORT_VLESS:-$DEFAULT_PORT_VLESS_KEM}"
+    local path_vl="${PATH_VL:-/vless}"
+    local port_reality="${PORT_REALITY:-$DEFAULT_PORT_REALITY}"
+    local path_reality="${PATH_REALITY:-/reality}"
+    local port_ss="${PORT_SS:-$DEFAULT_PORT_SS}"
+    local uuid="${UUID:-$(generate_random 36)}"  # Fallback just in case
+    
     local co_args=("--argjson" "custom_outbound" "[]")
     [ -f "$CUSTOM_OUT_FILE" ] && [ -s "$CUSTOM_OUT_FILE" ] && co_args=("--slurpfile" "custom_outbound" "$CUSTOM_OUT_FILE")
 
     jq -n \
         "${co_args[@]}" \
-        --arg port_vless "$PORT_VLESS" --arg dec_key "$DEC_KEY" --arg path_vl "$PATH_VL" \
-        --arg port_reality "$PORT_REALITY" --arg reality_dest "$REALITY_DEST" --arg reality_sni "$REALITY_SNI" --arg reality_pk "$REALITY_PK" --arg reality_sid "$REALITY_SID" --arg path_reality "$PATH_REALITY" \
-        --arg port_ss "$PORT_SS" --arg ss_cipher "$SS_CIPHER" --arg pass_ss "$PASS_SS" \
+        --arg port_vless "$port_vless" --arg dec_key "$DEC_KEY" --arg path_vl "$path_vl" \
+        --arg port_reality "$port_reality" --arg reality_dest "$REALITY_DEST" --arg reality_sni "$REALITY_SNI" --arg reality_pk "$REALITY_PK" --arg reality_sid "$REALITY_SID" --arg path_reality "$path_reality" \
+        --arg port_ss "$port_ss" --arg ss_cipher "$SS_CIPHER" --arg pass_ss "$PASS_SS" \
         --arg port_test "${PORT_TEST:-10000}" --arg port_api "${PORT_API:-10001}" \
-        --arg uuid "$UUID" --arg uuid_custom "$UUID_CUSTOM" \
+        --arg uuid "$uuid" --arg uuid_custom "$UUID_CUSTOM" \
         --arg dns_strategy "$dns_strategy" \
         --arg direct_outbound "${DIRECT_OUTBOUND:-true}" \
     '
@@ -919,7 +929,7 @@ uninstall_xray() {
     rm -f "/usr/local/bin/xray-proxya-maintenance"
     [ -d "/opt/xray-proxya" ] && rm -rf "/opt/xray-proxya"
     sys_reload_daemon
-    echo -e "${GREEN}✅ 卸载完成。正在自毁...${NC}"
+    echo -e "${GREEN}✅ 卸载完成。${NC}"
     rm -f "$0"
     exit 0
 }
