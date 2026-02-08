@@ -1037,6 +1037,16 @@ generate_config() {
         if [ ! -d "$log_dir" ]; then mkdir -p "$log_dir"; fi
     fi
 
+    # Apply defaults for core variables to prevent jq errors if config is partial
+    local port_vmess="${PORT_VMESS:-$DEFAULT_PORT_VMESS}"
+    local path_vm="${PATH_VM:-/vmess}"
+    local port_vless="${PORT_VLESS:-$DEFAULT_PORT_VLESS_KEM}"
+    local path_vl="${PATH_VL:-/vless}"
+    local port_reality="${PORT_REALITY:-$DEFAULT_PORT_REALITY}"
+    local path_reality="${PATH_REALITY:-/reality}"
+    local port_ss="${PORT_SS:-$DEFAULT_PORT_SS}"
+    local uuid="${UUID:-$(generate_random 36)}"  # Fallback just in case
+
     local co_args=()
     if [ -f "$CUSTOM_OUT_FILE" ] && [ -s "$CUSTOM_OUT_FILE" ] && [ "$(cat "$CUSTOM_OUT_FILE")" != "[]" ]; then
          co_args=("--slurpfile" "custom_list" "$CUSTOM_OUT_FILE")
@@ -1049,21 +1059,21 @@ generate_config() {
         --arg log_level "warning" \
         --arg enable_log "$enable_log" \
         --arg log_path "$log_dir/$log_file" \
-        --arg port_vmess "$PORT_VMESS" \
-        --arg path_vm "$PATH_VM" \
-        --arg port_vless "$PORT_VLESS" \
+        --arg port_vmess "$port_vmess" \
+        --arg path_vm "$path_vm" \
+        --arg port_vless "$port_vless" \
         --arg dec_key "$DEC_KEY" \
-        --arg path_vl "$PATH_VL" \
-        --arg port_reality "$PORT_REALITY" \
+        --arg path_vl "$path_vl" \
+        --arg port_reality "$port_reality" \
         --arg reality_dest "$REALITY_DEST" \
         --arg reality_sni "$REALITY_SNI" \
         --arg reality_pk "$REALITY_PK" \
         --arg reality_sid "$REALITY_SID" \
-        --arg path_reality "$PATH_REALITY" \
-        --arg port_ss "$PORT_SS" \
+        --arg path_reality "$path_reality" \
+        --arg port_ss "$port_ss" \
         --arg ss_cipher "$SS_CIPHER" \
         --arg pass_ss "$PASS_SS" \
-        --arg uuid "$UUID" \
+        --arg uuid "$uuid" \
         --arg port_test "$PORT_TEST" \
         --arg port_api "$PORT_API" \
         --arg dns_strategy "$dns_strategy" \
@@ -1690,7 +1700,7 @@ uninstall_xray() {
 
     sys_reload_daemon
     
-    echo -e "${GREEN}✅ 卸载完成。正在自毁...${NC}"
+    echo -e "${GREEN}✅ 卸载完成。${NC}"
     rm -f "$0"
     exit 0
 }
