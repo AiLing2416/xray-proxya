@@ -285,7 +285,7 @@ parse_link_to_json() {
                     tlsSettings: { serverName: $sni },
                     ($type + "Settings"): { path: $path }
                 }
-            }'
+            }' || return 1
         return 0
     fi
     # Shadowsocks
@@ -306,7 +306,7 @@ parse_link_to_json() {
         fi
         [ -z "$method" ] || [ -z "$address" ] && return 1
         jq -n -c --arg a "$address" --arg p "$port" --arg m "$method" --arg pass "$password" \
-            '{tag: "custom-out", protocol: "shadowsocks", settings: { servers: [{ address: $a, port: ($p | tonumber), method: $m, password: $pass }] } }'
+            '{tag: "custom-out", protocol: "shadowsocks", settings: { servers: [{ address: $a, port: ($p | tonumber), method: $m, password: $pass }] } }' || return 1
         return 0
     fi
     # Socks
@@ -321,7 +321,7 @@ parse_link_to_json() {
         else addr_port="$raw"; fi
         local address="${addr_port%%:*}"; local port="${addr_port##*:}"
         jq -n -c --arg a "$address" --arg p "$port" --arg u "$user" --arg pass "$pass" \
-            '{tag: "custom-out", protocol: "socks", settings: { servers: [{ address: $a, port: ($p | tonumber), users: (if $u != "" then [{user: $u, pass: $pass}] else [] end) }] } }'
+            '{tag: "custom-out", protocol: "socks", settings: { servers: [{ address: $a, port: ($p | tonumber), users: (if $u != "" then [{user: $u, pass: $pass}] else [] end) }] } }' || return 1
         return 0
     fi
 
@@ -337,7 +337,7 @@ parse_http_proxy() {
     if [[ "$auth" != *:* ]]; then return 1; fi
     local user="${auth%%:*}"; local pass="${auth#*:}"
     jq -n -c --arg a "$host" --arg p "$port" --arg u "$user" --arg pass "$pass" \
-        '{tag: "custom-out", protocol: "http", settings: { servers: [{ address: $a, port: ($p | tonumber), users: [{user: $u, pass: $pass}] }] } }'
+        '{tag: "custom-out", protocol: "http", settings: { servers: [{ address: $a, port: ($p | tonumber), users: [{user: $u, pass: $pass}] }] } }' || return 1
 }
 
 parse_interface_bind() {
