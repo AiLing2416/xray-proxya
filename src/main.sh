@@ -9,6 +9,7 @@
 DEFAULT_PORT_VMESS=8081
 DEFAULT_PORT_VLESS_KEM=8082
 DEFAULT_PORT_REALITY=8443
+DEFAULT_PORT_VISION=443
 DEFAULT_PORT_SS=8083
 DEFAULT_GEN_LEN=16
 SERVICE_AUTO_RESTART="true"
@@ -25,6 +26,8 @@ SS_CIPHER="aes-256-gcm"
 # Reality 配置
 REALITY_DEST="apple.com:443"
 REALITY_SNI="apple.com"
+VISION_DEST="apple.com:443"
+VISION_SNI="apple.com"
 
 # -----------------
 
@@ -486,25 +489,14 @@ maintenance_menu() {
 }
 
 uninstall_xray() {
-    echo -e "=== 安装向导 ==="
-    
-    if ! inbound_tui_selection; then
-        echo -e "${RED}❌ 端口设定无效，退出安装。${NC}"
-        return 1
+    echo -e "${YELLOW}⚠️  警告: 此操作将删除所有配置、核心文件以及服务。${NC}"
+    read -p "确定要卸载吗? (y/N): " confirm
+    if [[ "$confirm" =~ ^[yY]$ ]]; then
+        core_uninstall_xray
+        exit 0
+    else
+        echo "已取消。"
     fi
-
-    local ports_to_check=()
-    [[ "$PORT_VMESS" != -* ]] && ports_to_check+=("$PORT_VMESS")
-    [[ "$PORT_VLESS" != -* ]] && ports_to_check+=("$PORT_VLESS")
-    [[ "$PORT_REALITY" != -* ]] && ports_to_check+=("$PORT_REALITY")
-    [[ "$PORT_VISION" != -* ]] && ports_to_check+=("$PORT_VISION")
-    [[ "$PORT_SS" != -* ]] && ports_to_check+=("$PORT_SS")
-
-    for p in "${ports_to_check[@]}"; do
-        if check_port_occupied $p; then echo -e "${RED}⚠️ 端口 $p 被占用${NC}"; return; fi
-    done
-
-    core_install_xray "$PORT_VMESS" "$PORT_VLESS" "$PORT_REALITY" "$PORT_VISION" "$PORT_SS"
 }
 
 apply_refresh() {
