@@ -81,6 +81,23 @@ generate_config() {
         echo "PORT_API=$PORT_API" >> "$CONF_FILE"
     fi
 
+    # 自动补全 Vision Reality 密钥
+    if [ -z "$VISION_PK" ] || [ -z "$VISION_SID" ]; then
+        if [ -x "$XRAY_BIN" ]; then
+            local raw_vision_out=$("$XRAY_BIN" x25519 2>&1)
+            VISION_PK=$(echo "$raw_vision_out" | awk -F: 'tolower($0) ~ /private/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
+            VISION_PUB=$(echo "$raw_vision_out" | awk -F: 'tolower($0) ~ /public|password/ {gsub(/[ \r\t]/, "", $NF); print $NF; exit}')
+            VISION_SID=$(openssl rand -hex 4)
+            {
+                echo "VISION_PK=$VISION_PK"
+                echo "VISION_PUB=$VISION_PUB"
+                echo "VISION_SID=$VISION_SID"
+                echo "VISION_SNI=${VISION_SNI:-$REALITY_SNI}"
+                echo "VISION_DEST=${VISION_DEST:-$REALITY_DEST}"
+            } >> "$CONF_FILE"
+        fi
+    fi
+
     # 日志参数默认值
     local enable_log="${ENABLE_LOG:-$DEFAULT_ENABLE_LOG}"
     local log_dir="${LOG_DIR:-$DEFAULT_LOG_DIR}"
@@ -310,7 +327,10 @@ generate_config() {
 create_service() {
     load_config
     if [ $IS_OPENRC -eq 1 ]; then
-        if [ "$SERVICE_AUTO_RESTART" == "true" ]; then
+        local log_dir="/var/log/xray-proxya"
+        [ ! -d "$log_dir" ] && mkdir -p "$log_dir"
+        
+        if [ "$SERVICE_AUTO_RESTART" == "true" ] && command -v supervise-daemon >/dev/null 2>&1; then
             cat > "$SERVICE_FILE" <<-EOF
 #!/sbin/openrc-run
 name="xray-proxya"
@@ -319,11 +339,25 @@ supervisor="supervise-daemon"
 command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 524288"
+output_log="$log_dir/access.log"
+error_log="$log_dir/error.log"
 respawn_delay=5
 respawn_max=0
-depend() { need net; after firewall; }
-start_pre() { source /opt/xray-proxya/lib.sh 2>/dev/null && optimize_network 2>/dev/null || true; }
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -d -m 0755 -o root:root /run
+    
+    # 直接执行网络优化，避免在 OpenRC (sh) 中加载 Bash 库
+    sysctl -w net.core.rmem_max=8388608 >/dev/null 2>&1 || true
+    sysctl -w net.core.wmem_max=8388608 >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+}
 EOF
         else
             cat > "$SERVICE_FILE" <<-EOF
@@ -334,9 +368,22 @@ command="$XRAY_BIN"
 command_args="run -c $JSON_FILE"
 command_background=true
 pidfile="/run/xray-proxya.pid"
-rc_ulimit="-n 524288"
-depend() { need net; after firewall; }
-start_pre() { source /opt/xray-proxya/lib.sh 2>/dev/null && optimize_network 2>/dev/null || true; }
+start_stop_daemon_args="--stdout $log_dir/access.log --stderr $log_dir/error.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -d -m 0755 -o root:root /run
+
+    # 直接执行网络优化，避免在 OpenRC (sh) 中加载 Bash 库
+    sysctl -w net.core.rmem_max=8388608 >/dev/null 2>&1 || true
+    sysctl -w net.core.wmem_max=8388608 >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
+    sysctl -w net.ipv6.conf.all.forwarding=1 >/dev/null 2>&1 || true
+}
 EOF
         fi
         chmod +x "$SERVICE_FILE"
@@ -517,6 +564,8 @@ REALITY_SID=$REALITY_SID
 REALITY_SNI=$REALITY_SNI
 REALITY_DEST=$REALITY_DEST
 VISION_SID=$VISION_SID
+VISION_PK=$VISION_PK
+VISION_PUB=$VISION_PUB
 VISION_SNI=$VISION_SNI
 VISION_DEST=$VISION_DEST
 ENABLE_LOG=$DEFAULT_ENABLE_LOG
