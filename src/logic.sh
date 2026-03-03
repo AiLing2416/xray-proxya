@@ -264,7 +264,10 @@ generate_config() {
             "port": ($port_vision | tonumber),
             "protocol": "vless",
             "settings": {
-                "clients": [ { "id": $uuid, "flow": "xtls-rprx-vision" } ],
+                "clients": (
+                    [ { "id": $uuid, "flow": "xtls-rprx-vision", "email": "direct" } ]
+                    + ($custom_clients | map(. + { "flow": "xtls-rprx-vision" }))
+                ),
                 "decryption": "none"
             },
             "streamSettings": {
