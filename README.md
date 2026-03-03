@@ -1,67 +1,47 @@
 # Xray-Proxya
 
-基于 Xray-core 的自动化代理部署与管理脚本，专注于抗量子安全与受限环境兼容性。
+基于 Xray-core 的自动化代理部署与管理脚本，提供直观的 TUI 菜单与灵活的 CLI 命令行操作。
 
 ### 核心特性
-- **先进协议支持**：默认部署 VLESS-XHTTP-KEM768 (抗量子) 、Reality-TLS 及 VMess-WS。
-- **转发管理**：支持从 URL 导入自定义出站 (SS, Socks5, VMess, VLESS, WireGuard)。
-- **自动化维护**：完善的定时任务接口，支持自动重启、清理日志及核心更新。
-- **配置热更新**：手动重启服务时自动刷新配置，无需重新安装。
-- **纯中转模式**：一键切换禁用本机出站，仅保留自定义转发通道。
-- **跨平台支持**：支持 Debian/Ubuntu 及 Alpine Linux (OpenRC)。
+- **全协议支持**：预设 VLESS-XHTTP-KEM768 (抗量子)、VLESS-Reality (XHTTP/Vision)、VMess-WS 及 Shadowsocks。
+- **命令行管理**：支持通过 `xray-proxya inbound` 快速修改端口、启用/禁用指定入站协议。
+- **流量统计监控**：集成实时连接数统计、各入站总流量及自定义出站流量监控，支持 API 级热查询。
+- **自定义出站 (转发)**：支持从 URL (VMess, VLESS, SS, Socks5) 导入其它服务器作为中转出口。
+- **纯中转模式**：支持一键禁用本机直连出站，仅允许流量通过自定义转发通道。
+- **接口绑定 (Interface Binding)**：支持将 Xray 流量绑定至特定网卡（如 VPN 接口），实现透明网关级转发。
+- **跨平台兼容**：适配 Debian/Ubuntu (systemd) 及 Alpine Linux (OpenRC)。
 
 ### 快速安装
 
-**标准版** (功能完整)：
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh)
 ```
 
-**轻量版** (低内存适配)：
+### 管理工具
+
+#### 1. 交互式菜单 (TUI)
+输入 `xray-proxya` 进入管理面板。支持安装、重置密钥、管理链接、配置网络优化等。
+
+#### 2. 命令行操作 (CLI)
+支持免交互管理入站监听状态：
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/lite_install.sh)
+sudo xray-proxya help
 ```
 
-### 使用指南
-- 安装完成后使用 `sudo xray-proxya` 调用管理菜单。
-- 推荐使用 `VLESS-XHTTP-KEM768` 实现抗量子安全。
-- 若不使用卸载功能就切换版本，可能导致意料之外的后果。
+### 技术细节
 
-### 协议说明
-- **UDP**: 所有 XHTTP 协议均支持 UDP over TCP。
-- **安全**: 建议在受限环境下结合 CDN 使用 VMess/VLESS-KEM，或直连使用 Reality。
+| 协议类型 | 传输方式 | 安全特征 | 建议场景 |
+| :--- | :--- | :--- | :--- |
+| **VLESS** | XHTTP (KEM768) | 抗量子安全 (ML-KEM) | 极高安全性需求 |
+| **VLESS** | XHTTP (Reality) | 伪装站 TLS 握手 | 强干扰环境直连 |
+| **VLESS** | TCP (Vision) | XTLS-Reality 伪装 | 兼容性与性能均衡 |
+| **VMess** | WebSocket | 路径伪装 (WS) | 配合 CDN 使用 |
+| **Shadowsocks** | TCP/UDP | Aead 加密 | 基础转发与老旧设备 |
 
-### 接口绑定 (Interface Binding)
+### 接口绑定说明
+此功能适用于将 Xray 流量转发至特定的网络接口（如 `wg0`）。使用前请确保目标接口已启动，并在管理菜单中选择 `5. 自定义出站` -> `4. 绑定本地网络接口` 进行配置。
 
-此功能允许 Xray 通过特定的本地网络接口（如 `wg0`, `tun0`）发送流量，适用于将 Xray 作为 VPN 网关的场景。
-
-#### 1. 配置 WireGuard (或其它 VPN)
-在使用接口绑定前，请确保您的 VPN 接口已启动且能够正常访问互联网。
-**注意**：为了防止路由循环，建议在 WireGuard 配置中禁用自动生成默认路由：
-```ini
-[Interface]
-# 示例配置
-PrivateKey = <YOUR_PRIVATE_KEY>
-Address = 10.0.0.2/24
-DNS = 1.1.1.1
-# 关键：禁用自动全局路由
-Table = off
-
-[Peer]
-PublicKey = <SERVER_PUBLIC_KEY>
-Endpoint = <SERVER_IP>:51820
-AllowedIPs = 0.0.0.0/0
-```
-
-#### 2. 在 Xray-Proxya 中设置
-1. 进入菜单：`5. 自定义出站` -> `4. 绑定本地网络接口 (Interface Bind)`。
-2. **接口名**：输入您的网卡名。
-3. **绑定 IP**：输入该网卡上的本地 IP。
-
-#### 3. 常见问题排查
-- **无法连接**：请检查 VPN 服务端是否开启了 **IP 转发** 与 **NAT**。
-- **权限问题**：接口绑定需要 `CAP_NET_ADMIN` 权限，脚本已自动为 Xray 服务配置该能力。
-- **RP Filter**：如果还是不通，可以尝试关闭系统的反向路径过滤：
-  ```bash
-  sysctl -w net.ipv4.conf.all.rp_filter=0
-  ```
+### 注意事项
+- **根目录权限**：所有管理操作均需 `root` 权限。
+- **配置文件**：环境变量存储于 `/etc/xray-proxya/config.env`，建议定期备份。
+- **自动化维护**：脚本内置维护工具 `/usr/local/bin/xray-proxya-maintenance`，可用于定时任务。
