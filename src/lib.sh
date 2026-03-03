@@ -30,13 +30,13 @@ DEFAULT_PORT_SS=${DEFAULT_PORT_SS:-8083}
 SERVICE_AUTO_RESTART=${SERVICE_AUTO_RESTART:-"true"}
 
 # Encryption / Cipher Defaults
-VMESS_CIPHER="chacha20-poly1305"
-SS_CIPHER="aes-256-gcm"
-REALITY_DEST="apple.com:443"
-REALITY_SNI="apple.com"
+VMESS_CIPHER=${VMESS_CIPHER:-"chacha20-poly1305"}
+SS_CIPHER=${SS_CIPHER:-"aes-256-gcm"}
+REALITY_DEST=${REALITY_DEST:-"apple.com:443"}
+REALITY_SNI=${REALITY_SNI:-"apple.com"}
 
-VISION_DEST="www.microsoft.com:443"
-VISION_SNI="www.microsoft.com"
+VISION_DEST=${VISION_DEST:-"apple.com:443"}
+VISION_SNI=${VISION_SNI:-"apple.com"}
 
 # Detect System
 IS_OPENRC=0
@@ -162,22 +162,44 @@ get_runtime_formatted() {
 }
 
 sys_enable() {
-    [ "$IS_OPENRC" -eq 1 ] && rc-update add xray-proxya default >/dev/null 2>&1 || systemctl enable xray-proxya >/dev/null 2>&1
+    if [ "$IS_OPENRC" -eq 1 ]; then
+        rc-update add xray-proxya default >/dev/null 2>&1
+    else
+        systemctl enable xray-proxya >/dev/null 2>&1
+    fi
 }
 sys_disable() {
-    [ "$IS_OPENRC" -eq 1 ] && rc-update del xray-proxya default >/dev/null 2>&1 || systemctl disable xray-proxya >/dev/null 2>&1
+    if [ "$IS_OPENRC" -eq 1 ]; then
+        rc-update del xray-proxya default >/dev/null 2>&1
+    else
+        systemctl disable xray-proxya >/dev/null 2>&1
+    fi
 }
 sys_start() {
-    [ "$IS_OPENRC" -eq 1 ] && rc-service xray-proxya start || systemctl start xray-proxya
+    if [ "$IS_OPENRC" -eq 1 ]; then
+        rc-service xray-proxya start
+    else
+        systemctl start xray-proxya
+    fi
 }
 sys_stop() {
-    [ "$IS_OPENRC" -eq 1 ] && rc-service xray-proxya stop || systemctl stop xray-proxya
+    if [ "$IS_OPENRC" -eq 1 ]; then
+        rc-service xray-proxya stop
+    else
+        systemctl stop xray-proxya
+    fi
 }
 sys_restart() {
-    [ "$IS_OPENRC" -eq 1 ] && rc-service xray-proxya restart || systemctl restart xray-proxya
+    if [ "$IS_OPENRC" -eq 1 ]; then
+        rc-service xray-proxya restart
+    else
+        systemctl restart xray-proxya
+    fi
 }
 sys_reload_daemon() {
-    [ "$IS_OPENRC" -eq 0 ] && systemctl daemon-reload
+    if [ "$IS_OPENRC" -eq 0 ] && command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload
+    fi
 }
 
 check_status() {
