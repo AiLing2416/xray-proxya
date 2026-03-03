@@ -50,10 +50,15 @@ restart_service() {
             exit 1
         fi
     else
-        if systemctl restart xray-proxya 2>/dev/null; then
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ 服务重启成功 (systemd)"
+        if command -v systemctl >/dev/null 2>&1; then
+            if systemctl restart xray-proxya 2>/dev/null; then
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ✅ 服务重启成功 (systemd)"
+            else
+                echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ 服务重启失败 (systemd)" >&2
+                exit 1
+            fi
         else
-            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ 服务重启失败 (systemd)" >&2
+            echo "[$(date '+%Y-%m-%d %H:%M:%S')] ❌ 错误: 未找到 rc-service 或 systemctl" >&2
             exit 1
         fi
     fi
