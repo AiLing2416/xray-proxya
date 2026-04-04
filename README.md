@@ -21,13 +21,13 @@ Xray-Proxya is a professional, Go-based proxy management tool and transparent ga
 
 ### One-Click Install
 ```bash
-curl -Ls https://raw.githubusercontent.com/paimon-vless/xray-proxya/main/install.sh | bash
+curl -Ls https://raw.githubusercontent.com/ailing2416/xray-proxya/main/install.sh | bash
 ```
 
 ### Manual Build
 Requires Go 1.25+
 ```bash
-git clone https://github.com/paimon-vless/xray-proxya
+git clone https://github.com/ailing2416/xray-proxya
 cd xray-proxya
 CGO_ENABLED=0 go build -o xray-proxya ./cmd/xray-proxya/
 sudo mv xray-proxya /usr/local/bin/
