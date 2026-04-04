@@ -43,12 +43,13 @@ type GatewayConfig struct {
 }
 
 type CustomOutbound struct {
-	Alias       string                 `json:"alias"`
-	Enabled     bool                   `json:"enabled"`
-	UserUUID    string                 `json:"user_uuid"`
-	DNSStrategy string                 `json:"dns_strategy,omitempty"` // "follow", "direct", "manual"
-	DNSServers  []string               `json:"dns_servers,omitempty"`  // e.g. ["https://8.8.8.8/dns-query"]
-	Config      map[string]interface{} `json:"config"`
+	Alias             string                 `json:"alias"`
+	Enabled           bool                   `json:"enabled"`
+	UserUUID          string                 `json:"user_uuid"`
+	DNSStrategy       string                 `json:"dns_strategy,omitempty"` // "follow", "direct", "manual"
+	DNSServers        []string               `json:"dns_servers,omitempty"`  // e.g. ["https://8.8.8.8/dns-query"]
+	InternalProxyPort int                    `json:"internal_proxy_port,omitempty"`
+	Config            map[string]interface{} `json:"config"`
 }
 
 type ModeInfo struct {

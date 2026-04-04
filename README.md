@@ -21,13 +21,13 @@ Xray-Proxya is a professional, Go-based proxy management tool and transparent ga
 
 ### One-Click Install
 ```bash
-curl -Ls https://raw.githubusercontent.com/ailing2416/xray-proxya/main/install.sh | bash
+curl -Ls https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh | bash
 ```
 
 ### Manual Build
 Requires Go 1.25+
 ```bash
-git clone https://github.com/ailing2416/xray-proxya
+git clone https://github.com/AiLing2416/xray-proxya
 cd xray-proxya
 CGO_ENABLED=0 go build -o xray-proxya ./cmd/xray-proxya/
 sudo mv xray-proxya /usr/local/bin/
@@ -69,12 +69,13 @@ xray-proxya apply
 - `presets`: Manage pre-defined inbound slots.
 - `outbound`: Manage relay nodes and interface bindings.
 - `gateway`: Configure transparent proxy settings and blacklists.
-- `service`: Install/Uninstall systemd service and view logs.
+- `service`: Manage background service (Root required).
 - `status`: Show real-time traffic and process info.
 - `apply / undo`: Commit or discard staging changes.
+- `reset / purge / update`: Maintenance and cleanup tools.
 
 ## Development
 
-The project is built with a focus on **Rootless** execution where possible. Higher-level gateway features (TUN/TPROXY) leverage Linux capabilities (`setcap`) or explicit `sudo` calls for kernel interactions.
+The project is built with a focus on **Rootless** execution where possible. Higher-level gateway features (TUN/TPROXY) leverage Linux capabilities (`setcap`) or explicit root access for kernel interactions.
 
 Built with ❤️ by the Xray-Proxya team.

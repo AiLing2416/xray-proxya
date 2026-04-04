@@ -99,3 +99,29 @@ func isPublicIP(ip net.IP) bool {
 	// For IPv6, simple check: global unicast range 2000::/3
 	return (ip[0] & 0xe0) == 0x20
 }
+
+func GetLocalPrivateIPs() []string {
+	var ips []string
+	ifaces, _ := net.Interfaces()
+	for _, i := range ifaces {
+		addrs, _ := i.Addrs()
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet: ip = v.IP
+			case *net.IPAddr: ip = v.IP
+			}
+			if ip != nil && ip.To4() != nil {
+				// isPublicIP returns true for non-RFC1918 IPs
+				if !isPublicIP(ip) {
+					ips = append(ips, ip.String())
+				}
+			}
+		}
+	}
+	// Always include localhost
+	foundLocal := false
+	for _, s := range ips { if s == "127.0.0.1" { foundLocal = true; break } }
+	if !foundLocal { ips = append(ips, "127.0.0.1") }
+	return ips
+}

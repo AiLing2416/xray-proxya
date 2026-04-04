@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 )
 
 type XrayConfig struct {
@@ -230,7 +231,34 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 		xc.Inbounds = append(xc.Inbounds, in)
 	}
 
-	// 2. Gateway Inbounds
+	// 2. Gateway & Internal Proxy Inbounds
+	privateIPs := utils.GetLocalPrivateIPs()
+
+	for _, co := range userCfg.CustomOutbounds {
+		if !co.Enabled || co.InternalProxyPort == 0 { continue }
+		
+		for _, lip := range privateIPs {
+			// Socks
+			xc.Inbounds = append(xc.Inbounds, InboundConfig{
+				Tag:      fmt.Sprintf("internal-socks-%s-%s", co.Alias, lip),
+				Listen:   lip,
+				Port:     co.InternalProxyPort,
+				Protocol: "socks",
+				Settings: map[string]interface{}{"auth": "noauth", "udp": true},
+				Sniffing: &SniffingConfig{Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"}},
+			})
+			// HTTP
+			xc.Inbounds = append(xc.Inbounds, InboundConfig{
+				Tag:      fmt.Sprintf("internal-http-%s-%s", co.Alias, lip),
+				Listen:   lip,
+				Port:     co.InternalProxyPort + 1,
+				Protocol: "http",
+				Settings: map[string]interface{}{"auth": "noauth"},
+				Sniffing: &SniffingConfig{Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"}},
+			})
+		}
+	}
+
 	if userCfg.Gateway.Enabled {
 		dnsPort := 53
 		if p, ok := overridePorts["dns-in"]; ok { dnsPort = p }
@@ -310,11 +338,10 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 	testPort := userCfg.TestInbound
 	if p, ok := overridePorts["test-socks"]; ok { testPort = p }
 
-	var testAccounts []map[string]interface{}
-	testAccounts = append(testAccounts, map[string]interface{}{"user": "direct", "pass": "test"})
+	testAccounts := []map[string]interface{}{{"user": "direct", "pass": "test"}}
 	for _, co := range userCfg.CustomOutbounds {
 		if !co.Enabled { continue }
-		testAccounts = append(testAccounts, map[string]interface{}{"user": "test-" + co.Alias, "pass": "test"})
+		testAccounts = append(testAccounts, map[string]interface{}{"user": "user-" + co.Alias, "pass": "test"})
 	}
 
 	xc.Inbounds = append(xc.Inbounds, InboundConfig{
@@ -374,6 +401,23 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 			Type:        "field",
 			InboundTag:  []string{"tun-in", "tproxy-in"},
 			OutboundTag: "outbound-" + userCfg.Gateway.RelayAlias,
+		})
+	}
+
+	// Internal Proxy Routing
+	for _, co := range userCfg.CustomOutbounds {
+		if !co.Enabled || co.InternalProxyPort == 0 { continue }
+		
+		var inboundTags []string
+		for _, lip := range privateIPs {
+			inboundTags = append(inboundTags, fmt.Sprintf("internal-socks-%s-%s", co.Alias, lip))
+			inboundTags = append(inboundTags, fmt.Sprintf("internal-http-%s-%s", co.Alias, lip))
+		}
+
+		rules = append(rules, RoutingRule{
+			Type:        "field",
+			InboundTag:  inboundTags,
+			OutboundTag: "outbound-" + co.Alias,
 		})
 	}
 
