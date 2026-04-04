@@ -1,6 +1,7 @@
 #!/bin/bash
 
 # Xray-Proxya One-Click Installer
+# Repository: https://github.com/AiLing2416/xray-proxya
 # Supports x86_64 and arm64
 
 set -e

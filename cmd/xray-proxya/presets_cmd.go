@@ -9,7 +9,7 @@ import (
 
 var presetsCmd = &cobra.Command{
 	Use:   "presets",
-	Short: "Manage preset inbounds (STAGING)",
+	Short: "Manage preset inbound slots (STAGING)",
 }
 
 var roleMap = map[string]config.PresetMode{
@@ -64,7 +64,13 @@ func findPreset(cfg *config.UserConfig, input string) int {
 
 var presetsSetCmd = &cobra.Command{
 	Use:   "set [ID|Role]",
-	Short: "Set parameters for a preset (STAGING)",
+	Short: "Modify preset parameters (port, state, secrets)",
+	ValidArgs: []string{"1", "2", "3", "4", "5", "r", "v", "q", "c", "s", "reality", "vision", "quantum", "classic", "socks"},
+	Long: `Modify a preset inbound in STAGING area.
+Examples:
+  xray-proxya presets set 1 --port 8443 --on
+  xray-proxya presets set quantum --off
+  xray-proxya presets set 3 -r (flag for secret regeneration on next apply)`,
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
@@ -76,39 +82,24 @@ var presetsSetCmd = &cobra.Command{
 
 		idx := findPreset(cfg, args[0])
 		if idx != -1 {
+			// 1. Handle Port
 			port, _ := cmd.Flags().GetInt("port")
 			if port != 0 { cfg.ActiveModes[idx].Port = port }
 			
-			if cmd.Flags().Changed("enable") {
-				en, _ := cmd.Flags().GetBool("enable")
-				cfg.ActiveModes[idx].Enabled = en
-			}
+			// 2. Handle State
+			if cmd.Flags().Changed("on") { cfg.ActiveModes[idx].Enabled = true }
+			if cmd.Flags().Changed("off") { cfg.ActiveModes[idx].Enabled = false }
+			
+			// 3. Handle Regeneration
+			regen, _ := cmd.Flags().GetBool("regen")
+			if regen { cfg.ActiveModes[idx].RegenFlag = true }
 			
 			cfg.SaveEx(true)
-			fmt.Printf("✅ Updated slot %d [%s] in STAGING area.\n", idx+1, techLabels[cfg.ActiveModes[idx].Mode])
-		} else {
-			fmt.Printf("❌ Preset identifier '%s' not found.\n", args[0])
-		}
-	},
-}
-
-var presetsRegenCmd = &cobra.Command{
-	Use:   "regen [ID|Role]",
-	Short: "Flag a preset to regenerate secrets (STAGING)",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil { return }
-		if cfg.Role != config.RoleServer {
-			fmt.Printf("❌ Command 'presets' is only available in 'server' mode.\n")
-			return
-		}
-
-		idx := findPreset(cfg, args[0])
-		if idx != -1 {
-			cfg.ActiveModes[idx].RegenFlag = true
-			cfg.SaveEx(true)
-			fmt.Printf("✅ Slot %d [%s] flagged for regeneration in STAGING.\n", idx+1, techLabels[cfg.ActiveModes[idx].Mode])
+			status := "OFF"
+			if cfg.ActiveModes[idx].Enabled { status = "ON" }
+			fmt.Printf("✅ Updated slot %d [%s] -> Status: %s, Port: %d (STAGING)\n", 
+				idx+1, techLabels[cfg.ActiveModes[idx].Mode], status, cfg.ActiveModes[idx].Port)
+			if regen { fmt.Println("✨ Secrets will be regenerated on next 'apply'.") }
 		} else {
 			fmt.Printf("❌ Preset identifier '%s' not found.\n", args[0])
 		}
@@ -117,8 +108,10 @@ var presetsRegenCmd = &cobra.Command{
 
 func init() {
 	presetsSetCmd.Flags().IntP("port", "p", 0, "Set new port")
-	presetsSetCmd.Flags().Bool("enable", true, "Enable/disable the preset")
+	presetsSetCmd.Flags().Bool("on", false, "Enable the preset")
+	presetsSetCmd.Flags().Bool("off", false, "Disable the preset")
+	presetsSetCmd.Flags().BoolP("regen", "r", false, "Regenerate secrets (keys/passwords) on apply")
 	
-	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd, presetsRegenCmd)
+	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd)
 	rootCmd.AddCommand(presetsCmd)
 }

@@ -25,8 +25,8 @@ var runCmd = &cobra.Command{
 
 		if cfg.Role == config.RoleGateway {
 			fmt.Println("⚙️ [Gateway Mode] Auto-configuring environment...")
-			exec.Command("sudo", xray.GetXrayProxyaPath(), "gateway", "setup-kernel").Run()
-			exec.Command("sudo", xray.GetXrayProxyaPath(), "gateway", "sync-firewall").Run()
+			exec.Command(xray.GetXrayProxyaPath(), "gateway", "setup-kernel").Run()
+			exec.Command(xray.GetXrayProxyaPath(), "gateway", "sync-firewall").Run()
 		}
 
 		fmt.Println("🔍 Validating configuration...")

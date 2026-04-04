@@ -29,6 +29,7 @@ var gatewayStatusCmd = &cobra.Command{
 		fmt.Printf("Status: %s\n", status)
 		fmt.Printf("Mode:   %s\n", cfg.Gateway.Mode)
 		fmt.Printf("Relay:  %s\n", cfg.Gateway.RelayAlias)
+		fmt.Printf("LAN:    %s\n", cfg.Gateway.LANInterface)
 		fmt.Printf("Blacklist count: %d\n", len(cfg.Gateway.Blacklist))
 		fmt.Printf("Blacklist IPs:   %d\n", len(cfg.Gateway.BlacklistIPs))
 	},
@@ -41,7 +42,7 @@ var gatewayEnableCmd = &cobra.Command{
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil { return }
 		if cfg.Role != config.RoleGateway {
-			fmt.Printf("❌ Mode lock: Current role is %s.\n", cfg.Role)
+			fmt.Printf("❌ Command 'gateway %s' is only available in 'gateway' mode (Current: %s).\n", cmd.Name(), cfg.Role)
 			return
 		}
 		cfg.Gateway.Enabled = true
@@ -58,7 +59,7 @@ var gatewayDisableCmd = &cobra.Command{
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil { return }
 		if cfg.Role != config.RoleGateway {
-			fmt.Printf("❌ Mode lock: Current role is %s.\n", cfg.Role)
+			fmt.Printf("❌ Command 'gateway %s' is only available in 'gateway' mode (Current: %s).\n", cmd.Name(), cfg.Role)
 			return
 		}
 		cfg.Gateway.Enabled = false
@@ -74,7 +75,7 @@ var gatewaySetCmd = &cobra.Command{
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil { return }
 		if cfg.Role != config.RoleGateway {
-			fmt.Printf("❌ Mode lock: Current role is %s.\n", cfg.Role)
+			fmt.Printf("❌ Command 'gateway %s' is only available in 'gateway' mode (Current: %s).\n", cmd.Name(), cfg.Role)
 			return
 		}
 		
@@ -93,34 +94,32 @@ var gatewaySetCmd = &cobra.Command{
 
 var gatewaySyncFirewallCmd = &cobra.Command{
 	Use:   "sync-firewall",
-	Short: "Sync blacklist IPs to system nftables (requires sudo)",
+	Short: "Sync blacklist IPs to system nftables (Requires Root)",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfig() // Use ACTIVE config for firewall
+		cfg, _ := config.LoadConfig()
 		if cfg == nil { return }
-		// Firewall sync is an operational task, not staging
-		// But we check role
 		if cfg.Role != config.RoleGateway {
-			fmt.Printf("❌ Command only available in gateway mode.\n")
+			fmt.Printf("❌ Command 'gateway %s' is only available in 'gateway' mode (Current: %s).\n", cmd.Name(), cfg.Role)
 			return
 		}
 
 		fmt.Println("🛡️ Syncing kernel-level blacklist...")
-		// ... (rest of sync logic remains same)
-		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_gateway").Run()
-		exec.Command("sudo", "nft", "add", "table", "inet", "xray_gateway").Run()
-		exec.Command("sudo", "nft", "add", "set", "inet", "xray_gateway", "blacklist_ips", "{ type ipv4_addr; flags interval; }").Run()
-		exec.Command("sudo", "nft", "add", "set", "inet", "xray_gateway", "blacklist_ips6", "{ type ipv6_addr; flags interval; }").Run()
-		exec.Command("sudo", "nft", "add", "chain", "inet", "xray_gateway", "prerouting", "{ type filter hook prerouting priority -300; policy accept; }").Run()
-		exec.Command("sudo", "nft", "add", "chain", "inet", "xray_gateway", "forward", "{ type filter hook forward priority 0; policy accept; }").Run()
+		
+		exec.Command("nft", "delete", "table", "inet", "xray_gateway").Run()
+		exec.Command("nft", "add", "table", "inet", "xray_gateway").Run()
+		exec.Command("nft", "add", "set", "inet", "xray_gateway", "blacklist_ips", "{ type ipv4_addr; flags interval; }").Run()
+		exec.Command("nft", "add", "set", "inet", "xray_gateway", "blacklist_ips6", "{ type ipv6_addr; flags interval; }").Run()
+		exec.Command("nft", "add", "chain", "inet", "xray_gateway", "prerouting", "{ type filter hook prerouting priority -300; policy accept; }").Run()
+		exec.Command("nft", "add", "chain", "inet", "xray_gateway", "forward", "{ type filter hook forward priority 0; policy accept; }").Run()
 
 		for _, ipStr := range cfg.Gateway.BlacklistIPs {
 			set := "blacklist_ips"
 			if net.ParseIP(ipStr).To4() == nil { set = "blacklist_ips6" }
-			exec.Command("sudo", "nft", "add", "element", "inet", "xray_gateway", set, "{ "+ipStr+" }").Run()
+			exec.Command("nft", "add", "element", "inet", "xray_gateway", set, "{ "+ipStr+" }").Run()
 		}
 		
-		exec.Command("sudo", "nft", "add", "rule", "inet", "xray_gateway", "prerouting", "ip daddr @blacklist_ips drop").Run()
-		exec.Command("sudo", "nft", "add", "rule", "inet", "xray_gateway", "forward", "ip daddr @blacklist_ips drop").Run()
+		exec.Command("nft", "add", "rule", "inet", "xray_gateway", "prerouting", "ip daddr @blacklist_ips drop").Run()
+		exec.Command("nft", "add", "rule", "inet", "xray_gateway", "forward", "ip daddr @blacklist_ips drop").Run()
 		
 		fmt.Println("✅ Kernel blacklist synced.")
 	},
@@ -134,7 +133,7 @@ var gatewayBlacklistAddCmd = &cobra.Command{
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil { return }
 		if cfg.Role != config.RoleGateway {
-			fmt.Printf("❌ Mode lock: Current role is %s.\n", cfg.Role)
+			fmt.Printf("❌ Command 'gateway %s' is only available in 'gateway' mode (Current: %s).\n", cmd.Name(), cfg.Role)
 			return
 		}
 		
@@ -144,7 +143,6 @@ var gatewayBlacklistAddCmd = &cobra.Command{
 		} else if ip := net.ParseIP(input); ip != nil {
 			addBlacklistIP(cfg, input)
 		} else {
-			// Domain
 			cfg.Gateway.Blacklist = append(cfg.Gateway.Blacklist, input)
 			fmt.Printf("🔍 Resolving IPs for %s...\n", input)
 			ips, _ := net.LookupIP(input)
@@ -165,16 +163,21 @@ func addBlacklistIP(cfg *config.UserConfig, ipStr string) {
 
 var gatewaySetupKernelCmd = &cobra.Command{
 	Use:   "setup-kernel",
-	Short: "Configure kernel parameters (requires sudo)",
+	Short: "Configure kernel parameters (Requires Root)",
 	Run: func(cmd *cobra.Command, args []string) {
-		// ... same logic
+		cfg, _ := config.LoadConfig()
+		if cfg == nil { return }
+		if cfg.Role != config.RoleGateway {
+			fmt.Printf("❌ Command 'gateway %s' is only available in 'gateway' mode (Current: %s).\n", cmd.Name(), cfg.Role)
+			return
+		}
 		params := [][]string{
 			{"net.ipv4.ip_forward", "1"},
 			{"net.ipv6.conf.all.forwarding", "1"},
 			{"net.ipv4.conf.all.rp_filter", "0"},
 			{"net.ipv4.conf.default.rp_filter", "0"},
 		}
-		for _, p := range params { exec.Command("sudo", "sysctl", "-w", p[0]+"="+p[1]).Run() }
+		for _, p := range params { exec.Command("sysctl", "-w", p[0]+"="+p[1]).Run() }
 		fmt.Println("✅ Kernel parameters optimized.")
 	},
 }

@@ -275,9 +275,16 @@ func GetRandomShortID() string {
 func RestartXrayService() error {
 	fmt.Println("🔄 Restarting Xray service...")
 	if IsServiceActive() {
-		fmt.Println("🛰️ Systemd service detected, restarting via systemctl...")
-		return exec.Command("sudo", "systemctl", "restart", "xray-proxya").Run()
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			fmt.Println("🛰️ Systemd service detected, restarting via systemctl...")
+			return exec.Command("systemctl", "restart", "xray-proxya").Run()
+		}
+		if _, err := exec.LookPath("rc-service"); err == nil {
+			fmt.Println("🛰️ OpenRC service detected, restarting via rc-service...")
+			return exec.Command("rc-service", "xray-proxya", "restart").Run()
+		}
 	}
+
 
 	// Manual fallback
 	StopXray()
@@ -300,8 +307,17 @@ func RestartXrayService() error {
 }
 
 func IsServiceActive() bool {
-	err := exec.Command("sudo", "systemctl", "is-active", "--quiet", "xray-proxya").Run()
-	return err == nil
+	// Try systemd
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		err := exec.Command("systemctl", "is-active", "--quiet", "xray-proxya").Run()
+		return err == nil
+	}
+	// Try OpenRC
+	if _, err := exec.LookPath("rc-service"); err == nil {
+		err := exec.Command("rc-service", "xray-proxya", "status").Run()
+		return err == nil
+	}
+	return false
 }
 
 func GetXrayProxyaPath() string {

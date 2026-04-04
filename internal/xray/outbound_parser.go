@@ -272,7 +272,13 @@ func parseSocks(link string) (map[string]interface{}, error) {
 	if u.User.Username() != "" {
 		srv["users"] = []interface{}{map[string]interface{}{"user": u.User.Username(), "pass": pass}}
 	}
-	return map[string]interface{}{"protocol": "socks", "settings": map[string]interface{}{"servers": []interface{}{srv}}}, nil
+	return map[string]interface{}{
+		"protocol": "socks",
+		"settings": map[string]interface{}{
+			"servers": []interface{}{srv},
+			"udp":     true,
+		},
+	}, nil
 }
 
 func parseHTTP(link string) (map[string]interface{}, error) {
@@ -289,7 +295,12 @@ func parseHTTP(link string) (map[string]interface{}, error) {
 	if u.User.Username() != "" {
 		srv["users"] = []interface{}{map[string]interface{}{"user": u.User.Username(), "pass": pass}}
 	}
-	return map[string]interface{}{"protocol": "http", "settings": map[string]interface{}{"servers": []interface{}{srv}}}, nil
+	return map[string]interface{}{
+		"protocol": "http",
+		"settings": map[string]interface{}{
+			"servers": []interface{}{srv},
+		},
+	}, nil
 }
 
 func ParseInterfaceBind(iface string, bindAddr string) (map[string]interface{}, error) {
