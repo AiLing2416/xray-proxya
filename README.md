@@ -66,13 +66,16 @@ xray-proxya apply
 
 ## CLI Reference
 
-- `presets`: Manage pre-defined inbound slots.
-- `outbound`: Manage relay nodes and interface bindings.
+- `presets`: Manage pre-defined inbound slots (Reality, Vision, KEM, etc.).
+- `outbound`: Manage relay nodes, interface bindings, and **internal proxies**.
+- `outbound info`: Fetch detailed landing node profiles and media unlock tests.
 - `gateway`: Configure transparent proxy settings and blacklists.
-- `service`: Manage background service (Root required).
+- `service`: Manage background service (Systemd/OpenRC, Root required).
 - `status`: Show real-time traffic and process info.
+- `show`: Display sharing links. Use `-o` to filter by relay alias.
 - `apply / undo`: Commit or discard staging changes.
-- `reset / purge / update`: Maintenance and cleanup tools.
+- `reset / purge / update`: Maintenance, full uninstall, or core update.
+- `completion install`: One-click setup for shell autocompletion.
 
 ## Development
 

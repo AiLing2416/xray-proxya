@@ -259,19 +259,55 @@ func parseVMess(link string) (map[string]interface{}, error) {
 }
 
 func parseSocks(link string) (map[string]interface{}, error) {
-	u, err := url.Parse(link)
-	if err != nil {
-		return nil, err
+	raw := strings.TrimPrefix(link, "socks://")
+	raw = strings.TrimPrefix(raw, "socks5://")
+	if hashIdx := strings.Index(raw, "#"); hashIdx != -1 {
+		raw = raw[:hashIdx]
 	}
-	pass, _ := u.User.Password()
-	port, _ := strconv.Atoi(u.Port())
+
+	parts := strings.Split(raw, "@")
+	var user, pass, hostPort string
+
+	if len(parts) == 2 {
+		auth := parts[0]
+		hostPort = parts[1]
+		// Try Base64 decode
+		decoded, err := base64.StdEncoding.DecodeString(auth)
+		if err != nil {
+			if !strings.HasSuffix(auth, "=") {
+				decoded, err = base64.StdEncoding.DecodeString(auth + "==")
+			}
+		}
+		
+		if err == nil && strings.Contains(string(decoded), ":") {
+			authParts := strings.SplitN(string(decoded), ":", 2)
+			user, pass = authParts[0], authParts[1]
+		} else if strings.Contains(auth, ":") {
+			// Plain user:pass
+			authParts := strings.SplitN(auth, ":", 2)
+			user, pass = authParts[0], authParts[1]
+		} else {
+			user = auth
+		}
+	} else {
+		hostPort = parts[0]
+	}
+
+	host, portStr, err := net.SplitHostPort(hostPort)
+	if err != nil {
+		host = hostPort
+		portStr = "1080"
+	}
+	port, _ := strconv.Atoi(portStr)
+
 	srv := map[string]interface{}{
-		"address": u.Hostname(),
+		"address": host,
 		"port":    port,
 	}
-	if u.User.Username() != "" {
-		srv["users"] = []interface{}{map[string]interface{}{"user": u.User.Username(), "pass": pass}}
+	if user != "" {
+		srv["users"] = []interface{}{map[string]interface{}{"user": user, "pass": pass}}
 	}
+
 	return map[string]interface{}{
 		"protocol": "socks",
 		"settings": map[string]interface{}{

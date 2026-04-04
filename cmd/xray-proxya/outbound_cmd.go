@@ -6,9 +6,9 @@ import (
 	"net"
 	"net/http"
 	"time"
-	"io"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/utils"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -115,9 +115,7 @@ var infoOutboundCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil { return }
-
+		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
 		var target *config.CustomOutbound
 		for _, co := range cfg.CustomOutbounds {
 			if co.Alias == alias { target = &co; break }
@@ -125,8 +123,6 @@ var infoOutboundCmd = &cobra.Command{
 		if target == nil { fmt.Printf("❌ Relay '%s' not found.\n", alias); return }
 
 		fmt.Printf("🔍 Fetching landing profile for '%s'...\n", alias)
-		
-		// 1. Prepare isolated test
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
@@ -139,53 +135,34 @@ var infoOutboundCmd = &cobra.Command{
 		dialer, _ := proxy.SOCKS5("tcp", socksAddr, &proxy.Auth{User: "user-" + target.Alias, Password: "test"}, proxy.Direct)
 		httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 10 * time.Second}
 
-		// 2. Fetch GeoIP & ASN Data
 		var geo struct {
-			Query       string `json:"query"`
-			Status      string `json:"status"`
-			Country     string `json:"country"`
-			CountryCode string `json:"countryCode"`
-			RegionName  string `json:"regionName"`
-			City        string `json:"city"`
-			ISP         string `json:"isp"`
-			Org         string `json:"org"`
-			AS          string `json:"as"`
-			Timezone    string `json:"timezone"`
-			Hosting     bool   `json:"hosting"`
-			Proxy       bool   `json:"proxy"`
+			Query, CountryCode, RegionName, City, ISP, Org, AS, Timezone string
+			Hosting, Proxy bool
 		}
-		
 		resp, err := httpClient.Get("http://ip-api.com/json/?fields=66846719")
-		if err != nil { fmt.Printf("❌ Failed to reach info API: %v\n", err); return }
-		json.NewDecoder(resp.Body).Decode(&geo)
-		resp.Body.Close()
+		if err == nil {
+			json.NewDecoder(resp.Body).Decode(&geo)
+			resp.Body.Close()
+		}
 
-		// 3. Media Unlock Tests
 		nfStatus := testMedia(httpClient, "https://www.netflix.com/title/80018499")
 		ytStatus := testMedia(httpClient, "https://www.youtube.com/premium")
 		dsStatus := testMedia(httpClient, "https://www.disneyplus.com")
-
-		// 4. Calculate Local Time
+		
 		loc, _ := time.LoadLocation(geo.Timezone)
 		localTime := time.Now().In(loc).Format("2006-01-02 15:04:05")
 
-		// 5. Display Card
 		fmt.Printf("\n┏━━━━━━━━━━━━ Landing Profile: %s ━━━━━━━━━━━━┓\n", alias)
 		fmt.Printf("┃ 🌐 Exit Address: %-36s ┃\n", geo.Query)
-		
-		asnType := "ISP/Consumer"
-		if geo.Hosting { asnType = "DataCenter/Hosting" }
+		asnType := "ISP/Consumer"; if geo.Hosting { asnType = "DataCenter/Hosting" }
 		fmt.Printf("┃ 🏷️  ASN Type:     %-36s ┃\n", asnType)
 		fmt.Printf("┃ 🏢 ASN:          %-36s ┃\n", geo.AS)
 		fmt.Printf("┃ 📡 Provider/Org: %-36s ┃\n", geo.Org)
 		fmt.Printf("┃ 📍 Location:     %s, %s, %s ┃\n", geo.City, geo.RegionName, geo.CountryCode)
 		fmt.Printf("┃ ⏰ Local Time:   %-36s ┃\n", localTime)
 		fmt.Printf("┃ 🌐 Timezone:     %-36s ┃\n", geo.Timezone)
-		
-		privacy := "Clear (Residential/Corporate)"
-		if geo.Proxy { privacy = "Flagged (VPN/Proxy/Tor)" }
+		privacy := "Clear (Residential/Corporate)"; if geo.Proxy { privacy = "Flagged (VPN/Proxy/Tor)" }
 		fmt.Printf("┃ 🛡️  Privacy:      %-36s ┃\n", privacy)
-		
 		fmt.Printf("┣━━━━━━━━━━━━ Media Unlock Tests ━━━━━━━━━━━━━┫\n")
 		fmt.Printf("┃ 🎬 Netflix: %-38s ┃\n", nfStatus)
 		fmt.Printf("┃ 📺 YouTube: %-38s ┃\n", ytStatus)
@@ -195,18 +172,11 @@ var infoOutboundCmd = &cobra.Command{
 }
 
 func testMedia(client *http.Client, url string) string {
-	start := time.Now()
-	resp, err := client.Get(url)
-	if err != nil { return "❌ Connection Error" }
+	resp, err := client.Get(url); if err != nil { return "❌ Error" }
 	defer resp.Body.Close()
-	
-	duration := time.Since(start).Milliseconds()
-	if resp.StatusCode == 200 {
-		return fmt.Sprintf("✅ Unlocked (%dms)", duration)
-	} else if resp.StatusCode == 403 {
-		return "🚫 Blocked / Geo-Restricted"
-	}
-	return fmt.Sprintf("⚠️  Unexpected Status: %d", resp.StatusCode)
+	if resp.StatusCode == 200 { return "✅ Unlocked" }
+	if resp.StatusCode == 403 { return "🚫 Blocked" }
+	return fmt.Sprintf("⚠️  %d", resp.StatusCode)
 }
 
 var deleteOutboundCmd = &cobra.Command{
@@ -251,8 +221,7 @@ var bindInterfaceCmd = &cobra.Command{
 				addrs, _ := iface.Addrs()
 				for _, addr := range addrs {
 					if ipnet, ok := addr.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.IP.To4() != nil {
-						bindAddr = ipnet.IP.String()
-						break
+						bindAddr = ipnet.IP.String(); break
 					}
 				}
 			}
@@ -283,8 +252,7 @@ var setDNSRelayCmd = &cobra.Command{
 				if strategy != "" { cfg.CustomOutbounds[i].DNSStrategy = strategy }
 				if len(servers) > 0 { cfg.CustomOutbounds[i].DNSServers = servers }
 				cfg.SaveEx(true)
-				fmt.Printf("✅ DNS strategy updated for '%s'.\n", alias)
-				return
+				fmt.Printf("✅ DNS strategy updated for '%s'.\n", alias); return
 			}
 		}
 		fmt.Printf("❌ Relay '%s' not found.\n", alias)
@@ -308,9 +276,9 @@ var setInternalProxyCmd = &cobra.Command{
 				if port == 0 {
 					for {
 						p, _ := xray.GetFreePort()
-						if isPortFree(p + 1) { port = p; break }
+						if utils.IsPortFree(p + 1) { port = p; break }
 					}
-				} else if !isPortFree(port) || !isPortFree(port+1) {
+				} else if !utils.IsPortFree(port) || !utils.IsPortFree(port+1) {
 					fmt.Printf("❌ Port %d or %d is in use.\n", port, port+1); return
 				}
 				cfg.CustomOutbounds[i].InternalProxyPort = port
@@ -322,13 +290,6 @@ var setInternalProxyCmd = &cobra.Command{
 		}
 		fmt.Printf("❌ Relay '%s' not found.\n", alias)
 	},
-}
-
-func isPortFree(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil { return false }
-	ln.Close()
-	return true
 }
 
 func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[string]string {
@@ -349,8 +310,7 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[strin
 	if err == nil {
 		defer resp.Body.Close()
 		var geo struct { Query string `json:"query"` }
-		data, _ := io.ReadAll(resp.Body)
-		if err := json.Unmarshal(data, &geo); err == nil { results["TCP"], results["IP"] = "OK", geo.Query }
+		if err := json.NewDecoder(resp.Body).Decode(&geo); err == nil { results["TCP"], results["IP"] = "OK", geo.Query }
 	}
 	conn, err := dialer.Dial("tcp", "8.8.8.8:53")
 	if err == nil { results["DNS"] = "OK"; conn.Close() }
