@@ -58,65 +58,80 @@ var initCmd = &cobra.Command{
 		} else {
 			fmt.Println("🔑 Generating Reality keys...")
 			pk, pub, _ := xray.GenerateX25519()
-
-			// 1. VLESS-Reality-XHTTP
-			mode1 := config.ModeInfo{
-				Mode:    config.ModeVLESSReality,
-				Enabled: true,
-				Port:    4433,
-				SNI:     config.GetRandomRealityDomain(),
-				Dest:    "www.google.com:443",
-				Path:    "/" + utils.GenerateRandomString(8),
-			}
-			mode1.Settings.PrivateKey = pk
-			mode1.Settings.PublicKey = pub
-			mode1.Settings.ShortID = utils.GenerateRandomString(4)
-			cfg.ActiveModes = append(cfg.ActiveModes, mode1)
-
-			// 2. VLESS-Vision-Reality-TCP
-			mode2 := config.ModeInfo{
-				Mode:    config.ModeVLESSVision,
-				Enabled: true,
-				Port:    4434,
-				SNI:     config.GetRandomRealityDomain(),
-				Dest:    "www.google.com:443",
-			}
-			mode2.Settings.PrivateKey = pk
-			mode2.Settings.PublicKey = pub
-			mode2.Settings.ShortID = utils.GenerateRandomString(4)
-			cfg.ActiveModes = append(cfg.ActiveModes, mode2)
-
-			// 3. VLESS-XHTTP-KEM
 			fmt.Println("🔑 Generating ML-KEM keys...")
 			enc, dec, _ := xray.GenerateMLKEM()
-			mode3 := config.ModeInfo{
-				Mode:    config.ModeVLESSXHTTP,
-				Enabled: true,
-				Port:    4435,
-				Path:    "/" + utils.GenerateRandomString(8),
-			}
-			mode3.Settings.Password = enc
-			mode3.Settings.PrivateKey = dec
-			cfg.ActiveModes = append(cfg.ActiveModes, mode3)
 
-			// 4. VMess-WS
-			mode4 := config.ModeInfo{
-				Mode:    config.ModeVMessWS,
-				Enabled: true,
-				Port:    4436,
-				Path:    "/" + utils.GenerateRandomString(8),
-			}
-			cfg.ActiveModes = append(cfg.ActiveModes, mode4)
+			isRoot := os.Geteuid() == 0
+			offset := 0
+			if !isRoot { offset = 10000 }
 
-			// 5. Shadowsocks-TCP
-			mode5 := config.ModeInfo{
-				Mode:    config.ModeShadowsocksTCP,
-				Enabled: true,
-				Port:    4437,
+			// Desired Port Map (Role -> BasePort)
+			type portSpec struct {
+				mode config.PresetMode
+				base int
 			}
-			mode5.Settings.Cipher = "aes-256-gcm"
-			mode5.Settings.Password = utils.GenerateRandomString(16)
-			cfg.ActiveModes = append(cfg.ActiveModes, mode5)
+			specs := []portSpec{
+				{config.ModeVLESSVision, 443},
+				{config.ModeVLESSReality, 8443},
+				{config.ModeVLESSXHTTP, 8080},
+				{config.ModeVMessWS, 8081},
+				{config.ModeShadowsocksTCP, 8082},
+			}
+
+			var portWarnings []string
+
+			for _, s := range specs {
+				targetPort := s.base + offset
+				actualPort := targetPort
+				
+				if !utils.IsPortFree(actualPort) {
+					// Fallback: Random 10000-65535
+					for {
+						p, _ := xray.GetFreePort()
+						if p >= 10000 {
+							actualPort = p
+							break
+						}
+					}
+					portWarnings = append(portWarnings, fmt.Sprintf("⚠️  Port %d was busy, switched %s to %d", targetPort, s.mode, actualPort))
+				}
+
+				m := config.ModeInfo{
+					Mode:    s.mode,
+					Enabled: true,
+					Port:    actualPort,
+				}
+
+				// Assign technical specific fields
+				switch s.mode {
+				case config.ModeVLESSVision:
+					m.SNI = config.GetRandomRealityDomain()
+					m.Dest = "www.google.com:443"
+					m.Settings.PrivateKey = pk
+					m.Settings.PublicKey = pub
+					m.Settings.ShortID = utils.GenerateRandomString(4)
+				case config.ModeVLESSReality:
+					m.SNI = config.GetRandomRealityDomain()
+					m.Dest = "www.google.com:443"
+					m.Path = "/" + utils.GenerateRandomString(8)
+					m.Settings.PrivateKey = pk
+					m.Settings.PublicKey = pub
+					m.Settings.ShortID = utils.GenerateRandomString(4)
+				case config.ModeVLESSXHTTP:
+					m.Path = "/" + utils.GenerateRandomString(8)
+					m.Settings.Password = enc
+					m.Settings.PrivateKey = dec
+				case config.ModeVMessWS:
+					m.Path = "/" + utils.GenerateRandomString(8)
+				case config.ModeShadowsocksTCP:
+					m.Settings.Cipher = "aes-256-gcm"
+					m.Settings.Password = utils.GenerateRandomString(16)
+				}
+				cfg.ActiveModes = append(cfg.ActiveModes, m)
+			}
+
+			// Print warnings at the end
+			for _, w := range portWarnings { fmt.Println(w) }
 		}
 
 		if err := cfg.SaveEx(true); err != nil {

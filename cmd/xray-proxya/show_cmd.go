@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	useIPv4 bool
-	useIPv6 bool
-	manualAddr string
+	useIPv4      bool
+	useIPv6      bool
+	manualAddr   string
+	showOutbound string
 )
 
 var showCmd = &cobra.Command{
@@ -23,8 +24,8 @@ var showCmd = &cobra.Command{
 By default, it auto-detects your public IPv4 address.
 
 Examples:
-  xray-proxya show           (Auto IPv4)
-  xray-proxya show -4        (Auto IPv4)
+  xray-proxya show           (Auto IPv4, all links)
+  xray-proxya show -o hk-01  (Only show links for relay 'hk-01')
   xray-proxya show -6        (Auto IPv6)
   xray-proxya show -a my.ddns.com`,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -38,10 +39,7 @@ Examples:
 
 		// 1. Handle manual address first
 		if manualAddr != "" {
-			// Strict Format Validation
 			isIP := net.ParseIP(manualAddr) != nil
-			
-			// Simple check for valid hostname characters (RFC 1123ish)
 			validHost := true
 			if !isIP {
 				for _, r := range manualAddr {
@@ -51,14 +49,10 @@ Examples:
 					}
 				}
 			}
-
 			if !isIP && !validHost {
 				fmt.Printf("❌ Invalid address format: %s\n", manualAddr)
 				return
 			}
-
-			// If it's a domain, attempt a lookup but don't strictly fail for LAN hostnames 
-			// unless they are clearly broken.
 			if !isIP {
 				_, err := net.LookupHost(manualAddr)
 				if err != nil {
@@ -67,12 +61,10 @@ Examples:
 			}
 			targetAddrs = append(targetAddrs, manualAddr)
 		} else {
-			// 2. Handle protocol flags
 			if useIPv6 {
 				ip6 := utils.GetSmartIP(true)
 				if ip6 != "" { targetAddrs = append(targetAddrs, ip6) } else { fmt.Println("⚠️ IPv6 not detected.") }
 			}
-			// If -4 was requested OR nothing was requested (default behavior)
 			if useIPv4 || (!useIPv4 && !useIPv6) {
 				ip4 := utils.GetSmartIP(false)
 				if ip4 != "" { targetAddrs = append(targetAddrs, ip4) } else { fmt.Println("⚠️ IPv4 not detected.") }
@@ -88,18 +80,31 @@ Examples:
 			fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ip)
 			fmt.Println("============================================================")
 			
-			// Show Presets
-			fmt.Printf("# PRESET LINKS\n")
-			links := xray.GenerateLinks(cfg, ip)
-			for _, l := range links { fmt.Println(l) }
+			// Show Presets (Skip if specific outbound is requested)
+			if showOutbound == "" {
+				fmt.Printf("# PRESET LINKS\n")
+				links := xray.GenerateLinks(cfg, ip)
+				for _, l := range links { fmt.Println(l) }
+			}
 
 			// Show Relays
 			if len(cfg.CustomOutbounds) > 0 {
-				fmt.Printf("\n# RELAY LINKS\n")
+				found := false
+				var headerPrinted bool
 				for _, r := range cfg.CustomOutbounds {
 					if !r.Enabled { continue }
+					if showOutbound != "" && r.Alias != showOutbound { continue }
+					
+					if !headerPrinted {
+						fmt.Printf("\n# RELAY LINKS\n")
+						headerPrinted = true
+					}
+					found = true
 					rLinks := xray.GenerateRelayLinks(cfg, ip, r)
 					for _, l := range rLinks { fmt.Println(l) }
+				}
+				if showOutbound != "" && !found {
+					fmt.Printf("❌ Relay '%s' not found or not enabled.\n", showOutbound)
 				}
 			}
 		}
@@ -110,6 +115,12 @@ func init() {
 	showCmd.Flags().BoolVarP(&useIPv4, "ipv4", "4", false, "Auto-detect and show IPv4 links")
 	showCmd.Flags().BoolVarP(&useIPv6, "ipv6", "6", false, "Auto-detect and show IPv6 links")
 	showCmd.Flags().StringVarP(&manualAddr, "address", "a", "", "Use a custom IP or domain name")
+	showCmd.Flags().StringVarP(&showOutbound, "outbound", "o", "", "Only show links for a specific relay alias")
 	
+	// Link autocompletion for relay aliases
+	showCmd.RegisterFlagCompletionFunc("outbound", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
+
 	rootCmd.AddCommand(showCmd)
 }
