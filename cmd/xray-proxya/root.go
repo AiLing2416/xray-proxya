@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"xray-proxya/internal/config"
 
 	"github.com/spf13/cobra"
 )
