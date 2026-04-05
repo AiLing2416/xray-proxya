@@ -39,7 +39,7 @@ var applyCmd = &cobra.Command{
 		for _, m := range cfg.ActiveModes {
 			if m.Enabled {
 				p, _ := xray.GetFreePort()
-				overrides[string(m.Mode)+"-in"] = p
+				overrides[string(m.Mode)] = p
 			}
 		}
 		if cfg.Gateway.Enabled {
