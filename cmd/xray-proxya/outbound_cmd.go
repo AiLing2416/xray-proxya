@@ -106,6 +106,11 @@ var testOutboundCmd = &cobra.Command{
 	},
 }
 
+type Profile struct {
+	IP, ASN, Org, City, Region, Country, Timezone, LocalTime string
+	ASNType, Privacy string
+}
+
 var infoOutboundCmd = &cobra.Command{
 	Use:   "info [alias]",
 	Short: "Fetch detailed landing profile and media unlock status",
@@ -122,61 +127,87 @@ var infoOutboundCmd = &cobra.Command{
 		}
 		if target == nil { fmt.Printf("❌ Relay '%s' not found.\n", alias); return }
 
-		fmt.Printf("🔍 Fetching landing profile for '%s'...\n", alias)
+		fmt.Printf("🔍 Querying profile for [%s]...\n", alias)
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-		jsonData, _ := xray.GenerateXrayJSON(cfg, overrides)
+		jsonData, _ := xray.GenerateXrayJSON(cfg, map[string]int{"test-socks": testSocksPort, "api": apiPort})
 		_, cleanup, err := xray.StartXrayTemp(jsonData)
-		if err != nil { fmt.Printf("❌ Failed to start test core: %v\n", err); return }
+		if err != nil { fmt.Printf("❌ Error: %v\n", err); return }
 		defer cleanup()
 
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
 		dialer, _ := proxy.SOCKS5("tcp", socksAddr, &proxy.Auth{User: "user-" + target.Alias, Password: "test"}, proxy.Direct)
-		httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 10 * time.Second}
+		httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 8 * time.Second}
 
-		var geo struct {
-			Query, CountryCode, RegionName, City, ISP, Org, AS, Timezone string
-			Hosting, Proxy bool
-		}
-		resp, err := httpClient.Get("http://ip-api.com/json/?fields=66846719")
-		if err == nil {
-			json.NewDecoder(resp.Body).Decode(&geo)
-			resp.Body.Close()
-		}
+		profile := fetchProfile(httpClient)
+		nf := testMedia(httpClient, "https://www.netflix.com/title/80018499")
+		yt := testMedia(httpClient, "https://www.youtube.com/premium")
+		ds := testMedia(httpClient, "https://www.disneyplus.com")
 
-		nfStatus := testMedia(httpClient, "https://www.netflix.com/title/80018499")
-		ytStatus := testMedia(httpClient, "https://www.youtube.com/premium")
-		dsStatus := testMedia(httpClient, "https://www.disneyplus.com")
+		// Display Output
+		fmt.Printf("\n✨ Landing Profile: %s\n", alias)
+		fmt.Printf("   %-15s %s\n", "Exit IP:", profile.IP)
+		fmt.Printf("   %-15s %s (%s)\n", "ASN Type:", profile.ASNType, profile.Privacy)
+		fmt.Printf("   %-15s %s\n", "ASN:", profile.ASN)
+		fmt.Printf("   %-15s %s\n", "Company:", profile.Org)
+		fmt.Printf("   %-15s %s, %s, %s\n", "Local:", profile.City, profile.Region, profile.Country)
+		fmt.Printf("   %-15s %s\n", "Local Time:", profile.LocalTime)
+		fmt.Printf("   %-15s %s\n", "Time Zone:", profile.Timezone)
 		
-		loc, _ := time.LoadLocation(geo.Timezone)
-		localTime := time.Now().In(loc).Format("2006-01-02 15:04:05")
-
-		fmt.Printf("\n┏━━━━━━━━━━━━ Landing Profile: %s ━━━━━━━━━━━━┓\n", alias)
-		fmt.Printf("┃ 🌐 Exit Address: %-36s ┃\n", geo.Query)
-		asnType := "ISP/Consumer"; if geo.Hosting { asnType = "DataCenter/Hosting" }
-		fmt.Printf("┃ 🏷️  ASN Type:     %-36s ┃\n", asnType)
-		fmt.Printf("┃ 🏢 ASN:          %-36s ┃\n", geo.AS)
-		fmt.Printf("┃ 📡 Provider/Org: %-36s ┃\n", geo.Org)
-		fmt.Printf("┃ 📍 Location:     %s, %s, %s ┃\n", geo.City, geo.RegionName, geo.CountryCode)
-		fmt.Printf("┃ ⏰ Local Time:   %-36s ┃\n", localTime)
-		fmt.Printf("┃ 🌐 Timezone:     %-36s ┃\n", geo.Timezone)
-		privacy := "Clear (Residential/Corporate)"; if geo.Proxy { privacy = "Flagged (VPN/Proxy/Tor)" }
-		fmt.Printf("┃ 🛡️  Privacy:      %-36s ┃\n", privacy)
-		fmt.Printf("┣━━━━━━━━━━━━ Media Unlock Tests ━━━━━━━━━━━━━┫\n")
-		fmt.Printf("┃ 🎬 Netflix: %-38s ┃\n", nfStatus)
-		fmt.Printf("┃ 📺 YouTube: %-38s ┃\n", ytStatus)
-		fmt.Printf("┃ 🏰 Disney+: %-38s ┃\n", dsStatus)
-		fmt.Printf("┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n")
+		fmt.Printf("\n   Media Unlock Tests:\n")
+		fmt.Printf("   %-15s %s  YouTube: %s  Disney+: %s\n\n", "Netflix: "+nf, "", yt, ds)
 	},
 }
 
+func fetchProfile(client *http.Client) Profile {
+	p := Profile{IP: "Unknown", ASN: "N/A", Org: "N/A", City: "N/A", Region: "N/A", Country: "N/A", Timezone: "UTC", ASNType: "N/A", Privacy: "N/A"}
+	
+	// 1. Try ip-api.com
+	resp, err := client.Get("http://ip-api.com/json/?fields=66846719")
+	if err == nil {
+		defer resp.Body.Close()
+		var res struct {
+			Query, Country, RegionName, City, Org, AS, Timezone string
+			Hosting, Proxy bool
+		}
+		if json.NewDecoder(resp.Body).Decode(&res) == nil && res.Query != "" {
+			p.IP, p.Country, p.Region, p.City, p.Org, p.ASN, p.Timezone = res.Query, res.Country, res.RegionName, res.City, res.Org, res.AS, res.Timezone
+			p.ASNType = "ISP"; if res.Hosting { p.ASNType = "DataCenter" }
+			p.Privacy = "Clear"; if res.Proxy { p.Privacy = "Flagged" }
+			p.LocalTime = getLocalTime(p.Timezone)
+			return p
+		}
+	}
+
+	// 2. Fallback to ipinfo.io
+	resp, err = client.Get("https://ipinfo.io/json")
+	if err == nil {
+		defer resp.Body.Close()
+		var res struct {
+			IP, Org, City, Region, Country, Timezone string
+		}
+		if json.NewDecoder(resp.Body).Decode(&res) == nil && res.IP != "" {
+			p.IP, p.Org, p.City, p.Region, p.Country, p.Timezone = res.IP, res.Org, res.City, res.Region, res.Country, res.Timezone
+			p.ASN = res.Org // ipinfo org usually contains ASN
+			p.LocalTime = getLocalTime(p.Timezone)
+		}
+	}
+	return p
+}
+
+func getLocalTime(tz string) string {
+	loc, err := time.LoadLocation(tz)
+	if err != nil { return time.Now().Format("15:04:05") }
+	return time.Now().In(loc).Format("2006-01-02 15:04:05")
+}
+
 func testMedia(client *http.Client, url string) string {
-	resp, err := client.Get(url); if err != nil { return "❌ Error" }
+	resp, err := client.Get(url)
+	if err != nil { return "🔴" }
 	defer resp.Body.Close()
-	if resp.StatusCode == 200 { return "✅ Unlocked" }
-	if resp.StatusCode == 403 { return "🚫 Blocked" }
-	return fmt.Sprintf("⚠️  %d", resp.StatusCode)
+	if resp.StatusCode == 200 { return "🟢" }
+	if resp.StatusCode == 403 { return "🚫" }
+	return fmt.Sprintf("⚠️%d", resp.StatusCode)
 }
 
 var deleteOutboundCmd = &cobra.Command{

@@ -24,10 +24,27 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 		formattedIP = "[" + ip + "]"
 	}
 
-	for _, mode := range cfg.ActiveModes {
-		if !mode.Enabled {
+	// Priority Order for v0.1.3
+	order := []config.PresetMode{
+		config.ModeVLESSVision,
+		config.ModeVLESSReality,
+		config.ModeVLESSXHTTP,
+		config.ModeVMessWS,
+		config.ModeShadowsocksTCP,
+	}
+
+	for _, targetMode := range order {
+		var mode *config.ModeInfo
+		for _, m := range cfg.ActiveModes {
+			if m.Mode == targetMode {
+				mode = &m
+				break
+			}
+		}
+		if mode == nil || !mode.Enabled {
 			continue
 		}
+
 		var link string
 		psSuffix := ""
 		if suffix != "" {
@@ -60,9 +77,6 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 			link = "vmess://" + base64.StdEncoding.EncodeToString(data)
 
 		case config.ModeShadowsocksTCP:
-			// Note: Shadowsocks doesn't support per-user UUID in standard Xray the same way VLESS does for routing.
-			// Usually, for SS relays, you'd need a separate inbound or use a different auth method.
-			// In our current architecture, we'll skip SS for relays if it doesn't support the user-based routing we use.
 			if suffix == "" {
 				ps := fmt.Sprintf("SS-TCP-%d", mode.Port)
 				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", mode.Settings.Cipher, mode.Settings.Password)))

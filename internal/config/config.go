@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 )
 
-type PresetMode string
-
 type AppRole string
 
 const (
@@ -15,13 +13,24 @@ const (
 	RoleGateway AppRole = "gateway"
 )
 
+type PresetMode string
+
 const (
-	ModeVLESSReality   PresetMode = "vless-reality"
-	ModeVLESSVision    PresetMode = "vless-vision"
-	ModeVLESSXHTTP     PresetMode = "vless-xhttp"
+	ModeVLESSReality   PresetMode = "vless-reality-xhttp"
+	ModeVLESSVision    PresetMode = "vless-vision-reality-tcp"
+	ModeVLESSXHTTP     PresetMode = "vless-xhttp-kem768"
 	ModeVMessWS        PresetMode = "vmess-ws"
 	ModeShadowsocksTCP PresetMode = "shadowsocks-tcp"
 )
+
+// PresetOrder defines the canonical order of inbounds for v0.1.3+
+var PresetOrder = []PresetMode{
+	ModeVLESSVision,
+	ModeVLESSReality,
+	ModeVLESSXHTTP,
+	ModeVMessWS,
+	ModeShadowsocksTCP,
+}
 
 type UserConfig struct {
 	Role            AppRole          `json:"role"`
@@ -46,8 +55,8 @@ type CustomOutbound struct {
 	Alias             string                 `json:"alias"`
 	Enabled           bool                   `json:"enabled"`
 	UserUUID          string                 `json:"user_uuid"`
-	DNSStrategy       string                 `json:"dns_strategy,omitempty"` // "follow", "direct", "manual"
-	DNSServers        []string               `json:"dns_servers,omitempty"`  // e.g. ["https://8.8.8.8/dns-query"]
+	DNSStrategy       string                 `json:"dns_strategy,omitempty"`
+	DNSServers        []string               `json:"dns_servers,omitempty"`
 	InternalProxyPort int                    `json:"internal_proxy_port,omitempty"`
 	Config            map[string]interface{} `json:"config"`
 }
@@ -56,80 +65,125 @@ type ModeInfo struct {
 	Mode      PresetMode `json:"mode"`
 	Enabled   bool       `json:"enabled"`
 	Port      int        `json:"port"`
-	Path      string     `json:"path"`
-	SNI       string     `json:"sni"`
-	Dest      string     `json:"dest"`
+	SNI       string     `json:"sni,omitempty"`
+	Dest      string     `json:"dest,omitempty"`
+	Path      string     `json:"path,omitempty"`
+	Settings  Settings   `json:"settings"`
 	RegenFlag bool       `json:"regen_flag,omitempty"`
-	Settings  struct {
-		PrivateKey string `json:"private_key"`
-		PublicKey  string `json:"public_key"`
-		ShortID    string `json:"short_id"`
-		Password   string `json:"password"`
-		Cipher     string `json:"cipher"`
-	} `json:"settings"`
+}
+
+type Settings struct {
+	PrivateKey string `json:"privateKey,omitempty"`
+	PublicKey  string `json:"publicKey,omitempty"`
+	ShortID    string `json:"shortId,omitempty"`
+	Password   string `json:"password,omitempty"`
+	Cipher     string `json:"cipher,omitempty"`
+}
+
+func (cfg *UserConfig) Normalize() {
+	if cfg.Role != RoleServer {
+		return
+	}
+	newModes := make([]ModeInfo, 0, len(PresetOrder))
+	for _, target := range PresetOrder {
+		found := false
+		for _, m := range cfg.ActiveModes {
+			if m.Mode == target {
+				newModes = append(newModes, m)
+				found = true
+				break
+			}
+		}
+		if !found {
+			newModes = append(newModes, ModeInfo{Mode: target, Enabled: false})
+		}
+	}
+	cfg.ActiveModes = newModes
+}
+
+func GetConfigDir() string {
+	home, _ := os.UserHomeDir()
+	if os.Geteuid() == 0 {
+		home = "/root"
+	}
+	return filepath.Join(home, ".config", "xray-proxya")
 }
 
 func GetConfigPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".config", "xray-proxya", "config.json")
-}
-
-func GetStagingPath() string {
-	return GetConfigPath() + ".staging"
-}
-
-func (c *UserConfig) Save() error {
-	return c.SaveEx(false)
-}
-
-func (c *UserConfig) SaveEx(staging bool) error {
-	path := GetConfigPath()
-	if staging {
-		path = GetStagingPath()
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0600)
+	return filepath.Join(GetConfigDir(), "config.json")
 }
 
 func LoadConfig() (*UserConfig, error) {
-	return LoadConfigEx(false)
+	cfg, err := LoadConfigEx(false)
+	if err == nil { cfg.Normalize() }
+	return cfg, err
 }
 
-func LoadConfigEx(preferStaging bool) (*UserConfig, error) {
+func LoadConfigEx(staging bool) (*UserConfig, error) {
 	path := GetConfigPath()
-	if preferStaging {
-		if _, err := os.Stat(GetStagingPath()); err == nil {
-			path = GetStagingPath()
-		}
+	if staging {
+		path += ".staging"
 	}
+
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if staging {
+			cfg, err := LoadConfigEx(false)
+			if err == nil { cfg.Normalize() }
+			return cfg, err
+		}
+		return nil, err
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	var c UserConfig
-	if err := json.Unmarshal(data, &c); err != nil {
+
+	var cfg *UserConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, err
 	}
-	if c.Role == "" {
-		c.Role = RoleServer
-	}
-	return &c, nil
+	cfg.Normalize()
+	return cfg, nil
 }
 
 func ClearStaging() error {
-	return os.Remove(GetStagingPath())
+	path := GetConfigPath() + ".staging"
+	if _, err := os.Stat(path); err == nil {
+		return os.Remove(path)
+	}
+	return nil
+}
+
+func (cfg *UserConfig) Save() error {
+	return cfg.SaveEx(false)
+}
+
+func (cfg *UserConfig) SaveEx(staging bool) error {
+	path := GetConfigPath()
+	if staging {
+		path += ".staging"
+	}
+	os.MkdirAll(filepath.Dir(path), 0755)
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
 }
 
 func CommitStaging() error {
-	staging := GetStagingPath()
-	if _, err := os.Stat(staging); err != nil {
+	src := GetConfigPath() + ".staging"
+	dst := GetConfigPath()
+	if _, err := os.Stat(src); os.IsNotExist(err) {
 		return nil
 	}
-	return os.Rename(staging, GetConfigPath())
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(dst, data, 0644); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
