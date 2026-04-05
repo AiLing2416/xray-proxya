@@ -87,7 +87,11 @@ func RestartXrayService() error {
 	logPath := filepath.Join(config.GetConfigDir(), "xray.log")
 	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 
-	path, _ := os.Executable()
+	path, err := os.Executable()
+	if err != nil || path == "" {
+		path = os.Args[0]
+	}
+	
 	cmd := exec.Command(path, "run")
 	cmd.Stdout, cmd.Stderr = logFile, logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
