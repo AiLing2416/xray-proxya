@@ -3,6 +3,8 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,9 +13,9 @@ import (
 )
 
 var (
-	Version       = "0.1.3"
+	Version       = "0.1.4"
 	shellOverride string
-	setupRC       bool
+	setupDeps     bool
 )
 
 var rootCmd = &cobra.Command{
@@ -38,21 +40,21 @@ var completionCmd = &cobra.Command{
 
 var compInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install completion scripts to local share",
+	Short: "Install completion scripts and full environment to user directory",
 	Run: func(cmd *cobra.Command, args []string) {
-		handleCompletion(true, setupRC)
+		handleCompletion(true, setupDeps)
 	},
 }
 
 var compUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Remove completion scripts and optionally clean RC files",
+	Short: "Remove completion scripts and private environment",
 	Run: func(cmd *cobra.Command, args []string) {
-		handleCompletion(false, setupRC)
+		handleCompletion(false, setupDeps)
 	},
 }
 
-func handleCompletion(install bool, modifyRC bool) {
+func handleCompletion(install bool, manageDeps bool) {
 	shell := shellOverride
 	if shell == "" {
 		shell = filepath.Base(os.Getenv("SHELL"))
@@ -60,20 +62,27 @@ func handleCompletion(install bool, modifyRC bool) {
 
 	home, _ := os.UserHomeDir()
 	if os.Geteuid() == 0 { home = "/root" }
-	dir := filepath.Join(home, ".local", "share", "xray-proxya", "completions")
-	
+
+	baseDir := filepath.Join(home, ".local", "share", "bash-completion")
+	baseScript := filepath.Join(baseDir, "bash_completion.sh")
+	compDir := filepath.Join(baseDir, "completions")
+	compFile := filepath.Join(compDir, "xray-proxya")
 	rcFile := filepath.Join(home, ".bashrc")
-	compFile := filepath.Join(dir, "xray-proxya.bash")
-	sourceLine := fmt.Sprintf("[ -f %s ] && . %s", compFile, compFile)
+	
+	// Default base support line (pointing to our private copy)
+	baseDepLine := fmt.Sprintf("[ -f %s ] && . %s", baseScript, baseScript)
 
 	if shell == "zsh" {
+		compDir = filepath.Join(home, ".local", "share", "zsh", "site-functions")
+		compFile = filepath.Join(compDir, "_xray-proxya")
 		rcFile = filepath.Join(home, ".zshrc")
-		compFile = filepath.Join(dir, "xray-proxya.zsh")
-		sourceLine = fmt.Sprintf("[ -f %s ] && source %s", compFile, compFile)
+		baseDepLine = "autoload -Uz compinit && compinit"
 	}
 
 	if install {
-		os.MkdirAll(dir, 0755)
+		os.MkdirAll(compDir, 0755)
+		
+		// 1. Install xray-proxya script
 		if shell == "zsh" {
 			rootCmd.GenZshCompletionFile(compFile)
 		} else {
@@ -81,24 +90,64 @@ func handleCompletion(install bool, modifyRC bool) {
 		}
 		fmt.Printf("✅ Completion script saved to %s\n", compFile)
 
-		if modifyRC {
+		// 2. Install Full Environment (Rootless Helper)
+		if manageDeps && shell == "bash" {
+			fmt.Println("🌐 Downloading full bash-completion base set...")
+			url := "https://raw.githubusercontent.com/scop/bash-completion/master/bash_completion"
+			if err := downloadFile(url, baseScript); err != nil {
+				fmt.Printf("⚠️  Failed to download base set: %v. Completion might error.\n", err)
+			} else {
+				fmt.Printf("✅ Base completion tools installed to %s\n", baseScript)
+			}
+		}
+
+		if manageDeps {
 			data, _ := os.ReadFile(rcFile)
-			if !strings.Contains(string(data), compFile) {
+			content := string(data)
+			var newBlocks strings.Builder
+
+			if !strings.Contains(content, "bash_completion.sh") && !strings.Contains(content, "compinit") {
+				newBlocks.WriteString("\n# Base Shell Completion Support\n" + baseDepLine + "\n")
+			}
+			
+			sourceLine := fmt.Sprintf("[ -f %s ] && . %s", compFile, compFile)
+			if shell == "zsh" { sourceLine = fmt.Sprintf("fpath=(%s $fpath)\nautoload -Uz _xray-proxya", compDir) }
+			
+			if !strings.Contains(content, "xray-proxya") {
+				newBlocks.WriteString("\n# Xray-Proxya Completion\n" + sourceLine + "\n")
+			}
+
+			if newBlocks.Len() > 0 {
 				f, _ := os.OpenFile(rcFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 				defer f.Close()
-				f.WriteString("\n# Xray-Proxya Completion\n" + sourceLine + "\n")
-				fmt.Printf("✅ Added sourcing to %s\n", rcFile)
+				f.WriteString(newBlocks.String())
+				fmt.Printf("✅ Updated RC file: %s\n", rcFile)
 			}
+			fmt.Println("🚀 Please source your RC file or restart your shell.")
 		}
 	} else {
 		// Uninstall
 		os.Remove(compFile)
 		fmt.Printf("🗑️ Removed %s\n", compFile)
-
-		if modifyRC {
-			cleanRC(rcFile, compFile)
+		if manageDeps {
+			os.Remove(baseScript)
+			cleanRC(rcFile, "xray-proxya")
+			fmt.Printf("🧹 Cleaned completion environment from %s\n", rcFile)
 		}
 	}
+}
+
+func downloadFile(url string, path string) error {
+	resp, err := http.Get(url)
+	if err != nil { return err }
+	defer resp.Body.Close()
+	
+	out, err := os.Create(path)
+	if err != nil { return err }
+	defer out.Close()
+	
+	_, err = io.Copy(out, resp.Body)
+	return err
 }
 
 func cleanRC(rcPath, marker string) {
@@ -110,31 +159,26 @@ func cleanRC(rcPath, marker string) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, "# Xray-Proxya Completion") {
-			continue
-		}
-		if strings.Contains(line, marker) {
+		if strings.Contains(line, marker) || 
+		   strings.Contains(line, "# Xray-Proxya Completion") ||
+		   strings.Contains(line, "# Base Shell Completion Support") ||
+		   strings.Contains(line, "bash_completion.sh") ||
+		   strings.Contains(line, "compinit") {
 			continue
 		}
 		lines = append(lines, line)
 	}
-	
 	os.WriteFile(rcPath, []byte(strings.Join(lines, "\n")+"\n"), 0644)
-	fmt.Printf("🧹 Cleaned RC file: %s\n", rcPath)
 }
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	
 	compInstallCmd.Flags().StringVarP(&shellOverride, "shell", "s", "", "Shell type")
-	compInstallCmd.Flags().BoolVarP(&setupRC, "completion", "c", false, "Also setup/modify RC files")
-	
+	compInstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Install full completion script set to user directory")
 	compUninstallCmd.Flags().StringVarP(&shellOverride, "shell", "s", "", "Shell type")
-	compUninstallCmd.Flags().BoolVarP(&setupRC, "completion", "c", false, "Also clean RC files")
-
+	compUninstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Uninstall full completion set and cleanup RC")
 	completionCmd.AddCommand(compInstallCmd, compUninstallCmd)
 	
-	// Legacy support for direct gen
 	completionCmd.Run = func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 { cmd.Help(); return }
 		switch args[0] {
@@ -143,7 +187,6 @@ func init() {
 		case "fish": rootCmd.GenFishCompletion(os.Stdout, true)
 		}
 	}
-
 	rootCmd.AddCommand(completionCmd)
 }
 

@@ -84,17 +84,20 @@ func RestartXrayService() error {
 	StopXray()
 	time.Sleep(500 * time.Millisecond)
 
+	logPath := filepath.Join(config.GetConfigDir(), "xray.log")
+	logFile, _ := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+
 	path, _ := os.Executable()
-	// Use shell to background and write PID to avoid child capture
-	cmdStr := fmt.Sprintf("nohup %s run > /dev/null 2>&1 & echo $!", path)
-	out, err := exec.Command("sh", "-c", cmdStr).Output()
-	if err != nil { return err }
+	cmd := exec.Command(path, "run")
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	
+	if err := cmd.Start(); err != nil { return err }
 
-	pidStr := strings.TrimSpace(string(out))
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
-	os.WriteFile(pidPath, []byte(pidStr), 0644)
+	os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", cmd.Process.Pid)), 0644)
 
-	fmt.Printf("✅ Xray started in background (Shell Mode, PID: %s)\n", pidStr)
+	fmt.Printf("✅ Xray started in background (PID: %d)\n", cmd.Process.Pid)
 	return nil
 }
 
@@ -135,7 +138,13 @@ func ValidateConfig(jsonData []byte) error {
 	tmpFile := filepath.Join(os.TempDir(), "xray-test.json")
 	os.WriteFile(tmpFile, jsonData, 0644)
 	defer os.Remove(tmpFile)
-	return exec.Command(GetXrayBinaryPath(), "test", "-c", tmpFile).Run()
+	
+	cmd := exec.Command(GetXrayBinaryPath(), "run", "-test", "-c", tmpFile)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%v: %s", err, string(out))
+	}
+	return nil
 }
 
 // --- Utils & Metrics ---
@@ -154,8 +163,6 @@ func GetFreePort() (int, error) {
 }
 
 func GetXrayBinaryPath() string {
-	// Root: /root/.local/share/xray-proxya/bin/xray
-	// User: /home/user/.local/share/xray-proxya/bin/xray
 	home, _ := os.UserHomeDir()
 	if os.Geteuid() == 0 { home = "/root" }
 	return filepath.Join(home, ".local", "share", "xray-proxya", "bin", "xray")
@@ -177,7 +184,38 @@ func GenerateX25519() (string, string, error) {
 }
 
 func GenerateMLKEM() (string, string, error) {
-	return GenerateX25519()
+	bin := GetXrayBinaryPath()
+	if _, err := os.Stat(bin); os.IsNotExist(err) {
+		if err := DownloadXray(); err != nil { return "", "", err }
+	}
+	
+	out, err := exec.Command(bin, "vlessenc").Output()
+	if err != nil { return "", "", err }
+	
+	lines := strings.Split(string(out), "\n")
+	var encryption, decryption string
+	var inKEM bool
+	for _, line := range lines {
+		if strings.Contains(line, "Authentication: ML-KEM-768") {
+			inKEM = true
+		}
+		if inKEM {
+			if strings.Contains(line, "\"decryption\":") {
+				parts := strings.Split(line, "\"")
+				if len(parts) >= 4 { decryption = parts[3] }
+			} else if strings.Contains(line, "\"encryption\":") {
+				parts := strings.Split(line, "\"")
+				if len(parts) >= 4 { encryption = parts[3] }
+			}
+		}
+		if encryption != "" && decryption != "" { break }
+	}
+	
+	if encryption == "" || decryption == "" {
+		return "", "", fmt.Errorf("failed to parse xray vlessenc output")
+	}
+	
+	return encryption, decryption, nil
 }
 
 func GetRandomPath() string { return "/" + uuid.New().String()[:8] }
