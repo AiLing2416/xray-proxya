@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	Version       = "0.1.4"
+	Version       = "0.2.0"
 	shellOverride string
 	setupDeps     bool
 )
@@ -32,6 +32,7 @@ func Execute() {
 	}
 }
 
+// Completion related commands
 var completionCmd = &cobra.Command{
 	Use:   "completion [bash|zsh|fish|install|uninstall]",
 	Short: "Generate or manage shell autocompletion",
@@ -69,7 +70,6 @@ func handleCompletion(install bool, manageDeps bool) {
 	compFile := filepath.Join(compDir, "xray-proxya")
 	rcFile := filepath.Join(home, ".bashrc")
 	
-	// Default base support line (pointing to our private copy)
 	baseDepLine := fmt.Sprintf("[ -f %s ] && . %s", baseScript, baseScript)
 
 	if shell == "zsh" {
@@ -82,20 +82,18 @@ func handleCompletion(install bool, manageDeps bool) {
 	if install {
 		os.MkdirAll(compDir, 0755)
 		
-		// 1. Install xray-proxya script
 		if shell == "zsh" {
 			rootCmd.GenZshCompletionFile(compFile)
 		} else {
 			rootCmd.GenBashCompletionFile(compFile)
 		}
-		fmt.Printf("✅ Completion script saved to %s\n", compFile)
+		fmt.Printf("✅ [%s] Completion script saved to %s\n", Version, compFile)
 
-		// 2. Install Full Environment (Rootless Helper)
 		if manageDeps && shell == "bash" {
 			fmt.Println("🌐 Downloading full bash-completion base set...")
 			url := "https://raw.githubusercontent.com/scop/bash-completion/master/bash_completion"
 			if err := downloadFile(url, baseScript); err != nil {
-				fmt.Printf("⚠️  Failed to download base set: %v. Completion might error.\n", err)
+				fmt.Printf("⚠️  Failed to download base set: %v\n", err)
 			} else {
 				fmt.Printf("✅ Base completion tools installed to %s\n", baseScript)
 			}
@@ -111,7 +109,9 @@ func handleCompletion(install bool, manageDeps bool) {
 			}
 			
 			sourceLine := fmt.Sprintf("[ -f %s ] && . %s", compFile, compFile)
-			if shell == "zsh" { sourceLine = fmt.Sprintf("fpath=(%s $fpath)\nautoload -Uz _xray-proxya", compDir) }
+			if shell == "zsh" { 
+				sourceLine = fmt.Sprintf("fpath=(%s $fpath)\nautoload -Uz _xray-proxya", compDir) 
+			}
 			
 			if !strings.Contains(content, "xray-proxya") {
 				newBlocks.WriteString("\n# Xray-Proxya Completion\n" + sourceLine + "\n")
@@ -123,10 +123,9 @@ func handleCompletion(install bool, manageDeps bool) {
 				f.WriteString(newBlocks.String())
 				fmt.Printf("✅ Updated RC file: %s\n", rcFile)
 			}
-			fmt.Println("🚀 Please source your RC file or restart your shell.")
+			fmt.Println("🚀 IMPORTANT: Run 'complete -r xray-proxya' then 'source ~/.bashrc' to activate.")
 		}
 	} else {
-		// Uninstall
 		os.Remove(compFile)
 		fmt.Printf("🗑️ Removed %s\n", compFile)
 		if manageDeps {
@@ -138,14 +137,13 @@ func handleCompletion(install bool, manageDeps bool) {
 }
 
 func downloadFile(url string, path string) error {
+	os.MkdirAll(filepath.Dir(path), 0755)
 	resp, err := http.Get(url)
 	if err != nil { return err }
 	defer resp.Body.Close()
-	
 	out, err := os.Create(path)
 	if err != nil { return err }
 	defer out.Close()
-	
 	_, err = io.Copy(out, resp.Body)
 	return err
 }
@@ -173,11 +171,15 @@ func cleanRC(rcPath, marker string) {
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
+	
 	compInstallCmd.Flags().StringVarP(&shellOverride, "shell", "s", "", "Shell type")
-	compInstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Install full completion script set to user directory")
+	compInstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Install full completion script set")
+	
 	compUninstallCmd.Flags().StringVarP(&shellOverride, "shell", "s", "", "Shell type")
-	compUninstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Uninstall full completion set and cleanup RC")
+	compUninstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Uninstall full completion set")
+	
 	completionCmd.AddCommand(compInstallCmd, compUninstallCmd)
+	rootCmd.AddCommand(completionCmd)
 	
 	completionCmd.Run = func(cmd *cobra.Command, args []string) {
 		if len(args) == 0 { cmd.Help(); return }
@@ -187,7 +189,6 @@ func init() {
 		case "fish": rootCmd.GenFishCompletion(os.Stdout, true)
 		}
 	}
-	rootCmd.AddCommand(completionCmd)
 }
 
 var versionCmd = &cobra.Command{

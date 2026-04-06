@@ -30,4 +30,13 @@ This file contains foundational mandates for the AI Assistant working on this pr
     *   If validation fails, the application must return an error and not apply the changes.
 9.  **Testing Environment:**
     *   If cross-system testing is required, the AI is authorized to create user-mode QEMU virtual machines (via creating a Skill) to validate builds and execution on different architectures or basic OS environments.
+    *   **Pre-configured Virtual Machines:** The following VMs are available via SSH for testing:
+        *   `gateway`: Role as server (Debian).
+        *   `client`: Role as client (Debian).
+        *   `alpine`: Used for testing Alpine-specific features (Alpine Linux).
+    *   **Container Testing & Lessons Learned (webterm/ttya):**
+        *   **Environment:** Use `ailing2416/webterm:arm` (or `x64`) for clean environment testing. If network bridge issues occur, use `--network host`.
+        *   **Architecture Detection:** In Go, use `runtime.GOARCH` or correctly parse `uname -m` output for downloading the corresponding Xray core (e.g., `arm64-v8a` for ARM64).
+        *   **Config Naming:** Xray core requires a `.json` extension to correctly auto-detect configuration format. Use `config.active.json` instead of generic extensions like `.active`.
+        *   **Terminal Simulation:** `ttya` (ttyd-based) relies on real TTY for shell interaction. Headless automated testing (e.g., Chromium CDP) is unstable for complex Tab-completion verification; prefer interactive simulation via `docker exec bash -i` for command-line behavior testing.
 

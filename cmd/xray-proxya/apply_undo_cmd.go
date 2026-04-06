@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -42,7 +43,7 @@ var applyCmd = &cobra.Command{
 				overrides[string(m.Mode)] = p
 			}
 		}
-		if cfg.Gateway.Enabled {
+		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
 			pD, _ := xray.GetFreePort(); overrides["dns-in"] = pD
 			if cfg.Gateway.Mode == "tproxy" {
 				pT, _ := xray.GetFreePort(); overrides["tproxy-in"] = pT
@@ -74,6 +75,11 @@ var applyCmd = &cobra.Command{
 			fmt.Printf("⚠️ Config committed but restart failed: %v\n", err)
 		} else {
 			fmt.Println("✅ All changes applied and service updated.")
+		}
+
+		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
+			fmt.Println("🛡️  Synchronizing transparent gateway rules...")
+			gateway.SyncFirewall(cfg)
 		}
 	},
 }

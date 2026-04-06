@@ -504,3 +504,9 @@ func renderSidebar(current sessionTab, height int) string {
 	}
 	return lipgloss.NewStyle().Width(11).Height(height).MaxHeight(height).BorderStyle(lipgloss.NormalBorder()).BorderRight(true).Render(b.String())
 }
+
+func Start() error {
+	p := tea.NewProgram(InitialModel(), tea.WithAltScreen())
+	_, err := p.Run()
+	return err
+}

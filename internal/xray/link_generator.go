@@ -16,6 +16,10 @@ func GenerateRelayLinks(cfg *config.UserConfig, ip string, relay config.CustomOu
 	return generateAllLinks(cfg, ip, relay.UserUUID, "Relay-"+relay.Alias)
 }
 
+func GenerateGuestLinks(cfg *config.UserConfig, ip string, guestUUID string, alias string) []string {
+	return generateAllLinks(cfg, ip, guestUUID, "Guest-"+alias)
+}
+
 func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix string) []string {
 	var links []string
 	parsedIP := net.ParseIP(ip)
@@ -24,14 +28,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 		formattedIP = "[" + ip + "]"
 	}
 
-	// Priority Order for v0.1.3
-	order := []config.PresetMode{
-		config.ModeVLESSVision,
-		config.ModeVLESSReality,
-		config.ModeVLESSXHTTP,
-		config.ModeVMessWS,
-		config.ModeShadowsocksTCP,
-	}
+	order := config.PresetOrder
 
 	for _, targetMode := range order {
 		var mode *config.ModeInfo
@@ -41,15 +38,11 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 				break
 			}
 		}
-		if mode == nil || !mode.Enabled {
-			continue
-		}
+		if mode == nil || !mode.Enabled { continue }
 
 		var link string
 		psSuffix := ""
-		if suffix != "" {
-			psSuffix = "-" + suffix
-		}
+		if suffix != "" { psSuffix = "-" + suffix }
 
 		switch mode.Mode {
 		case config.ModeVLESSReality:
@@ -77,15 +70,14 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 			link = "vmess://" + base64.StdEncoding.EncodeToString(data)
 
 		case config.ModeShadowsocksTCP:
+			// Shadowsocks usually doesn't support the same user-UUID routing in this context
 			if suffix == "" {
 				ps := fmt.Sprintf("SS-TCP-%d", mode.Port)
 				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", mode.Settings.Cipher, mode.Settings.Password)))
 				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, ps)
 			}
 		}
-		if link != "" {
-			links = append(links, link)
-		}
+		if link != "" { links = append(links, link) }
 	}
 	return links
 }
