@@ -1,2 +1,14 @@
 test-links.txt
 links.txt
+links
+proton-vpn.conf
+build/
+*.zip
+*.log
+xray.pid
+config.json.staging
+config.active.json
+node_modules/
+completion_test.png
+test_completion.js
+chromium.log

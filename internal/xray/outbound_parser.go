@@ -39,6 +39,14 @@ func (fi *flexInt) UnmarshalJSON(b []byte) error {
 }
 
 func ParseProxyLink(link string) (map[string]interface{}, error) {
+	// Sanity check for shell truncation
+	if strings.Contains(link, "?") && !strings.Contains(link, "&") {
+		// Most complex links (VLESS/VMess) should have multiple params
+		if strings.HasPrefix(link, "vless://") || strings.HasPrefix(link, "vmess://") {
+			fmt.Println("⚠️  Warning: This link looks truncated. Did you forget to wrap it in 'single quotes'?")
+		}
+	}
+
 	if strings.HasPrefix(link, "vmess://") {
 		return parseVMess(link)
 	} else if strings.HasPrefix(link, "vless://") {
@@ -124,9 +132,13 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 	}
 
 	if security == "reality" {
+		pbk := query.Get("pbk")
+		if pbk == "" {
+			return nil, fmt.Errorf("invalid reality link: missing 'pbk' parameter")
+		}
 		realitySettings := map[string]interface{}{
 			"serverName":  query.Get("sni"),
-			"publicKey":   query.Get("pbk"),
+			"publicKey":   pbk,
 			"shortId":     query.Get("sid"),
 			"fingerprint": query.Get("fp"),
 		}

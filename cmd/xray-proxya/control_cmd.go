@@ -2,10 +2,27 @@ package main
 
 import (
 	"fmt"
+	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
 )
+
+var startCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start Xray service in background using current config",
+	Run: func(cmd *cobra.Command, args []string) {
+		active, pid := xray.GetXrayStatus()
+		if active {
+			fmt.Printf("ℹ️ Xray is already running (PID: %d).\n", pid)
+			return
+		}
+		if err := xray.StartXrayBackground(); err != nil {
+			fmt.Printf("❌ Failed to start: %v\n", err)
+		}
+	},
+}
 
 var stopCmd = &cobra.Command{
 	Use:   "stop",
@@ -18,6 +35,10 @@ var stopCmd = &cobra.Command{
 		}
 		fmt.Printf("🛑 Stopping Xray (PID: %d)...\n", pid)
 		xray.StopXray()
+		cfg, _ := config.LoadConfig()
+		if cfg != nil && (cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) {
+			gateway.CleanupFirewall()
+		}
 		fmt.Println("✅ Xray stopped.")
 	},
 }
@@ -33,5 +54,5 @@ var restartCmd = &cobra.Command{
 }
 
 func init() {
-	rootCmd.AddCommand(stopCmd, restartCmd)
+	rootCmd.AddCommand(startCmd, stopCmd, restartCmd)
 }

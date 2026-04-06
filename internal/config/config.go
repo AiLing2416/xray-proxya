@@ -23,7 +23,6 @@ const (
 	ModeShadowsocksTCP PresetMode = "shadowsocks-tcp"
 )
 
-// PresetOrder defines the canonical order of inbounds for v0.1.3+
 var PresetOrder = []PresetMode{
 	ModeVLESSVision,
 	ModeVLESSReality,
@@ -39,11 +38,24 @@ type UserConfig struct {
 	TestInbound     int              `json:"test_inbound"`
 	ActiveModes     []ModeInfo       `json:"active_modes"`
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
+	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
 }
 
+type GuestConfig struct {
+	Alias        string                 `json:"alias"`
+	UUID         string                 `json:"uuid"`
+	Enabled      bool                   `json:"enabled"`
+	QuotaGB      float64                `json:"quota_gb"` // -1 for unlimited, 0 for paused
+	UsedBytes    int64                  `json:"used_bytes"`
+	ResetDay     int                    `json:"reset_day"` // 1-31
+	OutboundLink string                 `json:"outbound_link,omitempty"` // For custom routing
+	OutboundConf map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
+}
+
 type GatewayConfig struct {
-	Enabled      bool     `json:"enabled"`
+	LocalEnabled bool     `json:"local_enabled"`
+	LANEnabled   bool     `json:"lan_enabled"`
 	Mode         string   `json:"mode"` // "tun" or "tproxy"
 	RelayAlias   string   `json:"relay_alias"`
 	Blacklist    []string `json:"blacklist"`
@@ -81,17 +93,14 @@ type Settings struct {
 }
 
 func (cfg *UserConfig) Normalize() {
-	if cfg.Role != RoleServer {
-		return
-	}
+	if cfg.Role != RoleServer { return }
 	newModes := make([]ModeInfo, 0, len(PresetOrder))
 	for _, target := range PresetOrder {
 		found := false
 		for _, m := range cfg.ActiveModes {
 			if m.Mode == target {
 				newModes = append(newModes, m)
-				found = true
-				break
+				found = true; break
 			}
 		}
 		if !found {
@@ -103,9 +112,7 @@ func (cfg *UserConfig) Normalize() {
 
 func GetConfigDir() string {
 	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 {
-		home = "/root"
-	}
+	if os.Geteuid() == 0 { home = "/root" }
 	return filepath.Join(home, ".config", "xray-proxya")
 }
 
@@ -121,9 +128,7 @@ func LoadConfig() (*UserConfig, error) {
 
 func LoadConfigEx(staging bool) (*UserConfig, error) {
 	path := GetConfigPath()
-	if staging {
-		path += ".staging"
-	}
+	if staging { path += ".staging" }
 
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		if staging {
@@ -135,55 +140,37 @@ func LoadConfigEx(staging bool) (*UserConfig, error) {
 	}
 
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { return nil, err }
 
 	var cfg *UserConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		return nil, err
-	}
+	if err := json.Unmarshal(data, &cfg); err != nil { return nil, err }
 	cfg.Normalize()
 	return cfg, nil
 }
 
-func ClearStaging() error {
-	path := GetConfigPath() + ".staging"
-	if _, err := os.Stat(path); err == nil {
-		return os.Remove(path)
-	}
-	return nil
-}
-
-func (cfg *UserConfig) Save() error {
-	return cfg.SaveEx(false)
-}
+func (cfg *UserConfig) Save() error { return cfg.SaveEx(false) }
 
 func (cfg *UserConfig) SaveEx(staging bool) error {
 	path := GetConfigPath()
-	if staging {
-		path += ".staging"
-	}
+	if staging { path += ".staging" }
 	os.MkdirAll(filepath.Dir(path), 0755)
 	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
+	if err != nil { return err }
 	return os.WriteFile(path, data, 0644)
 }
 
 func CommitStaging() error {
 	src := GetConfigPath() + ".staging"
 	dst := GetConfigPath()
-	if _, err := os.Stat(src); os.IsNotExist(err) {
-		return nil
-	}
+	if _, err := os.Stat(src); os.IsNotExist(err) { return nil }
 	data, err := os.ReadFile(src)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(dst, data, 0644); err != nil {
-		return err
-	}
+	if err != nil { return err }
+	if err := os.WriteFile(dst, data, 0644); err != nil { return err }
 	return os.Remove(src)
+}
+
+func ClearStaging() error {
+	path := GetConfigPath() + ".staging"
+	if _, err := os.Stat(path); err == nil { return os.Remove(path) }
+	return nil
 }
