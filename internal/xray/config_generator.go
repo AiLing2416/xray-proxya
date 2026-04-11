@@ -99,7 +99,7 @@ type RoutingRule struct {
 
 func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) ([]byte, error) {
 	xc := XrayConfig{}
-	xc.Log.LogLevel = "warning"
+	xc.Log.LogLevel = "debug"
 	xc.Policy.Levels = map[string]interface{}{
 		"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true},
 	}
@@ -181,7 +181,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 
 		switch mode.Mode {
 		case config.ModeVLESSReality:
-			in.Settings = map[string]interface{}{"clients": getInboundUsers(""), "decryption": "none"}
+			in.Settings = map[string]interface{}{"clients": getInboundUsers(""), "decryption": "none", "network": "tcp,udp"}
 			in.StreamSettings = &StreamSettings{
 				Network:  "xhttp",
 				Security: "reality",
@@ -195,7 +195,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 				XHTTPSettings: &XHTTPSet{Mode: "stream-up", Path: mode.Path, Host: mode.SNI},
 			}
 		case config.ModeVLESSVision:
-			in.Settings = map[string]interface{}{"clients": getInboundUsers("xtls-rprx-vision"), "decryption": "none"}
+			in.Settings = map[string]interface{}{"clients": getInboundUsers("xtls-rprx-vision"), "decryption": "none", "network": "tcp,udp"}
 			in.StreamSettings = &StreamSettings{
 				Network:  "tcp",
 				Security: "reality",
@@ -208,13 +208,13 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 				},
 			}
 		case config.ModeVLESSXHTTP:
-			in.Settings = map[string]interface{}{"clients": getInboundUsers(""), "decryption": mode.Settings.PrivateKey}
+			in.Settings = map[string]interface{}{"clients": getInboundUsers(""), "decryption": mode.Settings.PrivateKey, "network": "tcp,udp"}
 			in.StreamSettings = &StreamSettings{
 				Network: "xhttp",
 				XHTTPSettings: &XHTTPSet{Mode: "stream-up", Path: mode.Path},
 			}
 		case config.ModeVMessWS:
-			in.Settings = map[string]interface{}{"clients": getInboundUsers("")}
+			in.Settings = map[string]interface{}{"clients": getInboundUsers(""), "network": "tcp,udp"}
 			in.StreamSettings = &StreamSettings{Network: "ws", WSSettings: &WSSet{Path: mode.Path}}
 		case config.ModeShadowsocksTCP:
 			in.Settings = map[string]interface{}{"method": mode.Settings.Cipher, "password": mode.Settings.Password, "network": "tcp,udp"}
@@ -266,45 +266,37 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 			})
 		}
 
-		// 2. LAN Gateway Inbound
+		// 2. LAN Gateway Inbound (Always TProxy for better reliability)
 		if userCfg.Gateway.LANEnabled {
-			if userCfg.Gateway.Mode == "tun" {
-				xc.Inbounds = append(xc.Inbounds, InboundConfig{
-					Tag: "tun-lan-in", Protocol: "tun",
-					Settings: map[string]interface{}{"name": "lan-tun", "address": []string{"172.16.2.1/30"}, "mtu": 1500, "stack": "gvisor", "autoRoute": false},
-					Sniffing: &SniffingConfig{Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"}},
-				})
-			} else if userCfg.Gateway.Mode == "tproxy" {
-				tpPort := 12345; if p, ok := overridePorts["tproxy-in"]; ok { tpPort = p }
-				xc.Inbounds = append(xc.Inbounds, InboundConfig{
-					Tag: "tproxy-in", Port: tpPort, Protocol: "dokodemo-door",
-					Settings: map[string]interface{}{"network": "tcp,udp", "followRedirect": true},
-					StreamSettings: &StreamSettings{Sockopt: map[string]interface{}{"tproxy": "tproxy", "mark": 255}},
-					Sniffing: &SniffingConfig{Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"}},
-				})
-			}
+			tpPort := 12345; if p, ok := overridePorts["tproxy-in"]; ok { tpPort = p }
+			xc.Inbounds = append(xc.Inbounds, InboundConfig{
+				Tag: "tproxy-in", Port: tpPort, Protocol: "dokodemo-door",
+				Settings: map[string]interface{}{"network": "tcp,udp", "followRedirect": true},
+				StreamSettings: &StreamSettings{Sockopt: map[string]interface{}{"tproxy": "tproxy", "mark": 255}},
+				Sniffing: &SniffingConfig{Enabled: true, DestOverride: []string{"http", "tls", "quic", "fakedns"}},
+			})
 		}
 	}
 
-	// Global Outbounds
-	xc.Outbounds = append(xc.Outbounds, map[string]interface{}{"protocol": "freedom", "tag": "direct"})
-	xc.Outbounds = append(xc.Outbounds, map[string]interface{}{"protocol": "blackhole", "tag": "blocked"})
-	if isGateway {
-		xc.Outbounds = append(xc.Outbounds, map[string]interface{}{"protocol": "dns", "tag": "dns-out"})
-	}
-
-	// Relay Outbounds
+	// 1. Relay Outbounds (Specific Nodes)
 	for _, co := range userCfg.CustomOutbounds {
 		if !co.Enabled { continue }
 		out := deepCopyMap(co.Config); out["tag"] = "outbound-" + co.Alias
 		xc.Outbounds = append(xc.Outbounds, out)
 	}
 
-	// Guest Dedicated Outbounds
+	// 2. Guest Dedicated Outbounds
 	for _, g := range userCfg.Guests {
 		if !g.Enabled || g.OutboundConf == nil { continue }
 		out := deepCopyMap(g.OutboundConf); out["tag"] = "guest-outbound-" + g.Alias
 		xc.Outbounds = append(xc.Outbounds, out)
+	}
+
+	// 3. System Outbounds (Low Priority)
+	xc.Outbounds = append(xc.Outbounds, map[string]interface{}{"protocol": "freedom", "tag": "direct"})
+	xc.Outbounds = append(xc.Outbounds, map[string]interface{}{"protocol": "blackhole", "tag": "blocked"})
+	if isGateway {
+		xc.Outbounds = append(xc.Outbounds, map[string]interface{}{"protocol": "dns", "tag": "dns-out"})
 	}
 
 	// Test Inbound
@@ -326,15 +318,27 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 
 	xc.Routing.DomainStrategy = "AsIs"
 	var rules []RoutingRule
+
+	// 1. Mandatory routing for isolated tests (test-socks)
+	for _, co := range userCfg.CustomOutbounds {
+		if !co.Enabled { continue }
+		rules = append(rules, RoutingRule{
+			Type: "field", 
+			InboundTag: []string{"test-socks"}, 
+			OutboundTag: "outbound-" + co.Alias,
+		})
+	}
+
+	// 2. Standard System Inbounds (API & DNS)
 	rules = append(rules, RoutingRule{Type: "field", InboundTag: []string{"api"}, OutboundTag: "api"})
 	rules = append(rules, RoutingRule{Type: "field", InboundTag: []string{"tun-local-in", "tun-lan-in", "tproxy-in", "dns-in"}, Port: "53", OutboundTag: "dns-out"})
 
-	// Gateway Routing...
+	// 3. Transparent Gateway Redirection
 	if isGateway && userCfg.Gateway.RelayAlias != "" {
 		rules = append(rules, RoutingRule{Type: "field", InboundTag: []string{"tun-local-in", "tun-lan-in", "tproxy-in"}, OutboundTag: "outbound-" + userCfg.Gateway.RelayAlias})
 	}
 
-	// Internal Proxy Routing...
+	// 4. Internal Proxy Routing (SOCKS/HTTP provided for each custom outbound)
 	for _, co := range userCfg.CustomOutbounds {
 		if !co.Enabled || co.InternalProxyPort == 0 { continue }
 		var tags []string
@@ -344,20 +348,21 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 		rules = append(rules, RoutingRule{Type: "field", InboundTag: tags, OutboundTag: "outbound-" + co.Alias})
 	}
 
-	// Guest Routing (Highest Priority among users)
+	// 5. Guest & Relay User Identity-based Routing (Low Priority)
 	for _, g := range userCfg.Guests {
 		if !g.Enabled { continue }
 		outTag := "direct"; if g.OutboundConf != nil { outTag = "guest-outbound-" + g.Alias }
 		rules = append(rules, RoutingRule{Type: "field", User: []string{"guest-" + g.Alias, "test-" + g.Alias}, OutboundTag: outTag})
 	}
 
-	// Relay Users Standard Routing
 	for _, co := range userCfg.CustomOutbounds {
 		if !co.Enabled { continue }
 		rules = append(rules, RoutingRule{Type: "field", User: []string{"user-" + co.Alias, "test-" + co.Alias}, OutboundTag: "outbound-" + co.Alias})
 	}
 
+	// 6. Default Fallback
 	rules = append(rules, RoutingRule{Type: "field", User: []string{"main-user", "direct"}, OutboundTag: "direct"})
+	rules = append(rules, RoutingRule{Type: "field", InboundTag: []string{"test-socks"}, OutboundTag: "blocked"}) // Block leaked test-socks
 	xc.Routing.Rules = rules
 
 	return json.MarshalIndent(xc, "", "  ")

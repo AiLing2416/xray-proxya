@@ -1,21 +1,26 @@
 # Xray-Proxya
 
-Xray-Proxya is a professional, Go-based proxy management tool and transparent gateway. It is designed to be the modern successor to the archive bash-based deployment scripts, focusing on reliability, security, and advanced networking features.
+Xray-Proxya is a professional, Go-based proxy management tool and transparent gateway. It is designed to be the modern successor to legacy bash-based deployment scripts, focusing on multi-tenant isolation, reliability, and advanced networking features.
 
 ## Key Features
 
-- **Role-Based Architecture**: Clearly separated **Server** (inbound distribution) and **Gateway** (transparent proxy) roles to prevent configuration conflicts.
-- **Staging System**: A safe "Modify -> Validate -> Commit" workflow. All changes are saved to a staging area and verified by an isolated Xray process before going live.
-- **Advanced Inbounds**:
+- **Multi-Tenant Guest Management (v0.2.0)**:
+  - **Isolation**: Manage multiple tenants with independent UUIDs using `guests` commands.
+  - **Quotas**: Set downlink traffic quotas (GB) with monthly auto-reset and boundary adaptation.
+  - **Dedicated Routes**: Bind specific guests to dedicated outbound relay nodes for personalized traffic paths.
+- **Role-Based Architecture**: Clearly separated **Server** (inbound distribution) and **Gateway** (transparent proxy) roles.
+- **Advanced Networking**:
+  - **Physical Interface Binding**: Bind the `freedom` protocol to specific local interfaces (e.g., WireGuard, ProtonVPN) for policy-based routing.
+  - **Internal Proxies**: Instantly create private, unauthenticated Socks/HTTP ports for any outbound node.
+  - **Dual-Stack Gateway**: Automatic IPv4/IPv6 forwarding and TProxy/TUN support with `nftables` (and `iptables` fallback).
+- **Security & Stealth**:
   - **VLESS-Reality-XHTTP**: State-of-the-art stealth with randomized international SNIs.
   - **VLESS-XHTTP-KEM768**: Post-quantum security ready.
-  - **VMess-WS & Shadowsocks**: Reliable fallback protocols.
-- **Transparent Gateway**:
-  - Built-in **TUN (gvisor)** and **TPROXY** support.
-  - **DNS Hijacking & FakeDNS**: Accurate domain-based routing for LAN clients.
-  - **Kernel-Level Blacklist**: High-performance blocking using `nftables` sets.
-- **Relay System**: Easily bind incoming users to specific outbound relay nodes with per-relay DNS strategies.
-- **Zero-Conflict Testing**: Automated connectivity tests use randomized ports to ensure zero impact on running services.
+  - **SSH Protection**: Automatically excludes SSH ports from intercept rules to prevent lockout.
+- **Reliability**:
+  - **Zero-Dependency Core**: Pure Go zip implementation for downloading Xray core—works on Alpine/Debian Slim.
+  - **Self-Healing**: Automatic TUN device cleanup and process management (`pkill -x` matching).
+  - **Shell Guard**: Built-in detection for truncated links caused by missing shell quotes.
 
 ## Installation
 
@@ -29,14 +34,12 @@ Requires Go 1.25+
 ```bash
 git clone https://github.com/AiLing2416/xray-proxya
 cd xray-proxya
-CGO_ENABLED=0 go build -o xray-proxya ./cmd/xray-proxya/
-sudo mv xray-proxya /usr/local/bin/
+CGO_ENABLED=0 go build -ldflags "-s -w" -o xray-proxya ./cmd/xray-proxya/
 ```
 
 ## Quick Start
 
 ### 1. Initialize
-Choose your role during initialization:
 ```bash
 # For a distribution server
 xray-proxya init --role server
@@ -45,40 +48,29 @@ xray-proxya init --role server
 xray-proxya init --role gateway
 ```
 
-### 2. Manage Nodes (Relays)
+### 2. Multi-Tenant Setup
 ```bash
-# Add a node to staging
-xray-proxya outbound add my-hk-node "vless://..."
-
-# Apply changes (Validates and restarts service)
+# Add a guest with 100GB monthly quota
+xray-proxya guests add john-doe --quota 100 --reset 1
 xray-proxya apply
 ```
 
-### 3. Gateway Configuration
+### 3. Dedicated Outbound
 ```bash
-# Setup kernel parameters (forwarding, etc.)
-xray-proxya gateway setup-kernel
-
-# Bind gateway traffic to a relay
-xray-proxya gateway set --mode tun --relay my-hk-node
+# Bind a guest to a specific relay node
+xray-proxya outbound add hk-node "vless://..."
+xray-proxya guests set john-doe --outbound hk-node
 xray-proxya apply
 ```
 
 ## CLI Reference
 
-- `presets`: Manage pre-defined inbound slots (Reality, Vision, KEM, etc.).
-- `outbound`: Manage relay nodes, interface bindings, and **internal proxies**.
-- `outbound info`: Fetch detailed landing node profiles and media unlock tests.
-- `gateway`: Configure transparent proxy settings and blacklists.
-- `service`: Manage background service (Systemd/OpenRC, Root required).
-- `status`: Show real-time traffic and process info.
-- `show`: Display sharing links. Use `-o` to filter by relay alias.
-- `apply / undo`: Commit or discard staging changes.
-- `reset / purge / update`: Maintenance, full uninstall, or core update.
-- `completion install`: One-click setup for shell autocompletion.
-
-## Development
-
-The project is built with a focus on **Rootless** execution where possible. Higher-level gateway features (TUN/TPROXY) leverage Linux capabilities (`setcap`) or explicit root access for kernel interactions.
+- `guests`: Manage multi-tenant users, quotas, and dedicated outbounds.
+- `presets`: Manage pre-defined inbound protocols (Reality, Vision, KEM, etc.).
+- `outbound`: Manage relay nodes, **physical interface bindings**, and **internal proxies**.
+- `gateway`: Configure transparent proxy settings, dual-stack forwarding, and blacklists.
+- `status`: Real-time traffic stats and process monitoring.
+- `apply / undo`: Commit or discard staging changes with automatic validation.
+- `completion install`: Setup shell autocompletion.
 
 Built with ❤️ by the Xray-Proxya team.
