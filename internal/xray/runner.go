@@ -64,12 +64,16 @@ func StopXray() {
 		process.Kill()
 	}
 	
-	// CRITICAL FIX: Use -x for EXACT match to avoid killing xray-proxya itself
-	exec.Command("pkill", "-9", "-x", "xray").Run()
+	// CRITICAL FIX: Use sudo to ensure we can kill root processes and cleanup interfaces
+	exec.Command("sudo", "pkill", "-9", "-x", "xray").Run()
+	
+	// Cleanup TUN interfaces if they exist
+	exec.Command("sudo", "ip", "link", "delete", "proxya-tun").Run()
+	exec.Command("sudo", "ip", "link", "delete", "lan-tun").Run()
 	
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 	os.Remove(pidPath)
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1 * time.Second)
 }
 
 func StartXrayBackground() error {
@@ -134,7 +138,9 @@ func StartXray(configPath string) (*exec.Cmd, error) {
 func StartXrayTemp(jsonData []byte) (*exec.Cmd, func(), error) {
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("xray-check-%d.json", time.Now().Unix()))
 	os.WriteFile(tmpFile, jsonData, 0644)
+	
 	cmd := exec.Command(GetXrayBinaryPath(), "run", "-c", tmpFile)
+
 	if err := cmd.Start(); err != nil {
 		os.Remove(tmpFile)
 		return nil, nil, err

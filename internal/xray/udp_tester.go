@@ -50,7 +50,7 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 	relayIP := net.IP(buf[4:8])
 	relayPort := int(buf[8])<<8 | int(buf[9])
 	relayAddr := fmt.Sprintf("%s:%d", relayIP.String(), relayPort)
-	if relayIP.IsUnspecified() {
+	if relayIP.IsUnspecified() || relayIP.String() == "::" {
 		host, _, _ := net.SplitHostPort(socksAddr)
 		relayAddr = fmt.Sprintf("%s:%d", host, relayPort)
 	}

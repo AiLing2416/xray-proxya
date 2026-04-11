@@ -12,3 +12,6 @@ node_modules/
 completion_test.png
 test_completion.js
 chromium.log
+GEMINI.md
+NETWORK_VERIFICATION.md
+v0.2.0.txt

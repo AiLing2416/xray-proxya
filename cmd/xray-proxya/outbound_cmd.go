@@ -3,9 +3,11 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
@@ -283,24 +285,63 @@ var setInternalProxyCmd = &cobra.Command{
 
 func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[string]string {
 	results := map[string]string{"TCP": "FAIL", "UDP": "FAIL", "DNS": "FAIL", "IP": "Unknown"}
-	testSocksPort, _ := xray.GetFreePort(); apiPort, _ := xray.GetFreePort()
-	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
+	testSocksPort, _ := xray.GetFreePort(); apiPort, _ := xray.GetFreePort(); dnsPort, _ := xray.GetFreePort()
+	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
 	jsonData, err := xray.GenerateXrayJSON(cfg, overrides); if err != nil { return results }
-	_, cleanup, err := xray.StartXrayTemp(jsonData); if err != nil { return results }
+	
+	cmd, cleanup, err := xray.StartXrayTemp(jsonData)
+	if err != nil { return results }
+	_ = cmd // explicitly ignore if we only need cleanup
 	defer cleanup()
+	
+	// Wait a bit for Xray to start
+	time.Sleep(1 * time.Second)
+
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
 	dialer, err := proxy.SOCKS5("tcp", socksAddr, &proxy.Auth{User: "user-" + co.Alias, Password: "test"}, proxy.Direct)
 	if err != nil { return results }
-	httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 5 * time.Second}
-	resp, err := httpClient.Get("http://ip-api.com/json")
-	if err == nil {
-		defer resp.Body.Close()
-		var geo struct { Query string `json:"query"` }
-		if err := json.NewDecoder(resp.Body).Decode(&geo); err == nil { results["TCP"], results["IP"] = "OK", geo.Query }
+	
+	httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 10 * time.Second}
+	
+	// 1. Direct TCP Test (Bypass DNS)
+	if conn, err := dialer.Dial("tcp", "8.8.8.8:443"); err == nil {
+		results["TCP"] = "OK"
+		conn.Close()
+	} else {
+		results["TCP"] = fmt.Sprintf("FAIL(443:%v)", err)
 	}
+	
+	if results["TCP"] == "OK" {
+		if conn, err := dialer.Dial("tcp", "8.8.8.8:80"); err == nil {
+			conn.Close()
+		} else {
+			results["TCP"] = fmt.Sprintf("OK(443),FAIL(80:%v)", err)
+		}
+	}
+
+	// 2. Fetch Exit IP
+	ipList := []string{"http://api.ip.sb/ip", "http://ifconfig.me/ip", "http://ident.me"}
+	for _, url := range ipList {
+		resp, err := httpClient.Get(url)
+		if err == nil {
+			defer resp.Body.Close()
+			body, _ := io.ReadAll(resp.Body)
+			results["IP"] = strings.TrimSpace(string(body))
+			break
+		} else {
+			results["IP"] = fmt.Sprintf("Err:%v", err)
+		}
+	}
+	
+	// 3. DNS Test (via Outbound)
 	conn, err := dialer.Dial("tcp", "8.8.8.8:53"); if err == nil { results["DNS"] = "OK"; conn.Close() }
 	duration, err := xray.TestUDP(socksAddr, "user-"+co.Alias, "test")
 	if err == nil { results["UDP"] = fmt.Sprintf("OK(%dms)", duration.Milliseconds()) }
+	
+	fmt.Printf("DEBUG: Test SOCKS Proxy is at %s (user: user-%s, pass: test)\n", socksAddr, co.Alias)
+	fmt.Println("DEBUG: Waiting 30s for manual verification...")
+	time.Sleep(30 * time.Second)
+	
 	return results
 }
 

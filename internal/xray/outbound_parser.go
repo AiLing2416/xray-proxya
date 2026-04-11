@@ -110,6 +110,9 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 		"id":         uuid,
 		"encryption": encryptionStr,
 	}
+	if flow := query.Get("flow"); flow != "" {
+		userObj["flow"] = flow
+	}
 
 	out := map[string]interface{}{
 		"protocol": "vless",
@@ -146,19 +149,53 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 			realitySettings["spiderX"] = spx
 		}
 		out["streamSettings"].(map[string]interface{})["realitySettings"] = realitySettings
+	} else if security == "tls" || security == "xtls" {
+		tlsSettings := map[string]interface{}{
+			"serverName": query.Get("sni"),
+		}
+		if alpn := query.Get("alpn"); alpn != "" {
+			tlsSettings["alpn"] = strings.Split(alpn, ",")
+		}
+		out["streamSettings"].(map[string]interface{})[security+"Settings"] = tlsSettings
 	}
 
-	if network == "xhttp" || network == "ws" {
-		netSettings := map[string]interface{}{
+	// Network specific settings
+	switch network {
+	case "ws":
+		wsSettings := map[string]interface{}{
 			"path": path,
 		}
 		if host := query.Get("host"); host != "" {
-			netSettings["host"] = host
+			wsSettings["headers"] = map[string]interface{}{
+				"Host": host,
+			}
+		}
+		out["streamSettings"].(map[string]interface{})["wsSettings"] = wsSettings
+	case "grpc":
+		grpcSettings := map[string]interface{}{
+			"serviceName": query.Get("serviceName"),
 		}
 		if mode := query.Get("mode"); mode != "" {
-			netSettings["mode"] = mode
+			grpcSettings["multiMode"] = (mode == "multi")
 		}
-		out["streamSettings"].(map[string]interface{})[network+"Settings"] = netSettings
+		out["streamSettings"].(map[string]interface{})["grpcSettings"] = grpcSettings
+	case "xhttp":
+		xhttpSettings := map[string]interface{}{
+			"path": path,
+			"mode": query.Get("mode"),
+		}
+		if host := query.Get("host"); host != "" {
+			xhttpSettings["host"] = host
+		}
+		out["streamSettings"].(map[string]interface{})["xhttpSettings"] = xhttpSettings
+	case "http", "h2":
+		httpSettings := map[string]interface{}{
+			"path": path,
+		}
+		if host := query.Get("host"); host != "" {
+			httpSettings["host"] = strings.Split(host, ",")
+		}
+		out["streamSettings"].(map[string]interface{})["httpSettings"] = httpSettings
 	}
 
 	return out, nil
