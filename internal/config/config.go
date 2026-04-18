@@ -40,6 +40,25 @@ type UserConfig struct {
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
+	Subscriptions   []Subscription   `json:"subscriptions"`
+	SubPort         int              `json:"sub_port"`
+	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
+}
+
+type IPv6Config struct {
+	Enabled      bool   `json:"enabled"`
+	Subnet       string `json:"subnet"`        // e.g., 2001:db8::/64
+	Interface    string `json:"interface"`     // e.g., eth0
+	MaxAddresses int    `json:"max_addresses"` // How many IPs to include in a sub
+	EnableNDP    bool   `json:"enable_ndp"`    // Whether to auto-configure NDP
+}
+
+type Subscription struct {
+	Alias       string `json:"alias"`        // "" for the default direct outbound
+	TargetType  string `json:"target_type"`  // "direct", "outbound", "guest"
+	TargetAlias string `json:"target_alias"` // specific alias for outbound/guest
+	Address     string `json:"address"`      // custom address or hostname
+	Token       string `json:"token"`        // random URL path token
 }
 
 type GuestConfig struct {
@@ -112,8 +131,13 @@ func (cfg *UserConfig) Normalize() {
 
 func GetConfigDir() string {
 	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 { home = "/root" }
-	return filepath.Join(home, ".config", "xray-proxya")
+	// Fallback for some environments where UserHomeDir might fail for root
+	if os.Geteuid() == 0 && home == "" {
+		home = "/root"
+	}
+	dir := filepath.Join(home, ".config", "xray-proxya")
+	os.MkdirAll(dir, 0700)
+	return dir
 }
 
 func GetConfigPath() string {
@@ -121,42 +145,54 @@ func GetConfigPath() string {
 }
 
 func LoadConfig() (*UserConfig, error) {
+	// If a staging config exists, we should generally be aware of it to avoid split-brain.
+	// However, for 'run' and 'status', we want the active one.
 	cfg, err := LoadConfigEx(false)
-	if err == nil { cfg.Normalize() }
+	if err == nil {
+		cfg.Normalize()
+	}
 	return cfg, err
 }
 
 func LoadConfigEx(staging bool) (*UserConfig, error) {
 	path := GetConfigPath()
-	if staging { path += ".staging" }
-
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		if staging {
-			cfg, err := LoadConfigEx(false)
-			if err == nil { cfg.Normalize() }
-			return cfg, err
+	if staging {
+		stagingPath := path + ".staging"
+		// If requesting staging but it doesn't exist, fallback to official
+		if _, err := os.Stat(stagingPath); os.IsNotExist(err) {
+			return LoadConfigEx(false)
 		}
-		return nil, err
+		path = stagingPath
 	}
 
 	data, err := os.ReadFile(path)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 
 	var cfg *UserConfig
-	if err := json.Unmarshal(data, &cfg); err != nil { return nil, err }
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
 	cfg.Normalize()
 	return cfg, nil
 }
 
-func (cfg *UserConfig) Save() error { return cfg.SaveEx(false) }
+func (cfg *UserConfig) Save() error {
+	// Safety check: if we are saving to official but a staging file exists, 
+	// we might be overwriting a pending change with stale data.
+	// For background tasks like quota, we should ideally merge, but for now 
+	// we'll just ensure we save to the right place.
+	return cfg.SaveEx(false)
+}
 
 func (cfg *UserConfig) SaveEx(staging bool) error {
 	path := GetConfigPath()
 	if staging { path += ".staging" }
-	os.MkdirAll(filepath.Dir(path), 0755)
+	os.MkdirAll(filepath.Dir(path), 0700)
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil { return err }
-	return os.WriteFile(path, data, 0644)
+	return os.WriteFile(path, data, 0600)
 }
 
 func CommitStaging() error {
@@ -165,7 +201,7 @@ func CommitStaging() error {
 	if _, err := os.Stat(src); os.IsNotExist(err) { return nil }
 	data, err := os.ReadFile(src)
 	if err != nil { return err }
-	if err := os.WriteFile(dst, data, 0644); err != nil { return err }
+	if err := os.WriteFile(dst, data, 0600); err != nil { return err }
 	return os.Remove(src)
 }
 

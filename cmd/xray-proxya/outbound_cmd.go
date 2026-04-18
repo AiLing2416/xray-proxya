@@ -336,11 +336,11 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[strin
 	// 3. DNS Test (via Outbound)
 	conn, err := dialer.Dial("tcp", "8.8.8.8:53"); if err == nil { results["DNS"] = "OK"; conn.Close() }
 	duration, err := xray.TestUDP(socksAddr, "user-"+co.Alias, "test")
-	if err == nil { results["UDP"] = fmt.Sprintf("OK(%dms)", duration.Milliseconds()) }
-	
-	fmt.Printf("DEBUG: Test SOCKS Proxy is at %s (user: user-%s, pass: test)\n", socksAddr, co.Alias)
-	fmt.Println("DEBUG: Waiting 30s for manual verification...")
-	time.Sleep(30 * time.Second)
+	if err == nil { 
+		results["UDP"] = fmt.Sprintf("OK(%dms)", duration.Milliseconds()) 
+	} else {
+		results["UDP"] = fmt.Sprintf("FAIL(%v)", err)
+	}
 	
 	return results
 }

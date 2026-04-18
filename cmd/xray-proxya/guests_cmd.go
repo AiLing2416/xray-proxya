@@ -55,6 +55,18 @@ var guestsAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
+		// Validate alias: alphanumeric and underscore only, 3-20 chars
+		if len(alias) < 3 || len(alias) > 20 {
+			fmt.Println("❌ Guest alias must be between 3 and 20 characters.")
+			return
+		}
+		for _, r := range alias {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+				fmt.Printf("❌ Invalid guest alias: %s (Only alphanumeric, underscore, and hyphen allowed)\n", alias)
+				return
+			}
+		}
+
 		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
 		for _, g := range cfg.Guests {
 			if g.Alias == alias { fmt.Printf("❌ Guest '%s' already exists.\n", alias); return }
@@ -162,18 +174,24 @@ var guestsShowCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
-		cfg, _ := config.LoadConfig() 
+		cfg, err := config.LoadConfig() 
+		if err != nil || cfg == nil {
+			fmt.Println("❌ Error: Failed to load config.")
+			return
+		}
 		var target *config.GuestConfig
-		for _, g := range cfg.Guests { if g.Alias == alias { target = &g; break } }
-		if target == nil { fmt.Printf("❌ Guest '%s' not found.\n", alias); return }
+		for i := range cfg.Guests { if cfg.Guests[i].Alias == alias { target = &cfg.Guests[i]; break } }
+		if target == nil { 
+			fmt.Printf("❌ Guest '%s' not found.\n", alias)
+			return 
+		}
 
-		isIPv6, _ := cmd.Flags().GetBool("ipv6")
 		allIPs, _ := cmd.Flags().GetBool("all")
 		var ips []string
 		if allIPs {
-			ips = append(ips, utils.GetSmartIP(false), utils.GetSmartIP(true))
+			ips = append(ips, utils.GetLocalIP()) 
 		} else {
-			ips = append(ips, utils.GetSmartIP(isIPv6))
+			ips = append(ips, utils.GetLocalIP())
 		}
 
 		fmt.Printf("\n🚀 GUEST LINKS for [%s] (UUID: %s)\n", alias, target.UUID)

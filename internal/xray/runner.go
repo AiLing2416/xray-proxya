@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -32,8 +33,20 @@ func GetXrayStatus() (bool, int) {
 	fmt.Sscanf(string(data), "%d", &pid)
 	if pid <= 0 { return false, 0 }
 
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err == nil { return true, pid }
-	
+	// Check if process exists
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+		return false, 0
+	}
+
+	// Verify identity: Check if /proc/[pid]/exe points to our xray binary
+	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err == nil {
+		// On some systems it might be a symlink to the actual binary, but this is a good enough check
+		if !strings.Contains(exePath, "xray") {
+			return false, 0
+		}
+	}
+
 	process, err := os.FindProcess(pid)
 	if err == nil {
 		if err := process.Signal(syscall.Signal(0)); err == nil { return true, pid }
@@ -42,11 +55,8 @@ func GetXrayStatus() (bool, int) {
 }
 
 func GetXrayUptime(pid int) string {
+	// For uptime, we look at the process start time in /proc
 	info, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
-	if err != nil {
-		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
-		info, err = os.Stat(pidPath)
-	}
 	if err != nil { return "N/A" }
 	
 	duration := time.Since(info.ModTime())
@@ -58,22 +68,25 @@ func GetXrayUptime(pid int) string {
 func StopXray() {
 	active, pid := GetXrayStatus()
 	if active {
-		// Kill the background 'run' manager group
-		syscall.Kill(-pid, syscall.SIGKILL)
+		// Try graceful first, then kill
 		process, _ := os.FindProcess(pid)
-		process.Kill()
+		process.Signal(syscall.SIGTERM)
+		
+		time.Sleep(500 * time.Millisecond)
+		if active, _ := GetXrayStatus(); active {
+			syscall.Kill(-pid, syscall.SIGKILL) // Kill process group
+			process.Kill()
+		}
 	}
 	
-	// CRITICAL FIX: Use sudo to ensure we can kill root processes and cleanup interfaces
-	exec.Command("sudo", "pkill", "-9", "-x", "xray").Run()
-	
-	// Cleanup TUN interfaces if they exist
-	exec.Command("sudo", "ip", "link", "delete", "proxya-tun").Run()
-	exec.Command("sudo", "ip", "link", "delete", "lan-tun").Run()
+	if os.Geteuid() == 0 {
+		// Only cleanup specific interfaces we manage
+		exec.Command("ip", "link", "delete", "proxya-tun").Run()
+		exec.Command("ip", "link", "delete", "lan-tun").Run()
+	}
 	
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 	os.Remove(pidPath)
-	time.Sleep(1 * time.Second)
 }
 
 func StartXrayBackground() error {
@@ -81,17 +94,41 @@ func StartXrayBackground() error {
 	if err != nil || path == "" { path = os.Args[0] }
 
 	logPath := filepath.Join(config.GetConfigDir(), "xray.log")
-	// Ensure log directory exists
-	os.MkdirAll(filepath.Dir(logPath), 0755)
+	os.MkdirAll(filepath.Dir(logPath), 0700)
 	
-	cmdStr := fmt.Sprintf("nohup %s run > %s 2>&1 & echo $!", path, logPath)
+	cmd := exec.Command(path, "run")
+	// Set asset location to be absolutely sure Xray finds geoip.dat/geosite.dat
+	assetPath := filepath.Join(config.GetConfigDir(), "..", "..", ".local", "share", "xray-proxya", "bin")
+	if os.Geteuid() == 0 {
+		assetPath = "/root/.local/share/xray-proxya/bin"
+	}
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+assetPath)
 	
-	out, err := exec.Command("sh", "-c", cmdStr).Output()
+	// Open for appending with 0600
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil { return err }
+	
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
 
-	pidStr := strings.TrimSpace(string(out))
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return err
+	}
+	logFile.Close()
+
+	// Wait a bit to see if it crashes immediately
+	time.Sleep(1 * time.Second)
+	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+		return fmt.Errorf("xray exited immediately. Check logs at %s", logPath)
+	}
+
+	pidStr := fmt.Sprintf("%d", cmd.Process.Pid)
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
-	os.WriteFile(pidPath, []byte(pidStr), 0644)
+	os.WriteFile(pidPath, []byte(pidStr), 0600)
 
 	fmt.Printf("✅ Xray started in background (PID: %s)\n", pidStr)
 	return nil
@@ -99,18 +136,62 @@ func StartXrayBackground() error {
 
 func RestartXrayService() error {
 	fmt.Println("🔄 Restarting Xray service...")
-	if _, err := exec.LookPath("systemctl"); err == nil {
-		if exec.Command("systemctl", "is-active", "--quiet", "xray-proxya").Run() == nil {
-			return exec.Command("systemctl", "restart", "xray-proxya").Run()
+	isRoot := os.Geteuid() == 0
+	
+	if isRoot {
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			// Check system mode
+			if exec.Command("systemctl", "list-unit-files", "xray-proxya.service").Run() == nil {
+				return exec.Command("systemctl", "restart", "xray-proxya").Run()
+			}
+		}
+		if _, err := exec.LookPath("rc-service"); err == nil {
+			if exec.Command("rc-service", "xray-proxya", "status").Run() == nil {
+				return exec.Command("rc-service", "xray-proxya", "restart").Run()
+			}
 		}
 	}
-	if _, err := exec.LookPath("rc-service"); err == nil {
-		if exec.Command("rc-service", "xray-proxya", "status").Run() == nil {
-			return exec.Command("rc-service", "xray-proxya", "restart").Run()
+
+	// Rootless or no service found: Use nohup fallback
+	StopXray()
+	return StartXrayBackground()
+}
+
+func StartService() error {
+	isRoot := os.Geteuid() == 0
+	if isRoot {
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			if exec.Command("systemctl", "list-unit-files", "xray-proxya.service").Run() == nil {
+				return exec.Command("systemctl", "start", "xray-proxya").Run()
+			}
+		}
+		if _, err := exec.LookPath("rc-service"); err == nil {
+			return exec.Command("rc-service", "xray-proxya", "start").Run()
+		}
+	}
+	active, pid := GetXrayStatus()
+	if active {
+		fmt.Printf("ℹ️ Xray is already running (PID: %d).\n", pid)
+		return nil
+	}
+	return StartXrayBackground()
+}
+
+func StopService() {
+	isRoot := os.Geteuid() == 0
+	if isRoot {
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			if exec.Command("systemctl", "list-unit-files", "xray-proxya.service").Run() == nil {
+				exec.Command("systemctl", "stop", "xray-proxya").Run()
+				return
+			}
+		}
+		if _, err := exec.LookPath("rc-service"); err == nil {
+			exec.Command("rc-service", "xray-proxya", "stop").Run()
+			return
 		}
 	}
 	StopXray()
-	return StartXrayBackground()
 }
 
 // --- Xray Execution Core ---
@@ -122,6 +203,7 @@ func StartXrayRaw(configPath string) error {
 		if err := DownloadXray(); err != nil { return err }
 	}
 	cmd := exec.Command(bin, "run", "-c", configPath)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -130,6 +212,7 @@ func StartXrayRaw(configPath string) error {
 func StartXray(configPath string) (*exec.Cmd, error) {
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "run", "-c", configPath)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil { return nil, err }
 	return cmd, nil
@@ -139,7 +222,9 @@ func StartXrayTemp(jsonData []byte) (*exec.Cmd, func(), error) {
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("xray-check-%d.json", time.Now().Unix()))
 	os.WriteFile(tmpFile, jsonData, 0644)
 	
-	cmd := exec.Command(GetXrayBinaryPath(), "run", "-c", tmpFile)
+	bin := GetXrayBinaryPath()
+	cmd := exec.Command(bin, "run", "-c", tmpFile)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
 
 	if err := cmd.Start(); err != nil {
 		os.Remove(tmpFile)
@@ -153,7 +238,9 @@ func ValidateConfig(jsonData []byte) error {
 	os.WriteFile(tmpFile, jsonData, 0644)
 	defer os.Remove(tmpFile)
 	
-	cmd := exec.Command(GetXrayBinaryPath(), "run", "-test", "-c", tmpFile)
+	bin := GetXrayBinaryPath()
+	cmd := exec.Command(bin, "run", "-test", "-c", tmpFile)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
 	out, err := cmd.CombinedOutput()
 	if err != nil { return fmt.Errorf("%v: %s", err, string(out)) }
 	return nil
@@ -161,7 +248,61 @@ func ValidateConfig(jsonData []byte) error {
 
 // --- Utils & Metrics ---
 
-func GetXrayStats(pid int) (up, down int64, err error) { return 0, 0, nil }
+func GetXrayStats(apiPort int) (map[string]int64, error) {
+	bin := GetXrayBinaryPath()
+	cmd := exec.Command(bin, "api", "statsquery", "--server=127.0.0.1:"+fmt.Sprint(apiPort), "--pattern=", "--reset=false")
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	out, err := cmd.Output()
+	if err != nil { 
+		fmt.Printf("DEBUG: API Command Failed: %v\n", err)
+		return nil, err 
+	}
+	fmt.Printf("DEBUG: Raw API Output: %s\n", string(out))
+
+	// Use map[string]interface{} for dynamic parsing because 'stat' can be missing or different types
+	var raw map[string]interface{}
+	if err := json.Unmarshal(out, &raw); err != nil { return nil, err }
+
+	stats := make(map[string]int64)
+	statVal, ok := raw["stat"]
+	if !ok || statVal == nil { return stats, nil }
+
+	// Xray standard return is an array of stats
+	if list, ok := statVal.([]interface{}); ok {
+		for _, item := range list {
+			if m, ok := item.(map[string]interface{}); ok {
+				name, _ := m["name"].(string)
+				// Value is returned as a string or number depending on version/protobuf mapping
+				var value int64
+				switch v := m["value"].(type) {
+				case float64: value = int64(v)
+				case string: fmt.Sscanf(v, "%d", &value)
+				}
+				if name != "" { stats[name] = value }
+			}
+		}
+	} else if m, ok := statVal.(map[string]interface{}); ok {
+		// Single object case
+		name, _ := m["name"].(string)
+		var value int64
+		switch v := m["value"].(type) {
+		case float64: value = int64(v)
+		case string: fmt.Sscanf(v, "%d", &value)
+		}
+		if name != "" { stats[name] = value }
+	}
+
+	return stats, nil
+}
+
+func RemoveUserAPI(apiPort int, inboundTag, email string) error {
+	bin := GetXrayBinaryPath()
+	cmd := exec.Command(bin, "api", "rmu", "--server=127.0.0.1:"+fmt.Sprint(apiPort), "-tag="+inboundTag, email)
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	out, err := cmd.CombinedOutput()
+	if err != nil { return fmt.Errorf("%v: %s", err, string(out)) }
+	return nil
+}
 
 func GetFreePort() (int, error) {
 	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
@@ -174,7 +315,9 @@ func GetFreePort() (int, error) {
 
 func GetXrayBinaryPath() string {
 	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 { home = "/root" }
+	if os.Geteuid() == 0 && home == "" {
+		home = "/root"
+	}
 	return filepath.Join(home, ".local", "share", "xray-proxya", "bin", "xray")
 }
 
@@ -253,18 +396,25 @@ func DownloadXray() error {
 	defer r.Close()
 
 	for _, f := range r.File {
-		if f.Name == "xray" {
+		if f.Name == "xray" || strings.HasSuffix(f.Name, ".dat") {
 			rc, err := f.Open()
 			if err != nil { return err }
 			defer rc.Close()
 
-			outFile, err := os.OpenFile(binPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+			targetPath := filepath.Join(binDir, f.Name)
+			if f.Name == "xray" {
+				targetPath = binPath
+			}
+			
+			outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 			if err != nil { return err }
-			defer outFile.Close()
-
-			if _, err := io.Copy(outFile, rc); err != nil { return err }
-			return nil
+			
+			if _, err := io.Copy(outFile, rc); err != nil {
+				outFile.Close()
+				return err
+			}
+			outFile.Close()
 		}
 	}
-	return fmt.Errorf("xray binary not found in zip package")
+	return nil
 }

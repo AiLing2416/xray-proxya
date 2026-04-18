@@ -16,25 +16,29 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 	defer conn.Close()
 
 	// 2. SOCKS5 Handshake (Method selection)
-	// [VER, NMETHODS, METHODS] -> [0x05, 0x01, 0x02 (USER/PASS)]
-	if _, err := conn.Write([]byte{0x05, 0x01, 0x02}); err != nil {
+	// Support both NO AUTH (0x00) and USER/PASS (0x02)
+	if _, err := conn.Write([]byte{0x05, 0x02, 0x00, 0x02}); err != nil {
 		return 0, err
 	}
 	buf := make([]byte, 256)
-	if _, err := conn.Read(buf); err != nil || buf[1] != 0x02 {
-		return 0, fmt.Errorf("socks5 handshake failed or auth not supported")
-	}
-
-	// 3. User/Pass Auth
-	// [VER, ULEN, USER, PLEN, PASS]
-	authPayload := append([]byte{0x01, byte(len(user))}, []byte(user)...)
-	authPayload = append(authPayload, byte(len(pass)))
-	authPayload = append(authPayload, []byte(pass)...)
-	if _, err := conn.Write(authPayload); err != nil {
+	if _, err := conn.Read(buf); err != nil {
 		return 0, err
 	}
-	if _, err := conn.Read(buf); err != nil || buf[1] != 0x00 {
-		return 0, fmt.Errorf("socks5 auth failed")
+
+	method := buf[1]
+	if method == 0x02 {
+		// 3. User/Pass Auth
+		authPayload := append([]byte{0x01, byte(len(user))}, []byte(user)...)
+		authPayload = append(authPayload, byte(len(pass)))
+		authPayload = append(authPayload, []byte(pass)...)
+		if _, err := conn.Write(authPayload); err != nil {
+			return 0, err
+		}
+		if _, err := conn.Read(buf); err != nil || buf[1] != 0x00 {
+			return 0, fmt.Errorf("socks5 auth failed")
+		}
+	} else if method != 0x00 {
+		return 0, fmt.Errorf("socks5 handshake failed: unsupported method %d", method)
 	}
 
 	// 4. UDP ASSOCIATE Request

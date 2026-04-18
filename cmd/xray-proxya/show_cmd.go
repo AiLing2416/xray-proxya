@@ -19,14 +19,12 @@ var showCmd = &cobra.Command{
 			return
 		}
 
-		isIPv6, _ := cmd.Flags().GetBool("ipv6")
 		allIPs, _ := cmd.Flags().GetBool("all")
-
 		var ips []string
 		if allIPs {
-			ips = append(ips, utils.GetSmartIP(false), utils.GetSmartIP(true))
+			ips = append(ips, utils.GetLocalIP()) 
 		} else {
-			ips = append(ips, utils.GetSmartIP(isIPv6))
+			ips = append(ips, utils.GetLocalIP())
 		}
 
 		fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ips[0])

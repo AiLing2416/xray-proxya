@@ -12,6 +12,11 @@ node_modules/
 completion_test.png
 test_completion.js
 chromium.log
+# Local documentation
+*.md
+!README.md
 GEMINI.md
 NETWORK_VERIFICATION.md
+TransparentProxy.md
+WIKI_ZH.md
 v0.2.0.txt

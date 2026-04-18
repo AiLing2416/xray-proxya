@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"strings"
+	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -17,11 +19,21 @@ var statusCmd = &cobra.Command{
 			return
 		}
 
+		cfg, _ := config.LoadConfig()
 		uptime := xray.GetXrayUptime(pid)
-		up, down, _ := xray.GetXrayStats(pid)
+		allStats, _ := xray.GetXrayStats(cfg.APIInbound)
+
+		var direct, relay int64
+		for name, val := range allStats {
+			if strings.Contains(name, "direct") {
+				direct += val
+			} else if strings.Contains(name, "outbound") && !strings.Contains(name, "direct") && !strings.Contains(name, "blocked") {
+				relay += val
+			}
+		}
 
 		fmt.Printf("PID %d | UpTime: %s | Direct: %d B | Relay: %d B\n", 
-			pid, uptime, down, up)
+			pid, uptime, direct, relay)
 	},
 }
 

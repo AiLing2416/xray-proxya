@@ -11,29 +11,41 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var roleStr string
+var (
+	forceInit bool
+	roleStr   string
+)
 
 var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize Xray-Proxya with a specific role (server or gateway)",
 	Run: func(cmd *cobra.Command, args []string) {
+		configPath := config.GetConfigPath()
+		if _, err := os.Stat(configPath); err == nil && !forceInit {
+			fmt.Println("⚠️  Configuration already exists at", configPath)
+			fmt.Println("🚀 Use '--force' to overwrite (this will reset ALL settings, keys, and UUIDs).")
+			return
+		}
+
 		role := config.RoleServer
 		if roleStr == "gateway" { role = config.RoleGateway }
 		fmt.Printf("🚀 Initializing Xray-Proxya as %s...\n", role)
 
 		xrayPath := xray.GetXrayBinaryPath()
 		if _, err := os.Stat(xrayPath); os.IsNotExist(err) {
-			fmt.Println("⬇️ Xray core not found, downloading...")
-			if err := xray.DownloadXray(); err != nil { fmt.Printf("❌ Failed: %v\n", err); return }
+			fmt.Println("⬇️  Xray core not found. Downloading...")
+			if err := xray.DownloadXray(); err != nil {
+				fmt.Printf("❌ Failed to download Xray: %v\n", err)
+				return
+			}
 			fmt.Println("✅ Xray core downloaded.")
 		}
 
 		uid := uuid.New().String()
 		cfg := &config.UserConfig{Role: role, UUID: uid}
 
-		// Randomize internal ports
-		for { p, _ := xray.GetFreePort(); if p >= 10000 { cfg.APIInbound = p; break } }
-		for { p, _ := xray.GetFreePort(); if p >= 10000 && p != cfg.APIInbound { cfg.TestInbound = p; break } }
+		cfg.APIInbound = 10085
+		cfg.TestInbound = 10086
 		fmt.Printf("📡 Internal Ports: API=%d, Test=%d\n", cfg.APIInbound, cfg.TestInbound)
 
 		if role == config.RoleGateway {
@@ -75,11 +87,14 @@ var initCmd = &cobra.Command{
 		if err := cfg.SaveEx(true); err != nil { fmt.Printf("❌ Failed: %v\n", err); return }
 		fmt.Println("🚀 First-time automatic apply...")
 		if err := config.CommitStaging(); err != nil { fmt.Printf("❌ Failed: %v\n", err); return }
-		if err := xray.RestartXrayService(); err != nil { fmt.Printf("⚠️ Service failed to start: %v\n", err) } else { fmt.Println("✨ Initialization complete. Service is running.") }
+		
+		fmt.Println("✨ Initialization complete. Service is ready but NOT started.")
+		fmt.Println("🚀 Use 'service start' to run manually when ready.")
 	},
 }
 
 func init() {
 	initCmd.Flags().StringVarP(&roleStr, "role", "r", "server", "Application role: server or gateway")
+	initCmd.Flags().BoolVar(&forceInit, "force", false, "Force initialization (overwrites existing config)")
 	rootCmd.AddCommand(initCmd)
 }
