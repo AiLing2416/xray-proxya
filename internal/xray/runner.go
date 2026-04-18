@@ -90,17 +90,20 @@ func StopXray() {
 }
 
 func GetXrayAssetPath() string {
-	return filepath.Dir(GetXrayBinaryPath())
+	home, _ := os.UserHomeDir()
+	if os.Geteuid() == 0 { home = "/root" }
+	return filepath.Join(home, ".local", "share", "xray-proxya", "bin")
 }
 
 func StartXrayBackground() error {
 	path, err := os.Executable()
 	if err != nil || path == "" { path = os.Args[0] }
+	absPath, _ := filepath.Abs(path)
 
 	logPath := filepath.Join(config.GetConfigDir(), "xray.log")
 	os.MkdirAll(filepath.Dir(logPath), 0700)
 	
-	cmd := exec.Command(path, "run")
+	cmd := exec.Command(absPath, "run")
 	// Standardized asset location
 	assetPath := GetXrayAssetPath()
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+assetPath)
