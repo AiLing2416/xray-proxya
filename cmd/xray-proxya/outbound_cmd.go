@@ -116,7 +116,7 @@ var infoOutboundCmd = &cobra.Command{
 			time.Sleep(500 * time.Millisecond)
 		}
 		testSocksPort, _ := xray.GetFreePort(); apiPort, _ := xray.GetFreePort()
-		jsonData, _ := xray.GenerateXrayJSON(cfg, map[string]int{"test-socks": testSocksPort, "api": apiPort})
+		jsonData, _ := xray.GenerateXrayJSON(cfg, map[string]int{"test-socks": testSocksPort, "api": apiPort}, alias)
 		_, cleanup, err := xray.StartXrayTemp(jsonData); if err != nil { fmt.Printf("❌ Error: %v\n", err); return }
 		defer cleanup()
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
@@ -282,12 +282,13 @@ var setInternalProxyCmd = &cobra.Command{
 		fmt.Printf("❌ Relay '%s' not found.\n", alias)
 	},
 }
-
 func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[string]string {
 	results := map[string]string{"TCP": "FAIL", "UDP": "FAIL", "DNS": "FAIL", "IP": "Unknown"}
 	testSocksPort, _ := xray.GetFreePort(); apiPort, _ := xray.GetFreePort(); dnsPort, _ := xray.GetFreePort()
 	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
-	jsonData, err := xray.GenerateXrayJSON(cfg, overrides); if err != nil { return results }
+	jsonData, err := xray.GenerateXrayJSON(cfg, overrides, co.Alias)
+	if err != nil { return results }
+
 	
 	cmd, cleanup, err := xray.StartXrayTemp(jsonData)
 	if err != nil { return results }
@@ -298,7 +299,7 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[strin
 	time.Sleep(1 * time.Second)
 
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-	dialer, err := proxy.SOCKS5("tcp", socksAddr, &proxy.Auth{User: "user-" + co.Alias, Password: "test"}, proxy.Direct)
+	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil { return results }
 	
 	httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 10 * time.Second}

@@ -113,7 +113,7 @@ func (m Model) performApply() tea.Cmd {
 
 		home, _ := os.UserHomeDir()
 		xrayDir := filepath.Join(home, ".config", "xray-proxya")
-		jsonData, _ := xray.GenerateXrayJSON(cfg, nil)
+		jsonData, _ := xray.GenerateXrayJSON(cfg, nil, "")
 		jsonPath := filepath.Join(xrayDir, "xray_config.json")
 		os.WriteFile(jsonPath, jsonData, 0600)
 		
@@ -131,7 +131,7 @@ func runRelayTest(cfg *config.UserConfig, co config.CustomOutbound) tea.Cmd {
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-		jsonData, err := xray.GenerateXrayJSON(cfg, overrides)
+		jsonData, err := xray.GenerateXrayJSON(cfg, overrides, co.Alias)
 		if err != nil { return res }
 		_, cleanup, err := xray.StartXrayTemp(jsonData)
 		if err != nil { return res }

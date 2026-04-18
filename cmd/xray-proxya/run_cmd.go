@@ -25,11 +25,12 @@ var runCmd = &cobra.Command{
 		}
 
 		fmt.Println("🔍 Generating configuration...")
-		jsonData, err := xray.GenerateXrayJSON(cfg, nil)
+		jsonData, err := xray.GenerateXrayJSON(cfg, nil, "")
 		if err != nil {
-			fmt.Printf("❌ Failed to generate Xray JSON: %v\n", err)
+			fmt.Printf("❌ Failed to generate config: %v\n", err)
 			return
 		}
+
 
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		os.WriteFile(confPath, jsonData, 0644)

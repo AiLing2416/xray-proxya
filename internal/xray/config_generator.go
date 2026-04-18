@@ -5,32 +5,27 @@ import (
 	"xray-proxya/internal/config"
 )
 
-func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) ([]byte, error) {
+func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, testTarget string) ([]byte, error) {
 	isGateway := userCfg.Role == config.RoleGateway
 	relayAlias := ""
 	if isGateway { relayAlias = userCfg.Gateway.RelayAlias }
 
 	xc := make(map[string]interface{})
-	xc["log"] = map[string]interface{}{"loglevel": "debug"}
+	xc["log"] = map[string]interface{}{"loglevel": "warning"}
 
-	// 1. DNS
-	dns := make(map[string]interface{})
-	dns["servers"] = []interface{}{
-		"https://dns.google/dns-query",
-		"https://cloudflare-dns.com/dns-query",
+	// 1. DNS & Policy
+	xc["dns"] = map[string]interface{}{
+		"servers": []interface{}{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"},
+		"tag": "dns-internal", "queryStrategy": "UseIP",
 	}
-	dns["hosts"] = map[string]string{
-		"dns.google":         "8.8.8.8",
-		"cloudflare-dns.com": "1.1.1.1",
+	xc["policy"] = map[string]interface{}{
+		"levels": map[string]interface{}{"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true}},
 	}
-	dns["tag"] = "dns-internal"
-	dns["queryStrategy"] = "UseIP"
-	xc["dns"] = dns
 
 	// 2. Inbounds
 	inbounds := []interface{}{}
 	
-	// 2.1 API Inbound
+	// 2.1 API
 	apiPort := userCfg.APIInbound; if p, ok := overridePorts["api"]; ok { apiPort = p }
 	if apiPort > 0 {
 		xc["api"] = map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService"}}
@@ -39,61 +34,55 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 		})
 	}
 
-	// 2.2 Preset Service Inbounds (Server Features)
+	// 2.2 Test Socks (NO AUTH for internal simplicity, but restricted to 127.0.0.1)
+	testPort := 10086; if p, ok := overridePorts["test-socks"]; ok { testPort = p }
+	inbounds = append(inbounds, map[string]interface{}{
+		"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks",
+		"settings": map[string]interface{}{"auth": "noauth", "udp": true},
+		"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
+	})
+
+	// 2.3 Preset Inbounds
 	for _, m := range userCfg.ActiveModes {
 		if !m.Enabled { continue }
-		actualPort := m.Port
-		if p, ok := overridePorts[string(m.Mode)]; ok { actualPort = p }
+		port := m.Port; if p, ok := overridePorts[string(m.Mode)]; ok { port = p }
 		
-		inbound := map[string]interface{}{
-			"tag": string(m.Mode), "port": actualPort, "listen": "0.0.0.0",
+		in := map[string]interface{}{
+			"tag": string(m.Mode), "port": port, "listen": "0.0.0.0",
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
 		}
 
+		client := map[string]interface{}{"id": userCfg.UUID, "email": "service-user"}
+
 		switch m.Mode {
 		case config.ModeVLESSVision:
-			inbound["protocol"] = "vless"
-			inbound["settings"] = map[string]interface{}{
-				"decryption": "none",
-				"clients": []interface{}{map[string]interface{}{"id": userCfg.UUID, "flow": "xtls-rprx-vision"}},
-			}
-			inbound["streamSettings"] = map[string]interface{}{
+			in["protocol"] = "vless"
+			client["flow"] = "xtls-rprx-vision"
+			in["settings"] = map[string]interface{}{"clients": []interface{}{client}, "decryption": "none"}
+			in["streamSettings"] = map[string]interface{}{
 				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]interface{}{
-					"show": false, "dest": m.Dest, "xver": 0,
-					"serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey,
-					"shortIds": []string{m.Settings.ShortID},
-				},
+				"realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}},
 			}
 		case config.ModeVLESSReality:
-			inbound["protocol"] = "vless"
-			inbound["settings"] = map[string]interface{}{
-				"decryption": "none", "clients": []interface{}{map[string]interface{}{"id": userCfg.UUID}},
+			in["protocol"] = "vless"
+			in["settings"] = map[string]interface{}{"clients": []interface{}{client}, "decryption": "none"}
+			in["streamSettings"] = map[string]interface{}{
+				"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path},
+				"realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}},
 			}
-			inbound["streamSettings"] = map[string]interface{}{
-				"network": "xhttp", "security": "reality",
-				"xhttpSettings": map[string]interface{}{"path": m.Path, "mode": "streaming"},
-				"realitySettings": map[string]interface{}{
-					"show": false, "dest": m.Dest, "xver": 0,
-					"serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey,
-					"shortIds": []string{m.Settings.ShortID},
-				},
-			}
+		case config.ModeVLESSXHTTP:
+			in["protocol"] = "vless"
+			in["settings"] = map[string]interface{}{"clients": []interface{}{client}, "decryption": "none"}
+			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "xhttpSettings": map[string]interface{}{"path": m.Path}}
 		case config.ModeVMessWS:
-			inbound["protocol"] = "vmess"
-			inbound["settings"] = map[string]interface{}{
-				"clients": []interface{}{map[string]interface{}{"id": userCfg.UUID}},
-			}
-			inbound["streamSettings"] = map[string]interface{}{
-				"network": "ws", "wsSettings": map[string]interface{}{"path": m.Path},
-			}
+			in["protocol"] = "vmess"
+			in["settings"] = map[string]interface{}{"clients": []interface{}{client}}
+			in["streamSettings"] = map[string]interface{}{"network": "ws", "wsSettings": map[string]interface{}{"path": m.Path}}
 		case config.ModeShadowsocksTCP:
-			inbound["protocol"] = "shadowsocks"
-			inbound["settings"] = map[string]interface{}{
-				"method": m.Settings.Cipher, "password": m.Settings.Password, "network": "tcp,udp",
-			}
+			in["protocol"] = "shadowsocks"
+			in["settings"] = map[string]interface{}{"method": m.Settings.Cipher, "password": m.Settings.Password, "email": "service-user"}
 		}
-		inbounds = append(inbounds, inbound)
+		inbounds = append(inbounds, in)
 	}
 
 	if isGateway {
@@ -107,7 +96,6 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 				"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}, "routeOnly": true},
 			})
 		}
-		// PRIMARY DNS: Listen on 53 for everyone
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "dns-in", "port": 53, "listen": "0.0.0.0", "protocol": "dokodemo-door",
 			"settings": map[string]interface{}{"network": "tcp,udp", "address": "1.1.1.1", "port": 53},
@@ -116,19 +104,15 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 	xc["inbounds"] = inbounds
 
 	// 3. Outbounds
-	outMark := 0
-	if isGateway { outMark = 255 }
-
-	outbounds := []interface{}{
+	mark := 0; if isGateway { mark = 255 }
+	
+	xc["outbounds"] = []interface{}{
 		map[string]interface{}{
 			"protocol": "freedom", "tag": "direct", 
-			"settings": map[string]interface{}{"domainStrategy": "UseIP"}, 
-			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": outMark}},
+			"settings": map[string]interface{}{"domainStrategy": "UseIP"},
+			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}, // Always mark direct for safety
 		},
-		map[string]interface{}{
-			"protocol": "dns", "tag": "dns-out", 
-			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": outMark}},
-		},
+		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}
 
@@ -140,10 +124,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 		if ss == nil { ss = make(map[string]interface{}); out["streamSettings"] = ss }
 		so, _ := ss["sockopt"].(map[string]interface{})
 		if so == nil { so = make(map[string]interface{}); ss["sockopt"] = so }
-		so["mark"] = outMark
-		outbounds = append(outbounds, out)
+		so["mark"] = mark
+		xc["outbounds"] = append(xc["outbounds"].([]interface{}), out)
 	}
-	xc["outbounds"] = outbounds
 
 	// 4. Routing
 	rules := []interface{}{
@@ -153,17 +136,25 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	}
 
-	if isGateway && relayAlias != "" {
-		rules = append(rules, map[string]interface{}{
-			"type": "field", "inboundTag": []string{"tun-in", "test-socks"}, "outboundTag": "outbound-" + relayAlias,
-		})
+	// Rule: Isolated Test Redirection
+	if testTarget != "" {
+		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "outbound-" + testTarget})
 	}
+
+	// Rule: Gateway Transparent Redirection
+	if isGateway && relayAlias != "" {
+		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"tun-in"}, "outboundTag": "outbound-" + relayAlias})
+	}
+
+	// Rule: All service inbounds go to DIRECT
+	rules = append(rules, map[string]interface{}{"type": "field", "user": []string{"service-user"}, "outboundTag": "direct"})
 	
+	// Default
 	rules = append(rules, map[string]interface{}{"type": "field", "network": "tcp,udp", "outboundTag": "direct"})
-	
+	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "blocked"})
+
 	xc["routing"] = map[string]interface{}{"domainStrategy": "IPIfNonMatch", "rules": rules}
 	xc["stats"] = map[string]interface{}{}
-	xc["policy"] = map[string]interface{}{"levels": map[string]interface{}{"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true}}}
 
 	return json.MarshalIndent(xc, "", "  ")
 }
