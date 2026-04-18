@@ -89,6 +89,10 @@ func StopXray() {
 	os.Remove(pidPath)
 }
 
+func GetXrayAssetPath() string {
+	return filepath.Dir(GetXrayBinaryPath())
+}
+
 func StartXrayBackground() error {
 	path, err := os.Executable()
 	if err != nil || path == "" { path = os.Args[0] }
@@ -97,11 +101,8 @@ func StartXrayBackground() error {
 	os.MkdirAll(filepath.Dir(logPath), 0700)
 	
 	cmd := exec.Command(path, "run")
-	// Set asset location to be absolutely sure Xray finds geoip.dat/geosite.dat
-	assetPath := filepath.Join(config.GetConfigDir(), "..", "..", ".local", "share", "xray-proxya", "bin")
-	if os.Geteuid() == 0 {
-		assetPath = "/root/.local/share/xray-proxya/bin"
-	}
+	// Standardized asset location
+	assetPath := GetXrayAssetPath()
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+assetPath)
 	
 	// Open for appending with 0600

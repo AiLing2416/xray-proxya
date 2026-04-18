@@ -9,6 +9,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	showIPv4 bool
+	showIPv6 bool
+	showAddr string
+)
+
 var showCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show sharing links for active modes",
@@ -19,15 +25,22 @@ var showCmd = &cobra.Command{
 			return
 		}
 
-		allIPs, _ := cmd.Flags().GetBool("all")
 		var ips []string
-		if allIPs {
-			ips = append(ips, utils.GetLocalIP()) 
+		if showAddr != "" {
+			ips = []string{showAddr}
 		} else {
-			ips = append(ips, utils.GetLocalIP())
+			if showIPv4 {
+				if ip := utils.GetPublicIPv4(); ip != "" { ips = append(ips, ip) }
+			}
+			if showIPv6 {
+				if ip := utils.GetPublicIPv6(); ip != "" { ips = append(ips, ip) }
+			}
+			if len(ips) == 0 {
+				ips = []string{utils.GetLocalIP()}
+			}
 		}
 
-		fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ips[0])
+		fmt.Printf("\n🚀 SHARING LINKS (Primary Address: %s)\n", ips[0])
 		fmt.Println("============================================================")
 		
 		fmt.Println("# PRESET LINKS")
@@ -55,8 +68,8 @@ var showCmd = &cobra.Command{
 }
 
 func init() {
-	showCmd.Flags().BoolP("ipv4", "4", true, "Use IPv4 address")
-	showCmd.Flags().BoolP("ipv6", "6", false, "Use IPv6 address")
-	showCmd.Flags().BoolP("all", "a", false, "Show all available IP addresses")
+	showCmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "Use public IPv4 address")
+	showCmd.Flags().BoolVarP(&showIPv6, "ipv6", "6", false, "Use public IPv6 address")
+	showCmd.Flags().StringVarP(&showAddr, "address", "a", "", "Override server address/hostname in links")
 	rootCmd.AddCommand(showCmd)
 }
