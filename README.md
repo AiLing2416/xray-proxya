@@ -4,7 +4,7 @@ Xray-Proxya is a professional, Go-based proxy management tool and transparent ga
 
 ## Key Features
 
-- **Multi-Tenant Guest Management (v0.2.0)**:
+- **Multi-Tenant Guest Management (v0.2.2)**:
   - **Isolation**: Manage multiple tenants with independent UUIDs using `guests` commands.
   - **Quotas**: Set downlink traffic quotas (GB) with monthly auto-reset and boundary adaptation.
   - **Dedicated Routes**: Bind specific guests to dedicated outbound relay nodes for personalized traffic paths.

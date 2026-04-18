@@ -24,11 +24,20 @@ var gatewayStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show current gateway configuration and system state",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		fmt.Println("\n🛰️ GATEWAY CONFIGURATION (STAGING)")
 		fmt.Println("--------------------------------------------------")
-		localState := "DISABLED"; if cfg.Gateway.LocalEnabled { localState = "ENABLED" }
-		lanState := "DISABLED"; if cfg.Gateway.LANEnabled { lanState = "ENABLED" }
+		localState := "DISABLED"
+		if cfg.Gateway.LocalEnabled {
+			localState = "ENABLED"
+		}
+		lanState := "DISABLED"
+		if cfg.Gateway.LANEnabled {
+			lanState = "ENABLED"
+		}
 		fmt.Printf("Local Proxy: %s\n", localState)
 		fmt.Printf("LAN Gateway: %s\n", lanState)
 		fmt.Printf("Mode:        %s\n", cfg.Gateway.Mode)
@@ -42,7 +51,10 @@ var gatewayEnableCmd = &cobra.Command{
 	Use:   "enable",
 	Short: "Turn on transparent gateway (local & lan) in staging",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.LocalEnabled = true
 		cfg.Gateway.LANEnabled = true
 		cfg.SaveEx(true)
@@ -54,7 +66,10 @@ var gatewayDisableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "Turn off transparent gateway (local & lan) in staging",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.LocalEnabled = false
 		cfg.Gateway.LANEnabled = false
 		cfg.SaveEx(true)
@@ -66,7 +81,10 @@ var gatewayLocalEnableCmd = &cobra.Command{
 	Use:   "local-enable",
 	Short: "Enable local machine transparent proxy in staging",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.LocalEnabled = true
 		cfg.SaveEx(true)
 		fmt.Println("✅ Local transparent proxy ENABLED in STAGING.")
@@ -77,7 +95,10 @@ var gatewayLocalDisableCmd = &cobra.Command{
 	Use:   "local-disable",
 	Short: "Disable local machine transparent proxy in staging",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.LocalEnabled = false
 		cfg.SaveEx(true)
 		fmt.Println("✅ Local transparent proxy DISABLED in STAGING.")
@@ -88,7 +109,10 @@ var gatewayLANEnableCmd = &cobra.Command{
 	Use:   "lan-enable",
 	Short: "Enable LAN gateway (IP forwarding) in staging",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.LANEnabled = true
 		cfg.SaveEx(true)
 		fmt.Println("✅ LAN gateway ENABLED in STAGING.")
@@ -99,7 +123,10 @@ var gatewayLANDisableCmd = &cobra.Command{
 	Use:   "lan-disable",
 	Short: "Disable LAN gateway in staging",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.LANEnabled = false
 		cfg.SaveEx(true)
 		fmt.Println("✅ LAN gateway DISABLED in STAGING.")
@@ -108,21 +135,26 @@ var gatewayLANDisableCmd = &cobra.Command{
 
 var gatewaySetCmd = &cobra.Command{
 	Use:   "set",
-	Short: "Configure gateway parameters",
+	Short: "Configure gateway parameters in STAGING",
 	Run: func(cmd *cobra.Command, args []string) {
 		mode, _ := cmd.Flags().GetString("mode")
 		relay, _ := cmd.Flags().GetString("relay")
 		lan, _ := cmd.Flags().GetString("lan")
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 
 		if mode != "" {
-			if mode != "tun" && mode != "tproxy" {
-				fmt.Println("❌ Invalid mode. Use 'tun' or 'tproxy'.")
+			if mode != "tun" {
+				fmt.Println("❌ Invalid mode. Only 'tun' is currently supported.")
 				return
 			}
 			cfg.Gateway.Mode = mode
 		}
-		if relay != "" { cfg.Gateway.RelayAlias = relay }
+		if relay != "" {
+			cfg.Gateway.RelayAlias = relay
+		}
 		if lan != "" {
 			// Basic validation for interface name: alphanumeric and common separators
 			for _, r := range lan {
@@ -145,7 +177,10 @@ var gatewayBlacklistAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		target := args[0]
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		if net.ParseIP(target) != nil || strings.Contains(target, "/") {
 			cfg.Gateway.BlacklistIPs = append(cfg.Gateway.BlacklistIPs, target)
 		} else {
@@ -160,7 +195,10 @@ var gatewayBlacklistClearCmd = &cobra.Command{
 	Use:   "blacklist-clear",
 	Short: "Clear all domains and IPs from the gateway blacklist",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
 		cfg.Gateway.Blacklist = []string{}
 		cfg.Gateway.BlacklistIPs = []string{}
 		cfg.SaveEx(true)
@@ -172,7 +210,10 @@ var gatewaySyncFirewallCmd = &cobra.Command{
 	Use:   "sync-firewall",
 	Short: "Regenerate and apply NFTables rules",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfig(); if cfg == nil { return }
+		cfg, _ := config.LoadConfig()
+		if cfg == nil {
+			return
+		}
 		gateway.SyncFirewall(cfg)
 		fmt.Println("✅ Firewall rules synchronized.")
 	},
@@ -189,36 +230,51 @@ var gatewaySetupKernelCmd = &cobra.Command{
 }
 
 func init() {
-	gatewaySetCmd.Flags().StringP("mode", "m", "", "Gateway mode: tun or tproxy")
+	gatewaySetCmd.Flags().StringP("mode", "m", "", "Gateway mode (currently: tun)")
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
 
 	// Dynamic completions
 	gatewaySetCmd.RegisterFlagCompletionFunc("mode", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"tun", "tproxy"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"tun"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	gatewaySetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		cfg, err := config.LoadConfigEx(true)
-		if err != nil { return nil, cobra.ShellCompDirectiveNoFileComp }
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
 		var aliases []string
 		for _, co := range cfg.CustomOutbounds {
 			aliases = append(aliases, co.Alias)
 		}
 		return aliases, cobra.ShellCompDirectiveNoFileComp
 	})
-	
+	gatewaySetCmd.RegisterFlagCompletionFunc("lan", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		ifaces, err := net.Interfaces()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var names []string
+		for _, iface := range ifaces {
+			if iface.Name != "" {
+				names = append(names, iface.Name)
+			}
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	})
+
 	gatewayCmd.AddCommand(
-		gatewayStatusCmd, 
-		gatewayEnableCmd, 
-		gatewayDisableCmd, 
-		gatewayLocalEnableCmd, 
-		gatewayLocalDisableCmd, 
-		gatewayLANEnableCmd, 
-		gatewayLANDisableCmd, 
-		gatewaySetCmd, 
-		gatewayBlacklistAddCmd, 
+		gatewayStatusCmd,
+		gatewayEnableCmd,
+		gatewayDisableCmd,
+		gatewayLocalEnableCmd,
+		gatewayLocalDisableCmd,
+		gatewayLANEnableCmd,
+		gatewayLANDisableCmd,
+		gatewaySetCmd,
+		gatewayBlacklistAddCmd,
 		gatewayBlacklistClearCmd,
-		gatewaySyncFirewallCmd, 
+		gatewaySyncFirewallCmd,
 		gatewaySetupKernelCmd,
 	)
 	rootCmd.AddCommand(gatewayCmd)
