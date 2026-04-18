@@ -20,6 +20,15 @@ func IsPortFree(port int) bool {
 	return true
 }
 
+func GetFreePort() (int, error) {
+	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
+	if err != nil { return 0, err }
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil { return 0, err }
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
 func GetLocalIP() string {
 	addrs, err := net.InterfaceAddrs()
 	if err != nil { return "127.0.0.1" }
@@ -95,6 +104,11 @@ func SetupIPv6Addr(ip string, iface string) error {
 	return exec.Command("sudo", "ip", "-6", "addr", "add", ip+"/128", "dev", iface).Run()
 }
 
+func RemoveIPv6Addr(ip string, iface string) error {
+	// Best effort to remove old IP
+	return exec.Command("sudo", "ip", "-6", "addr", "del", ip+"/128", "dev", iface).Run()
+}
+
 func SetupNDPProxy(ip, iface string) error {
 	exec.Command("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.proxy_ndp=1", iface)).Run()
 	return exec.Command("sudo", "ip", "-6", "neigh", "add", "proxy", ip, "dev", iface).Run()
@@ -132,4 +146,15 @@ func TestIPv6Reachability(ip string) bool {
 func IsPublicIP(ip net.IP) bool {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsPrivate() { return false }
 	return true
+}
+
+func FormatBytes(b int64) string {
+	const unit = 1024
+	if b < unit { return fmt.Sprintf("%d B", b) }
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.2f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

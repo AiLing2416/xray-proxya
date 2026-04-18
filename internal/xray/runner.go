@@ -41,7 +41,6 @@ func GetXrayStatus() (bool, int) {
 	// Verify identity: Check if /proc/[pid]/exe points to our xray binary
 	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err == nil {
-		// On some systems it might be a symlink to the actual binary, but this is a good enough check
 		if !strings.Contains(exePath, "xray") {
 			return false, 0
 		}
@@ -257,13 +256,12 @@ func GetXrayStats(apiPort int) (map[string]int64, error) {
 	cmd := exec.Command(bin, "api", "statsquery", "--server=127.0.0.1:"+fmt.Sprint(apiPort), "--pattern=", "--reset=false")
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
 	out, err := cmd.Output()
-	if err != nil { 
-		fmt.Printf("DEBUG: API Command Failed: %v\n", err)
-		return nil, err 
+	if err != nil {
+		return nil, err
 	}
-	fmt.Printf("DEBUG: Raw API Output: %s\n", string(out))
 
 	// Use map[string]interface{} for dynamic parsing because 'stat' can be missing or different types
+
 	var raw map[string]interface{}
 	if err := json.Unmarshal(out, &raw); err != nil { return nil, err }
 
