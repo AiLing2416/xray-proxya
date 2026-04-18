@@ -101,7 +101,8 @@ func SetupIPv6Addr(ip string, iface string) error {
 	if strings.Contains(string(out), ip) { return nil }
 	
 	exec.Command("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.accept_ra=2", iface)).Run()
-	return exec.Command("sudo", "ip", "-6", "addr", "add", ip+"/128", "dev", iface).Run()
+	// Use nodad to skip tentative state
+	return exec.Command("sudo", "ip", "-6", "addr", "add", ip+"/128", "dev", iface, "nodad").Run()
 }
 
 func RemoveIPv6Addr(ip string, iface string) error {

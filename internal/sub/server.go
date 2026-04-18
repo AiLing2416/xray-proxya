@@ -55,49 +55,43 @@ func StartSubServer(port int) error {
 		}
 
 		// IPv6 Rolling Pool Logic
-		if cfg.IPv6Pool.Enabled && cfg.IPv6Pool.Subnet != "" {
+		if cfg.IPv6Pool.Enabled && cfg.IPv6Pool.Subnet != "" && cfg.IPv6Pool.Interface != "" {
 			newV6, err := utils.GenerateRandomIPv6(cfg.IPv6Pool.Subnet)
 			if err == nil {
 				ipMutex.Lock()
 				maxLimit := cfg.IPv6Pool.MaxAddresses
 				if maxLimit <= 0 { maxLimit = 6 }
 
-				if cfg.IPv6Pool.Interface != "" {
-					// 1. Add new address
-					utils.SetupIPv6Addr(newV6, cfg.IPv6Pool.Interface)
-					if cfg.IPv6Pool.EnableNDP {
-						utils.SetupNDPProxy(newV6, cfg.IPv6Pool.Interface)
+				// 1. Load Assigned IPs from Cache
+				cachePath := filepath.Join(config.GetConfigDir(), "ipv6_pool.cache")
+				data, _ := os.ReadFile(cachePath)
+				assignedIPs := []string{}
+				if len(data) > 0 {
+					for _, v := range strings.Split(string(data), "\n") {
+						if v != "" { assignedIPs = append(assignedIPs, v) }
 					}
-
-					// 2. Load Assigned IPs from Cache
-					cachePath := filepath.Join(config.GetConfigDir(), "ipv6_pool.cache")
-					data, _ := os.ReadFile(cachePath)
-					assignedIPs := []string{}
-					if len(data) > 0 {
-						assignedIPs = strings.Split(string(data), "\n")
-					}
-					
-					// Cleanup empty entries
-					validIPs := []string{}
-					for _, v := range assignedIPs {
-						if v != "" { validIPs = append(validIPs, v) }
-					}
-					assignedIPs = validIPs
-
-					// 3. Append new IP
-					assignedIPs = append(assignedIPs, newV6)
-
-					// 4. FIFO Rotation
-					for len(assignedIPs) > maxLimit {
-						oldIP := assignedIPs[0]
-						assignedIPs = assignedIPs[1:]
-						// Remove oldest IP from system
-						utils.RemoveIPv6Addr(oldIP, cfg.IPv6Pool.Interface)
-					}
-
-					// 5. Persist assigned IPs
-					os.WriteFile(cachePath, []byte(strings.Join(assignedIPs, "\n")), 0600)
 				}
+
+				// 2. FIFO Rotation: If we're at the limit, remove oldest BEFORE adding new
+				// Use >= because we're about to add a new one
+				for len(assignedIPs) >= maxLimit && len(assignedIPs) > 0 {
+					oldIP := assignedIPs[0]
+					assignedIPs = assignedIPs[1:]
+					fmt.Printf("♻️  Rotating IPv6: Removing oldest address %s\n", oldIP)
+					utils.RemoveIPv6Addr(oldIP, cfg.IPv6Pool.Interface)
+				}
+
+				// 3. Add new address to system
+				fmt.Printf("🆕 Assigning new IPv6: %s\n", newV6)
+				utils.SetupIPv6Addr(newV6, cfg.IPv6Pool.Interface)
+				if cfg.IPv6Pool.EnableNDP {
+					utils.SetupNDPProxy(newV6, cfg.IPv6Pool.Interface)
+				}
+				assignedIPs = append(assignedIPs, newV6)
+
+				// 4. Persist updated cache
+				os.WriteFile(cachePath, []byte(strings.Join(assignedIPs, "\n")), 0600)
+				
 				ipMutex.Unlock()
 				addr = newV6
 			}
