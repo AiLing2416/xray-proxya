@@ -185,6 +185,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "blocked"})
 
 	xc["routing"] = map[string]interface{}{"domainStrategy": "IPIfNonMatch", "rules": rules}
+	xc["stats"] = map[string]interface{}{}
 
 	return json.MarshalIndent(xc, "", "  ")
 }
