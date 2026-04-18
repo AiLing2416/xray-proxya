@@ -25,7 +25,7 @@ var applyCmd = &cobra.Command{
 
 		if !forceApply {
 			fmt.Println("🔍 Stage 1: Static Validation...")
-			jsonData, _ := xray.GenerateXrayJSON(cfg, nil)
+			jsonData, _ := xray.GenerateXrayJSON(cfg, nil, "")
 			if err := xray.ValidateConfig(jsonData); err != nil {
 				fmt.Printf("❌ Static validation failed: %v\n", err)
 				return
@@ -37,7 +37,7 @@ var applyCmd = &cobra.Command{
 			apiPort, _ := xray.GetFreePort()
 			dnsPort, _ := xray.GetFreePort()
 			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
-			testJson, _ := xray.GenerateXrayJSON(cfg, overrides)
+			testJson, _ := xray.GenerateXrayJSON(cfg, overrides, "")
 			
 			_, cleanup, err := xray.StartXrayTemp(testJson)
 			if err != nil {
