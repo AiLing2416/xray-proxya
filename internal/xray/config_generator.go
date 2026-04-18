@@ -30,12 +30,70 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 	// 2. Inbounds
 	inbounds := []interface{}{}
 	
+	// 2.1 API Inbound
 	apiPort := userCfg.APIInbound; if p, ok := overridePorts["api"]; ok { apiPort = p }
 	if apiPort > 0 {
 		xc["api"] = map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService"}}
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "api", "port": apiPort, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"},
 		})
+	}
+
+	// 2.2 Preset Service Inbounds (Server Features)
+	for _, m := range userCfg.ActiveModes {
+		if !m.Enabled { continue }
+		actualPort := m.Port
+		if p, ok := overridePorts[string(m.Mode)]; ok { actualPort = p }
+		
+		inbound := map[string]interface{}{
+			"tag": string(m.Mode), "port": actualPort, "listen": "0.0.0.0",
+			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
+		}
+
+		switch m.Mode {
+		case config.ModeVLESSVision:
+			inbound["protocol"] = "vless"
+			inbound["settings"] = map[string]interface{}{
+				"decryption": "none",
+				"clients": []interface{}{map[string]interface{}{"id": userCfg.UUID, "flow": "xtls-rprx-vision"}},
+			}
+			inbound["streamSettings"] = map[string]interface{}{
+				"network": "tcp", "security": "reality",
+				"realitySettings": map[string]interface{}{
+					"show": false, "dest": m.Dest, "xver": 0,
+					"serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey,
+					"shortIds": []string{m.Settings.ShortID},
+				},
+			}
+		case config.ModeVLESSReality:
+			inbound["protocol"] = "vless"
+			inbound["settings"] = map[string]interface{}{
+				"decryption": "none", "clients": []interface{}{map[string]interface{}{"id": userCfg.UUID}},
+			}
+			inbound["streamSettings"] = map[string]interface{}{
+				"network": "xhttp", "security": "reality",
+				"xhttpSettings": map[string]interface{}{"path": m.Path, "mode": "streaming"},
+				"realitySettings": map[string]interface{}{
+					"show": false, "dest": m.Dest, "xver": 0,
+					"serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey,
+					"shortIds": []string{m.Settings.ShortID},
+				},
+			}
+		case config.ModeVMessWS:
+			inbound["protocol"] = "vmess"
+			inbound["settings"] = map[string]interface{}{
+				"clients": []interface{}{map[string]interface{}{"id": userCfg.UUID}},
+			}
+			inbound["streamSettings"] = map[string]interface{}{
+				"network": "ws", "wsSettings": map[string]interface{}{"path": m.Path},
+			}
+		case config.ModeShadowsocksTCP:
+			inbound["protocol"] = "shadowsocks"
+			inbound["settings"] = map[string]interface{}{
+				"method": m.Settings.Cipher, "password": m.Settings.Password, "network": "tcp,udp",
+			}
+		}
+		inbounds = append(inbounds, inbound)
 	}
 
 	if isGateway {
@@ -55,13 +113,22 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 			"settings": map[string]interface{}{"network": "tcp,udp", "address": "1.1.1.1", "port": 53},
 		})
 	}
-
 	xc["inbounds"] = inbounds
 
 	// 3. Outbounds
+	outMark := 0
+	if isGateway { outMark = 255 }
+
 	outbounds := []interface{}{
-		map[string]interface{}{"protocol": "freedom", "tag": "direct", "settings": map[string]interface{}{"domainStrategy": "UseIP"}, "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
-		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
+		map[string]interface{}{
+			"protocol": "freedom", "tag": "direct", 
+			"settings": map[string]interface{}{"domainStrategy": "UseIP"}, 
+			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": outMark}},
+		},
+		map[string]interface{}{
+			"protocol": "dns", "tag": "dns-out", 
+			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": outMark}},
+		},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}
 
@@ -73,7 +140,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 		if ss == nil { ss = make(map[string]interface{}); out["streamSettings"] = ss }
 		so, _ := ss["sockopt"].(map[string]interface{})
 		if so == nil { so = make(map[string]interface{}); ss["sockopt"] = so }
-		so["mark"] = 255
+		so["mark"] = outMark
 		outbounds = append(outbounds, out)
 	}
 	xc["outbounds"] = outbounds
@@ -87,15 +154,11 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 	}
 
 	if isGateway && relayAlias != "" {
-		// CRITICAL: Only relay traffic from TUN or Socks-Test, NOT from other service inbounds
 		rules = append(rules, map[string]interface{}{
-			"type": "field", 
-			"inboundTag": []string{"tun-in", "test-socks"}, 
-			"outboundTag": "outbound-" + relayAlias,
+			"type": "field", "inboundTag": []string{"tun-in", "test-socks"}, "outboundTag": "outbound-" + relayAlias,
 		})
 	}
 	
-	// Fallback for everything else (including service inbounds)
 	rules = append(rules, map[string]interface{}{"type": "field", "network": "tcp,udp", "outboundTag": "direct"})
 	
 	xc["routing"] = map[string]interface{}{"domainStrategy": "IPIfNonMatch", "rules": rules}
