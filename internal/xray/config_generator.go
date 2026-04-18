@@ -87,11 +87,16 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int) 
 	}
 
 	if isGateway && relayAlias != "" {
-		target := "outbound-" + relayAlias
-		rules = append(rules, map[string]interface{}{"type": "field", "network": "tcp,udp", "outboundTag": target})
-	} else {
-		rules = append(rules, map[string]interface{}{"type": "field", "network": "tcp,udp", "outboundTag": "direct"})
+		// CRITICAL: Only relay traffic from TUN or Socks-Test, NOT from other service inbounds
+		rules = append(rules, map[string]interface{}{
+			"type": "field", 
+			"inboundTag": []string{"tun-in", "test-socks"}, 
+			"outboundTag": "outbound-" + relayAlias,
+		})
 	}
+	
+	// Fallback for everything else (including service inbounds)
+	rules = append(rules, map[string]interface{}{"type": "field", "network": "tcp,udp", "outboundTag": "direct"})
 	
 	xc["routing"] = map[string]interface{}{"domainStrategy": "IPIfNonMatch", "rules": rules}
 	xc["stats"] = map[string]interface{}{}
