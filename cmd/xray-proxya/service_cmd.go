@@ -43,6 +43,7 @@ var serviceInstallCmd = &cobra.Command{
 		home, _ := os.UserHomeDir()
 		if os.Geteuid() == 0 { home = "/root" }
 		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
+		assetDir := filepath.Join(workDir, "bin")
 		os.MkdirAll(workDir, 0700)
 
 		if _, err := exec.LookPath("systemctl"); err == nil {
@@ -55,10 +56,11 @@ Type=simple
 ExecStart=%s run
 Restart=on-failure
 WorkingDirectory=%s
+Environment=XRAY_LOCATION_ASSET=%s
 
 [Install]
 WantedBy=multi-user.target
-`, binPath, workDir)
+`, binPath, workDir, assetDir)
 
 			err := os.WriteFile(getSystemdPath(), []byte(content), 0644)
 			if err != nil {
@@ -135,16 +137,21 @@ var serviceStatusCmd = &cobra.Command{
 
 func installOpenRC(isRoot bool) {
 	binPath := xray.GetXrayProxyaPath()
+	home, _ := os.UserHomeDir()
+	if os.Geteuid() == 0 { home = "/root" }
+	assetDir := filepath.Join(home, ".local", "share", "xray-proxya", "bin")
+
 	content := fmt.Sprintf(`#!/sbin/openrc-run
 description="Xray-Proxya Service"
 command="%s"
 command_args="run"
 command_background=true
 pidfile="/run/${RC_SVCNAME}.pid"
+export XRAY_LOCATION_ASSET="%s"
 depend() {
 	need net
 }
-`, binPath)
+`, binPath, assetDir)
 	os.WriteFile("/etc/init.d/xray-proxya", []byte(content), 0755)
 	fmt.Println("✅ OpenRC service installed (Disabled by default).")
 }

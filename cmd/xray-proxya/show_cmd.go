@@ -35,9 +35,15 @@ var showCmd = &cobra.Command{
 			if showIPv6 {
 				if ip := utils.GetPublicIPv6(); ip != "" { ips = append(ips, ip) }
 			}
+			// Fallback to local if no public IP found
 			if len(ips) == 0 {
 				ips = []string{utils.GetLocalIP()}
 			}
+		}
+
+		if len(ips) == 0 {
+			fmt.Println("❌ Could not determine any IP address. Use -a to specify manually.")
+			return
 		}
 
 		fmt.Printf("\n🚀 SHARING LINKS (Primary Address: %s)\n", ips[0])
