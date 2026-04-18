@@ -21,7 +21,9 @@ func SyncFirewall(cfg *config.UserConfig) {
 func SyncTun(cfg *config.UserConfig) {
 	xrayMark := "255"
 
-	// 2. Policy Routing
+	// 1. Cleanup everything and force remove TUN to avoid 'busy' errors
+	exec.Command("sudo", "ip", "link", "delete", "proxya-tun").Run()
+	
 	exec.Command("sudo", "ip", "rule", "del", "pref", "10").Run()
 	exec.Command("sudo", "ip", "rule", "del", "pref", "149").Run()
 	exec.Command("sudo", "ip", "rule", "del", "pref", "150").Run()

@@ -400,16 +400,13 @@ func DownloadXray() error {
 	defer r.Close()
 
 	for _, f := range r.File {
-		if f.Name == "xray" || strings.HasSuffix(f.Name, ".dat") {
+		baseName := filepath.Base(f.Name)
+		if baseName == "xray" || strings.HasSuffix(baseName, ".dat") {
 			rc, err := f.Open()
 			if err != nil { return err }
 			defer rc.Close()
 
-			targetPath := filepath.Join(binDir, f.Name)
-			if f.Name == "xray" {
-				targetPath = binPath
-			}
-			
+			targetPath := filepath.Join(binDir, baseName)
 			outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 			if err != nil { return err }
 			
