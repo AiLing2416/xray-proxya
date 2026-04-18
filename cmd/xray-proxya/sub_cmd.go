@@ -23,12 +23,27 @@ var subCmd = &cobra.Command{
 	Short: "Manage subscription links and server",
 }
 
+func getSubscriptionAliases() []string {
+	cfg, _ := config.LoadConfigEx(true)
+	if cfg == nil {
+		return nil
+	}
+	var aliases []string
+	for _, s := range cfg.Subscriptions {
+		aliases = append(aliases, s.Alias)
+	}
+	return aliases
+}
+
 var subGenCmd = &cobra.Command{
 	Use:   "gen [alias]",
 	Short: "Generate a subscription link (STAGING)",
 	Long: `Generate a subscription link for direct outbound, a specific guest, or a custom outbound.
 If no alias is provided, it defaults to the direct outbound subscription.`,
 	Args: cobra.MaximumNArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getSubscriptionAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := ""
 		if len(args) > 0 {
@@ -88,6 +103,9 @@ var subDelCmd = &cobra.Command{
 	Use:   "del [alias]",
 	Short: "Delete a subscription link (STAGING)",
 	Args:  cobra.MaximumNArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getSubscriptionAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
@@ -177,6 +195,12 @@ func init() {
 	subGenCmd.Flags().StringVarP(&subOutbound, "outbound", "o", "", "Target custom outbound alias")
 	subGenCmd.Flags().StringVarP(&subGuest, "guest", "g", "", "Target guest alias")
 	subGenCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override server address/hostname in links")
+	subGenCmd.RegisterFlagCompletionFunc("outbound", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
+	subGenCmd.RegisterFlagCompletionFunc("guest", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
 
 	subDelCmd.Flags().BoolVarP(&subAll, "all", "a", false, "Delete all subscriptions")
 

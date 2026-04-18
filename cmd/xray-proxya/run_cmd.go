@@ -31,20 +31,20 @@ var runCmd = &cobra.Command{
 			return
 		}
 
-
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		os.WriteFile(confPath, jsonData, 0644)
-
-		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
-			fmt.Println("🛡️  Synchronizing transparent gateway rules...")
-			gateway.SyncFirewall(cfg)
-		}
 
 		fmt.Println("🚀 Starting Xray core in foreground...")
 		process, err := xray.StartXray(confPath)
 		if err != nil {
 			fmt.Printf("❌ Failed to start Xray: %v\n", err)
 			return
+		}
+
+		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
+			time.Sleep(1 * time.Second)
+			fmt.Println("🛡️  Synchronizing transparent gateway rules...")
+			gateway.SyncFirewall(cfg)
 		}
 
 		// Handle signals for graceful shutdown

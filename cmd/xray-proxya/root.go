@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	Version       = "0.2.1"
+	Version       = "0.2.2"
 	shellOverride string
 	setupDeps     bool
 )
@@ -34,9 +34,38 @@ func Execute() {
 
 // Completion related commands
 var completionCmd = &cobra.Command{
-	Use:   "completion [bash|zsh|fish|install|uninstall]",
-	Short: "Generate or manage shell autocompletion",
-	ValidArgs: []string{"bash", "zsh", "fish", "install", "uninstall"},
+	Use:   "completion",
+	Short: "Generate or install shell completion scripts",
+	Long: `Generate completion scripts for bash, zsh, or fish,
+or install/remove completion integration in your shell profile.`,
+	Args: cobra.NoArgs,
+}
+
+var compBashCmd = &cobra.Command{
+	Use:   "bash",
+	Short: "Print bash completion script to stdout",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		rootCmd.GenBashCompletion(os.Stdout)
+	},
+}
+
+var compZshCmd = &cobra.Command{
+	Use:   "zsh",
+	Short: "Print zsh completion script to stdout",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		rootCmd.GenZshCompletion(os.Stdout)
+	},
+}
+
+var compFishCmd = &cobra.Command{
+	Use:   "fish",
+	Short: "Print fish completion script to stdout",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		rootCmd.GenFishCompletion(os.Stdout, true)
+	},
 }
 
 var compInstallCmd = &cobra.Command{
@@ -62,14 +91,16 @@ func handleCompletion(install bool, manageDeps bool) {
 	}
 
 	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 { home = "/root" }
+	if os.Geteuid() == 0 {
+		home = "/root"
+	}
 
 	baseDir := filepath.Join(home, ".local", "share", "bash-completion")
 	baseScript := filepath.Join(baseDir, "bash_completion.sh")
 	compDir := filepath.Join(baseDir, "completions")
 	compFile := filepath.Join(compDir, "xray-proxya")
 	rcFile := filepath.Join(home, ".bashrc")
-	
+
 	baseDepLine := fmt.Sprintf("[ -f %s ] && . %s", baseScript, baseScript)
 
 	if shell == "zsh" {
@@ -81,7 +112,7 @@ func handleCompletion(install bool, manageDeps bool) {
 
 	if install {
 		os.MkdirAll(compDir, 0755)
-		
+
 		if shell == "zsh" {
 			rootCmd.GenZshCompletionFile(compFile)
 		} else {
@@ -107,12 +138,12 @@ func handleCompletion(install bool, manageDeps bool) {
 			if !strings.Contains(content, "bash_completion.sh") && !strings.Contains(content, "compinit") {
 				newBlocks.WriteString("\n# Base Shell Completion Support\n" + baseDepLine + "\n")
 			}
-			
+
 			sourceLine := fmt.Sprintf("[ -f %s ] && . %s", compFile, compFile)
-			if shell == "zsh" { 
-				sourceLine = fmt.Sprintf("fpath=(%s $fpath)\nautoload -Uz _xray-proxya", compDir) 
+			if shell == "zsh" {
+				sourceLine = fmt.Sprintf("fpath=(%s $fpath)\nautoload -Uz _xray-proxya", compDir)
 			}
-			
+
 			if !strings.Contains(content, "xray-proxya") {
 				newBlocks.WriteString("\n# Xray-Proxya Completion\n" + sourceLine + "\n")
 			}
@@ -139,10 +170,14 @@ func handleCompletion(install bool, manageDeps bool) {
 func downloadFile(url string, path string) error {
 	os.MkdirAll(filepath.Dir(path), 0755)
 	resp, err := http.Get(url)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer resp.Body.Close()
 	out, err := os.Create(path)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 	return err
@@ -150,18 +185,20 @@ func downloadFile(url string, path string) error {
 
 func cleanRC(rcPath, marker string) {
 	file, err := os.Open(rcPath)
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 	defer file.Close()
 
 	var lines []string
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.Contains(line, marker) || 
-		   strings.Contains(line, "# Xray-Proxya Completion") ||
-		   strings.Contains(line, "# Base Shell Completion Support") ||
-		   strings.Contains(line, "bash_completion.sh") ||
-		   strings.Contains(line, "compinit") {
+		if strings.Contains(line, marker) ||
+			strings.Contains(line, "# Xray-Proxya Completion") ||
+			strings.Contains(line, "# Base Shell Completion Support") ||
+			strings.Contains(line, "bash_completion.sh") ||
+			strings.Contains(line, "compinit") {
 			continue
 		}
 		lines = append(lines, line)
@@ -171,24 +208,21 @@ func cleanRC(rcPath, marker string) {
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
-	
+
 	compInstallCmd.Flags().StringVarP(&shellOverride, "shell", "s", "", "Shell type")
-	compInstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Install full completion script set")
-	
+	compInstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Install shell profile integration and extra completion support")
+
 	compUninstallCmd.Flags().StringVarP(&shellOverride, "shell", "s", "", "Shell type")
-	compUninstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Uninstall full completion set")
-	
-	completionCmd.AddCommand(compInstallCmd, compUninstallCmd)
-	rootCmd.AddCommand(completionCmd)
-	
-	completionCmd.Run = func(cmd *cobra.Command, args []string) {
-		if len(args) == 0 { cmd.Help(); return }
-		switch args[0] {
-		case "bash": rootCmd.GenBashCompletion(os.Stdout)
-		case "zsh": rootCmd.GenZshCompletion(os.Stdout)
-		case "fish": rootCmd.GenFishCompletion(os.Stdout, true)
-		}
+	compUninstallCmd.Flags().BoolVarP(&setupDeps, "completion", "c", false, "Remove shell profile integration and extra completion support")
+
+	for _, c := range []*cobra.Command{compInstallCmd, compUninstallCmd} {
+		c.RegisterFlagCompletionFunc("shell", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+			return []string{"bash", "zsh", "fish"}, cobra.ShellCompDirectiveNoFileComp
+		})
 	}
+
+	completionCmd.AddCommand(compBashCmd, compZshCmd, compFishCmd, compInstallCmd, compUninstallCmd)
+	rootCmd.AddCommand(completionCmd)
 }
 
 var versionCmd = &cobra.Command{

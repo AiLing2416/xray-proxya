@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"xray-proxya/internal/config"
 	"xray-proxya/pkg/utils"
 
@@ -159,6 +160,19 @@ func init() {
 	ipv6EnableCmd.Flags().StringVarP(&ipv6Iface, "interface", "i", "", "Interface to use")
 	ipv6EnableCmd.Flags().IntVarP(&ipv6Max, "max", "m", 3, "Max addresses to include in sub")
 	ipv6EnableCmd.Flags().BoolVarP(&ipv6NDP, "ndp", "n", true, "Enable auto-NDP configuration")
+	ipv6EnableCmd.RegisterFlagCompletionFunc("interface", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		ifaces, err := net.Interfaces()
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		var names []string
+		for _, iface := range ifaces {
+			if iface.Name != "" {
+				names = append(names, iface.Name)
+			}
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	ipv6Cmd.AddCommand(ipv6StatusCmd, ipv6EnableCmd, ipv6DisableCmd, ipv6TestCmd)
 	rootCmd.AddCommand(ipv6Cmd)
