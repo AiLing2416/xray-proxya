@@ -70,7 +70,16 @@ type Model struct {
 func tickStats(apiPort int) tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		active, pid := xray.GetXrayStatus()
-		direct, relay, _ := xray.GetXrayStats(apiPort)
+		allStats, _ := xray.GetXrayStats(apiPort)
+		
+		var direct, relay int64
+		for name, val := range allStats {
+			if strings.Contains(name, "direct") {
+				direct += val
+			} else if strings.Contains(name, "outbound") && !strings.Contains(name, "direct") && !strings.Contains(name, "blocked") {
+				relay += val
+			}
+		}
 		return statsMsg{direct: direct, relay: relay, active: active, pid: pid}
 	})
 }
@@ -273,6 +282,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if linkPub != "" {
 				clipboard.WriteAll(linkPub) // Try clipboard first
+				// Escape single quotes for bash
+				ePub := strings.ReplaceAll(linkPub, "'", "'\\''")
+				eLoc := strings.ReplaceAll(linkLoc, "'", "'\\''")
 				script := fmt.Sprintf(`
 					link_pub='%s'; link_loc='%s'; current='PUBLIC'
 					[ "%t" == "true" ] && current='LOCAL'
@@ -288,7 +300,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							c|C) if [ "$current" == "PUBLIC" ]; then echo -n "$link_pub" | xclip -sel clip 2>/dev/null || echo -n "$link_pub" | pbcopy 2>/dev/null; else echo -n "$link_loc" | xclip -sel clip 2>/dev/null || echo -n "$link_loc" | pbcopy 2>/dev/null; fi ;;
 							q|Q|$'\e') exit 0 ;;
 						esac
-					done`, linkPub, linkLoc, m.useLocalIP)
+					done`, ePub, eLoc, m.useLocalIP)
 				cmd := exec.Command("bash", "-c", script)
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
 			}

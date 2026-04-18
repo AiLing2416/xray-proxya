@@ -4,50 +4,49 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Manage background service (Requires Root)",
+	Short: "Manage background service (Systemd/OpenRC for Root, Nohup for Rootless)",
+}
+
+func getSystemdPath() string {
+	return "/etc/systemd/system/xray-proxya.service"
 }
 
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install xray-proxya as a system service (Systemd/OpenRC)",
+	Short: "Install as a system service (Requires Root)",
 	Run: func(cmd *cobra.Command, args []string) {
-		if os.Geteuid() != 0 { fmt.Println("❌ This command requires sudo/root."); return }
-		// Detect init system
-		if _, err := exec.LookPath("systemctl"); err == nil {
-			installSystemd()
-		} else if _, err := exec.LookPath("rc-service"); err == nil {
-			installOpenRC()
-		} else {
-			fmt.Println("❌ Unsupported init system.")
+		if !utils.IsRoot() {
+			fmt.Println("ℹ️ Rootless mode uses 'nohup' automatically. No installation required.")
+			fmt.Println("🚀 Use 'service start' to run in background.")
+			return
 		}
-	},
-}
 
-var serviceUninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: "Remove the system service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if os.Geteuid() != 0 { fmt.Println("❌ Requires root."); return }
-		if _, err := exec.LookPath("systemctl"); err == nil {
-			exec.Command("systemctl", "stop", "xray-proxya").Run()
-			exec.Command("systemctl", "disable", "xray-proxya").Run()
-			os.Remove("/etc/systemd/system/xray-proxya.service")
-			exec.Command("systemctl", "daemon-reload").Run()
+		binPath := xray.GetXrayProxyaPath()
+		// Security Check: Ensure binary is not in a world-writable directory
+		if info, err := os.Stat(filepath.Dir(binPath)); err == nil {
+			if info.Mode()&0002 != 0 {
+				fmt.Printf("⚠️  SECURITY WARNING: Binary is in a world-writable directory (%s).\n", filepath.Dir(binPath))
+				fmt.Println("   This could allow other users to replace the binary and gain root privileges.")
+				fmt.Println("   Consider moving it to /usr/local/bin or a root-owned directory.")
+			}
 		}
-		fmt.Println("✅ Service uninstalled.")
-	},
-}
 
-func installSystemd() {
-	binPath := xray.GetXrayProxyaPath()
-	content := fmt.Sprintf(`[Unit]
+		home, _ := os.UserHomeDir()
+		if os.Geteuid() == 0 { home = "/root" }
+		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
+		os.MkdirAll(workDir, 0700)
+
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			content := fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Service
 After=network.target
 
@@ -55,23 +54,102 @@ After=network.target
 Type=simple
 ExecStart=%s run
 Restart=on-failure
-User=root
+WorkingDirectory=%s
 
 [Install]
 WantedBy=multi-user.target
-`, binPath)
-	os.WriteFile("/etc/systemd/system/xray-proxya.service", []byte(content), 0644)
-	exec.Command("systemctl", "daemon-reload").Run()
-	exec.Command("systemctl", "enable", "xray-proxya").Run()
-	fmt.Println("✅ Systemd service installed and enabled.")
+`, binPath, workDir)
+
+			err := os.WriteFile(getSystemdPath(), []byte(content), 0644)
+			if err != nil {
+				fmt.Printf("❌ Failed to write service file: %v\n", err)
+				return
+			}
+			exec.Command("systemctl", "daemon-reload").Run()
+			fmt.Println("✅ System (Root) service unit installed (Disabled by default).")
+			fmt.Println("🚀 Use 'service start' to run manually.")
+		} else if _, err := exec.LookPath("rc-service"); err == nil {
+			installOpenRC(true)
+		}
+	},
 }
 
-func installOpenRC() {
-	// Simple OpenRC stub
-	fmt.Println("ℹ️ OpenRC installation is partially implemented. Manual config might be needed.")
+var serviceUninstallCmd = &cobra.Command{
+	Use:   "uninstall",
+	Short: "Uninstall the system service (Requires Root)",
+	Run: func(cmd *cobra.Command, args []string) {
+		if !utils.IsRoot() {
+			fmt.Println("❌ This command is for system service removal and requires root.")
+			return
+		}
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			exec.Command("systemctl", "stop", "xray-proxya").Run()
+			exec.Command("systemctl", "disable", "xray-proxya").Run()
+			os.Remove(getSystemdPath())
+			exec.Command("systemctl", "daemon-reload").Run()
+			fmt.Println("✅ Systemd service uninstalled.")
+		} else if _, err := exec.LookPath("rc-service"); err == nil {
+			os.Remove("/etc/init.d/xray-proxya")
+			fmt.Println("✅ OpenRC service uninstalled.")
+		}
+	},
+}
+
+var serviceStartCmd = &cobra.Command{
+	Use:   "start",
+	Short: "Start the service",
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := xray.StartService(); err != nil {
+			fmt.Printf("❌ Failed to start: %v\n", err)
+		}
+	},
+}
+
+var serviceStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the service",
+	Run: func(cmd *cobra.Command, args []string) {
+		xray.StopService()
+		fmt.Println("✅ Stop command executed.")
+	},
+}
+
+var serviceRestartCmd = &cobra.Command{
+	Use:   "restart",
+	Short: "Restart the service",
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := xray.RestartXrayService(); err != nil {
+			fmt.Printf("❌ Restart failed: %v\n", err)
+		}
+	},
+}
+
+var serviceStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Check service status",
+	Run: func(cmd *cobra.Command, args []string) {
+		// Just delegate to the main status logic for consistent output
+		statusCmd.Run(cmd, args)
+	},
+}
+
+func installOpenRC(isRoot bool) {
+	binPath := xray.GetXrayProxyaPath()
+	content := fmt.Sprintf(`#!/sbin/openrc-run
+description="Xray-Proxya Service"
+command="%s"
+command_args="run"
+command_background=true
+pidfile="/run/${RC_SVCNAME}.pid"
+depend() {
+	need net
+}
+`, binPath)
+	os.WriteFile("/etc/init.d/xray-proxya", []byte(content), 0755)
+	fmt.Println("✅ OpenRC service installed (Disabled by default).")
 }
 
 func init() {
-	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd)
+	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStartCmd, serviceStopCmd, serviceRestartCmd, serviceStatusCmd)
 	rootCmd.AddCommand(serviceCmd)
 }

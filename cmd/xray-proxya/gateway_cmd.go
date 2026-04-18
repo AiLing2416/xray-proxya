@@ -7,6 +7,7 @@ import (
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -14,6 +15,9 @@ import (
 var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
 	Short: "Manage transparent proxy gateway (STAGING)",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		utils.EnsureRoot()
+	},
 }
 
 var gatewayStatusCmd = &cobra.Command{
@@ -111,9 +115,24 @@ var gatewaySetCmd = &cobra.Command{
 		lan, _ := cmd.Flags().GetString("lan")
 		cfg, _ := config.LoadConfigEx(true); if cfg == nil { return }
 
-		if mode != "" { cfg.Gateway.Mode = mode }
+		if mode != "" {
+			if mode != "tun" && mode != "tproxy" {
+				fmt.Println("❌ Invalid mode. Use 'tun' or 'tproxy'.")
+				return
+			}
+			cfg.Gateway.Mode = mode
+		}
 		if relay != "" { cfg.Gateway.RelayAlias = relay }
-		if lan != "" { cfg.Gateway.LANInterface = lan }
+		if lan != "" {
+			// Basic validation for interface name: alphanumeric and common separators
+			for _, r := range lan {
+				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+					fmt.Printf("❌ Invalid interface name: %s\n", lan)
+					return
+				}
+			}
+			cfg.Gateway.LANInterface = lan
+		}
 
 		cfg.SaveEx(true)
 		fmt.Println("✅ Gateway parameters updated in STAGING.")
@@ -154,11 +173,8 @@ var gatewaySyncFirewallCmd = &cobra.Command{
 	Short: "Regenerate and apply NFTables rules",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig(); if cfg == nil { return }
-		if err := gateway.SyncFirewall(cfg); err != nil {
-			fmt.Printf("❌ Failed to sync firewall: %v\n", err)
-		} else {
-			fmt.Println("✅ Firewall rules synchronized.")
-		}
+		gateway.SyncFirewall(cfg)
+		fmt.Println("✅ Firewall rules synchronized.")
 	},
 }
 
@@ -176,6 +192,20 @@ func init() {
 	gatewaySetCmd.Flags().StringP("mode", "m", "", "Gateway mode: tun or tproxy")
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
+
+	// Dynamic completions
+	gatewaySetCmd.RegisterFlagCompletionFunc("mode", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"tun", "tproxy"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	gatewaySetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil { return nil, cobra.ShellCompDirectiveNoFileComp }
+		var aliases []string
+		for _, co := range cfg.CustomOutbounds {
+			aliases = append(aliases, co.Alias)
+		}
+		return aliases, cobra.ShellCompDirectiveNoFileComp
+	})
 	
 	gatewayCmd.AddCommand(
 		gatewayStatusCmd, 

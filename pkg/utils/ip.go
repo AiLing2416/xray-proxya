@@ -1,16 +1,12 @@
 package utils
 
 import (
-	"io"
 	"net"
-	"net/http"
-	"strings"
-	"time"
 )
 
 // GetSmartIP implements logic: Local Public > API Public > Local Private > Loopback
 func GetSmartIP(isIPv6 bool) string {
-	// 1. Try Local Interfaces
+	// 1. Try Local Interfaces First
 	localIPs := getLocalIPs(isIPv6)
 	for _, ip := range localIPs {
 		if isPublicIP(ip) {
@@ -18,24 +14,17 @@ func GetSmartIP(isIPv6 bool) string {
 		}
 	}
 
-	// 2. Try External API
-	url := "https://api.ip.sb/ip"
-	if isIPv6 { url = "https://api6.ip.sb/ip" }
-	client := http.Client{Timeout: 3 * time.Second}
-	resp, err := client.Get(url)
-	if err == nil {
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(resp.Body)
-		ipStr := strings.TrimSpace(string(b))
-		if net.ParseIP(ipStr) != nil {
-			return ipStr
-		}
-	}
-
-	// 3. Fallback to Local Private
+	// 2. Fallback to Local Private immediately if no public found on interfaces
+	// This avoids waiting for HTTP timeout in internal environments
 	if len(localIPs) > 0 {
 		return localIPs[0].String()
 	}
+
+	// 3. Optional: Try External API only if really needed (skipped for now to ensure stability)
+	/*
+	url := "https://api.ip.sb/ip"
+	...
+	*/
 
 	// 4. Ultimate Fallback
 	if isIPv6 { return "::1" }
