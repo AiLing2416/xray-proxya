@@ -78,37 +78,37 @@ func StartSubServer(port int) error {
 		// IPv6 Rotation Integration
 		if cfg.IPv6Pool.Enabled && cfg.IPv6Pool.Subnet != "" {
 			maxV6 := cfg.IPv6Pool.MaxAddresses
-			if maxV6 <= 0 {
-				maxV6 = 1
-			}
+			if maxV6 <= 0 { maxV6 = 1 }
+
 			for i := 0; i < maxV6; i++ {
 				v6, err := utils.GenerateRandomIPv6(cfg.IPv6Pool.Subnet)
-				if err != nil {
-					continue
-				}
-				// Auto-setup NDP if enabled
-				if cfg.IPv6Pool.EnableNDP && cfg.IPv6Pool.Interface != "" {
+				if err != nil { continue }
+				
+				// Auto-setup NDP/Address if enabled
+				if cfg.IPv6Pool.Interface != "" {
 					utils.SetupIPv6Addr(v6, cfg.IPv6Pool.Interface)
+					if cfg.IPv6Pool.EnableNDP {
+						utils.SetupNDPProxy(v6, cfg.IPv6Pool.Interface)
+					}
 				}
 
+				// Generate links for this IPv6
 				var v6Links []string
 				switch sub.TargetType {
 				case "direct":
 					v6Links = xray.GenerateLinks(cfg, v6)
 				case "outbound":
-					// Relay links usually depend on the specific relay node, but we can use the IPv6 as the entry point
-					// This assumes Xray is listening on all interfaces including this IPv6
+					var targetOutbound *config.CustomOutbound
+					for _, o := range cfg.CustomOutbounds {
+						if o.Alias == sub.TargetAlias { targetOutbound = &o; break }
+					}
+					if targetOutbound != nil { v6Links = xray.GenerateRelayLinks(cfg, v6, *targetOutbound) }
 				case "guest":
 					var targetGuest *config.GuestConfig
 					for _, g := range cfg.Guests {
-						if g.Alias == sub.TargetAlias {
-							targetGuest = &g
-							break
-						}
+						if g.Alias == sub.TargetAlias { targetGuest = &g; break }
 					}
-					if targetGuest != nil {
-						v6Links = xray.GenerateGuestLinks(cfg, v6, targetGuest.UUID, targetGuest.Alias)
-					}
+					if targetGuest != nil { v6Links = xray.GenerateGuestLinks(cfg, v6, targetGuest.UUID, targetGuest.Alias) }
 				}
 				links = append(links, v6Links...)
 			}
