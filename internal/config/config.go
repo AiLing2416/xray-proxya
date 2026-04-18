@@ -49,7 +49,7 @@ type IPv6Config struct {
 	Enabled      bool   `json:"enabled"`
 	Subnet       string `json:"subnet"`        // e.g., 2001:db8::/64
 	Interface    string `json:"interface"`     // e.g., eth0
-	MaxAddresses int    `json:"max_addresses"` // How many IPs to include in a sub
+	MaxAddresses int    `json:"max_addresses"` // Max addresses to keep active (rotation limit)
 	EnableNDP    bool   `json:"enable_ndp"`    // Whether to auto-configure NDP
 }
 

@@ -31,6 +31,9 @@ var runCmd = &cobra.Command{
 			return
 		}
 
+		// Save the config back to disk in case ports were updated/drifted
+		cfg.Save()
+
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		os.WriteFile(confPath, jsonData, 0644)
 
@@ -40,6 +43,11 @@ var runCmd = &cobra.Command{
 			fmt.Printf("❌ Failed to start Xray: %v\n", err)
 			return
 		}
+
+		// Write PID file for status tracking
+		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
+		os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600)
+		defer os.Remove(pidPath)
 
 		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
 			time.Sleep(1 * time.Second)

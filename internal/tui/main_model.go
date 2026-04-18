@@ -130,7 +130,8 @@ func runRelayTest(cfg *config.UserConfig, co config.CustomOutbound) tea.Cmd {
 		res := relayTestMsg{alias: co.Alias, latency: "FAIL", udp: "FAIL", dns: "FAIL", ip: "Unknown", country: "XX"}
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
+		dnsPort, _ := xray.GetFreePort()
+		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
 		jsonData, err := xray.GenerateXrayJSON(cfg, overrides, co.Alias)
 		if err != nil { return res }
 		_, cleanup, err := xray.StartXrayTemp(jsonData)
@@ -138,7 +139,7 @@ func runRelayTest(cfg *config.UserConfig, co config.CustomOutbound) tea.Cmd {
 		defer cleanup()
 
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-		dialer, err := proxy.SOCKS5("tcp", socksAddr, &proxy.Auth{User: "test-" + co.Alias, Password: "test"}, proxy.Direct)
+		dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 		if err != nil { return res }
 		httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 5 * time.Second}
 

@@ -2,6 +2,7 @@ package xray
 
 import (
 	"encoding/json"
+	"fmt"
 	"xray-proxya/internal/config"
 	"xray-proxya/pkg/utils"
 )
@@ -14,54 +15,70 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	xc := make(map[string]interface{})
 	xc["log"] = map[string]interface{}{"loglevel": "warning"}
 
-	// 1. DNS: Internal DOH
+	// 1. DNS
 	xc["dns"] = map[string]interface{}{
-		"servers": []interface{}{
-			"https://dns.google/dns-query",
-			"https://cloudflare-dns.com/dns-query",
-			"localhost",
-		},
+		"servers": []interface{}{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query", "localhost"},
 		"tag": "dns-internal", "queryStrategy": "UseIP",
 	}
 	xc["policy"] = map[string]interface{}{
-		"levels": map[string]interface{}{
-			"0": map[string]interface{}{
-				"statsUserUplink": true, 
-				"statsUserDownlink": true,
-			},
-		},
-		"system": map[string]interface{}{
-			"statsInboundUplink": true,
-			"statsInboundDownlink": true,
-		},
+		"levels": map[string]interface{}{"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true}},
+		"system": map[string]interface{}{"statsInboundUplink": true, "statsInboundDownlink": true},
 	}
 
-	// 2. Inbounds
+	// 2. Port Management & Audit
+	// Rule: Test Port is ALWAYS random and new
+	testPort, _ := utils.GetFreePort()
+	if p, ok := overridePorts["test-socks"]; ok {
+		testPort = p
+	}
+	
+	// Rule: API and Presets follow "Sticky but Dynamic" policy
+	ensurePort := func(label string, current int) int {
+		// If provided in overrides (like during isolated test), use it directly
+		if val, ok := overridePorts[label]; ok { return val }
+		
+		// If current is free, stick with it
+		if current > 0 && utils.IsPortFree(current) { return current }
+		
+		// Otherwise, find a new one and WARN
+		newPort, _ := utils.GetFreePort()
+		fmt.Printf("⚠️  Warning: Port %d (%s) is occupied. Switched to %d.\n", current, label, newPort)
+		return newPort
+	}
+
+	// Audit API Port
+	userCfg.APIInbound = ensurePort("api", userCfg.APIInbound)
+
+	// 3. Inbounds
 	inbounds := []interface{}{}
 	
-	// API
-	apiPort := userCfg.APIInbound; if p, ok := overridePorts["api"]; ok { apiPort = p }
-	if apiPort > 0 {
+	// 3.1 API Inbound
+	if userCfg.APIInbound > 0 {
 		xc["api"] = map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService"}}
 		inbounds = append(inbounds, map[string]interface{}{
-			"tag": "api", "port": apiPort, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"},
+			"tag": "api", "port": userCfg.APIInbound, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"},
 		})
 	}
 
-	// Test Proxy
-	testPort := 10086; if p, ok := overridePorts["test-socks"]; ok { testPort = p }
+	// 3.2 Test Proxy (Always random)
 	inbounds = append(inbounds, map[string]interface{}{
-		"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks",
+		"tag": "test-socks", "port": testPort, "listen": "::", "protocol": "socks",
 		"settings": map[string]interface{}{"auth": "noauth", "udp": true},
 		"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
 	})
 
-	// Service Inbounds
-	for _, m := range userCfg.ActiveModes {
+	// 3.3 Preset Service Inbounds
+	for i, m := range userCfg.ActiveModes {
 		if !m.Enabled { continue }
-		port := m.Port; if p, ok := overridePorts[string(m.Mode)]; ok { port = p }
-		in := map[string]interface{}{"tag": string(m.Mode), "port": port, "listen": "0.0.0.0"}
-		in["sniffing"] = map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}
+		
+		// Audit Preset Port
+		newPort := ensurePort(string(m.Mode), m.Port)
+		if newPort != m.Port { userCfg.ActiveModes[i].Port = newPort }
+		
+		in := map[string]interface{}{
+			"tag": string(m.Mode), "port": newPort, "listen": "::",
+			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
+		}
 		
 		clientEmail := "service-" + string(m.Mode)
 		client := map[string]interface{}{"id": userCfg.UUID, "email": clientEmail}
@@ -107,28 +124,19 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
 		})
 		inbounds = append(inbounds, map[string]interface{}{
-			"tag": "dns-in", "port": 53, "listen": "0.0.0.0", "protocol": "dokodemo-door",
+			"tag": "dns-in", "port": 53, "listen": "::", "protocol": "dokodemo-door",
 			"settings": map[string]interface{}{"network": "tcp,udp", "followRedirect": true},
 		})
 	}
 	xc["inbounds"] = inbounds
 
-	// 3. Outbounds
-	mark := 0; if isGateway { mark = 255 }
-	
-	// CRITICAL: Defensive sendThrough logic
-	directOut := map[string]interface{}{
-		"protocol": "freedom", "tag": "direct", 
-		"settings": map[string]interface{}{"domainStrategy": "UseIP"},
-		"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}, 
-	}
-	if !isGateway {
-		v6 := utils.GetPublicIPv6()
-		if v6 != "" { directOut["sendThrough"] = v6 }
-	}
-
+	// 4. Outbounds
 	xc["outbounds"] = []interface{}{
-		directOut,
+		map[string]interface{}{
+			"protocol": "freedom", "tag": "direct", 
+			"settings": map[string]interface{}{"domainStrategy": "UseIP"},
+			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}, 
+		},
 		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}
@@ -141,11 +149,11 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		if ss == nil { ss = make(map[string]interface{}); out["streamSettings"] = ss }
 		so, _ := ss["sockopt"].(map[string]interface{})
 		if so == nil { so = make(map[string]interface{}); ss["sockopt"] = so }
-		so["mark"] = mark
+		so["mark"] = 255
 		xc["outbounds"] = append(xc["outbounds"].([]interface{}), out)
 	}
 
-	// 4. Routing
+	// 5. Routing
 	rules := []interface{}{
 		map[string]interface{}{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
 		map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"},

@@ -163,15 +163,20 @@ var infoOutboundCmd = &cobra.Command{
 		}
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
-		jsonData, _ := xray.GenerateXrayJSON(cfg, map[string]int{"test-socks": testSocksPort, "api": apiPort}, alias)
+		dnsPort, _ := xray.GetFreePort()
+		jsonData, _ := xray.GenerateXrayJSON(cfg, map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}, alias)
 		_, cleanup, err := xray.StartXrayTemp(jsonData)
 		if err != nil {
 			fmt.Printf("❌ Error: %v\n", err)
 			return
 		}
 		defer cleanup()
+
+		// Wait for Xray to bind
+		time.Sleep(1 * time.Second)
+
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-		dialer, _ := proxy.SOCKS5("tcp", socksAddr, &proxy.Auth{User: "user-" + target.Alias, Password: "test"}, proxy.Direct)
+		dialer, _ := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 		httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 10 * time.Second}
 		profile := fetchProfile(httpClient)
 		nf := testMedia(httpClient, "https://www.netflix.com/title/80018499")

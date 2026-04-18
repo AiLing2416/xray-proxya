@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"os"
 	"xray-proxya/internal/config"
 	"xray-proxya/pkg/utils"
 
@@ -18,7 +19,13 @@ var (
 
 var ipv6Cmd = &cobra.Command{
 	Use:   "ipv6",
-	Short: "Manage IPv6 block rotation and NDP settings",
+	Short: "Manage IPv6 block rotation and NDP settings (Requires Root)",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if !utils.IsRoot() {
+			fmt.Println("❌ IPv6 Rolling Pool requires root privileges.")
+			os.Exit(1)
+		}
+	},
 }
 
 var ipv6StatusCmd = &cobra.Command{
@@ -158,7 +165,7 @@ var ipv6TestCmd = &cobra.Command{
 
 func init() {
 	ipv6EnableCmd.Flags().StringVarP(&ipv6Iface, "interface", "i", "", "Interface to use")
-	ipv6EnableCmd.Flags().IntVarP(&ipv6Max, "max", "m", 3, "Max addresses to include in sub")
+	ipv6EnableCmd.Flags().IntVarP(&ipv6Max, "max", "m", 6, "Max addresses to keep active (FIFO rotation)")
 	ipv6EnableCmd.Flags().BoolVarP(&ipv6NDP, "ndp", "n", true, "Enable auto-NDP configuration")
 	ipv6EnableCmd.RegisterFlagCompletionFunc("interface", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		ifaces, err := net.Interfaces()

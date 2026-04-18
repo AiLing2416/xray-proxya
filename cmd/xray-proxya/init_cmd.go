@@ -42,8 +42,8 @@ var initCmd = &cobra.Command{
 		}
 
 		cfg := &config.UserConfig{Role: role, UUID: uuid.New().String()}
-		cfg.APIInbound = 10085
-		cfg.TestInbound = 10086
+		cfg.APIInbound, _ = utils.GetFreePort()
+		cfg.TestInbound, _ = utils.GetFreePort()
 		fmt.Printf("📡 Internal Ports: API=%d, Test=%d\n", cfg.APIInbound, cfg.TestInbound)
 
 		if role == config.RoleGateway {
