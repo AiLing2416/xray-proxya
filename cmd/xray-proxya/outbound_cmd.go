@@ -164,7 +164,17 @@ var infoOutboundCmd = &cobra.Command{
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
 		dnsPort, _ := xray.GetFreePort()
-		jsonData, _ := xray.GenerateXrayJSON(cfg, map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}, alias)
+		
+		// v0.2.4: Randomize all active presets to avoid "device busy" during info test
+		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+		for _, m := range cfg.ActiveModes {
+			if m.Enabled {
+				p, _ := xray.GetFreePort()
+				overrides[string(m.Mode)] = p
+			}
+		}
+
+		jsonData, _ := xray.GenerateXrayJSON(cfg, overrides, alias)
 		_, cleanup, err := xray.StartXrayTemp(jsonData)
 		if err != nil {
 			fmt.Printf("❌ Error: %v\n", err)
@@ -247,7 +257,7 @@ func testMedia(client *http.Client, url string) string {
 
 var deleteOutboundCmd = &cobra.Command{
 	Use:   "delete [alias]",
-	Short: "Remove a relay node from staging",
+	Short: "Remove a relay node from STAGING",
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
@@ -318,7 +328,7 @@ var bindInterfaceCmd = &cobra.Command{
 
 var setDNSRelayCmd = &cobra.Command{
 	Use:   "set-dns [alias]",
-	Short: "Configure DNS strategy for a relay",
+	Short: "Configure DNS strategy for a relay (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
@@ -395,7 +405,16 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) map[strin
 	testSocksPort, _ := xray.GetFreePort()
 	apiPort, _ := xray.GetFreePort()
 	dnsPort, _ := xray.GetFreePort()
+
+	// v0.2.4: Fully randomized overrides for test instance
 	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+	for _, m := range cfg.ActiveModes {
+		if m.Enabled {
+			p, _ := xray.GetFreePort()
+			overrides[string(m.Mode)] = p
+		}
+	}
+
 	jsonData, err := xray.GenerateXrayJSON(cfg, overrides, co.Alias)
 	if err != nil {
 		return results

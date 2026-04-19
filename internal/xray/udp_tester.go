@@ -3,6 +3,7 @@ package xray
 import (
 	"fmt"
 	"net"
+	"strings"
 	"time"
 )
 
@@ -16,11 +17,10 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 	defer conn.Close()
 
 	// 2. SOCKS5 Handshake (Method selection)
-	// Support both NO AUTH (0x00) and USER/PASS (0x02)
 	if _, err := conn.Write([]byte{0x05, 0x02, 0x00, 0x02}); err != nil {
 		return 0, err
 	}
-	buf := make([]byte, 256)
+	buf := make([]byte, 1024)
 	if _, err := conn.Read(buf); err != nil {
 		return 0, err
 	}
@@ -42,19 +42,39 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 	}
 
 	// 4. UDP ASSOCIATE Request
-	// [VER, CMD, RSV, ATYP, ADDR, PORT] -> [0x05, 0x03, 0x00, 0x01, 0,0,0,0, 0,0]
 	if _, err := conn.Write([]byte{0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0}); err != nil {
 		return 0, err
 	}
-	if _, err := conn.Read(buf); err != nil || buf[1] != 0x00 {
+	n, err := conn.Read(buf)
+	if err != nil || n < 10 || buf[1] != 0x00 {
 		return 0, fmt.Errorf("udp associate failed")
 	}
 
-	// Parse Relay Address (usually the same as socksAddr but with different port)
-	relayIP := net.IP(buf[4:8])
-	relayPort := int(buf[8])<<8 | int(buf[9])
-	relayAddr := fmt.Sprintf("%s:%d", relayIP.String(), relayPort)
-	if relayIP.IsUnspecified() || relayIP.String() == "::" {
+	// Parse Relay Address correctly based on ATYP
+	var relayIP string
+	var relayPort int
+	atyp := buf[3]
+	pos := 4
+
+	switch atyp {
+	case 0x01: // IPv4
+		relayIP = net.IP(buf[pos : pos+4]).String()
+		pos += 4
+	case 0x03: // Domain
+		l := int(buf[pos])
+		relayIP = string(buf[pos+1 : pos+1+l])
+		pos += 1 + l
+	case 0x04: // IPv6
+		relayIP = "[" + net.IP(buf[pos:pos+16]).String() + "]"
+		pos += 16
+	default:
+		return 0, fmt.Errorf("unknown ATYP: %d", atyp)
+	}
+	relayPort = int(buf[pos])<<8 | int(buf[pos+1])
+	relayAddr := fmt.Sprintf("%s:%d", relayIP, relayPort)
+
+	// If relay IP is all zeros, use the SOCKS server's IP
+	if strings.Contains(relayIP, "0.0.0.0") || strings.Contains(relayIP, "::") {
 		host, _, _ := net.SplitHostPort(socksAddr)
 		relayAddr = fmt.Sprintf("%s:%d", host, relayPort)
 	}
@@ -67,15 +87,10 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 	defer udpConn.Close()
 
 	// SOCKS5 UDP Header + DNS Query (Standard 8.8.8.8:53 query for google.com)
-	// Header: [RSV, RSV, FRAG, ATYP, ADDR, PORT] -> [0,0,0, 0x01, 8,8,8,8, 0,53]
 	header := []byte{0x00, 0x00, 0x00, 0x01, 8, 8, 8, 8, 0, 53}
 	dnsQuery := []byte{
-		0x12, 0x34, // ID
-		0x01, 0x00, // Flags: Standard query
-		0x00, 0x01, // Questions: 1
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // Answer RRs, Authority RRs, Additional RRs
-		0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00, // google.com
-		0x00, 0x01, 0x00, 0x01, // Type A, Class IN
+		0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
 	}
 	payload := append(header, dnsQuery...)
 
@@ -84,13 +99,13 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 		return 0, err
 	}
 
-	udpConn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	n, err := udpConn.Read(buf)
+	udpConn.SetReadDeadline(time.Now().Add(4 * time.Second))
+	rn, err := udpConn.Read(buf)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("read error: %v (relay: %s)", err, relayAddr)
 	}
-	if n < 10 {
-		return 0, fmt.Errorf("truncated udp response")
+	if rn < 10 {
+		return 0, fmt.Errorf("truncated response")
 	}
 
 	return time.Since(start), nil

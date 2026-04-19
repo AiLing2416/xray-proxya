@@ -69,7 +69,7 @@ var guestsListCmd = &cobra.Command{
 
 var guestsAddCmd = &cobra.Command{
 	Use:   "add [alias]",
-	Short: "Add a new guest user",
+	Short: "Add a new guest user (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
@@ -108,7 +108,7 @@ var guestsAddCmd = &cobra.Command{
 
 var guestsDelCmd = &cobra.Command{
 	Use:   "del [alias]",
-	Short: "Remove a guest user",
+	Short: "Remove a guest user (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
@@ -141,7 +141,7 @@ var guestsDelCmd = &cobra.Command{
 
 var guestsSetCmd = &cobra.Command{
 	Use:   "set [alias]",
-	Short: "Configure guest parameters (quota, outbound, reset day)",
+	Short: "Configure guest parameters (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp

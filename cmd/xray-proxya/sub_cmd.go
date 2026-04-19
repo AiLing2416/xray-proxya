@@ -129,17 +129,18 @@ var subRunCmd = &cobra.Command{
 		cfg, _ := config.LoadConfig()
 		port := subPort
 		if !cmd.Flags().Changed("port") && cfg.SubPort > 0 { port = cfg.SubPort }
-		
+
+		// v0.2.4: Explicitly audit and persist ONLY during RUN
 		if !utils.IsPortFree(port) {
 			p, _ := xray.GetFreePort()
-			fmt.Printf("⚠️  Port %d occupied, using %d\n", port, p)
+			fmt.Printf("⚠️  Warning: Subscription Port %d occupied, using %d\n", port, p)
 			port = p
+			cfg.SubPort = port
+			cfg.Save()
 		}
-		
-		cfg.SubPort = port
-		cfg.Save()
-		
+
 		if err := sub.StartSubServer(port); err != nil {
+
 			fmt.Printf("❌ Failed: %v\n", err)
 		}
 	},
