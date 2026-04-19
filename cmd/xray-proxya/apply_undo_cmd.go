@@ -36,7 +36,16 @@ var applyCmd = &cobra.Command{
 			testSocksPort, _ := xray.GetFreePort()
 			apiPort, _ := xray.GetFreePort()
 			dnsPort, _ := xray.GetFreePort()
+			
+			// For all preset modes, if they conflict with main service, we use random ports for the TEST
 			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+			for _, m := range cfg.ActiveModes {
+				if m.Enabled {
+					p, _ := xray.GetFreePort()
+					overrides[string(m.Mode)] = p
+				}
+			}
+
 			testJson, _ := xray.GenerateXrayJSON(cfg, overrides, "")
 			
 			_, cleanup, err := xray.StartXrayTemp(testJson)

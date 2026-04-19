@@ -2,9 +2,7 @@ package xray
 
 import (
 	"encoding/json"
-	"fmt"
 	"xray-proxya/internal/config"
-	"xray-proxya/pkg/utils"
 )
 
 func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, testTarget string) ([]byte, error) {
@@ -25,80 +23,47 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		"system": map[string]interface{}{"statsInboundUplink": true, "statsInboundDownlink": true},
 	}
 
-	// 2. Port Management & Audit
-	// Rule: Test Port is ALWAYS random and new
-	testPort, _ := utils.GetFreePort()
-	if p, ok := overridePorts["test-socks"]; ok {
-		testPort = p
-	}
-	
-	// Rule: API and Presets follow "Sticky but Dynamic" policy
-	ensurePort := func(label string, current int) int {
-		// If provided in overrides (like during isolated test), use it directly
+	// 2. Port Selection
+	getPort := func(label string, defaultVal int) int {
 		if val, ok := overridePorts[label]; ok { return val }
-		
-		// If current is free, stick with it
-		if current > 0 && utils.IsPortFree(current) { return current }
-		
-		// Otherwise, find a new one and WARN
-		newPort, _ := utils.GetFreePort()
-		fmt.Printf("⚠️  Warning: Port %d (%s) is occupied. Switched to %d.\n", current, label, newPort)
-		return newPort
+		return defaultVal
 	}
 
-	// Audit API Port
-	userCfg.APIInbound = ensurePort("api", userCfg.APIInbound)
+	apiPort := getPort("api", userCfg.APIInbound)
+	testPort := getPort("test-socks", 10086)
 
 	// 3. Inbounds
 	inbounds := []interface{}{}
 	
-	// 3.1 API Inbound
-	if userCfg.APIInbound > 0 {
+	if apiPort > 0 {
 		xc["api"] = map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService"}}
 		inbounds = append(inbounds, map[string]interface{}{
-			"tag": "api", "port": userCfg.APIInbound, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"},
+			"tag": "api", "port": apiPort, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"},
 		})
 	}
 
-	// 3.2 Test Proxy (Always random)
 	inbounds = append(inbounds, map[string]interface{}{
 		"tag": "test-socks", "port": testPort, "listen": "::", "protocol": "socks",
 		"settings": map[string]interface{}{"auth": "noauth", "udp": true},
 		"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
 	})
 
-	// 3.3 Preset Service Inbounds
-	for i, m := range userCfg.ActiveModes {
+	for _, m := range userCfg.ActiveModes {
 		if !m.Enabled { continue }
-		
-		// Audit Preset Port
-		newPort := ensurePort(string(m.Mode), m.Port)
-		if newPort != m.Port { userCfg.ActiveModes[i].Port = newPort }
-		
-		in := map[string]interface{}{
-			"tag": string(m.Mode), "port": newPort, "listen": "::",
-			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
-		}
-		
+		mPort := getPort(string(m.Mode), m.Port)
+		in := map[string]interface{}{"tag": string(m.Mode), "port": mPort, "listen": "::", "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}}
 		clientEmail := "service-" + string(m.Mode)
 		client := map[string]interface{}{"id": userCfg.UUID, "email": clientEmail}
-
 		switch m.Mode {
 		case config.ModeVLESSVision:
 			in["protocol"] = "vless"
 			client["flow"] = "xtls-rprx-vision"
 			in["settings"] = map[string]interface{}{"clients": []interface{}{client}, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{
-				"network": "tcp", "security": "reality",
-				"realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}},
-			}
+			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSReality:
 			in["protocol"] = "vless"
 			in["settings"] = map[string]interface{}{"clients": []interface{}{client}, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{
-				"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path},
-				"realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}},
-			}
+			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSXHTTP:
 			in["protocol"] = "vless"
 			in["settings"] = map[string]interface{}{"clients": []interface{}{client}, "decryption": "none"}
@@ -115,28 +80,15 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	if isGateway {
-		inbounds = append(inbounds, map[string]interface{}{
-			"tag": "tun-in", "protocol": "tun",
-			"settings": map[string]interface{}{
-				"name": "proxya-tun", "mtu": 1500, "address": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
-				"autoRoute": false, "strictRoute": true, "stack": "gvisor",
-			},
-			"sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
-		})
-		inbounds = append(inbounds, map[string]interface{}{
-			"tag": "dns-in", "port": 53, "listen": "::", "protocol": "dokodemo-door",
-			"settings": map[string]interface{}{"network": "tcp,udp", "followRedirect": true},
-		})
+		dnsPort := getPort("dns-in", 53)
+		inbounds = append(inbounds, map[string]interface{}{"tag": "tun-in", "protocol": "tun", "settings": map[string]interface{}{"name": "proxya-tun", "mtu": 1500, "address": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"}, "autoRoute": false, "strictRoute": true, "stack": "gvisor"}, "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}})
+		inbounds = append(inbounds, map[string]interface{}{"tag": "dns-in", "port": dnsPort, "listen": "::", "protocol": "dokodemo-door", "settings": map[string]interface{}{"network": "tcp,udp", "followRedirect": true}})
 	}
 	xc["inbounds"] = inbounds
 
 	// 4. Outbounds
 	xc["outbounds"] = []interface{}{
-		map[string]interface{}{
-			"protocol": "freedom", "tag": "direct", 
-			"settings": map[string]interface{}{"domainStrategy": "UseIP"},
-			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}, 
-		},
+		map[string]interface{}{"protocol": "freedom", "tag": "direct", "settings": map[string]interface{}{"domainStrategy": "UseIP"}, "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
 		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}
@@ -153,24 +105,25 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		xc["outbounds"] = append(xc["outbounds"].([]interface{}), out)
 	}
 
-	// 5. Routing
+	// 5. Routing (Reordered for v0.2.4: Test bypasses DNS hijack)
 	rules := []interface{}{
 		map[string]interface{}{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
-		map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"},
-		map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"},
-		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	}
 
+	// v0.2.4: Isolated Test has HIGHEST priority to avoid DNS module hijacking its UDP probes
 	if testTarget != "" {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "outbound-" + testTarget})
 	}
 
+	// DNS rules
+	rules = append(rules, 
+		map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"},
+		map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"},
+		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
+	)
+
 	if isGateway && relayAlias != "" {
-		rules = append(rules, map[string]interface{}{
-			"type": "field", 
-			"inboundTag": []string{"tun-in"}, 
-			"outboundTag": "outbound-" + relayAlias,
-		})
+		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"tun-in"}, "outboundTag": "outbound-" + relayAlias})
 	}
 
 	rules = append(rules, map[string]interface{}{"type": "field", "user": []string{"regexp:service-.*"}, "outboundTag": "direct"})

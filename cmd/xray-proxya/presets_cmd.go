@@ -48,7 +48,7 @@ var presetsListCmd = &cobra.Command{
 
 var presetsSetCmd = &cobra.Command{
 	Use:   "set [id]",
-	Short: "Configure a specific preset slot",
+	Short: "Configure a specific preset slot (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		id, _ := strconv.Atoi(args[0])

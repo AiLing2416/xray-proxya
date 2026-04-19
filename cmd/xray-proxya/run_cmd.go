@@ -10,13 +10,18 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
 
+var (
+	runAudit bool
+)
+
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Start Xray core in foreground (For service/daemon use)",
+	Short: "Run Xray core in foreground",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
 		if err != nil {
@@ -24,15 +29,40 @@ var runCmd = &cobra.Command{
 			return
 		}
 
+		// v0.2.4 Port Policy:
+		// By default (especially as a service), we are STRICT.
+		// We only allow port drift if --audit is explicitly provided.
+		changed := false
+		auditPort := func(label string, current *int) {
+			if *current <= 0 { return }
+			if !utils.IsPortFree(*current) {
+				if runAudit {
+					newP, _ := xray.GetFreePort()
+					fmt.Printf("⚠️  Warning: %s Port %d occupied, switched to %d\n", label, *current, newP)
+					*current = newP
+					changed = true
+				} else {
+					fmt.Printf("❌ Error: %s Port %d is occupied. Use --audit to allow dynamic port selection.\n", label, *current)
+					os.Exit(1)
+				}
+			}
+		}
+
+		auditPort("API", &cfg.APIInbound)
+		for i := range cfg.ActiveModes {
+			if cfg.ActiveModes[i].Enabled {
+				auditPort(string(cfg.ActiveModes[i].Mode), &cfg.ActiveModes[i].Port)
+			}
+		}
+
+		if changed { cfg.Save() }
+
 		fmt.Println("🔍 Generating configuration...")
 		jsonData, err := xray.GenerateXrayJSON(cfg, nil, "")
 		if err != nil {
 			fmt.Printf("❌ Failed to generate config: %v\n", err)
 			return
 		}
-
-		// Save the config back to disk in case ports were updated/drifted
-		cfg.Save()
 
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		os.WriteFile(confPath, jsonData, 0644)
@@ -44,7 +74,6 @@ var runCmd = &cobra.Command{
 			return
 		}
 
-		// Write PID file for status tracking
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600)
 		defer os.Remove(pidPath)
@@ -55,80 +84,21 @@ var runCmd = &cobra.Command{
 			gateway.SyncFirewall(cfg)
 		}
 
-		// Handle signals for graceful shutdown
+		// Handle signals
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+		<-sigChan
 
-		go func() {
-			<-sigChan
-			fmt.Println("\n🛑 Stopping Xray core...")
-			process.Process.Kill()
-			os.Remove(confPath)
-			os.Exit(0)
-		}()
-
-		// Start Quota Maintenance Loop
-		if cfg.Role == config.RoleServer {
-			go maintainQuota(cfg.APIInbound)
-		}
-
-		err = process.Wait()
-		if err != nil {
-			fmt.Printf("❌ Xray exited with error: %v\n", err)
+		fmt.Println("\n🛑 Stopping Xray...")
+		process.Process.Signal(syscall.SIGTERM)
+		
+		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
+			gateway.CleanupFirewall()
 		}
 	},
 }
 
-func maintainQuota(apiPort int) {
-	fmt.Printf("🚀 Quota maintenance loop started on port %d\n", apiPort)
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	for range ticker.C {
-		stats, err := xray.GetXrayStats(apiPort)
-		if err != nil {
-			fmt.Printf("❌ Quota loop: failed to get stats: %v\n", err)
-			continue
-		}
-
-		cfg, err := config.LoadConfig()
-		if err != nil {
-			continue
-		}
-
-		changed := false
-		for i, g := range cfg.Guests {
-			// user>>>Alias@xray-proxya.com>>>traffic>>>downlink
-			name := fmt.Sprintf("user>>>%s@xray-proxya.com>>>traffic>>>downlink", g.Alias)
-			if val, ok := stats[name]; ok {
-				fmt.Printf("📊 Stat: %s = %d bytes\n", name, val)
-				cfg.Guests[i].UsedBytes = val
-				// Check Quota
-				if g.QuotaGB > 0 {
-					limitBytes := int64(g.QuotaGB * 1024 * 1024 * 1024)
-					if val >= limitBytes && g.Enabled {
-						fmt.Printf("⚠️ Quota exceeded for guest '%s' (%d >= %d). Disabling via API.\n", g.Alias, val, limitBytes)
-						cfg.Guests[i].Enabled = false
-						changed = true
-						// Attempt to remove from all standard inbounds
-						tags := []string{"vless-vision-reality-tcp-in", "vless-reality-xhttp-in", "vless-xhttp-kem768-in", "vmess-ws-in"}
-						for _, tag := range tags {
-							err := xray.RemoveUserAPI(apiPort, tag, g.Alias+"@xray-proxya.com")
-							if err != nil {
-								fmt.Printf("❌ Failed to remove user %s from %s: %v\n", g.Alias, tag, err)
-							}
-						}
-					}
-				}
-			}
-		}
-
-		if changed {
-			cfg.Save()
-		}
-	}
-}
-
 func init() {
+	runCmd.Flags().BoolVar(&runAudit, "audit", false, "Enable dynamic port negotiation if configured ports are occupied")
 	rootCmd.AddCommand(runCmd)
 }
