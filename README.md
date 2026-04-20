@@ -1,27 +1,34 @@
 # Xray-Proxya
 
-Xray-Proxya is a professional, Go-based proxy management tool and transparent gateway. It is designed to be the modern successor to legacy bash-based deployment scripts, focusing on multi-tenant isolation, reliability, and advanced networking features.
+Xray-Proxya is a Go-based Xray manager for two main jobs: running a role-based proxy server and building a TUN-based transparent gateway. It focuses on staging-first configuration changes, relay routing, guest isolation, and operational commands that are practical on small Linux VPS nodes.
 
 ## Key Features
 
-- **Multi-Tenant Guest Management (v0.2.2)**:
-  - **Isolation**: Manage multiple tenants with independent UUIDs using `guests` commands.
-  - **Quotas**: Set downlink traffic quotas (GB) with monthly auto-reset and boundary adaptation.
-  - **Dedicated Routes**: Bind specific guests to dedicated outbound relay nodes for personalized traffic paths.
-- **Role-Based Architecture**: Clearly separated **Server** (inbound distribution) and **Gateway** (transparent proxy) roles.
-- **Advanced Networking**:
-  - **Physical Interface Binding**: Bind the `freedom` protocol to specific local interfaces (e.g., WireGuard, ProtonVPN) for policy-based routing.
-  - **Internal Proxies**: Instantly create private, unauthenticated Socks/HTTP ports for any outbound node.
-  - **Dual-Stack Gateway**: Automatic IPv4/IPv6 forwarding and TUN-based transparent gateway management with `nftables`.
-  - **Kernel Tuning Profiles**: Apply temporary root-only `sysctl` presets for `gateway`, `relay`, and `server` roles with runtime rollback support.
-- **Security & Stealth**:
-  - **VLESS-Reality-XHTTP**: State-of-the-art stealth with randomized international SNIs.
-  - **VLESS-XHTTP-KEM768**: Post-quantum security ready.
-  - **SSH Protection**: Automatically excludes SSH ports from intercept rules to prevent lockout.
-- **Reliability**:
-  - **Zero-Dependency Core**: Pure Go zip implementation for downloading Xray core—works on Alpine/Debian Slim.
-  - **Self-Healing**: Automatic TUN device cleanup and process management (`pkill -x` matching).
-  - **Shell Guard**: Built-in detection for truncated links caused by missing shell quotes.
+- **Staging-first operations**:
+  - Most configuration commands write to a staging file first.
+  - `apply` performs validation before committing changes into the active config.
+- **Role-based deployment**:
+  - `server` mode for inbound distribution and relay serving.
+  - `gateway` mode for TUN-based transparent proxy forwarding.
+- **Relay and outbound tooling**:
+  - Import relay links with `outbound add`.
+  - Bind guests or the gateway to specific relays.
+  - Expose per-relay local SOCKS/HTTP listeners for debugging or local forwarding.
+  - Probe relay paths directly with IPv4 / IPv6-aware outbound tests.
+- **Guest isolation**:
+  - Create multiple guests with separate UUIDs.
+  - Set quotas and reset schedules.
+  - Route selected guests through dedicated outbounds.
+- **Modern transport presets**:
+  - VLESS Vision + Reality TCP
+  - VLESS Reality XHTTP
+  - VLESS XHTTP KEM-768
+  - VMess WS
+  - Shadowsocks TCP
+- **Operational safety**:
+  - Gateway firewall sync protects active SSH listeners from interception.
+  - Runtime-only `tune` profiles can apply temporary kernel `sysctl` changes for `gateway`, `relay`, and `server` roles.
+  - Shell completion generation and install helpers are built in.
 
 ## Installation
 
@@ -35,7 +42,7 @@ Requires Go 1.25+
 ```bash
 git clone https://github.com/AiLing2416/xray-proxya
 cd xray-proxya
-CGO_ENABLED=0 go build -ldflags "-s -w" -o xray-proxya ./cmd/xray-proxya/
+CGO_ENABLED=0 go build -ldflags "-s -w" -o xray-proxya ./cmd/xray-proxya
 ```
 
 ## Quick Start
@@ -49,22 +56,28 @@ xray-proxya init --role server
 xray-proxya init --role gateway
 ```
 
-### 2. Multi-Tenant Setup
+### 2. Add a Relay
+```bash
+xray-proxya outbound add hk-node "vless://..."
+xray-proxya outbound list
+```
+
+### 3. Multi-Tenant Setup
 ```bash
 # Add a guest with 100GB monthly quota
 xray-proxya guests add john-doe --quota 100 --reset 1
-xray-proxya apply
-```
-
-### 3. Dedicated Outbound
-```bash
-# Bind a guest to a specific relay node
-xray-proxya outbound add hk-node "vless://..."
 xray-proxya guests set john-doe --outbound hk-node
 xray-proxya apply
 ```
 
-### 4. Temporary Kernel Tuning
+### 4. Transparent Gateway
+```bash
+# Use a relay as the transparent upstream
+xray-proxya gateway set --mode tun --relay hk-node
+xray-proxya apply
+```
+
+### 5. Temporary Kernel Tuning
 ```bash
 # Inspect available tuning profiles
 sudo xray-proxya tune profiles
@@ -85,6 +98,17 @@ Notes:
 - Tuning is runtime-only and does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`.
 - Unsupported keys are reported and skipped rather than forcing legacy compatibility behavior.
 
+## Common Commands
+
+```bash
+xray-proxya status
+xray-proxya show
+xray-proxya show --guest john-doe
+xray-proxya outbound test hk-node
+xray-proxya outbound info hk-node
+xray-proxya outbound probe-local hk-node -4
+```
+
 ## CLI Reference
 
 - `guests`: Manage multi-tenant users, quotas, and dedicated outbounds.
@@ -95,5 +119,3 @@ Notes:
 - `status`: Real-time traffic stats and process monitoring.
 - `apply / undo`: Commit or discard staging changes with automatic validation.
 - `completion install`: Setup shell autocompletion.
-
-Built with ❤️ by the Xray-Proxya team.
