@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/presets"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -23,6 +24,11 @@ var applyCmd = &cobra.Command{
 			return
 		}
 
+		if err := presets.RegenerateMarkedModes(cfg); err != nil {
+			fmt.Printf("❌ Failed to regenerate preset secrets: %v\n", err)
+			return
+		}
+
 		if !forceApply {
 			fmt.Println("🔍 Stage 1: Static Validation...")
 			jsonData, _ := xray.GenerateXrayJSON(cfg, nil, "")
@@ -36,7 +42,7 @@ var applyCmd = &cobra.Command{
 			testSocksPort, _ := xray.GetFreePort()
 			apiPort, _ := xray.GetFreePort()
 			dnsPort, _ := xray.GetFreePort()
-			
+
 			// For all preset modes, if they conflict with main service, we use random ports for the TEST
 			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
 			for _, m := range cfg.ActiveModes {
@@ -47,7 +53,7 @@ var applyCmd = &cobra.Command{
 			}
 
 			testJson, _ := xray.GenerateXrayJSON(cfg, overrides, "")
-			
+
 			_, cleanup, err := xray.StartXrayTemp(testJson)
 			if err != nil {
 				fmt.Printf("❌ Runtime isolation test failed: %v\n", err)
