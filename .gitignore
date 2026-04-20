@@ -15,10 +15,11 @@ chromium.log
 # Local documentation
 *.md
 !README.md
-!SERVER_GUIDE_ZH.md
-!KERNEL_TUNING_ZH.md
 GEMINI.md
 NETWORK_VERIFICATION.md
 TransparentProxy.md
 WIKI_ZH.md
 v0.2.0.txt
+
+# Local tool state
+.codex/
