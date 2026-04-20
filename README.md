@@ -12,7 +12,8 @@ Xray-Proxya is a professional, Go-based proxy management tool and transparent ga
 - **Advanced Networking**:
   - **Physical Interface Binding**: Bind the `freedom` protocol to specific local interfaces (e.g., WireGuard, ProtonVPN) for policy-based routing.
   - **Internal Proxies**: Instantly create private, unauthenticated Socks/HTTP ports for any outbound node.
-  - **Dual-Stack Gateway**: Automatic IPv4/IPv6 forwarding and TProxy/TUN support with `nftables` (and `iptables` fallback).
+  - **Dual-Stack Gateway**: Automatic IPv4/IPv6 forwarding and TUN-based transparent gateway management with `nftables`.
+  - **Kernel Tuning Profiles**: Apply temporary root-only `sysctl` presets for `gateway`, `relay`, and `server` roles with runtime rollback support.
 - **Security & Stealth**:
   - **VLESS-Reality-XHTTP**: State-of-the-art stealth with randomized international SNIs.
   - **VLESS-XHTTP-KEM768**: Post-quantum security ready.
@@ -63,12 +64,34 @@ xray-proxya guests set john-doe --outbound hk-node
 xray-proxya apply
 ```
 
+### 4. Temporary Kernel Tuning
+```bash
+# Inspect available tuning profiles
+sudo xray-proxya tune profiles
+
+# Preview the relay profile before applying it
+sudo xray-proxya tune diff relay
+
+# Apply temporary runtime-only sysctl tuning
+sudo xray-proxya tune apply relay
+
+# Verify or rollback the session later
+sudo xray-proxya tune verify relay
+sudo xray-proxya tune rollback
+```
+
+Notes:
+- `tune` is root-only by design.
+- Tuning is runtime-only and does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`.
+- Unsupported keys are reported and skipped rather than forcing legacy compatibility behavior.
+
 ## CLI Reference
 
 - `guests`: Manage multi-tenant users, quotas, and dedicated outbounds.
 - `presets`: Manage pre-defined inbound protocols (Reality, Vision, KEM, etc.).
 - `outbound`: Manage relay nodes, **physical interface bindings**, and **internal proxies**.
 - `gateway`: Configure transparent proxy settings, dual-stack forwarding, and blacklists.
+- `tune`: Apply and rollback temporary kernel tuning profiles for gateway, relay, and server roles.
 - `status`: Real-time traffic stats and process monitoring.
 - `apply / undo`: Commit or discard staging changes with automatic validation.
 - `completion install`: Setup shell autocompletion.

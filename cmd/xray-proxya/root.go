@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	Version       = "0.2.4"
+	Version       = "0.2.5"
 	shellOverride string
 	setupDeps     bool
 )
@@ -37,7 +37,7 @@ var completionCmd = &cobra.Command{
 	Use:   "completion",
 	Short: "Generate or install shell completion scripts",
 	Long: `Generate completion scripts for bash, zsh, or fish,
-or install/remove completion integration in your shell profile.`,
+or install/remove shell integration under the current user's home directory.`,
 	Args: cobra.NoArgs,
 }
 
@@ -70,7 +70,7 @@ var compFishCmd = &cobra.Command{
 
 var compInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Install completion scripts and full environment to user directory",
+	Short: "Install completion files and optional shell profile integration",
 	Run: func(cmd *cobra.Command, args []string) {
 		handleCompletion(true, setupDeps)
 	},
@@ -78,7 +78,7 @@ var compInstallCmd = &cobra.Command{
 
 var compUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Remove completion scripts and private environment",
+	Short: "Remove installed completion files and optional shell integration",
 	Run: func(cmd *cobra.Command, args []string) {
 		handleCompletion(false, setupDeps)
 	},

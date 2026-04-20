@@ -103,7 +103,7 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetOff, "off", false, "Disable this mode")
 	presetsSetCmd.Flags().BoolVar(&presetOn, "on", false, "Enable this mode")
 	presetsSetCmd.Flags().IntVarP(&presetPort, "port", "p", 0, "Set specific port")
-	presetsSetCmd.Flags().BoolVar(&presetRegen, "regen", false, "Regenerate keys/paths for this mode")
+	presetsSetCmd.Flags().BoolVarP(&presetRegen, "regen", "r", false, "Regenerate secrets/paths for this mode on apply")
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}
