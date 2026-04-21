@@ -75,9 +75,9 @@ func tickStats(apiPort int) tea.Cmd {
 
 		var direct, relay int64
 		for name, val := range allStats {
-			if strings.Contains(name, "direct") {
+			if strings.HasPrefix(name, "outbound>>>direct>>>") {
 				direct += val
-			} else if strings.Contains(name, "outbound") && !strings.Contains(name, "direct") && !strings.Contains(name, "blocked") {
+			} else if strings.HasPrefix(name, "outbound>>>outbound-") && !strings.Contains(name, ">>>blocked>>>") {
 				relay += val
 			}
 		}
@@ -116,8 +116,7 @@ func runRelayTest(cfg *config.UserConfig, co config.CustomOutbound) tea.Cmd {
 		res := relayTestMsg{alias: co.Alias, latency: "FAIL", udp: "FAIL", dns: "FAIL", ip: "Unknown", country: "XX"}
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
-		dnsPort, _ := xray.GetFreePort()
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
 		jsonData, err := xray.GenerateXrayJSON(cfg, overrides, co.Alias)
 		if err != nil {
 			return res

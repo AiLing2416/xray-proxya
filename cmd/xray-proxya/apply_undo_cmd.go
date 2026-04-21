@@ -41,10 +41,9 @@ var applyCmd = &cobra.Command{
 			fmt.Println("🔍 Stage 2: Runtime Isolation Test...")
 			testSocksPort, _ := xray.GetFreePort()
 			apiPort, _ := xray.GetFreePort()
-			dnsPort, _ := xray.GetFreePort()
 
 			// For all preset modes, if they conflict with main service, we use random ports for the TEST
-			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
 			for _, m := range cfg.ActiveModes {
 				if m.Enabled {
 					p, _ := xray.GetFreePort()
