@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"xray-proxya/internal/config"
 
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ var presetsCmd = &cobra.Command{
 }
 
 func supportsSkin(m config.PresetMode) bool {
-	return m == config.ModeVLESSVision || m == config.ModeVLESSReality || m == config.ModeVLESSXHTTP
+	return m == config.ModeVLESSVision || m == config.ModeVLESSReality
 }
 
 var presetsListCmd = &cobra.Command{
@@ -64,7 +65,32 @@ var presetsListCmd = &cobra.Command{
 var presetsSetCmd = &cobra.Command{
 	Use:   "set [id]",
 	Short: "Configure a specific preset slot (STAGING)",
-	Args:  cobra.ExactArgs(1),
+	Long: strings.TrimSpace(`
+Configure or toggle features for a specific preset slot in the STAGING config.
+
+You can enable/disable modes, change ports, and toggle the Smart Mirroring 
+camouflage (Skin) for supported Reality/Vision protocols.
+
+Smart Mirroring (Skin) highlights:
+  - Proxies requests normally for authenticated users.
+  - Redirects probes (access via IP) to a local camouflage server.
+  - Returns target site's real error page for IP probes (e.g. 403/Invalid URL).
+  - Returns target site's home page for SNI probes (Mirroring).
+`),
+	Example: strings.TrimSpace(`
+  # Enable slot 1 and set port to 443
+  xray-proxya presets set 1 --on --port 443
+
+  # Enable web camouflage (Skin) for slot 1
+  xray-proxya presets set 1 --skin
+
+  # Manually override the camouflage target site
+  xray-proxya presets set 1 --sni www.intel.com --dest www.intel.com:443
+
+  # Reset/Regenerate secrets for slot 2
+  xray-proxya presets set 2 --regen
+`),
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		id, _ := strconv.Atoi(args[0])
 		cfg, _ := config.LoadConfigEx(true)
@@ -93,7 +119,7 @@ var presetsSetCmd = &cobra.Command{
 		}
 		if presetSkin {
 			if !supportsSkin(m.Mode) {
-				fmt.Printf("❌ Error: Mode [%s] does not support web camouflage (requires VLESS Reality/Vision/XHTTP).\n", m.Mode)
+				fmt.Printf("❌ Error: Mode [%s] does not support web camouflage (requires VLESS Reality or Vision).\n", m.Mode)
 				return
 			}
 			m.Skin = true
@@ -146,9 +172,15 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Disable web camouflage")
 	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set SNI (e.g., www.intel.com)")
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Manually set Destination (e.g., www.intel.com:443)")
+	
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}
+
+	// Add completion for --sni from our domain pool
+	presetsSetCmd.RegisterFlagCompletionFunc("sni", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
+	})
 
 	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd)
 	rootCmd.AddCommand(presetsCmd)
