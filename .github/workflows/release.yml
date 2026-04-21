@@ -9,14 +9,9 @@ permissions:
   contents: write
 
 jobs:
-  build:
-    name: Build Binaries
+  release:
+    name: Build and Create Release
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux]
-        goarch: [amd64, arm64]
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -26,32 +21,22 @@ jobs:
         with:
           go-version: '1.25'
 
-      - name: Build
+      - name: Build amd64
         run: |
-          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
-          go build -ldflags "-s -w" -o xray-proxya-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/xray-proxya/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          go build -ldflags "-s -w" -o xray-proxya-linux-amd64 ./cmd/xray-proxya/
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: xray-proxya-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: xray-proxya-${{ matrix.goos }}-${{ matrix.goarch }}
-
-  release:
-    name: Create Release
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
+      - name: Build arm64
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+          go build -ldflags "-s -w" -o xray-proxya-linux-arm64 ./cmd/xray-proxya/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/xray-proxya-*
+          files: |
+            xray-proxya-linux-amd64
+            xray-proxya-linux-arm64
           generate_release_notes: true
           draft: false
           prerelease: false
