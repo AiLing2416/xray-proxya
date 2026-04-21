@@ -1,6 +1,6 @@
-# Xray-Proxya 开发与安全准则 (v0.2.8)
+# Xray-Proxya 开发与安全准则 (v0.2.9)
 
-本项目已完成核心功能加固，当前版本为 v0.2.8。所有开发必须遵循以下准则。
+本项目已完成核心功能加固，当前版本为 v0.2.9。所有开发必须遵循以下准则。
 
 ## 1. 核心开发原则 (Core Mandates)
 
@@ -82,4 +82,4 @@
     *   不得将“本地已 commit/push”视为“发布已经完成”。
 
 ---
-*GEMINI.md v0.2.8 (Synced with CODEX v0.2.8, DNS/UDP hijacking fixed)*
+*GEMINI.md v0.2.9 (Synced with CODEX v0.2.9, Smart Mirroring added)*

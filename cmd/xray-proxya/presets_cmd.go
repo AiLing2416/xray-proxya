@@ -9,15 +9,23 @@ import (
 )
 
 var (
-	presetOff   bool
-	presetOn    bool
-	presetPort  int
-	presetRegen bool
+	presetOff     bool
+	presetOn      bool
+	presetPort    int
+	presetRegen   bool
+	presetSkin    bool
+	presetUnskin  bool
+	presetSNI     string
+	presetDest    string
 )
 
 var presetsCmd = &cobra.Command{
 	Use:   "presets",
 	Short: "Manage preset inbound slots (STAGING)",
+}
+
+func supportsSkin(m config.PresetMode) bool {
+	return m == config.ModeVLESSVision || m == config.ModeVLESSReality || m == config.ModeVLESSXHTTP
 }
 
 var presetsListCmd = &cobra.Command{
@@ -29,18 +37,25 @@ var presetsListCmd = &cobra.Command{
 			return
 		}
 
-		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-s\n", "ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI/PATH")
-		fmt.Println("-----------------------------------------------------------------------------------------")
+		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-6s | %-s\n", "ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SKIN", "SNI/PATH")
+		fmt.Println("------------------------------------------------------------------------------------------------")
 		for i, mode := range cfg.ActiveModes {
 			status := "OFF"
 			if mode.Enabled {
 				status = "ON"
 			}
+			skin := "n/A"
+			if supportsSkin(mode.Mode) {
+				skin = "OFF"
+				if mode.Skin {
+					skin = "ON"
+				}
+			}
 			extra := mode.SNI
 			if mode.Path != "" {
 				extra = mode.Path
 			}
-			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-s\n", i+1, mode.Mode, status, mode.Port, extra)
+			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-6s | %-s\n", i+1, mode.Mode, status, mode.Port, skin, extra)
 		}
 		fmt.Println()
 	},
@@ -76,13 +91,36 @@ var presetsSetCmd = &cobra.Command{
 		if presetRegen {
 			m.RegenFlag = true
 		}
+		if presetSkin {
+			if !supportsSkin(m.Mode) {
+				fmt.Printf("❌ Error: Mode [%s] does not support web camouflage (requires VLESS Reality/Vision/XHTTP).\n", m.Mode)
+				return
+			}
+			m.Skin = true
+		}
+		if presetUnskin {
+			m.Skin = false
+		}
+		if presetSNI != "" {
+			m.SNI = presetSNI
+		}
+		if presetDest != "" {
+			m.Dest = presetDest
+		}
 
 		cfg.SaveEx(true)
 		status := "OFF"
 		if m.Enabled {
 			status = "ON"
 		}
-		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d (STAGING)\n", m.Mode, status, m.Port)
+		skinStatus := "n/A"
+		if supportsSkin(m.Mode) {
+			skinStatus = "DISABLED"
+			if m.Skin {
+				skinStatus = "ENABLED"
+			}
+		}
+		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, Skin: %s (STAGING)\n", m.Mode, status, m.Port, skinStatus)
 		fmt.Println("🚀 Run 'apply' to commit changes.")
 	},
 }
@@ -104,6 +142,10 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetOn, "on", false, "Enable this mode")
 	presetsSetCmd.Flags().IntVarP(&presetPort, "port", "p", 0, "Set specific port")
 	presetsSetCmd.Flags().BoolVarP(&presetRegen, "regen", "r", false, "Regenerate secrets/paths for this mode on apply")
+	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Enable web camouflage (mirroring)")
+	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Disable web camouflage")
+	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set SNI (e.g., www.intel.com)")
+	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Manually set Destination (e.g., www.intel.com:443)")
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}

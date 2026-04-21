@@ -103,6 +103,7 @@ type ModeInfo struct {
 	Dest      string     `json:"dest,omitempty"`
 	Path      string     `json:"path,omitempty"`
 	Settings  Settings   `json:"settings"`
+	Skin      bool       `json:"skin,omitempty"`
 	RegenFlag bool       `json:"regen_flag,omitempty"`
 }
 
