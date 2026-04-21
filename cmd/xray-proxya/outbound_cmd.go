@@ -245,6 +245,90 @@ func outboundDNSSummary(co config.CustomOutbound, fallback string) string {
 	return trimText(fallback+" "+strings.Join(co.DNSServers, ","), 48)
 }
 
+func normalizeDNSFlags(strategy string, servers []string, reset bool) (string, []string, error) {
+	if reset {
+		if strings.TrimSpace(strategy) != "" || len(servers) > 0 {
+			return "", nil, fmt.Errorf("--reset cannot be combined with --strategy or --servers")
+		}
+		return "", nil, nil
+	}
+
+	normalizedServers := make([]string, 0, len(servers))
+	seen := make(map[string]struct{}, len(servers))
+	for _, server := range servers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		if _, ok := seen[server]; ok {
+			continue
+		}
+		seen[server] = struct{}{}
+		normalizedServers = append(normalizedServers, server)
+	}
+
+	strategy = strings.TrimSpace(strategy)
+	if strategy == "" {
+		return "", normalizedServers, nil
+	}
+
+	normalizedStrategy, ok := xray.NormalizeDNSQueryStrategy(strategy)
+	if !ok {
+		return "", nil, fmt.Errorf("unsupported strategy %q (allowed: UseIP, UseIPv4, UseIPv6)", strategy)
+	}
+	return normalizedStrategy, normalizedServers, nil
+}
+
+func waitForLocalTCPPort(address string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", address, 300*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return nil
+		}
+		lastErr = err
+		time.Sleep(150 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("timed out waiting for %s", address)
+	}
+	return lastErr
+}
+
+func resolveDNSWithRetry(serverAddr string, domain string, qtype uint16, attempts int) ([]string, time.Duration, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastAnswers []string
+	var lastDuration time.Duration
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		answers, duration, err := xray.ResolveDNSTCP(serverAddr, domain, qtype)
+		lastAnswers, lastDuration, lastErr = answers, duration, err
+		if err == nil {
+			return answers, duration, nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return lastAnswers, lastDuration, lastErr
+}
+
+func applyDNSConfigUpdate(co *config.CustomOutbound, strategy string, servers []string, reset bool) {
+	if reset {
+		co.DNSStrategy = ""
+		co.DNSServers = nil
+		return
+	}
+	if strategy != "" {
+		co.DNSStrategy = strategy
+	}
+	if len(servers) > 0 {
+		co.DNSServers = servers
+	}
+}
+
 func getMapSlice(m map[string]interface{}, key string) []map[string]interface{} {
 	raw, ok := m[key].([]interface{})
 	if !ok {
@@ -408,14 +492,13 @@ var infoOutboundCmd = &cobra.Command{
 		}
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
-		dnsPort, _ := xray.GetFreePort()
 
 		testCfg := *cfg
 		testCfg.Role = config.RoleServer
 		testCfg.Gateway = config.GatewayConfig{}
 
 		// v0.2.4: Randomize all active presets to avoid "device busy" during info test
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
 		for _, m := range testCfg.ActiveModes {
 			if m.Enabled {
 				p, _ := xray.GetFreePort()
@@ -673,6 +756,109 @@ var probeLocalOutboundCmd = &cobra.Command{
 	},
 }
 
+var resolveOutboundCmd = &cobra.Command{
+	Use:   "resolve [alias] [domain]",
+	Short: "Resolve a domain through a relay's DNS path",
+	Long: strings.TrimSpace(`
+Start a temporary Xray instance with the selected relay and send explicit DNS
+queries through that relay's configured DNS path.
+
+This is useful for verifying per-relay DNS overrides from 'outbound set-dns'
+without changing the running service.
+`),
+	Example: strings.TrimSpace(`
+  xray-proxya outbound resolve test1 openai.com
+  xray-proxya outbound resolve via-a-test1 example.org
+`),
+	Args: cobra.ExactArgs(2),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+		}
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		alias, domain := args[0], args[1]
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
+
+		found := false
+		for _, co := range cfg.CustomOutbounds {
+			if co.Alias == alias {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("❌ Relay '%s' not found.\n", alias)
+			return
+		}
+
+		bin := xray.GetXrayBinaryPath()
+		if _, err := os.Stat(bin); os.IsNotExist(err) {
+			fmt.Println("⬇️ Xray core missing, downloading for test...")
+			if err := xray.DownloadXray(); err != nil {
+				fmt.Printf("❌ Failed to download Xray: %v\n", err)
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		testCfg := *cfg
+		testCfg.Role = config.RoleServer
+		testCfg.Gateway = config.GatewayConfig{}
+
+		testSocksPort, _ := xray.GetFreePort()
+		apiPort, _ := xray.GetFreePort()
+		dnsPort, _ := xray.GetFreePort()
+		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+		for _, m := range testCfg.ActiveModes {
+			if m.Enabled {
+				p, _ := xray.GetFreePort()
+				overrides[string(m.Mode)] = p
+			}
+		}
+
+		jsonData, err := xray.GenerateXrayJSON(&testCfg, overrides, alias)
+		if err != nil {
+			fmt.Printf("❌ Error: %v\n", err)
+			return
+		}
+		_, cleanup, err := xray.StartXrayTemp(jsonData)
+		if err != nil {
+			fmt.Printf("❌ Error: %v\n", err)
+			return
+		}
+		defer cleanup()
+
+		serverAddr := fmt.Sprintf("127.0.0.1:%d", dnsPort)
+		if err := waitForLocalTCPPort(serverAddr, 5*time.Second); err != nil {
+			fmt.Printf("❌ DNS test listener did not become ready: %v\n", err)
+			return
+		}
+		for _, queryType := range []struct {
+			label string
+			value uint16
+		}{
+			{label: "A", value: xray.DNSTypeA},
+			{label: "AAAA", value: xray.DNSTypeAAAA},
+		} {
+			answers, duration, err := resolveDNSWithRetry(serverAddr, domain, queryType.value, 3)
+			if err != nil {
+				fmt.Printf("%s  %s  ❌ %v\n", alias, queryType.label, err)
+				continue
+			}
+			if len(answers) == 0 {
+				fmt.Printf("%s  %s  ⚠️ no records (%dms)\n", alias, queryType.label, duration.Milliseconds())
+				continue
+			}
+			fmt.Printf("%s  %s  %s  (%dms)\n", alias, queryType.label, strings.Join(answers, ", "), duration.Milliseconds())
+		}
+	},
+}
+
 func probeBoundProxy(proxyURL string) map[string]string {
 	results := map[string]string{"IPv4": "N/A", "IPv6": "N/A"}
 	transport := &http.Transport{Proxy: func(req *http.Request) (*url.URL, error) { return url.Parse(proxyURL) }}
@@ -803,7 +989,20 @@ var bindInterfaceCmd = &cobra.Command{
 var setDNSRelayCmd = &cobra.Command{
 	Use:   "set-dns [alias]",
 	Short: "Configure DNS strategy for a relay (STAGING)",
-	Args:  cobra.ExactArgs(1),
+	Long: strings.TrimSpace(`
+Override the DNS behavior of a specific relay in the staging config.
+
+You can set a DNS query strategy, provide dedicated upstream DNS servers, or
+clear the relay-specific override with --reset. After reset, the relay falls
+back to the global default DNS behavior generated from the active config.
+`),
+	Example: strings.TrimSpace(`
+  xray-proxya outbound set-dns test1 --strategy UseIPv4
+  xray-proxya outbound set-dns test1 --servers 1.1.1.1,8.8.8.8
+  xray-proxya outbound set-dns test1 --strategy UseIP --servers https://dns.google/dns-query
+  xray-proxya outbound set-dns test1 --reset
+`),
+	Args: cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 	},
@@ -811,20 +1010,25 @@ var setDNSRelayCmd = &cobra.Command{
 		alias := args[0]
 		strategy, _ := cmd.Flags().GetString("strategy")
 		servers, _ := cmd.Flags().GetStringSlice("servers")
+		reset, _ := cmd.Flags().GetBool("reset")
+		normalizedStrategy, normalizedServers, err := normalizeDNSFlags(strategy, servers, reset)
+		if err != nil {
+			fmt.Printf("❌ Error: %v\n", err)
+			return
+		}
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
 			return
 		}
 		for i, co := range cfg.CustomOutbounds {
 			if co.Alias == alias {
-				if strategy != "" {
-					cfg.CustomOutbounds[i].DNSStrategy = strategy
-				}
-				if len(servers) > 0 {
-					cfg.CustomOutbounds[i].DNSServers = servers
-				}
+				applyDNSConfigUpdate(&cfg.CustomOutbounds[i], normalizedStrategy, normalizedServers, reset)
 				if err := cfg.SaveEx(true); err == nil {
-					fmt.Printf("✅ DNS strategy updated for '%s'.\n", alias)
+					if reset {
+						fmt.Printf("✅ DNS config reset for '%s'.\n", alias)
+					} else {
+						fmt.Printf("✅ DNS config updated for '%s'.\n", alias)
+					}
 					fmt.Println("🚀 Run 'apply' to commit changes.")
 				}
 				return
@@ -878,14 +1082,13 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResu
 	results := ProbeResult{TCP: "FAIL", UDP: "FAIL", DNS: "FAIL", IPv4: "N/A", IPv6: "N/A"}
 	testSocksPort, _ := xray.GetFreePort()
 	apiPort, _ := xray.GetFreePort()
-	dnsPort, _ := xray.GetFreePort()
 
 	testCfg := *cfg
 	testCfg.Role = config.RoleServer
 	testCfg.Gateway = config.GatewayConfig{}
 
 	// v0.2.4: Fully randomized overrides for test instance
-	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
+	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
 	for _, m := range testCfg.ActiveModes {
 		if m.Enabled {
 			p, _ := xray.GetFreePort()
@@ -962,8 +1165,9 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResu
 
 func init() {
 	bindInterfaceCmd.Flags().StringP("addr", "a", "", "Specific IP address to bind")
-	setDNSRelayCmd.Flags().StringP("strategy", "s", "", "Strategy: follow, direct, manual")
-	setDNSRelayCmd.Flags().StringSliceP("servers", "v", []string{}, "Manual DNS Servers")
+	setDNSRelayCmd.Flags().StringP("strategy", "s", "", "DNS query strategy: UseIP, UseIPv4, or UseIPv6")
+	setDNSRelayCmd.Flags().StringSliceP("servers", "v", []string{}, "DNS servers for this relay, e.g. https://dns.google/dns-query or 1.1.1.1")
+	setDNSRelayCmd.Flags().BoolP("reset", "r", false, "Clear relay-specific DNS overrides and return to the default DNS config")
 	setInternalProxyCmd.Flags().IntP("port", "p", 0, "Base port (0 for random)")
 	testOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	testOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
@@ -992,8 +1196,8 @@ func init() {
 		}
 	}
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"follow", "direct", "manual"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
-	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd)
+	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -76,7 +77,6 @@ var runCmd = &cobra.Command{
 
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600)
-		defer os.Remove(pidPath)
 
 		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
 			time.Sleep(1 * time.Second)
@@ -84,16 +84,40 @@ var runCmd = &cobra.Command{
 			gateway.SyncFirewall(cfg)
 		}
 
-		// Handle signals
+		cleanup := func() {
+			os.Remove(pidPath)
+			if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
+				gateway.CleanupFirewall()
+			}
+		}
+
+		waitCh := make(chan error, 1)
+		go func() {
+			waitCh <- process.Wait()
+		}()
+
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
+		defer signal.Stop(sigChan)
 
-		fmt.Println("\n🛑 Stopping Xray...")
-		process.Process.Signal(syscall.SIGTERM)
-		
-		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
-			gateway.CleanupFirewall()
+		select {
+		case sig := <-sigChan:
+			fmt.Printf("\n🛑 Stopping Xray (%s)...\n", sig)
+			process.Process.Signal(syscall.SIGTERM)
+			<-waitCh
+			cleanup()
+		case err := <-waitCh:
+			cleanup()
+			if err != nil {
+				fmt.Printf("\n❌ Xray core exited unexpectedly: %v\n", err)
+				if exitErr, ok := err.(*exec.ExitError); ok {
+					if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+						os.Exit(status.ExitStatus())
+					}
+				}
+				os.Exit(1)
+			}
+			fmt.Println("\nℹ️ Xray core exited normally.")
 		}
 	},
 }

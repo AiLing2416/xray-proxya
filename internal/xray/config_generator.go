@@ -2,9 +2,197 @@ package xray
 
 import (
 	"encoding/json"
+	"net"
+	"net/url"
 	"strings"
 	"xray-proxya/internal/config"
 )
+
+const DefaultDNSQueryStrategy = "UseIP"
+
+var validDNSQueryStrategies = map[string]string{
+	"useip":   "UseIP",
+	"useipv4": "UseIPv4",
+	"useipv6": "UseIPv6",
+}
+
+func NormalizeDNSQueryStrategy(value string) (string, bool) {
+	normalized, ok := validDNSQueryStrategies[strings.ToLower(strings.TrimSpace(value))]
+	return normalized, ok
+}
+
+func normalizeDNSServers(servers []string) []string {
+	if len(servers) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(servers))
+	normalized := make([]string, 0, len(servers))
+	for _, server := range servers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		if _, ok := seen[server]; ok {
+			continue
+		}
+		seen[server] = struct{}{}
+		normalized = append(normalized, server)
+	}
+	return normalized
+}
+
+func defaultDNSServers(isGateway bool) []interface{} {
+	servers := []interface{}{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
+	if !isGateway {
+		servers = append(servers, "localhost")
+	}
+	return servers
+}
+
+func findOutboundByAlias(userCfg *config.UserConfig, alias string) *config.CustomOutbound {
+	for i := range userCfg.CustomOutbounds {
+		if userCfg.CustomOutbounds[i].Alias == alias {
+			return &userCfg.CustomOutbounds[i]
+		}
+	}
+	return nil
+}
+
+func selectDNSOutboundAlias(relayAlias string, testTarget string) string {
+	switch {
+	case testTarget != "":
+		return testTarget
+	case relayAlias != "":
+		return relayAlias
+	default:
+		return ""
+	}
+}
+
+func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget string, isGateway bool) (string, string, []string) {
+	selectedAlias := selectDNSOutboundAlias(relayAlias, testTarget)
+	strategy := DefaultDNSQueryStrategy
+	servers := make([]string, 0, len(defaultDNSServers(isGateway)))
+	for _, server := range defaultDNSServers(isGateway) {
+		if text, ok := server.(string); ok {
+			servers = append(servers, text)
+		}
+	}
+
+	if selectedAlias != "" {
+		if co := findOutboundByAlias(userCfg, selectedAlias); co != nil {
+			if normalized, ok := NormalizeDNSQueryStrategy(co.DNSStrategy); ok {
+				strategy = normalized
+			}
+			if customServers := normalizeDNSServers(co.DNSServers); len(customServers) > 0 {
+				servers = customServers
+			}
+		}
+	}
+
+	return selectedAlias, strategy, servers
+}
+
+func buildDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget string, isGateway bool) map[string]interface{} {
+	_, strategy, serverStrings := resolveDNSConfig(userCfg, relayAlias, testTarget, isGateway)
+	servers := make([]interface{}, 0, len(serverStrings))
+	for _, server := range serverStrings {
+		servers = append(servers, server)
+	}
+
+	return map[string]interface{}{
+		"hosts": map[string]interface{}{
+			"dns.google":         "8.8.8.8",
+			"cloudflare-dns.com": "1.1.1.1",
+		},
+		"servers":       servers,
+		"tag":           "dns-internal",
+		"queryStrategy": strategy,
+	}
+}
+
+func dnsRoutingTargets(servers []string) ([]string, []string) {
+	domains := make([]string, 0, len(servers))
+	ips := make([]string, 0, len(servers))
+	seenDomains := make(map[string]struct{}, len(servers))
+	seenIPs := make(map[string]struct{}, len(servers))
+
+	for _, server := range servers {
+		server = strings.TrimSpace(server)
+		if server == "" {
+			continue
+		}
+		host := server
+		if strings.Contains(server, "://") {
+			u, err := url.Parse(server)
+			if err != nil {
+				continue
+			}
+			host = u.Hostname()
+		} else if parsedHost, parsedPort, err := net.SplitHostPort(server); err == nil && parsedHost != "" && parsedPort != "" {
+			host = parsedHost
+		}
+
+		host = strings.Trim(host, "[]")
+		if host == "" || strings.EqualFold(host, "localhost") {
+			continue
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			normalizedIP := ip.String()
+			if _, ok := seenIPs[normalizedIP]; ok {
+				continue
+			}
+			seenIPs[normalizedIP] = struct{}{}
+			ips = append(ips, normalizedIP)
+			continue
+		}
+		if _, ok := seenDomains[host]; ok {
+			continue
+		}
+		seenDomains[host] = struct{}{}
+		domains = append(domains, host)
+	}
+
+	return domains, ips
+}
+
+func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []interface{} {
+	if selectedAlias == "" {
+		return nil
+	}
+	domains, ips := dnsRoutingTargets(servers)
+	rules := make([]interface{}, 0, 2)
+	outboundTag := "outbound-" + selectedAlias
+	if len(domains) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"domain":      domains,
+			"outboundTag": outboundTag,
+		})
+	}
+	if len(ips) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"ip":          ips,
+			"outboundTag": outboundTag,
+		})
+	}
+	return rules
+}
+
+func buildDNSInbound(port int) map[string]interface{} {
+	return map[string]interface{}{
+		"tag":      "dns-in",
+		"port":     port,
+		"listen":   "127.0.0.1",
+		"protocol": "dokodemo-door",
+		"settings": map[string]interface{}{
+			"address": "8.8.8.8",
+			"port":    53,
+			"network": "tcp,udp",
+		},
+	}
+}
 
 func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, testTarget string) ([]byte, error) {
 	isGateway := userCfg.Role == config.RoleGateway
@@ -20,21 +208,15 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	xc["log"] = map[string]interface{}{"loglevel": "warning"}
 
 	// 1. DNS
-	dnsServers := []interface{}{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
-	if !isGateway {
-		dnsServers = append(dnsServers, "localhost")
-	}
-	xc["dns"] = map[string]interface{}{
-		"hosts": map[string]interface{}{
-			"dns.google":         "8.8.8.8",
-			"cloudflare-dns.com": "1.1.1.1",
-		},
-		"servers": dnsServers,
-		"tag":     "dns-internal", "queryStrategy": "UseIP",
-	}
+	xc["dns"] = buildDNSConfig(userCfg, relayAlias, testTarget, isGateway)
 	xc["policy"] = map[string]interface{}{
 		"levels": map[string]interface{}{"0": map[string]interface{}{"statsUserUplink": true, "statsUserDownlink": true}},
-		"system": map[string]interface{}{"statsInboundUplink": true, "statsInboundDownlink": true},
+		"system": map[string]interface{}{
+			"statsInboundUplink":    true,
+			"statsInboundDownlink":  true,
+			"statsOutboundUplink":   true,
+			"statsOutboundDownlink": true,
+		},
 	}
 
 	// 2. Port Selection
@@ -46,6 +228,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 	apiPort := getPort("api", userCfg.APIInbound)
 	testPort := getPort("test-socks", 10086)
+	dnsInPort := getPort("dns-in", 0)
 	relayInboundTags := map[string][]string{}
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
@@ -60,6 +243,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if apiPort > 0 {
 		xc["api"] = map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService"}}
 		inbounds = append(inbounds, map[string]interface{}{"tag": "api", "port": apiPort, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"}})
+	}
+	if dnsInPort > 0 {
+		inbounds = append(inbounds, buildDNSInbound(dnsInPort))
 	}
 	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}})
 	for _, co := range userCfg.CustomOutbounds {
@@ -185,14 +371,18 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	// 5. Routing
+	selectedDNSAlias, _, selectedDNSServers := resolveDNSConfig(userCfg, relayAlias, testTarget, isGateway)
 	rules := []interface{}{
 		map[string]interface{}{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
 	}
 	if testTarget != "" {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "outbound-" + testTarget})
 	}
+	if dnsInPort > 0 {
+		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"})
+	}
+	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
 	rules = append(rules,
-		map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"},
 		map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"},
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	)
