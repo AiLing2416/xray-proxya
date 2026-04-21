@@ -268,6 +268,42 @@ func TestGenerateXrayJSONOutboundSetDNSOverrides(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONCamouflageSkinning(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		ActiveModes: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "www.intel.com",
+				Dest:    "www.intel.com:443",
+				Skin:    true,
+			},
+		},
+	}
+
+	// 1. Verify dest is redirected to camouflage port
+	parsed := generateAndDecodeXrayConfigWithOverrides(t, cfg, map[string]int{"camouflage": 49152}, "")
+	inbounds := parsed["inbounds"].([]interface{})
+	
+	found := false
+	for _, rawIn := range inbounds {
+		in := rawIn.(map[string]interface{})
+		if in["tag"] == string(config.ModeVLESSVision) {
+			found = true
+			ss := in["streamSettings"].(map[string]interface{})
+			rs := ss["realitySettings"].(map[string]interface{})
+			if got := rs["dest"].(string); got != "127.0.0.1:49152" {
+				t.Fatalf("Vision dest = %q, want %q (camouflage)", got, "127.0.0.1:49152")
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("Vision inbound not found")
+	}
+}
+
 func generateAndDecodeXrayConfig(t *testing.T, cfg *config.UserConfig, testTarget string) map[string]interface{} {
 	t.Helper()
 

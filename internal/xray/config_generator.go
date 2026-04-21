@@ -2,6 +2,7 @@ package xray
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -226,6 +227,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	apiPort := getPort("api", userCfg.APIInbound)
 	testPort := getPort("test-socks", 10086)
 	dnsInPort := getPort("dns-in", 0)
+	camoPort := getPort("camouflage", 0) // Default 0 means no camo unless requested via override or dynamically in run
 	relayInboundTags := map[string][]string{}
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
@@ -262,6 +264,12 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 		mPort := getPort(string(m.Mode), m.Port)
 		in := map[string]interface{}{"tag": string(m.Mode), "port": mPort, "listen": "::", "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}}
+		
+		dest := m.Dest
+		if m.Skin && camoPort > 0 {
+			dest = fmt.Sprintf("127.0.0.1:%d", camoPort)
+		}
+
 		clients := []interface{}{map[string]interface{}{"id": userCfg.UUID, "email": "service-user"}}
 		for _, co := range userCfg.CustomOutbounds {
 			if !co.Enabled || co.UserUUID == "" {
@@ -285,14 +293,18 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				visionClients = append(visionClients, client)
 			}
 			in["settings"] = map[string]interface{}{"clients": visionClients, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
+			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSReality:
 			in["protocol"] = "vless"
 			in["settings"] = map[string]interface{}{"clients": clients, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": m.Dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
+			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSXHTTP:
 			in["protocol"] = "vless"
-			in["settings"] = map[string]interface{}{"clients": clients, "decryption": "none"}
+			settings := map[string]interface{}{"clients": clients, "decryption": "none"}
+			if dest != "" {
+				settings["fallbacks"] = []interface{}{map[string]interface{}{"dest": dest}}
+			}
+			in["settings"] = settings
 			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "xhttpSettings": map[string]interface{}{"path": m.Path}}
 		case config.ModeVMessWS:
 			in["protocol"] = "vmess"
