@@ -23,7 +23,7 @@ func TestGenerateXrayJSONUsesDefaultDNSConfig(t *testing.T) {
 	}
 
 	servers := getStringSlice(t, dns, "servers")
-	want := []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query", "localhost"}
+	want := []string{"fakedns", "https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
 	assertStringSliceEqual(t, servers, want)
 }
 
@@ -49,7 +49,7 @@ func TestGenerateXrayJSONUsesTestTargetDNSConfig(t *testing.T) {
 	}
 
 	servers := getStringSlice(t, dns, "servers")
-	want := []string{"1.1.1.1", "https://dns.google/dns-query"}
+	want := []string{"fakedns", "1.1.1.1", "https://dns.google/dns-query"}
 	assertStringSliceEqual(t, servers, want)
 }
 
@@ -78,7 +78,7 @@ func TestGenerateXrayJSONUsesGatewayRelayDNSConfig(t *testing.T) {
 	}
 
 	servers := getStringSlice(t, dns, "servers")
-	want := []string{"https://cloudflare-dns.com/dns-query"}
+	want := []string{"fakedns", "https://cloudflare-dns.com/dns-query"}
 	assertStringSliceEqual(t, servers, want)
 }
 
@@ -182,6 +182,92 @@ func TestGenerateXrayJSONRoutesDNSUpstreamsThroughSelectedOutbound(t *testing.T)
 	}
 }
 
+func TestGenerateXrayJSONRoutesDNSPacketsThroughDNSOutInServerMode(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:      "relay-a",
+				Enabled:    true,
+				Config:     map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "relay-a")
+	routing := getMap(t, parsed, "routing")
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		t.Fatalf("routing.rules has type %T, want []interface{}", routing["rules"])
+	}
+	if !containsPortRule(rules, "53", "dns-out") {
+		t.Fatalf("port 53 routing rule to dns-out not found")
+	}
+}
+
+func TestGenerateXrayJSONRoutesDNSPacketsThroughDNSOut(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:      "relay-a",
+				Enabled:    true,
+				Config:     map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	routing := getMap(t, parsed, "routing")
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		t.Fatalf("routing.rules has type %T, want []interface{}", routing["rules"])
+	}
+	// Currently it fails because it routes to outbound-relay-a instead of dns-out
+	if !containsPortRule(rules, "53", "dns-out") {
+		t.Fatalf("port 53 routing rule to dns-out not found")
+	}
+}
+
+func TestGenerateXrayJSONOutboundSetDNSOverrides(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:       "relay-a",
+				Enabled:     true,
+				DNSStrategy: "UseIPv6",
+				DNSServers:  []string{"8.8.4.4"},
+				Config:      map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+
+	// 1. Verify DNS servers and strategy are overridden
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	dns := getMap(t, parsed, "dns")
+	if got := getString(t, dns, "queryStrategy"); got != "UseIPv6" {
+		t.Fatalf("queryStrategy = %q, want %q", got, "UseIPv6")
+	}
+	servers := getStringSlice(t, dns, "servers")
+	// Should be fakedns + custom server
+	want := []string{"fakedns", "8.8.4.4"}
+	assertStringSliceEqual(t, servers, want)
+
+	// 2. Verify routing rules for custom DNS servers are added
+	routing := getMap(t, parsed, "routing")
+	rules, _ := routing["rules"].([]interface{})
+	if !containsIPRule(rules, "8.8.4.4", "outbound-relay-a") {
+		t.Fatalf("routing rule for custom DNS server 8.8.4.4 to outbound-relay-a not found")
+	}
+}
+
 func generateAndDecodeXrayConfig(t *testing.T, cfg *config.UserConfig, testTarget string) map[string]interface{} {
 	t.Helper()
 
@@ -250,6 +336,22 @@ func containsSliceRuleValue(rules []interface{}, key string, expected string, ou
 			if value, _ := rawValue.(string); value == expected {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func containsPortRule(rules []interface{}, port string, outboundTag string) bool {
+	for _, rawRule := range rules {
+		rule, ok := rawRule.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if rule["outboundTag"] != outboundTag {
+			continue
+		}
+		if rule["port"] == port {
+			return true
 		}
 	}
 	return false
