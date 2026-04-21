@@ -477,7 +477,7 @@ func fetchJSON(client *http.Client, url string, target interface{}) bool {
 	if err != nil {
 		return false
 	}
-	req.Header.Set("User-Agent", "xray-proxya/0.2.5")
+	req.Header.Set("User-Agent", "xray-proxya/0.2.6")
 	resp, err := client.Do(req)
 	if err != nil {
 		return false
@@ -494,7 +494,7 @@ func fetchText(client *http.Client, url string) string {
 	if err != nil {
 		return ""
 	}
-	req.Header.Set("User-Agent", "xray-proxya/0.2.5")
+	req.Header.Set("User-Agent", "xray-proxya/0.2.6")
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""
