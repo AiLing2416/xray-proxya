@@ -3,6 +3,7 @@ links.txt
 links
 proton-vpn.conf
 build/
+/xray-proxya
 *.zip
 *.log
 xray.pid
