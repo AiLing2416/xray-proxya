@@ -41,12 +41,8 @@ func normalizeDNSServers(servers []string) []string {
 	return normalized
 }
 
-func defaultDNSServers(isGateway bool) []interface{} {
-	servers := []interface{}{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
-	if !isGateway {
-		servers = append(servers, "localhost")
-	}
-	return servers
+func defaultDNSServers(_ bool) []interface{} {
+	return []interface{}{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
 }
 
 func findOutboundByAlias(userCfg *config.UserConfig, alias string) *config.CustomOutbound {
@@ -95,7 +91,8 @@ func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget 
 
 func buildDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget string, isGateway bool) map[string]interface{} {
 	_, strategy, serverStrings := resolveDNSConfig(userCfg, relayAlias, testTarget, isGateway)
-	servers := make([]interface{}, 0, len(serverStrings))
+	servers := make([]interface{}, 0, len(serverStrings)+1)
+	servers = append(servers, "fakedns")
 	for _, server := range serverStrings {
 		servers = append(servers, server)
 	}
@@ -319,7 +316,6 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			"sniffing": map[string]interface{}{
 				"enabled":      true,
 				"destOverride": []string{"http", "tls", "quic", "fakedns"},
-				"routeOnly":    true,
 			},
 		})
 	}
