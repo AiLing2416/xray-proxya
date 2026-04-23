@@ -18,14 +18,29 @@
 - Gateway：运行 `xray-proxya init --role gateway`，负责透明代理。
 - Client：局域网内测试机，把默认路由临时指向 Gateway。
 
+## 运行原则
+
+不要使用 `sudo xray-proxya ...` 这种跨用户调用方式。原因是 `sudo` 会切换用户、HOME、PATH 和配置目录，容易出现“普通用户安装，root 环境找不到二进制或读到另一份配置”的问题。
+
+推荐二选一：
+
+- 普通用户模式：以同一个普通用户安装和运行，只使用不需要系统网络权限的功能。
+- Root 模式：直接登录 root shell，或先执行 `su -` 进入 root 环境，再安装和运行 `xray-proxya`。透明网关需要修改 TUN、nftables、policy routing 和 sysctl，推荐使用 Root 模式。
+
+本文中的命令默认在正确用户的 shell 中直接执行。如果你采用 Root 模式，请先进入 root shell：
+
+```bash
+su -
+```
+
 ## 准备上游节点
 
 在上游服务器上初始化并启动服务：
 
 ```bash
-sudo xray-proxya init --role server
-sudo xray-proxya service install
-sudo xray-proxya service start
+xray-proxya init --role server
+xray-proxya service install
+xray-proxya service start
 ```
 
 导出分享链接：
@@ -41,7 +56,7 @@ xray-proxya show --address <server-ip> --all
 在网关机上：
 
 ```bash
-sudo xray-proxya init --role gateway
+xray-proxya init --role gateway
 ```
 
 确认默认出口接口：
@@ -61,9 +76,9 @@ default via 10.47.0.1 dev eth0 proto static
 ## 导入上游节点
 
 ```bash
-sudo xray-proxya outbound add remote-v029 "vless://..."
-sudo xray-proxya apply
-sudo xray-proxya outbound test remote-v029
+xray-proxya outbound add remote-v029 "vless://..."
+xray-proxya apply
+xray-proxya outbound test remote-v029
 ```
 
 期望看到：
@@ -81,9 +96,9 @@ DNS: OK
 设置透明上游和 LAN 接口：
 
 ```bash
-sudo xray-proxya gateway set --relay remote-v029 --lan eth0
-sudo xray-proxya gateway enable
-sudo xray-proxya apply
+xray-proxya gateway set --relay remote-v029 --lan eth0
+xray-proxya gateway enable
+xray-proxya apply
 ```
 
 `apply` 只提交 Xray 配置并重启服务，不再修改系统路由、防火墙或 sysctl。
@@ -91,8 +106,8 @@ sudo xray-proxya apply
 应用 gateway 运行态规则：
 
 ```bash
-sudo xray-proxya gateway up
-sudo xray-proxya gateway check
+xray-proxya gateway up
+xray-proxya gateway check
 ```
 
 `gateway up` 会执行：
@@ -107,12 +122,12 @@ sudo xray-proxya gateway check
 ## 检查状态
 
 ```bash
-sudo xray-proxya gateway status
-sudo xray-proxya gateway check
+xray-proxya gateway status
+xray-proxya gateway check
 ip addr show proxya-tun
 ip rule show
 ip route show table 100
-sudo nft list table inet xray_proxya
+nft list table inet xray_proxya
 ```
 
 正常情况下应看到：
@@ -143,7 +158,7 @@ cat /etc/resolv.conf
 当前版本的 `gateway up` 不会停止 `systemd-resolved`。如果系统之前被旧版本停止过，可以恢复：
 
 ```bash
-sudo systemctl start systemd-resolved
+systemctl start systemd-resolved
 ```
 
 也可以绕过 DNS 做连通性测试：
@@ -157,13 +172,13 @@ curl -4 --resolve api.ipify.org:80:104.26.12.205 http://api.ipify.org
 在 Client 上临时把默认网关改为 Gateway：
 
 ```bash
-sudo ip route replace default via <gateway-lan-ip> dev <client-lan-iface>
+ip route replace default via <gateway-lan-ip> dev <client-lan-iface>
 ```
 
 例如：
 
 ```bash
-sudo ip route replace default via 10.47.0.103 dev eth0
+ip route replace default via 10.47.0.103 dev eth0
 ```
 
 测试：
@@ -178,20 +193,20 @@ curl -4 https://api.ipify.org
 测试完成后恢复默认路由：
 
 ```bash
-sudo ip route replace default via <original-router-ip> dev <client-lan-iface>
+ip route replace default via <original-router-ip> dev <client-lan-iface>
 ```
 
 例如：
 
 ```bash
-sudo ip route replace default via 10.47.0.1 dev eth0
+ip route replace default via 10.47.0.1 dev eth0
 ```
 
 ## 关闭透明网关运行态
 
 ```bash
-sudo xray-proxya gateway down
-sudo xray-proxya gateway check
+xray-proxya gateway down
+xray-proxya gateway check
 ```
 
 `gateway down` 只清理 Xray-Proxya 管理的 nftables、policy routing 和 table 100，不停止 Xray 服务。
@@ -199,9 +214,9 @@ sudo xray-proxya gateway check
 如果要在配置层禁用 gateway：
 
 ```bash
-sudo xray-proxya gateway disable
-sudo xray-proxya apply
-sudo xray-proxya gateway down
+xray-proxya gateway disable
+xray-proxya apply
+xray-proxya gateway down
 ```
 
 ## 常见问题
@@ -222,7 +237,7 @@ journalctl -u xray-proxya --no-pager -n 80
 重新执行：
 
 ```bash
-sudo xray-proxya gateway up
+xray-proxya gateway up
 ```
 
 ### 上游可用，但透明代理超时
@@ -244,14 +259,14 @@ journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
 ## 命令速查
 
 ```bash
-sudo xray-proxya outbound add remote-v029 "vless://..."
-sudo xray-proxya outbound test remote-v029
+xray-proxya outbound add remote-v029 "vless://..."
+xray-proxya outbound test remote-v029
 
-sudo xray-proxya gateway set --relay remote-v029 --lan eth0
-sudo xray-proxya gateway enable
-sudo xray-proxya apply
-sudo xray-proxya gateway up
-sudo xray-proxya gateway check
+xray-proxya gateway set --relay remote-v029 --lan eth0
+xray-proxya gateway enable
+xray-proxya apply
+xray-proxya gateway up
+xray-proxya gateway check
 
-sudo xray-proxya gateway down
+xray-proxya gateway down
 ```

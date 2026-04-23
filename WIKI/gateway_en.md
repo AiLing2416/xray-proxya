@@ -18,14 +18,29 @@ A typical setup has two or three machines:
 - Gateway: runs `xray-proxya init --role gateway` and handles transparent proxying.
 - Client: a LAN test machine whose default route is temporarily pointed to the gateway.
 
+## Runtime Principle
+
+Do not run `sudo xray-proxya ...` across users. `sudo` changes the user, HOME, PATH, and config directory, which can easily produce a split setup where the binary was installed by one user but commands read another user's config.
+
+Use one of these models:
+
+- User mode: install and run as the same non-root user, and only use features that do not require system network privileges.
+- Root mode: log into a root shell directly, or run `su -` first, then install and run `xray-proxya` there. Transparent gateway needs TUN, nftables, policy routing, and sysctl access, so Root mode is recommended.
+
+Commands in this guide are meant to be run directly in the correct user's shell. If you use Root mode, enter a root shell first:
+
+```bash
+su -
+```
+
 ## Prepare An Upstream Node
 
 On the upstream server:
 
 ```bash
-sudo xray-proxya init --role server
-sudo xray-proxya service install
-sudo xray-proxya service start
+xray-proxya init --role server
+xray-proxya service install
+xray-proxya service start
 ```
 
 Export sharing links:
@@ -41,7 +56,7 @@ Use a link that passes connectivity tests, for example a Reality Vision TCP link
 On the gateway host:
 
 ```bash
-sudo xray-proxya init --role gateway
+xray-proxya init --role gateway
 ```
 
 Find the default egress interface:
@@ -61,9 +76,9 @@ Here the interface is `eth0`.
 ## Import The Upstream Node
 
 ```bash
-sudo xray-proxya outbound add remote-v029 "vless://..."
-sudo xray-proxya apply
-sudo xray-proxya outbound test remote-v029
+xray-proxya outbound add remote-v029 "vless://..."
+xray-proxya apply
+xray-proxya outbound test remote-v029
 ```
 
 Expected result:
@@ -81,9 +96,9 @@ If `outbound test` fails, fix the upstream first before enabling transparent gat
 Set the transparent upstream and LAN interface:
 
 ```bash
-sudo xray-proxya gateway set --relay remote-v029 --lan eth0
-sudo xray-proxya gateway enable
-sudo xray-proxya apply
+xray-proxya gateway set --relay remote-v029 --lan eth0
+xray-proxya gateway enable
+xray-proxya apply
 ```
 
 `apply` only commits Xray configuration and restarts the service. It no longer modifies system routing, firewall rules, or sysctl values.
@@ -91,8 +106,8 @@ sudo xray-proxya apply
 Bring runtime gateway rules up:
 
 ```bash
-sudo xray-proxya gateway up
-sudo xray-proxya gateway check
+xray-proxya gateway up
+xray-proxya gateway check
 ```
 
 `gateway up` does the following:
@@ -107,12 +122,12 @@ sudo xray-proxya gateway check
 ## Inspect Runtime State
 
 ```bash
-sudo xray-proxya gateway status
-sudo xray-proxya gateway check
+xray-proxya gateway status
+xray-proxya gateway check
 ip addr show proxya-tun
 ip rule show
 ip route show table 100
-sudo nft list table inet xray_proxya
+nft list table inet xray_proxya
 ```
 
 A healthy setup should show:
@@ -143,7 +158,7 @@ cat /etc/resolv.conf
 Current `gateway up` does not stop `systemd-resolved`. If an older version stopped it, restore it with:
 
 ```bash
-sudo systemctl start systemd-resolved
+systemctl start systemd-resolved
 ```
 
 You can also bypass DNS for a connectivity test:
@@ -157,13 +172,13 @@ curl -4 --resolve api.ipify.org:80:104.26.12.205 http://api.ipify.org
 On the client, temporarily point the default route to the gateway:
 
 ```bash
-sudo ip route replace default via <gateway-lan-ip> dev <client-lan-iface>
+ip route replace default via <gateway-lan-ip> dev <client-lan-iface>
 ```
 
 Example:
 
 ```bash
-sudo ip route replace default via 10.47.0.103 dev eth0
+ip route replace default via 10.47.0.103 dev eth0
 ```
 
 Test:
@@ -178,20 +193,20 @@ The returned IP should be the upstream server's egress IP.
 After testing, restore the original default route:
 
 ```bash
-sudo ip route replace default via <original-router-ip> dev <client-lan-iface>
+ip route replace default via <original-router-ip> dev <client-lan-iface>
 ```
 
 Example:
 
 ```bash
-sudo ip route replace default via 10.47.0.1 dev eth0
+ip route replace default via 10.47.0.1 dev eth0
 ```
 
 ## Bring Gateway Runtime Rules Down
 
 ```bash
-sudo xray-proxya gateway down
-sudo xray-proxya gateway check
+xray-proxya gateway down
+xray-proxya gateway check
 ```
 
 `gateway down` only removes nftables, policy routing, and table 100 entries managed by Xray-Proxya. It does not stop the Xray service.
@@ -199,9 +214,9 @@ sudo xray-proxya gateway check
 To disable gateway mode at the configuration level:
 
 ```bash
-sudo xray-proxya gateway disable
-sudo xray-proxya apply
-sudo xray-proxya gateway down
+xray-proxya gateway disable
+xray-proxya apply
+xray-proxya gateway down
 ```
 
 ## Troubleshooting
@@ -222,7 +237,7 @@ journalctl -u xray-proxya --no-pager -n 80
 Run:
 
 ```bash
-sudo xray-proxya gateway up
+xray-proxya gateway up
 ```
 
 ### The Upstream Works But Transparent Proxying Times Out
@@ -244,14 +259,14 @@ journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
 ## Command Summary
 
 ```bash
-sudo xray-proxya outbound add remote-v029 "vless://..."
-sudo xray-proxya outbound test remote-v029
+xray-proxya outbound add remote-v029 "vless://..."
+xray-proxya outbound test remote-v029
 
-sudo xray-proxya gateway set --relay remote-v029 --lan eth0
-sudo xray-proxya gateway enable
-sudo xray-proxya apply
-sudo xray-proxya gateway up
-sudo xray-proxya gateway check
+xray-proxya gateway set --relay remote-v029 --lan eth0
+xray-proxya gateway enable
+xray-proxya apply
+xray-proxya gateway up
+xray-proxya gateway check
 
-sudo xray-proxya gateway down
+xray-proxya gateway down
 ```
