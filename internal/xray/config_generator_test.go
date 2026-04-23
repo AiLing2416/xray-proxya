@@ -187,9 +187,9 @@ func TestGenerateXrayJSONRoutesDNSPacketsThroughDNSOutInServerMode(t *testing.T)
 		Role: config.RoleServer,
 		CustomOutbounds: []config.CustomOutbound{
 			{
-				Alias:      "relay-a",
-				Enabled:    true,
-				Config:     map[string]interface{}{"protocol": "freedom"},
+				Alias:   "relay-a",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
 			},
 		},
 	}
@@ -213,9 +213,9 @@ func TestGenerateXrayJSONRoutesDNSPacketsThroughDNSOut(t *testing.T) {
 		},
 		CustomOutbounds: []config.CustomOutbound{
 			{
-				Alias:      "relay-a",
-				Enabled:    true,
-				Config:     map[string]interface{}{"protocol": "freedom"},
+				Alias:   "relay-a",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
 			},
 		},
 	}
@@ -229,6 +229,39 @@ func TestGenerateXrayJSONRoutesDNSPacketsThroughDNSOut(t *testing.T) {
 	// Currently it fails because it routes to outbound-relay-a instead of dns-out
 	if !containsPortRule(rules, "53", "dns-out") {
 		t.Fatalf("port 53 routing rule to dns-out not found")
+	}
+}
+
+func TestGenerateXrayJSONCanDisableGatewayTunForRuntimeTest(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role:        config.RoleGateway,
+		APIInbound:  10085,
+		TestInbound: 10086,
+		Gateway: config.GatewayConfig{
+			LocalEnabled: true,
+			LANEnabled:   true,
+			Mode:         "tun",
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-a",
+				Enabled: true,
+				Config: map[string]interface{}{
+					"protocol": "freedom",
+					"settings": map[string]interface{}{},
+				},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfigWithOverrides(t, cfg, map[string]int{"gateway-tun-disabled": 1}, "")
+	inbounds := parsed["inbounds"].([]interface{})
+	for _, rawInbound := range inbounds {
+		inbound := rawInbound.(map[string]interface{})
+		if inbound["tag"] == "tun-in" {
+			t.Fatal("tun-in inbound should be disabled during runtime isolation tests")
+		}
 	}
 }
 
@@ -286,7 +319,7 @@ func TestGenerateXrayJSONCamouflageSkinning(t *testing.T) {
 	// 1. Verify dest is redirected to camouflage port
 	parsed := generateAndDecodeXrayConfigWithOverrides(t, cfg, map[string]int{"camouflage": 49152}, "")
 	inbounds := parsed["inbounds"].([]interface{})
-	
+
 	found := false
 	for _, rawIn := range inbounds {
 		in := rawIn.(map[string]interface{})

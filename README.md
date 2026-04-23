@@ -73,8 +73,9 @@ xray-proxya apply
 ### 4. Transparent Gateway
 ```bash
 # Use a relay as the transparent upstream
-xray-proxya gateway set --mode tun --relay hk-node
+xray-proxya gateway set --relay hk-node
 xray-proxya apply
+xray-proxya gateway up
 ```
 
 ### 5. Temporary Kernel Tuning
