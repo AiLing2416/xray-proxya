@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
-	"os/exec"
+	"os"
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
@@ -40,7 +40,6 @@ var gatewayStatusCmd = &cobra.Command{
 		}
 		fmt.Printf("Local Proxy: %s\n", localState)
 		fmt.Printf("LAN Gateway: %s\n", lanState)
-		fmt.Printf("Mode:        %s\n", cfg.Gateway.Mode)
 		fmt.Printf("Relay:       %s\n", cfg.Gateway.RelayAlias)
 		fmt.Printf("LAN Iface:   %s\n", cfg.Gateway.LANInterface)
 		fmt.Printf("Blacklist:   %d domains, %d IPs\n\n", len(cfg.Gateway.Blacklist), len(cfg.Gateway.BlacklistIPs))
@@ -57,8 +56,9 @@ var gatewayEnableCmd = &cobra.Command{
 		}
 		cfg.Gateway.LocalEnabled = true
 		cfg.Gateway.LANEnabled = true
+		cfg.Gateway.Mode = "tun"
 		cfg.SaveEx(true)
-		fmt.Println("✅ Gateway (Local & LAN) ENABLED in STAGING. Run 'apply' to commit.")
+		fmt.Println("✅ Gateway ENABLED in STAGING. Run 'apply' to commit, then 'gateway up' to update runtime rules.")
 	},
 }
 
@@ -72,14 +72,16 @@ var gatewayDisableCmd = &cobra.Command{
 		}
 		cfg.Gateway.LocalEnabled = false
 		cfg.Gateway.LANEnabled = false
+		cfg.Gateway.Mode = "tun"
 		cfg.SaveEx(true)
-		fmt.Println("✅ Gateway (Local & LAN) DISABLED in STAGING. Run 'apply' to commit.")
+		fmt.Println("✅ Gateway DISABLED in STAGING. Run 'apply' to commit, then 'gateway down' to remove runtime rules.")
 	},
 }
 
 var gatewayLocalEnableCmd = &cobra.Command{
-	Use:   "local-enable",
-	Short: "Enable local machine transparent proxy in staging",
+	Use:    "local-enable",
+	Short:  "Enable local machine transparent proxy in staging",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
@@ -92,8 +94,9 @@ var gatewayLocalEnableCmd = &cobra.Command{
 }
 
 var gatewayLocalDisableCmd = &cobra.Command{
-	Use:   "local-disable",
-	Short: "Disable local machine transparent proxy in staging",
+	Use:    "local-disable",
+	Short:  "Disable local machine transparent proxy in staging",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
@@ -106,8 +109,9 @@ var gatewayLocalDisableCmd = &cobra.Command{
 }
 
 var gatewayLANEnableCmd = &cobra.Command{
-	Use:   "lan-enable",
-	Short: "Enable LAN gateway (IP forwarding) in staging",
+	Use:    "lan-enable",
+	Short:  "Enable LAN gateway (IP forwarding) in staging",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
@@ -120,8 +124,9 @@ var gatewayLANEnableCmd = &cobra.Command{
 }
 
 var gatewayLANDisableCmd = &cobra.Command{
-	Use:   "lan-disable",
-	Short: "Disable LAN gateway in staging",
+	Use:    "lan-disable",
+	Short:  "Disable LAN gateway in staging",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
@@ -137,7 +142,6 @@ var gatewaySetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Configure gateway parameters in STAGING",
 	Run: func(cmd *cobra.Command, args []string) {
-		mode, _ := cmd.Flags().GetString("mode")
 		relay, _ := cmd.Flags().GetString("relay")
 		lan, _ := cmd.Flags().GetString("lan")
 		cfg, _ := config.LoadConfigEx(true)
@@ -145,13 +149,7 @@ var gatewaySetCmd = &cobra.Command{
 			return
 		}
 
-		if mode != "" {
-			if mode != "tun" {
-				fmt.Println("❌ Invalid mode. Only 'tun' is currently supported.")
-				return
-			}
-			cfg.Gateway.Mode = mode
-		}
+		cfg.Gateway.Mode = "tun"
 		if relay != "" {
 			cfg.Gateway.RelayAlias = relay
 		}
@@ -206,38 +204,108 @@ var gatewayBlacklistClearCmd = &cobra.Command{
 	},
 }
 
-var gatewaySyncFirewallCmd = &cobra.Command{
-	Use:   "sync-firewall",
-	Short: "Regenerate and apply NFTables rules",
+var gatewayUpCmd = &cobra.Command{
+	Use:   "up",
+	Short: "Bring gateway runtime rules up",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
 		if cfg == nil {
 			return
 		}
-		gateway.SyncFirewall(cfg)
-		fmt.Println("✅ Firewall rules synchronized.")
+		if err := gateway.ApplyFirewall(cfg); err != nil {
+			fmt.Printf("❌ Failed: %v\n", err)
+			return
+		}
+		fmt.Println("✅ Gateway runtime rules are up.")
 	},
 }
 
-var gatewaySetupKernelCmd = &cobra.Command{
-	Use:   "setup-kernel",
-	Short: "Enable IP forwarding and required kernel modules",
+var gatewayApplyCompatCmd = &cobra.Command{
+	Use:    "apply",
+	Short:  "Apply gateway runtime rules",
+	Hidden: true,
+	Run:    gatewayUpCmd.Run,
+}
+
+var gatewaySyncFirewallCompatCmd = &cobra.Command{
+	Use:    "sync-firewall",
+	Short:  "Regenerate and apply gateway runtime rules",
+	Hidden: true,
+	Run:    gatewayUpCmd.Run,
+}
+
+var gatewayDiffCmd = &cobra.Command{
+	Use:   "diff",
+	Short: "Show gateway runtime rules that would be applied",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("🔧 Optimizing kernel for gateway...")
-		exec.Command("sudo", "sysctl", "-w", "net.ipv4.ip_forward=1").Run()
-		fmt.Println("✅ Kernel parameters optimized.")
+		cfg, _ := config.LoadConfig()
+		if cfg == nil {
+			return
+		}
+		rules, err := gateway.BuildRulesPreview(cfg)
+		if err != nil {
+			fmt.Printf("❌ Failed: %v\n", err)
+			return
+		}
+		fmt.Println("# nftables")
+		if rules == "" {
+			fmt.Println("(no gateway rules needed)")
+		} else {
+			fmt.Print(rules)
+		}
+		fmt.Println("# policy routing")
+		fmt.Println("ip rule add fwmark 1 table 100 pref 100")
+		fmt.Println("ip rule add fwmark 255 table main pref 10")
+		fmt.Println("ip route replace default dev proxya-tun table 100")
 	},
+}
+
+var gatewayCheckCmd = &cobra.Command{
+	Use:   "check",
+	Short: "Check gateway runtime state",
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfig()
+		problems := gateway.Verify(cfg)
+		if len(problems) == 0 {
+			fmt.Println("✅ Gateway runtime state looks ready.")
+			return
+		}
+		fmt.Println("❌ Gateway verification found issues:")
+		for _, problem := range problems {
+			fmt.Printf("- %s\n", problem)
+		}
+		os.Exit(1)
+	},
+}
+
+var gatewayVerifyCompatCmd = &cobra.Command{
+	Use:    "verify",
+	Short:  "Verify gateway runtime state",
+	Hidden: true,
+	Run:    gatewayCheckCmd.Run,
+}
+
+var gatewayDownCmd = &cobra.Command{
+	Use:   "down",
+	Short: "Bring gateway runtime rules down",
+	Run: func(cmd *cobra.Command, args []string) {
+		gateway.CleanupFirewall()
+		fmt.Println("✅ Gateway runtime rules are down.")
+	},
+}
+
+var gatewayRollbackCompatCmd = &cobra.Command{
+	Use:    "rollback",
+	Short:  "Remove xray-proxya gateway runtime rules",
+	Hidden: true,
+	Run:    gatewayDownCmd.Run,
 }
 
 func init() {
-	gatewaySetCmd.Flags().StringP("mode", "m", "", "Gateway mode (currently: tun)")
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
 
 	// Dynamic completions
-	gatewaySetCmd.RegisterFlagCompletionFunc("mode", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"tun"}, cobra.ShellCompDirectiveNoFileComp
-	})
 	gatewaySetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
@@ -274,8 +342,14 @@ func init() {
 		gatewaySetCmd,
 		gatewayBlacklistAddCmd,
 		gatewayBlacklistClearCmd,
-		gatewaySyncFirewallCmd,
-		gatewaySetupKernelCmd,
+		gatewayUpCmd,
+		gatewayApplyCompatCmd,
+		gatewaySyncFirewallCompatCmd,
+		gatewayDownCmd,
+		gatewayRollbackCompatCmd,
+		gatewayCheckCmd,
+		gatewayVerifyCompatCmd,
+		gatewayDiffCmd,
 	)
 	rootCmd.AddCommand(gatewayCmd)
 }

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -18,29 +19,39 @@ const (
 )
 
 func SyncFirewall(cfg *config.UserConfig) {
-	CleanupFirewall()
+	if err := ApplyFirewall(cfg); err != nil {
+		fmt.Printf("❌ Failed to apply gateway rules: %v\n", err)
+	}
+}
 
+func ApplyFirewall(cfg *config.UserConfig) error {
 	if cfg == nil || cfg.Role != config.RoleGateway {
-		return
+		return nil
 	}
 	if cfg.Gateway.Mode != "tun" {
-		return
+		return nil
 	}
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
-		return
+		return nil
 	}
 
 	lanIface := cfg.Gateway.LANInterface
 	if lanIface == "" {
-		lanIface = "eth0"
+		return fmt.Errorf("gateway LAN interface is not configured; run 'gateway set --lan <iface>'")
 	}
 
 	lanCIDR, err := getInterfaceCIDR(lanIface)
 	if err != nil {
-		fmt.Printf("❌ Failed to detect LAN subnet for %s: %v\n", lanIface, err)
-		return
+		return fmt.Errorf("detect LAN subnet for %s: %w", lanIface, err)
 	}
+	rules := buildNFT(cfg, lanIface, lanCIDR)
+	tmpFile := filepath.Join(os.TempDir(), "xray-proxya.nft")
+	if err := os.WriteFile(tmpFile, []byte(rules), 0600); err != nil {
+		return fmt.Errorf("write nft rules: %w", err)
+	}
+	defer os.Remove(tmpFile)
 
+	CleanupFirewall()
 	SetupKernel()
 
 	run("sudo", "ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100")
@@ -49,35 +60,20 @@ func SyncFirewall(cfg *config.UserConfig) {
 	run("sudo", "ip", "rule", "add", "to", "127.0.0.0/8", "table", "main", "pref", "51")
 	run("sudo", "ip", "route", "replace", "default", "dev", tunName, "table", "100")
 
-	tmpFile := filepath.Join(os.TempDir(), "xray-proxya.nft")
-	rules := buildNFT(cfg, lanIface, lanCIDR)
-	if err := os.WriteFile(tmpFile, []byte(rules), 0600); err != nil {
-		fmt.Printf("❌ Failed to write nft rules: %v\n", err)
-		return
-	}
-	defer os.Remove(tmpFile)
-
 	run("sudo", "nft", "-f", tmpFile)
+	return nil
 }
 
 func CleanupFirewall() {
 	run("sudo", "nft", "delete", "table", "inet", tableName)
-	run("sudo", "ip", "rule", "del", "pref", "5")
 	run("sudo", "ip", "rule", "del", "pref", "10")
 	run("sudo", "ip", "rule", "del", "pref", "50")
 	run("sudo", "ip", "rule", "del", "pref", "51")
 	run("sudo", "ip", "rule", "del", "pref", "100")
-	run("sudo", "ip", "rule", "del", "pref", "149")
-	run("sudo", "ip", "rule", "del", "pref", "150")
-	run("sudo", "ip", "rule", "del", "pref", "200")
-	run("sudo", "ip", "rule", "del", "pref", "201")
 	run("sudo", "ip", "route", "flush", "table", "100")
 	run("sudo", "ip", "-6", "rule", "del", "pref", "10")
 	run("sudo", "ip", "-6", "rule", "del", "pref", "50")
 	run("sudo", "ip", "-6", "rule", "del", "pref", "100")
-	run("sudo", "ip", "-6", "rule", "del", "pref", "149")
-	run("sudo", "ip", "-6", "rule", "del", "pref", "150")
-	run("sudo", "ip", "-6", "rule", "del", "pref", "200")
 	run("sudo", "ip", "-6", "route", "flush", "table", "100")
 }
 
@@ -86,7 +82,67 @@ func SetupKernel() {
 	run("sudo", "sysctl", "-w", "net.ipv6.conf.all.forwarding=1")
 	run("sudo", "sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")
 	run("sudo", "sysctl", "-w", "net.ipv4.conf.default.rp_filter=0")
-	run("sudo", "systemctl", "stop", "systemd-resolved")
+}
+
+func DetectDefaultInterface() (string, error) {
+	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
+	if err != nil {
+		return "", err
+	}
+	return ParseDefaultInterface(string(out))
+}
+
+func ParseDefaultInterface(routeOutput string) (string, error) {
+	re := regexp.MustCompile(`(?:^|\s)dev\s+([^\s]+)`)
+	for _, line := range strings.Split(routeOutput, "\n") {
+		if !strings.Contains(line, "default") {
+			continue
+		}
+		matches := re.FindStringSubmatch(line)
+		if len(matches) == 2 {
+			return matches[1], nil
+		}
+	}
+	return "", fmt.Errorf("no default route interface found")
+}
+
+func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
+	if cfg == nil || cfg.Role != config.RoleGateway || cfg.Gateway.Mode != "tun" || (!cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled) {
+		return "", nil
+	}
+	if cfg.Gateway.LANInterface == "" {
+		return "", fmt.Errorf("gateway LAN interface is not configured")
+	}
+	lanCIDR, err := getInterfaceCIDR(cfg.Gateway.LANInterface)
+	if err != nil {
+		return "", err
+	}
+	return buildNFT(cfg, cfg.Gateway.LANInterface, lanCIDR), nil
+}
+
+func Verify(cfg *config.UserConfig) []string {
+	var problems []string
+	if cfg == nil {
+		return []string{"config is not loaded"}
+	}
+	if cfg.Role != config.RoleGateway {
+		return []string{"role is not gateway"}
+	}
+	if cfg.Gateway.Mode != "tun" {
+		problems = append(problems, "gateway mode is not tun")
+	}
+	if cfg.Gateway.LANInterface == "" {
+		problems = append(problems, "LAN interface is not configured")
+	} else if _, err := net.InterfaceByName(cfg.Gateway.LANInterface); err != nil {
+		problems = append(problems, fmt.Sprintf("LAN interface %s not found", cfg.Gateway.LANInterface))
+	}
+	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
+		problems = append(problems, tunName+" interface is not present")
+	}
+	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err != nil {
+		problems = append(problems, "nft table inet "+tableName+" is not present")
+	}
+	return problems
 }
 
 func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR string) string {

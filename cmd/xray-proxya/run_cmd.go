@@ -8,10 +8,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
-	"time"
 	"xray-proxya/internal/camouflage"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -37,7 +35,9 @@ var runCmd = &cobra.Command{
 		// We only allow port drift if --audit is explicitly provided.
 		changed := false
 		auditPort := func(label string, current *int) {
-			if *current <= 0 { return }
+			if *current <= 0 {
+				return
+			}
 			if !utils.IsPortFree(*current) {
 				if runAudit {
 					newP, _ := xray.GetFreePort()
@@ -58,7 +58,9 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		if changed { cfg.Save() }
+		if changed {
+			cfg.Save()
+		}
 
 		// Camouflage Setup
 		camoPort := 0
@@ -72,7 +74,7 @@ var runCmd = &cobra.Command{
 		if hasSkin {
 			camoPort, _ = xray.GetFreePort()
 			fmt.Printf("🎭 Starting Camouflage server (TLS) on 127.0.0.1:%d...\n", camoPort)
-			
+
 			// Generate temporary self-signed certs for camouflage
 			certPath := filepath.Join(config.GetConfigDir(), "camo.crt")
 			keyPath := filepath.Join(config.GetConfigDir(), "camo.key")
@@ -112,17 +114,8 @@ var runCmd = &cobra.Command{
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600)
 
-		if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
-			time.Sleep(1 * time.Second)
-			fmt.Println("🛡️  Synchronizing transparent gateway rules...")
-			gateway.SyncFirewall(cfg)
-		}
-
 		cleanup := func() {
 			os.Remove(pidPath)
-			if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
-				gateway.CleanupFirewall()
-			}
 		}
 
 		waitCh := make(chan error, 1)

@@ -228,6 +228,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	testPort := getPort("test-socks", 10086)
 	dnsInPort := getPort("dns-in", 0)
 	camoPort := getPort("camouflage", 0) // Default 0 means no camo unless requested via override or dynamically in run
+	_, disableGatewayTun := overridePorts["gateway-tun-disabled"]
 	relayInboundTags := map[string][]string{}
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
@@ -264,7 +265,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 		mPort := getPort(string(m.Mode), m.Port)
 		in := map[string]interface{}{"tag": string(m.Mode), "port": mPort, "listen": "::", "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}}
-		
+
 		dest := m.Dest
 		if m.Skin && camoPort > 0 {
 			dest = fmt.Sprintf("127.0.0.1:%d", camoPort)
@@ -317,7 +318,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		inbounds = append(inbounds, in)
 	}
 
-	if isGateway {
+	if isGateway && !disableGatewayTun {
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "tun-in", "protocol": "tun",
 			"settings": map[string]interface{}{

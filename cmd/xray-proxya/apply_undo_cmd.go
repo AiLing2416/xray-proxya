@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/presets"
 	"xray-proxya/internal/xray"
 
@@ -30,8 +29,9 @@ var applyCmd = &cobra.Command{
 		}
 
 		if !forceApply {
+			testOverrides := map[string]int{"gateway-tun-disabled": 1}
 			fmt.Println("🔍 Stage 1: Static Validation...")
-			jsonData, _ := xray.GenerateXrayJSON(cfg, nil, "")
+			jsonData, _ := xray.GenerateXrayJSON(cfg, testOverrides, "")
 			if err := xray.ValidateConfig(jsonData); err != nil {
 				fmt.Printf("❌ Static validation failed: %v\n", err)
 				return
@@ -43,7 +43,7 @@ var applyCmd = &cobra.Command{
 			apiPort, _ := xray.GetFreePort()
 
 			// For all preset modes, if they conflict with main service, we use random ports for the TEST
-			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
+			overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "gateway-tun-disabled": 1}
 			for _, m := range cfg.ActiveModes {
 				if m.Enabled {
 					p, _ := xray.GetFreePort()
@@ -76,12 +76,8 @@ var applyCmd = &cobra.Command{
 		}
 
 		fmt.Println("✅ All changes applied and service updated.")
-
-		// Apply gateway rules if needed
-		newCfg, _ := config.LoadConfig()
-		if newCfg != nil && (newCfg.Role == config.RoleGateway) {
-			fmt.Println("🛡️  Synchronizing transparent gateway rules...")
-			gateway.SyncFirewall(newCfg)
+		if cfg.Role == config.RoleGateway {
+			fmt.Println("ℹ️  Gateway runtime rules are not changed by apply. Use 'sudo xray-proxya gateway up' when gateway system rules need updating.")
 		}
 	},
 }
