@@ -16,6 +16,8 @@ chromium.log
 # Local documentation
 *.md
 !README.md
+!WIKI/
+!WIKI/*.md
 GEMINI.md
 NETWORK_VERIFICATION.md
 TransparentProxy.md
