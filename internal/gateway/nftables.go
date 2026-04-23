@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	tableName = "xray_proxya"
-	tunName   = "proxya-tun"
-	xrayMark  = "255"
-	tunMark   = "1"
+	tableName   = "xray_proxya"
+	tunName     = "proxya-tun"
+	tunIPv4CIDR = "172.16.255.1/30"
+	tunIPv6CIDR = "fd00:eea:ff::1/126"
+	xrayMark    = "255"
+	tunMark     = "1"
 )
 
 func SyncFirewall(cfg *config.UserConfig) {
@@ -53,6 +55,8 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 
 	CleanupFirewall()
 	SetupKernel()
+	run("sudo", "ip", "addr", "replace", tunIPv4CIDR, "dev", tunName)
+	run("sudo", "ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName)
 
 	run("sudo", "ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100")
 	run("sudo", "ip", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10")
@@ -138,11 +142,30 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
 		problems = append(problems, tunName+" interface is not present")
+	} else if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
+		problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
 	}
 	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err != nil {
 		problems = append(problems, "nft table inet "+tableName+" is not present")
 	}
 	return problems
+}
+
+func interfaceHasCIDR(name, cidr string) bool {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return false
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, addr := range addrs {
+		if addr.String() == cidr {
+			return true
+		}
+	}
+	return false
 }
 
 func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR string) string {
