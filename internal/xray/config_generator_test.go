@@ -265,6 +265,77 @@ func TestGenerateXrayJSONCanDisableGatewayTunForRuntimeTest(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONSkipsDisabledGuests(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		ActiveModes: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "www.amazon.com",
+				Dest:    "www.amazon.com:443",
+				Settings: config.Settings{
+					PrivateKey: "priv",
+					ShortID:    "abcd",
+				},
+			},
+		},
+		Guests: []config.GuestConfig{
+			{Alias: "enabled-guest", Enabled: true, UUID: "enabled-uuid"},
+			{Alias: "disabled-guest", Enabled: false, UUID: "disabled-uuid"},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds := parsed["inbounds"].([]interface{})
+	foundEnabled := false
+	foundDisabled := false
+	for _, rawInbound := range inbounds {
+		inbound := rawInbound.(map[string]interface{})
+		settings, ok := inbound["settings"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		clients, ok := settings["clients"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawClient := range clients {
+			client := rawClient.(map[string]interface{})
+			email, _ := client["email"].(string)
+			if email == "guest-enabled-guest" {
+				foundEnabled = true
+			}
+			if email == "guest-disabled-guest" {
+				foundDisabled = true
+			}
+		}
+	}
+	if !foundEnabled {
+		t.Fatalf("enabled guest client missing from generated config")
+	}
+	if foundDisabled {
+		t.Fatalf("disabled guest client should not appear in generated config")
+	}
+
+	routing := getMap(t, parsed, "routing")
+	rules, _ := routing["rules"].([]interface{})
+	for _, rawRule := range rules {
+		rule := rawRule.(map[string]interface{})
+		users, ok := rule["user"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawUser := range users {
+			user, _ := rawUser.(string)
+			if user == "guest-disabled-guest" {
+				t.Fatalf("disabled guest routing rule should not appear in generated config")
+			}
+		}
+	}
+}
+
 func TestGenerateXrayJSONOutboundSetDNSOverrides(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleGateway,

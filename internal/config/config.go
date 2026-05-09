@@ -71,6 +71,7 @@ type GuestConfig struct {
 	QuotaGB      float64                `json:"quota_gb"` // -1 for unlimited, 0 for paused
 	UsedBytes    int64                  `json:"used_bytes"`
 	ResetDay     int                    `json:"reset_day"`               // 1-31
+	LastResetYM  string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
 	OutboundLink string                 `json:"outbound_link,omitempty"` // For custom routing
 	OutboundConf map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
 }
