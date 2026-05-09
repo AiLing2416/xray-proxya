@@ -66,10 +66,13 @@ func buildApplyImpact(activeCfg, stagingCfg *config.UserConfig) applyImpact {
 		impact.SubContentChanged = true
 		mark("custom_outbounds")
 	}
-	if !reflect.DeepEqual(activeCfg.Guests, stagingCfg.Guests) {
+	if guestsAffectXray(activeCfg.Guests, stagingCfg.Guests) {
 		impact.XrayConfigChanged = true
-		impact.SubContentChanged = true
 		mark("guests")
+	}
+	if guestsAffectGuestSub(activeCfg.Guests, stagingCfg.Guests) {
+		impact.SubContentChanged = true
+		mark("guest_sub")
 	}
 	if activeCfg.Gateway.RelayAlias != stagingCfg.Gateway.RelayAlias {
 		impact.XrayConfigChanged = true
@@ -79,6 +82,10 @@ func buildApplyImpact(activeCfg, stagingCfg *config.UserConfig) applyImpact {
 	if activeCfg.SubPort != stagingCfg.SubPort {
 		impact.SubListenerChanged = true
 		mark("sub_port")
+	}
+	if activeCfg.GuestSubPort != stagingCfg.GuestSubPort || activeCfg.GuestSubBind != stagingCfg.GuestSubBind {
+		impact.SubListenerChanged = true
+		mark("guest_sub_listener")
 	}
 	if !reflect.DeepEqual(activeCfg.Subscriptions, stagingCfg.Subscriptions) {
 		impact.SubContentChanged = true
@@ -122,4 +129,36 @@ func restartSubServiceIfInstalled() error {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+func guestsAffectXray(activeGuests, stagingGuests []config.GuestConfig) bool {
+	if len(activeGuests) != len(stagingGuests) {
+		return true
+	}
+	for i := range activeGuests {
+		a := activeGuests[i]
+		b := stagingGuests[i]
+		if a.Alias != b.Alias ||
+			a.UUID != b.UUID ||
+			a.Enabled != b.Enabled ||
+			a.OutboundLink != b.OutboundLink ||
+			!reflect.DeepEqual(a.OutboundConf, b.OutboundConf) {
+			return true
+		}
+	}
+	return false
+}
+
+func guestsAffectGuestSub(activeGuests, stagingGuests []config.GuestConfig) bool {
+	if len(activeGuests) != len(stagingGuests) {
+		return true
+	}
+	for i := range activeGuests {
+		a := activeGuests[i]
+		b := stagingGuests[i]
+		if !reflect.DeepEqual(a, b) {
+			return true
+		}
+	}
+	return false
 }

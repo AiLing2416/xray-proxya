@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/quota"
+	"xray-proxya/internal/sub"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -15,9 +17,10 @@ import (
 )
 
 var (
-	quotaStr    string
-	outboundStr string
-	resetDay    int
+	quotaStr         string
+	outboundStr      string
+	resetDay         int
+	guestSubShowAddr string
 )
 
 var guestsCmd = &cobra.Command{
@@ -92,6 +95,36 @@ func guestReasonLabel(guest config.GuestConfig) string {
 	default:
 		return "-"
 	}
+}
+
+func ensureGuestSubListenerConfig(cfg *config.UserConfig) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.GuestSubBind) == "" {
+		cfg.GuestSubBind = "127.0.0.1"
+	}
+	if cfg.GuestSubPort > 0 {
+		return
+	}
+	const preferredPort = 9444
+	if utils.IsPortFree(preferredPort) {
+		cfg.GuestSubPort = preferredPort
+		return
+	}
+	port, _ := xray.GetFreePort()
+	cfg.GuestSubPort = port
+}
+
+func guestSubURL(host string, port int, token string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return fmt.Sprintf("https://%s/guest-sub/%s", host, token)
+	}
+	return fmt.Sprintf("https://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
 }
 
 var guestsListCmd = &cobra.Command{
@@ -437,6 +470,117 @@ var guestsShowCmd = &cobra.Command{
 	},
 }
 
+var guestsSubCmd = &cobra.Command{
+	Use:   "sub",
+	Short: "Manage guest self-service subscription links (STAGING)",
+}
+
+var guestsSubEnableCmd = &cobra.Command{
+	Use:   "enable [alias]",
+	Short: "Enable self-service subscription for a guest (STAGING)",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		idx, guest := findGuest(cfg, args[0])
+		if idx == -1 || guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		ensureGuestSubListenerConfig(cfg)
+		if cfg.Guests[idx].SubToken == "" {
+			cfg.Guests[idx].SubToken = utils.GenerateRandomString(32)
+		}
+		if err := cfg.SaveEx(true); err == nil {
+			fmt.Printf("✅ Guest sub enabled for '%s' in STAGING.\n", args[0])
+			fmt.Printf("🔒 Listener: https://%s:%d/guest-sub/<token>\n", cfg.GuestSubBind, cfg.GuestSubPort)
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+		}
+	},
+}
+
+var guestsSubDisableCmd = &cobra.Command{
+	Use:   "disable [alias]",
+	Short: "Disable self-service subscription for a guest (STAGING)",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		idx, guest := findGuest(cfg, args[0])
+		if idx == -1 || guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		cfg.Guests[idx].SubToken = ""
+		if err := cfg.SaveEx(true); err == nil {
+			fmt.Printf("✅ Guest sub disabled for '%s' in STAGING.\n", args[0])
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+		}
+	},
+}
+
+var guestsSubRotateCmd = &cobra.Command{
+	Use:   "rotate [alias]",
+	Short: "Rotate the guest self-service subscription token (STAGING)",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		idx, guest := findGuest(cfg, args[0])
+		if idx == -1 || guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		ensureGuestSubListenerConfig(cfg)
+		cfg.Guests[idx].SubToken = utils.GenerateRandomString(32)
+		if err := cfg.SaveEx(true); err == nil {
+			fmt.Printf("✅ Guest sub token rotated for '%s' in STAGING.\n", args[0])
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+		}
+	},
+}
+
+var guestsSubShowCmd = &cobra.Command{
+	Use:   "show [alias]",
+	Short: "Show a guest self-service subscription link",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		_, guest := findGuest(cfg, args[0])
+		if guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		if guest.SubToken == "" {
+			fmt.Printf("❌ Guest sub is not enabled for '%s'.\n", args[0])
+			return
+		}
+		ensureGuestSubListenerConfig(cfg)
+		host := cfg.GuestSubBind
+		if guestSubShowAddr != "" {
+			host = guestSubShowAddr
+		}
+		fmt.Printf("\nGuest: %s\n", guest.Alias)
+		fmt.Printf("State: %s\n", guestStateLabel(*guest))
+		fmt.Printf("Quota: %s\n", formatGuestQuota(guest.QuotaGB))
+		fmt.Printf("Used: %.2fGB\n", float64(guest.UsedBytes)/(1024*1024*1024))
+		fmt.Printf("Reset Day: %d\n", guest.ResetDay)
+		fmt.Printf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(*guest, time.Now()))
+		fmt.Printf("Listener: %s:%d\n", cfg.GuestSubBind, cfg.GuestSubPort)
+		fmt.Printf("Path: /guest-sub/%s\n", guest.SubToken)
+		fmt.Printf("URL: %s\n\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken))
+	},
+}
+
 func init() {
 	guestsSetCmd.Flags().StringVarP(&quotaStr, "quota", "q", "", "Set quota (GB, -1, 0, or 'reset')")
 	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct'")
@@ -448,7 +592,9 @@ func init() {
 	guestsShowCmd.Flags().BoolP("ipv4", "4", true, "Use IPv4")
 	guestsShowCmd.Flags().BoolP("ipv6", "6", false, "Use IPv6")
 	guestsShowCmd.Flags().BoolP("all", "a", false, "Show all available IPs")
+	guestsSubShowCmd.Flags().StringVarP(&guestSubShowAddr, "address", "a", "", "Override the host used when printing the guest sub URL")
 
-	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsShowCmd)
+	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd)
+	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsShowCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)
 }

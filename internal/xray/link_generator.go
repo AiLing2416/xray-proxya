@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/url"
+	"strings"
 	"xray-proxya/internal/config"
 )
 
@@ -18,6 +20,17 @@ func GenerateRelayLinks(cfg *config.UserConfig, ip string, relay config.CustomOu
 
 func GenerateGuestLinks(cfg *config.UserConfig, ip string, guestUUID string, alias string) []string {
 	return generateAllLinks(cfg, ip, guestUUID, "Guest-"+alias)
+}
+
+func WithPrimaryRemark(links []string, remark string) []string {
+	if len(links) == 0 || strings.TrimSpace(remark) == "" {
+		return links
+	}
+	out := append([]string(nil), links...)
+	if updated, ok := rewritePrimaryRemark(out[0], remark); ok {
+		out[0] = updated
+	}
+	return out
 }
 
 func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix string) []string {
@@ -38,11 +51,15 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 				break
 			}
 		}
-		if mode == nil || !mode.Enabled { continue }
+		if mode == nil || !mode.Enabled {
+			continue
+		}
 
 		var link string
 		psSuffix := ""
-		if suffix != "" { psSuffix = "-" + suffix }
+		if suffix != "" {
+			psSuffix = "-" + suffix
+		}
 
 		switch mode.Mode {
 		case config.ModeVLESSReality:
@@ -77,7 +94,46 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, ps)
 			}
 		}
-		if link != "" { links = append(links, link) }
+		if link != "" {
+			links = append(links, link)
+		}
 	}
 	return links
+}
+
+func rewritePrimaryRemark(link string, remark string) (string, bool) {
+	switch {
+	case strings.HasPrefix(link, "vmess://"):
+		return rewriteVMessRemark(link, remark)
+	case strings.HasPrefix(link, "vless://"), strings.HasPrefix(link, "ss://"):
+		return rewriteFragmentRemark(link, remark), true
+	default:
+		return link, false
+	}
+}
+
+func rewriteVMessRemark(link string, remark string) (string, bool) {
+	raw := strings.TrimPrefix(link, "vmess://")
+	data, err := base64.StdEncoding.DecodeString(raw)
+	if err != nil {
+		return link, false
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return link, false
+	}
+	payload["ps"] = remark
+	updated, err := json.Marshal(payload)
+	if err != nil {
+		return link, false
+	}
+	return "vmess://" + base64.StdEncoding.EncodeToString(updated), true
+}
+
+func rewriteFragmentRemark(link string, remark string) string {
+	escaped := url.QueryEscape(remark)
+	if idx := strings.Index(link, "#"); idx >= 0 {
+		return link[:idx+1] + escaped
+	}
+	return link + "#" + escaped
 }
