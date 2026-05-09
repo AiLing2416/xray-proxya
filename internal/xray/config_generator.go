@@ -225,7 +225,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		return defaultVal
 	}
 	apiPort := getPort("api", userCfg.APIInbound)
-	testPort := getPort("test-socks", 10086)
+	testPort := getPort("test-socks", userCfg.TestInbound)
 	dnsInPort := getPort("dns-in", 0)
 	camoPort := getPort("camouflage", 0) // Default 0 means no camo unless requested via override or dynamically in run
 	_, disableGatewayTun := overridePorts["gateway-tun-disabled"]
