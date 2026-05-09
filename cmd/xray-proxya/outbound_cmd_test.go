@@ -2,6 +2,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"xray-proxya/internal/config"
 )
@@ -83,5 +84,41 @@ func TestApplyDNSConfigUpdatePreservesUntouchedFields(t *testing.T) {
 	}
 	if len(co.DNSServers) != 1 || co.DNSServers[0] != "8.8.8.8" {
 		t.Fatalf("DNSServers = %v, want updated value", co.DNSServers)
+	}
+}
+
+func TestLowPercentileAverageUsesBottomTwentyPercent(t *testing.T) {
+	samples := []float64{100, 200, 300, 400, 500}
+	got := lowPercentileAverage(samples, 0.20)
+	if got != 100 {
+		t.Fatalf("lowPercentileAverage() = %v, want 100", got)
+	}
+}
+
+func TestWorstPercentileAverageUsesTopFivePercentLatency(t *testing.T) {
+	values := []time.Duration{
+		10 * time.Millisecond,
+		20 * time.Millisecond,
+		30 * time.Millisecond,
+		40 * time.Millisecond,
+		250 * time.Millisecond,
+	}
+	got := worstPercentileAverage(values, 0.05)
+	if got != 250*time.Millisecond {
+		t.Fatalf("worstPercentileAverage() = %v, want 250ms", got)
+	}
+}
+
+func TestFormatBitrateUsesMegabits(t *testing.T) {
+	got := formatBitrate(125000)
+	if got != "1.00 Mb/s" {
+		t.Fatalf("formatBitrate() = %q, want %q", got, "1.00 Mb/s")
+	}
+}
+
+func TestFormatDecimalBytesUsesReadableUnits(t *testing.T) {
+	got := formatDecimalBytes(2_000_000)
+	if got != "2.00 MB" {
+		t.Fatalf("formatDecimalBytes() = %q, want %q", got, "2.00 MB")
 	}
 }

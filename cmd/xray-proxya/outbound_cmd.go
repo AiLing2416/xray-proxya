@@ -1,13 +1,17 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
+	"sync"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
@@ -31,9 +35,33 @@ type ProbeResult struct {
 	IPv6 string
 }
 
+type SpeedResult struct {
+	Link                string
+	Duration            time.Duration
+	BytesTransferred    int64
+	Low20SpeedBps       float64
+	AvgSpeedBps         float64
+	PeakSpeedBps        float64
+	IdleLatencyAvg      time.Duration
+	LoadLatencyAvg      time.Duration
+	LoadLatencyWorst5   time.Duration
+	LoadLatencySamples  int
+	LoadLatencyLossRate float64
+}
+
 var (
 	outboundIPv4 bool
 	outboundIPv6 bool
+	speedLink    string
+	speedTime    int
+)
+
+const (
+	defaultSpeedTestLink    = "https://speed.cloudflare.com/__down?bytes=50000000"
+	maxSpeedTestSeconds     = 3600
+	speedSampleInterval     = time.Second
+	latencyProbeInterval    = time.Second
+	defaultLatencyProbeRuns = 5
 )
 
 var outboundCmd = &cobra.Command{
@@ -563,7 +591,7 @@ func fetchJSON(client *http.Client, url string, target interface{}) bool {
 	if err != nil {
 		return false
 	}
-	req.Header.Set("User-Agent", "xray-proxya/0.2.6")
+	req.Header.Set("User-Agent", "xray-proxya/"+Version)
 	resp, err := client.Do(req)
 	if err != nil {
 		return false
@@ -580,7 +608,7 @@ func fetchText(client *http.Client, url string) string {
 	if err != nil {
 		return ""
 	}
-	req.Header.Set("User-Agent", "xray-proxya/0.2.6")
+	req.Header.Set("User-Agent", "xray-proxya/"+Version)
 	resp, err := client.Do(req)
 	if err != nil {
 		return ""
@@ -862,6 +890,67 @@ without changing the running service.
 	},
 }
 
+var speedOutboundCmd = &cobra.Command{
+	Use:   "speed [alias]",
+	Short: "Measure relay throughput, latency under load, and packet loss",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		alias := args[0]
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
+		var target *config.CustomOutbound
+		for _, co := range cfg.CustomOutbounds {
+			if co.Alias == alias {
+				copy := co
+				target = &copy
+				break
+			}
+		}
+		if target == nil {
+			fmt.Printf("❌ Relay '%s' not found.\n", alias)
+			return
+		}
+
+		link := strings.TrimSpace(speedLink)
+		if link == "" {
+			link = defaultSpeedTestLink
+		}
+		if _, err := url.ParseRequestURI(link); err != nil {
+			fmt.Printf("❌ Invalid speed test link: %v\n", err)
+			return
+		}
+
+		duration := 0
+		if speedTime > 0 {
+			if speedTime > maxSpeedTestSeconds {
+				fmt.Printf("❌ Speed test duration must be between 1 and %d seconds.\n", maxSpeedTestSeconds)
+				return
+			}
+			duration = speedTime
+		}
+
+		fmt.Printf("🚀 Running speed test for [%s]\n", alias)
+		fmt.Printf("   Link: %s\n", link)
+		if duration > 0 {
+			fmt.Printf("   Duration: %ds\n", duration)
+		} else {
+			fmt.Printf("   Duration: single pass\n")
+		}
+
+		result, err := runIsolatedSpeedTest(cfg, *target, link, duration)
+		if err != nil {
+			fmt.Printf("❌ Speed test failed: %v\n", err)
+			return
+		}
+		printSpeedResults(alias, result)
+	},
+}
+
 func probeBoundProxy(proxyURL string) map[string]string {
 	results := map[string]string{"IPv4": "N/A", "IPv6": "N/A"}
 	transport := &http.Transport{Proxy: func(req *http.Request) (*url.URL, error) { return url.Parse(proxyURL) }}
@@ -885,6 +974,20 @@ func printProxyProbe(alias, proto string, results map[string]string) {
 
 func printProbeResults(alias string, results ProbeResult) {
 	fmt.Printf("[%s] -> TCP: %s | UDP: %s | DNS: %s | IPv4: %s | IPv6: %s\n", alias, results.TCP, results.UDP, results.DNS, results.IPv4, results.IPv6)
+}
+
+func printSpeedResults(alias string, result SpeedResult) {
+	fmt.Printf("\n[%s] Speed Test\n", alias)
+	fmt.Printf("  Link: %s\n", result.Link)
+	fmt.Printf("  Duration: %s\n", result.Duration.Round(time.Millisecond))
+	fmt.Printf("  Data: %s\n", formatDecimalBytes(result.BytesTransferred))
+	fmt.Printf("  Low 20%%: %s\n", formatBitrate(result.Low20SpeedBps))
+	fmt.Printf("  Average: %s\n", formatBitrate(result.AvgSpeedBps))
+	fmt.Printf("  Peak: %s\n", formatBitrate(result.PeakSpeedBps))
+	fmt.Printf("  Idle Latency Avg: %s\n", formatDurationMetric(result.IdleLatencyAvg))
+	fmt.Printf("  Load Latency Avg: %s\n", formatDurationMetric(result.LoadLatencyAvg))
+	fmt.Printf("  Load Worst 5%%: %s\n", formatDurationMetric(result.LoadLatencyWorst5))
+	fmt.Printf("  Packet Loss: %.1f%% (%d samples)\n\n", result.LoadLatencyLossRate*100, result.LoadLatencySamples)
 }
 
 func choosePrimaryIP(v4, v6 string) string {
@@ -916,6 +1019,353 @@ func valueOrNA(v string) string {
 		return "N/A"
 	}
 	return v
+}
+
+func startIsolatedOutboundInstance(cfg *config.UserConfig, alias string) (*http.Client, string, func(), error) {
+	testSocksPort, _ := xray.GetFreePort()
+	apiPort, _ := xray.GetFreePort()
+
+	testCfg := *cfg
+	testCfg.Role = config.RoleServer
+	testCfg.Gateway = config.GatewayConfig{}
+
+	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
+	for _, m := range testCfg.ActiveModes {
+		if m.Enabled {
+			p, _ := xray.GetFreePort()
+			overrides[string(m.Mode)] = p
+		}
+	}
+
+	jsonData, err := xray.GenerateXrayJSON(&testCfg, overrides, alias)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	_, cleanup, err := xray.StartXrayTemp(jsonData)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
+	if err := waitForLocalTCPPort(socksAddr, 5*time.Second); err != nil {
+		cleanup()
+		return nil, "", nil, err
+	}
+
+	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
+	if err != nil {
+		cleanup()
+		return nil, "", nil, err
+	}
+
+	transport := &http.Transport{
+		Dial:                  dialer.Dial,
+		DisableCompression:    true,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 15 * time.Second,
+	}
+	client := &http.Client{Transport: transport, Timeout: 0}
+	return client, socksAddr, cleanup, nil
+}
+
+func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link string, durationSeconds int) (SpeedResult, error) {
+	result := SpeedResult{Link: link}
+
+	client, _, cleanup, err := startIsolatedOutboundInstance(cfg, co.Alias)
+	if err != nil {
+		return result, err
+	}
+	defer cleanup()
+
+	idleLatencies := measureLatencySeries(client, link, defaultLatencyProbeRuns)
+	result.IdleLatencyAvg = averageDuration(idleLatencies)
+
+	var deadline time.Time
+	if durationSeconds > 0 {
+		deadline = time.Now().Add(time.Duration(durationSeconds) * time.Second)
+	}
+
+	probeStop := make(chan struct{})
+	var wg sync.WaitGroup
+	var loadLatencies []time.Duration
+	var loadProbeTotal int
+	var loadProbeFailed int
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(latencyProbeInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-probeStop:
+				return
+			case <-ticker.C:
+				loadProbeTotal++
+				latency, err := measureLatency(client, link)
+				if err != nil {
+					loadProbeFailed++
+					continue
+				}
+				loadLatencies = append(loadLatencies, latency)
+			}
+		}
+	}()
+
+	startedAt := time.Now()
+	var samples []float64
+	probesClosed := false
+
+	for {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			break
+		}
+		if err := runSpeedPass(client, link, deadline, &result.BytesTransferred, &samples); err != nil {
+			if !probesClosed {
+				close(probeStop)
+				probesClosed = true
+			}
+			wg.Wait()
+			if result.BytesTransferred == 0 {
+				return result, err
+			}
+			break
+		}
+		if deadline.IsZero() {
+			break
+		}
+	}
+
+	if !probesClosed {
+		close(probeStop)
+	}
+	wg.Wait()
+
+	if result.BytesTransferred == 0 {
+		return result, fmt.Errorf("no data transferred")
+	}
+
+	result.Duration = time.Since(startedAt)
+	if !deadline.IsZero() {
+		target := time.Duration(durationSeconds) * time.Second
+		if result.Duration > target {
+			result.Duration = target
+		}
+	}
+	if result.Duration <= 0 {
+		result.Duration = time.Millisecond
+	}
+
+	result.AvgSpeedBps = float64(result.BytesTransferred) / result.Duration.Seconds()
+	result.PeakSpeedBps = peakSample(samples)
+	result.Low20SpeedBps = lowPercentileAverage(samples, 0.20)
+	result.LoadLatencyAvg = averageDuration(loadLatencies)
+	result.LoadLatencyWorst5 = worstPercentileAverage(loadLatencies, 0.05)
+	result.LoadLatencySamples = loadProbeTotal
+	if loadProbeTotal > 0 {
+		result.LoadLatencyLossRate = float64(loadProbeFailed) / float64(loadProbeTotal)
+	}
+	return result, nil
+}
+
+func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalBytes *int64, samples *[]float64) error {
+	ctx := context.Background()
+	if !deadline.IsZero() {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
+	}
+	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "xray-proxya/"+Version)
+	req.Header.Set("Accept-Encoding", "identity")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	buf := make([]byte, 128*1024)
+	lastSampleAt := time.Now()
+	var intervalBytes int64
+
+	for {
+		if !deadline.IsZero() && time.Now().After(deadline) {
+			flushSpeedSample(samples, intervalBytes, time.Since(lastSampleAt))
+			return nil
+		}
+
+		n, err := resp.Body.Read(buf)
+		now := time.Now()
+		if n > 0 {
+			*totalBytes += int64(n)
+			intervalBytes += int64(n)
+		}
+		if elapsed := now.Sub(lastSampleAt); elapsed >= speedSampleInterval {
+			flushSpeedSample(samples, intervalBytes, elapsed)
+			intervalBytes = 0
+			lastSampleAt = now
+		}
+		if err == io.EOF {
+			flushSpeedSample(samples, intervalBytes, time.Since(lastSampleAt))
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func flushSpeedSample(samples *[]float64, bytes int64, elapsed time.Duration) {
+	if samples == nil || elapsed <= 0 {
+		return
+	}
+	if bytes < 0 {
+		bytes = 0
+	}
+	*samples = append(*samples, float64(bytes)/elapsed.Seconds())
+}
+
+func measureLatencySeries(client *http.Client, rawURL string, runs int) []time.Duration {
+	if runs < 1 {
+		runs = 1
+	}
+	out := make([]time.Duration, 0, runs)
+	for i := 0; i < runs; i++ {
+		latency, err := measureLatency(client, rawURL)
+		if err == nil {
+			out = append(out, latency)
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return out
+}
+
+func measureLatency(client *http.Client, rawURL string) (time.Duration, error) {
+	start := time.Now()
+	req, err := http.NewRequest("HEAD", rawURL, nil)
+	if err == nil {
+		req.Header.Set("User-Agent", "xray-proxya/"+Version)
+		resp, err := client.Do(req)
+		if err == nil {
+			io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
+			resp.Body.Close()
+			return time.Since(start), nil
+		}
+	}
+
+	start = time.Now()
+	req, err = http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("User-Agent", "xray-proxya/"+Version)
+	req.Header.Set("Range", "bytes=0-0")
+	req.Header.Set("Accept-Encoding", "identity")
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
+	resp.Body.Close()
+	return time.Since(start), nil
+}
+
+func averageDuration(values []time.Duration) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	var total time.Duration
+	for _, value := range values {
+		total += value
+	}
+	return time.Duration(int64(total) / int64(len(values)))
+}
+
+func worstPercentileAverage(values []time.Duration, percentile float64) time.Duration {
+	if len(values) == 0 {
+		return 0
+	}
+	cp := append([]time.Duration(nil), values...)
+	sort.Slice(cp, func(i, j int) bool { return cp[i] > cp[j] })
+	count := int(math.Ceil(float64(len(cp)) * percentile))
+	if count < 1 {
+		count = 1
+	}
+	return averageDuration(cp[:count])
+}
+
+func lowPercentileAverage(samples []float64, percentile float64) float64 {
+	if len(samples) == 0 {
+		return 0
+	}
+	cp := append([]float64(nil), samples...)
+	sort.Float64s(cp)
+	count := int(math.Ceil(float64(len(cp)) * percentile))
+	if count < 1 {
+		count = 1
+	}
+	var total float64
+	for _, sample := range cp[:count] {
+		total += sample
+	}
+	return total / float64(count)
+}
+
+func peakSample(samples []float64) float64 {
+	var peak float64
+	for _, sample := range samples {
+		if sample > peak {
+			peak = sample
+		}
+	}
+	return peak
+}
+
+func formatBitrate(bytesPerSecond float64) string {
+	if bytesPerSecond <= 0 {
+		return "N/A"
+	}
+	bitsPerSecond := bytesPerSecond * 8
+	switch {
+	case bitsPerSecond >= 1e9:
+		return fmt.Sprintf("%.2f Gb/s", bitsPerSecond/1e9)
+	case bitsPerSecond >= 1e6:
+		return fmt.Sprintf("%.2f Mb/s", bitsPerSecond/1e6)
+	case bitsPerSecond >= 1e3:
+		return fmt.Sprintf("%.2f Kb/s", bitsPerSecond/1e3)
+	default:
+		return fmt.Sprintf("%.0f b/s", bitsPerSecond)
+	}
+}
+
+func formatDecimalBytes(bytes int64) string {
+	if bytes <= 0 {
+		return "0 B"
+	}
+	units := []string{"B", "KB", "MB", "GB", "TB"}
+	value := float64(bytes)
+	idx := 0
+	for value >= 1000 && idx < len(units)-1 {
+		value /= 1000
+		idx++
+	}
+	return fmt.Sprintf("%.2f %s", value, units[idx])
+}
+
+func formatDurationMetric(d time.Duration) string {
+	if d <= 0 {
+		return "N/A"
+	}
+	return fmt.Sprintf("%dms", d.Milliseconds())
 }
 
 var deleteOutboundCmd = &cobra.Command{
@@ -1083,44 +1533,17 @@ var setInternalProxyCmd = &cobra.Command{
 
 func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResult {
 	results := ProbeResult{TCP: "FAIL", UDP: "FAIL", DNS: "FAIL", IPv4: "N/A", IPv6: "N/A"}
-	testSocksPort, _ := xray.GetFreePort()
-	apiPort, _ := xray.GetFreePort()
-
-	testCfg := *cfg
-	testCfg.Role = config.RoleServer
-	testCfg.Gateway = config.GatewayConfig{}
-
-	// v0.2.4: Fully randomized overrides for test instance
-	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-	for _, m := range testCfg.ActiveModes {
-		if m.Enabled {
-			p, _ := xray.GetFreePort()
-			overrides[string(m.Mode)] = p
-		}
-	}
-
-	jsonData, err := xray.GenerateXrayJSON(&testCfg, overrides, co.Alias)
+	client, socksAddr, cleanup, err := startIsolatedOutboundInstance(cfg, co.Alias)
 	if err != nil {
 		return results
 	}
-
-	cmd, cleanup, err := xray.StartXrayTemp(jsonData)
-	if err != nil {
-		return results
-	}
-	_ = cmd // explicitly ignore if we only need cleanup
 	defer cleanup()
 
-	// Wait a bit for Xray to start
-	time.Sleep(1 * time.Second)
-
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
 	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
 	if err != nil {
 		return results
 	}
-
-	httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 10 * time.Second}
+	httpClient := client
 
 	// 1. Direct TCP Test (Bypass DNS)
 	if conn, err := dialer.Dial("tcp", "8.8.8.8:443"); err == nil {
@@ -1178,6 +1601,8 @@ func init() {
 	infoOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
+	speedOutboundCmd.Flags().StringVarP(&speedLink, "link", "l", "", "Speed test download URL")
+	speedOutboundCmd.Flags().IntVarP(&speedTime, "time", "t", 0, "Continuous test duration in seconds (max 3600)")
 	bindInterfaceCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:
@@ -1201,6 +1626,6 @@ func init() {
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
-	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd, resolveOutboundCmd)
+	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }
