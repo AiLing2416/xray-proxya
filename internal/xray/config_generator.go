@@ -279,7 +279,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			clients = append(clients, map[string]interface{}{"id": co.UserUUID, "email": relayUserEmail(co.Alias)})
 		}
 		for _, guest := range userCfg.Guests {
-			if guest.UUID == "" {
+			if !guest.Enabled || guest.UUID == "" {
 				continue
 			}
 			clients = append(clients, map[string]interface{}{"id": guest.UUID, "email": guestUserEmail(guest.Alias)})
@@ -360,7 +360,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		xc["outbounds"] = append(xc["outbounds"].([]interface{}), out)
 	}
 	for _, guest := range userCfg.Guests {
-		if guest.OutboundConf == nil {
+		if !guest.Enabled || guest.OutboundConf == nil {
 			continue
 		}
 		out := deepCopyMap(guest.OutboundConf)
@@ -421,6 +421,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		})
 	}
 	for _, guest := range userCfg.Guests {
+		if !guest.Enabled {
+			continue
+		}
 		targetOutbound := "direct"
 		if guest.OutboundConf != nil {
 			targetOutbound = guestOutboundTag(guest.Alias)

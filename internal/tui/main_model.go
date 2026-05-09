@@ -8,7 +8,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
-	"golang.org/x/net/proxy"
 	"net/http"
 	"os"
 	"os/exec"
@@ -128,7 +127,7 @@ func runRelayTest(cfg *config.UserConfig, co config.CustomOutbound) tea.Cmd {
 		defer cleanup()
 
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-		dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
+		dialer, err := utils.NewSOCKS5Dialer(socksAddr)
 		if err != nil {
 			return res
 		}

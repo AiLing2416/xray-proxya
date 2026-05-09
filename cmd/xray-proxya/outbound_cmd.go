@@ -16,7 +16,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
-	"golang.org/x/net/proxy"
 )
 
 type Profile struct {
@@ -518,7 +517,11 @@ var infoOutboundCmd = &cobra.Command{
 		time.Sleep(1 * time.Second)
 
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-		dialer, _ := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
+		dialer, err := utils.NewSOCKS5Dialer(socksAddr)
+		if err != nil {
+			fmt.Printf("❌ Failed to build SOCKS5 dialer: %v\n", err)
+			return
+		}
 		httpClient := &http.Client{
 			Transport: &http.Transport{
 				Dial:                  dialer.Dial,
@@ -1112,7 +1115,7 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResu
 	time.Sleep(1 * time.Second)
 
 	socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
+	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
 	if err != nil {
 		return results
 	}

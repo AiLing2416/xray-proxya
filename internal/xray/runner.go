@@ -171,8 +171,7 @@ func RestartXrayService() error {
 
 	if isRoot {
 		if _, err := exec.LookPath("systemctl"); err == nil {
-			// Check system mode
-			if exec.Command("systemctl", "list-unit-files", "xray-proxya.service").Run() == nil {
+			if hasSystemdService("xray-proxya.service") {
 				return exec.Command("systemctl", "restart", "xray-proxya").Run()
 			}
 		}
@@ -192,7 +191,7 @@ func StartService() error {
 	isRoot := os.Geteuid() == 0
 	if isRoot {
 		if _, err := exec.LookPath("systemctl"); err == nil {
-			if exec.Command("systemctl", "list-unit-files", "xray-proxya.service").Run() == nil {
+			if hasSystemdService("xray-proxya.service") {
 				return exec.Command("systemctl", "start", "xray-proxya").Run()
 			}
 		}
@@ -212,7 +211,7 @@ func StopService() {
 	isRoot := os.Geteuid() == 0
 	if isRoot {
 		if _, err := exec.LookPath("systemctl"); err == nil {
-			if exec.Command("systemctl", "list-unit-files", "xray-proxya.service").Run() == nil {
+			if hasSystemdService("xray-proxya.service") {
 				exec.Command("systemctl", "stop", "xray-proxya").Run()
 				return
 			}
@@ -223,6 +222,19 @@ func StopService() {
 		}
 	}
 	StopXray()
+}
+
+func hasSystemdService(unit string) bool {
+	for _, path := range []string{
+		filepath.Join("/etc/systemd/system", unit),
+		filepath.Join("/lib/systemd/system", unit),
+		filepath.Join("/usr/lib/systemd/system", unit),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // --- Xray Execution Core ---

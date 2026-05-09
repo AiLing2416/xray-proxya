@@ -8,8 +8,10 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 	"xray-proxya/internal/camouflage"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/quota"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -90,61 +92,119 @@ var runCmd = &cobra.Command{
 			}()
 		}
 
-		fmt.Println("🔍 Generating configuration...")
+		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
+		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		overrides := make(map[string]int)
 		if camoPort > 0 {
 			overrides["camouflage"] = camoPort
 		}
-		jsonData, err := xray.GenerateXrayJSON(cfg, overrides, "")
-		if err != nil {
-			fmt.Printf("❌ Failed to generate config: %v\n", err)
-			return
+		quotaMonitor := quota.NewMonitor()
+
+		startProcess := func(currentCfg *config.UserConfig) (*exec.Cmd, chan error, error) {
+			fmt.Println("🔍 Generating configuration...")
+			jsonData, err := xray.GenerateXrayJSON(currentCfg, overrides, "")
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := os.WriteFile(confPath, jsonData, 0644); err != nil {
+				return nil, nil, err
+			}
+
+			fmt.Println("🚀 Starting Xray core in foreground...")
+			process, err := xray.StartXray(confPath)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600); err != nil {
+				process.Process.Kill()
+				return nil, nil, err
+			}
+
+			waitCh := make(chan error, 1)
+			go func() {
+				waitCh <- process.Wait()
+			}()
+			return process, waitCh, nil
 		}
 
-		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
-		os.WriteFile(confPath, jsonData, 0644)
-
-		fmt.Println("🚀 Starting Xray core in foreground...")
-		process, err := xray.StartXray(confPath)
-		if err != nil {
-			fmt.Printf("❌ Failed to start Xray: %v\n", err)
-			return
+		stopProcess := func(process *exec.Cmd, waitCh chan error) error {
+			if process == nil || process.Process == nil {
+				return nil
+			}
+			_ = process.Process.Signal(syscall.SIGTERM)
+			select {
+			case err := <-waitCh:
+				return err
+			case <-time.After(5 * time.Second):
+				_ = process.Process.Kill()
+				return <-waitCh
+			}
 		}
-
-		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
-		os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600)
 
 		cleanup := func() {
 			os.Remove(pidPath)
 		}
 
-		waitCh := make(chan error, 1)
-		go func() {
-			waitCh <- process.Wait()
-		}()
+		process, waitCh, err := startProcess(cfg)
+		if err != nil {
+			fmt.Printf("❌ Failed to start Xray: %v\n", err)
+			return
+		}
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigChan)
+		quotaTicker := time.NewTicker(30 * time.Second)
+		defer quotaTicker.Stop()
 
-		select {
-		case sig := <-sigChan:
-			fmt.Printf("\n🛑 Stopping Xray (%s)...\n", sig)
-			process.Process.Signal(syscall.SIGTERM)
-			<-waitCh
-			cleanup()
-		case err := <-waitCh:
-			cleanup()
-			if err != nil {
-				fmt.Printf("\n❌ Xray core exited unexpectedly: %v\n", err)
-				if exitErr, ok := err.(*exec.ExitError); ok {
-					if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-						os.Exit(status.ExitStatus())
+		for {
+			select {
+			case sig := <-sigChan:
+				fmt.Printf("\n🛑 Stopping Xray (%s)...\n", sig)
+				_ = stopProcess(process, waitCh)
+				cleanup()
+				return
+			case err := <-waitCh:
+				cleanup()
+				if err != nil {
+					fmt.Printf("\n❌ Xray core exited unexpectedly: %v\n", err)
+					if exitErr, ok := err.(*exec.ExitError); ok {
+						if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+							os.Exit(status.ExitStatus())
+						}
+					}
+					os.Exit(1)
+				}
+				fmt.Println("\nℹ️ Xray core exited normally.")
+				return
+			case <-quotaTicker.C:
+				allStats, err := xray.GetXrayStats(cfg.APIInbound)
+				if err != nil {
+					continue
+				}
+				update := quotaMonitor.UpdateGuests(cfg, allStats, time.Now())
+				if !update.Changed {
+					continue
+				}
+				if err := cfg.Save(); err != nil {
+					fmt.Printf("⚠️  Failed to persist guest quota state: %v\n", err)
+					continue
+				}
+				if update.RestartNeeded {
+					for _, msg := range update.Messages {
+						fmt.Printf("ℹ️  Guest quota: %s\n", msg)
+					}
+					fmt.Println("🔄 Reloading Xray to apply guest quota changes...")
+					_ = stopProcess(process, waitCh)
+					quotaMonitor.Reset()
+					process, waitCh, err = startProcess(cfg)
+					if err != nil {
+						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", err)
+						cleanup()
+						return
 					}
 				}
-				os.Exit(1)
 			}
-			fmt.Println("\nℹ️ Xray core exited normally.")
 		}
 	},
 }
