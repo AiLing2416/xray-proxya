@@ -35,7 +35,9 @@ func testApplyConfig() *config.UserConfig {
 			TargetAlias: "guest1",
 			Token:       "token1",
 		}},
-		SubPort: 8443,
+		SubPort:      8443,
+		GuestSubPort: 9443,
+		GuestSubBind: "127.0.0.1",
 		IPv6Pool: config.IPv6Config{
 			Enabled:      true,
 			Subnet:       "2001:db8::/64",
@@ -90,6 +92,20 @@ func TestBuildApplyImpactGuestChange(t *testing.T) {
 	}
 }
 
+func TestBuildApplyImpactGuestSubTokenChange(t *testing.T) {
+	active := testApplyConfig()
+	staging := testApplyConfig()
+	staging.Guests[0].SubToken = "token-guest"
+
+	impact := buildApplyImpact(active, staging)
+	if impact.XrayConfigChanged {
+		t.Fatalf("expected guest sub token change to skip Xray restart")
+	}
+	if !impact.SubContentChanged {
+		t.Fatalf("expected guest sub token change to affect sub content")
+	}
+}
+
 func TestBuildApplyImpactGatewayRuntimeOnly(t *testing.T) {
 	active := testApplyConfig()
 	staging := testApplyConfig()
@@ -115,5 +131,19 @@ func TestBuildApplyImpactRelayAliasChange(t *testing.T) {
 	}
 	if !impact.SubContentChanged {
 		t.Fatalf("expected relay alias change to affect generated subscriptions")
+	}
+}
+
+func TestBuildApplyImpactGuestSubListenerChange(t *testing.T) {
+	active := testApplyConfig()
+	staging := testApplyConfig()
+	staging.GuestSubPort = 9555
+
+	impact := buildApplyImpact(active, staging)
+	if impact.XrayConfigChanged {
+		t.Fatalf("expected guest sub listener change to skip Xray restart")
+	}
+	if !impact.SubListenerChanged {
+		t.Fatalf("expected guest sub listener change to restart sub listener")
 	}
 }

@@ -45,6 +45,8 @@ type UserConfig struct {
 	Gateway         GatewayConfig    `json:"gateway"`
 	Subscriptions   []Subscription   `json:"subscriptions"`
 	SubPort         int              `json:"sub_port"`
+	GuestSubPort    int              `json:"guest_sub_port,omitempty"`
+	GuestSubBind    string           `json:"guest_sub_bind,omitempty"`
 	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
 }
 
@@ -82,6 +84,7 @@ type GuestConfig struct {
 	UsedBytes      int64                  `json:"used_bytes"`
 	ResetDay       int                    `json:"reset_day"`               // 1-31
 	LastResetYM    string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
+	SubToken       string                 `json:"sub_token,omitempty"`
 	OutboundLink   string                 `json:"outbound_link,omitempty"` // For custom routing
 	OutboundConf   map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
 }
@@ -243,6 +246,10 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if cfg.Role == RoleGateway && cfg.Gateway.Mode == "" {
 		cfg.Gateway.Mode = "tun"
 		changes = append(changes, "set missing gateway.mode=tun")
+	}
+	if strings.TrimSpace(cfg.GuestSubBind) == "" {
+		cfg.GuestSubBind = "127.0.0.1"
+		changes = append(changes, "set missing guest_sub_bind=127.0.0.1")
 	}
 
 	for i := range cfg.CustomOutbounds {
