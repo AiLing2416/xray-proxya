@@ -265,6 +265,31 @@ func TestGenerateXrayJSONCanDisableGatewayTunForRuntimeTest(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONUsesConfiguredTestInboundPort(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role:        config.RoleServer,
+		APIInbound:  10085,
+		TestInbound: 23456,
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds := parsed["inbounds"].([]interface{})
+	found := false
+	for _, rawInbound := range inbounds {
+		inbound := rawInbound.(map[string]interface{})
+		if inbound["tag"] != "test-socks" {
+			continue
+		}
+		found = true
+		if got := int(inbound["port"].(float64)); got != 23456 {
+			t.Fatalf("test-socks port = %d, want 23456", got)
+		}
+	}
+	if !found {
+		t.Fatalf("test-socks inbound not found")
+	}
+}
+
 func TestGenerateXrayJSONSkipsDisabledGuests(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
