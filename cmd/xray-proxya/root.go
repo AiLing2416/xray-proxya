@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	Version       = "0.2.10"
+	Version       = "0.3.1"
 	shellOverride string
 	setupDeps     bool
 )
