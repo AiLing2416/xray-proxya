@@ -64,16 +64,26 @@ type Subscription struct {
 	Token       string `json:"token"`        // random URL path token
 }
 
+type GuestDisabledReason string
+
+const (
+	GuestDisabledNone         GuestDisabledReason = ""
+	GuestDisabledManual       GuestDisabledReason = "manual"
+	GuestDisabledQuotaReached GuestDisabledReason = "quota_reached"
+	GuestDisabledQuotaZero    GuestDisabledReason = "quota_zero"
+)
+
 type GuestConfig struct {
-	Alias        string                 `json:"alias"`
-	UUID         string                 `json:"uuid"`
-	Enabled      bool                   `json:"enabled"`
-	QuotaGB      float64                `json:"quota_gb"` // -1 for unlimited, 0 for paused
-	UsedBytes    int64                  `json:"used_bytes"`
-	ResetDay     int                    `json:"reset_day"`               // 1-31
-	LastResetYM  string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
-	OutboundLink string                 `json:"outbound_link,omitempty"` // For custom routing
-	OutboundConf map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
+	Alias          string                 `json:"alias"`
+	UUID           string                 `json:"uuid"`
+	Enabled        bool                   `json:"enabled"`
+	DisabledReason GuestDisabledReason    `json:"disabled_reason,omitempty"`
+	QuotaGB        float64                `json:"quota_gb"` // -1 for unlimited, 0 for paused
+	UsedBytes      int64                  `json:"used_bytes"`
+	ResetDay       int                    `json:"reset_day"`               // 1-31
+	LastResetYM    string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
+	OutboundLink   string                 `json:"outbound_link,omitempty"` // For custom routing
+	OutboundConf   map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
 }
 
 type GatewayConfig struct {
@@ -260,6 +270,25 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		if guest.UUID == "" {
 			guest.UUID = randomHexString(32)
 			changes = append(changes, "generated missing UUID for guest "+guest.Alias)
+		}
+		switch guest.DisabledReason {
+		case GuestDisabledNone, GuestDisabledManual, GuestDisabledQuotaReached, GuestDisabledQuotaZero:
+		default:
+			guest.DisabledReason = GuestDisabledNone
+			changes = append(changes, "cleared invalid disabled_reason for guest "+guest.Alias)
+		}
+		if guest.Enabled && guest.DisabledReason != GuestDisabledNone {
+			guest.DisabledReason = GuestDisabledNone
+			changes = append(changes, "cleared stale disabled_reason for enabled guest "+guest.Alias)
+		}
+		if !guest.Enabled && guest.DisabledReason == GuestDisabledNone {
+			if guest.QuotaGB == 0 {
+				guest.DisabledReason = GuestDisabledQuotaZero
+				changes = append(changes, "backfilled disabled_reason=quota_zero for guest "+guest.Alias)
+			} else {
+				guest.DisabledReason = GuestDisabledManual
+				changes = append(changes, "backfilled disabled_reason=manual for guest "+guest.Alias)
+			}
 		}
 		if guest.ResetDay < 1 || guest.ResetDay > 31 {
 			guest.ResetDay = 1

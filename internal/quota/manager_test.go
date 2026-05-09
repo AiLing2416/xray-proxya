@@ -1,6 +1,8 @@
 package quota
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
@@ -29,6 +31,9 @@ func TestUpdateGuestsTracksUsageWithoutRestart(t *testing.T) {
 	if cfg.Guests[0].UsedBytes != 300 {
 		t.Fatalf("UsedBytes = %d, want 300", cfg.Guests[0].UsedBytes)
 	}
+	if cfg.Guests[0].DisabledReason != config.GuestDisabledNone {
+		t.Fatalf("DisabledReason = %q, want empty", cfg.Guests[0].DisabledReason)
+	}
 }
 
 func TestUpdateGuestsDisablesExceededQuota(t *testing.T) {
@@ -50,6 +55,9 @@ func TestUpdateGuestsDisablesExceededQuota(t *testing.T) {
 	}
 	if cfg.Guests[0].Enabled {
 		t.Fatalf("guest should be disabled after quota exhaustion")
+	}
+	if cfg.Guests[0].DisabledReason != config.GuestDisabledQuotaReached {
+		t.Fatalf("DisabledReason = %q, want %q", cfg.Guests[0].DisabledReason, config.GuestDisabledQuotaReached)
 	}
 }
 
@@ -73,6 +81,9 @@ func TestUpdateGuestsMonthlyResetReenablesGuest(t *testing.T) {
 	}
 	if cfg.Guests[0].LastResetYM != "2026-05" {
 		t.Fatalf("LastResetYM = %q, want 2026-05", cfg.Guests[0].LastResetYM)
+	}
+	if cfg.Guests[0].DisabledReason != config.GuestDisabledNone {
+		t.Fatalf("DisabledReason = %q, want empty", cfg.Guests[0].DisabledReason)
 	}
 }
 
@@ -116,5 +127,32 @@ func TestUpdateGuestsAccumulatesDeltasAcrossPolls(t *testing.T) {
 
 	if cfg.Guests[0].UsedBytes != 180 {
 		t.Fatalf("UsedBytes = %d, want 180", cfg.Guests[0].UsedBytes)
+	}
+}
+
+func TestMonitorSaveAndLoadState(t *testing.T) {
+	tmp := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	if err := os.Setenv("HOME", tmp); err != nil {
+		t.Fatalf("Setenv HOME: %v", err)
+	}
+	defer os.Setenv("HOME", oldHome)
+
+	monitor := NewMonitor()
+	monitor.lastObserved["alice"] = 123
+	if err := monitor.Save(); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	loaded, err := LoadMonitor()
+	if err != nil {
+		t.Fatalf("LoadMonitor() error = %v", err)
+	}
+	if loaded.lastObserved["alice"] != 123 {
+		t.Fatalf("loaded lastObserved = %d, want 123", loaded.lastObserved["alice"])
+	}
+
+	if _, err := os.Stat(filepath.Join(config.GetConfigDir(), "quota-monitor.json")); err != nil {
+		t.Fatalf("quota-monitor.json not found: %v", err)
 	}
 }

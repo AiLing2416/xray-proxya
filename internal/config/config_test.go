@@ -38,6 +38,9 @@ func TestBackfillDefaultsPopulatesMissingFields(t *testing.T) {
 	if cfg.Guests[0].UUID == "" {
 		t.Fatalf("Guest UUID was not generated")
 	}
+	if cfg.Guests[0].DisabledReason != GuestDisabledQuotaZero {
+		t.Fatalf("DisabledReason = %q, want %q", cfg.Guests[0].DisabledReason, GuestDisabledQuotaZero)
+	}
 	if cfg.Guests[0].ResetDay != 1 {
 		t.Fatalf("ResetDay = %d, want 1", cfg.Guests[0].ResetDay)
 	}
@@ -65,5 +68,23 @@ func TestBackfillDefaultsGatewayMode(t *testing.T) {
 	}
 	if len(cfg.ActiveModes) != 0 {
 		t.Fatalf("gateway config should not auto-expand active modes; got %d", len(cfg.ActiveModes))
+	}
+}
+
+func TestBackfillDefaultsSetsDisabledReasonForDisabledGuest(t *testing.T) {
+	cfg := &UserConfig{
+		Guests: []GuestConfig{
+			{Alias: "guest-a", Enabled: false, QuotaGB: 0},
+			{Alias: "guest-b", Enabled: false, QuotaGB: 5},
+		},
+	}
+
+	cfg.BackfillDefaults()
+
+	if cfg.Guests[0].DisabledReason != GuestDisabledQuotaZero {
+		t.Fatalf("guest-a DisabledReason = %q, want %q", cfg.Guests[0].DisabledReason, GuestDisabledQuotaZero)
+	}
+	if cfg.Guests[1].DisabledReason != GuestDisabledManual {
+		t.Fatalf("guest-b DisabledReason = %q, want %q", cfg.Guests[1].DisabledReason, GuestDisabledManual)
 	}
 }
