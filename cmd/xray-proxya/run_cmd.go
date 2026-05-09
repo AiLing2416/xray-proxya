@@ -22,6 +22,8 @@ var (
 	runAudit bool
 )
 
+const guestQuotaCheckInterval = 6 * time.Hour
+
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run Xray core in foreground",
@@ -98,7 +100,11 @@ var runCmd = &cobra.Command{
 		if camoPort > 0 {
 			overrides["camouflage"] = camoPort
 		}
-		quotaMonitor := quota.NewMonitor()
+		quotaMonitor, err := quota.LoadMonitor()
+		if err != nil {
+			fmt.Printf("⚠️  Failed to load quota monitor state: %v\n", err)
+			quotaMonitor = quota.NewMonitor()
+		}
 
 		startProcess := func(currentCfg *config.UserConfig) (*exec.Cmd, chan error, error) {
 			fmt.Println("🔍 Generating configuration...")
@@ -154,7 +160,7 @@ var runCmd = &cobra.Command{
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigChan)
-		quotaTicker := time.NewTicker(30 * time.Second)
+		quotaTicker := time.NewTicker(guestQuotaCheckInterval)
 		defer quotaTicker.Stop()
 
 		for {
@@ -178,16 +184,12 @@ var runCmd = &cobra.Command{
 				fmt.Println("\nℹ️ Xray core exited normally.")
 				return
 			case <-quotaTicker.C:
-				allStats, err := xray.GetXrayStats(cfg.APIInbound)
+				update, err := checkGuestQuotaState(cfg, quotaMonitor, time.Now())
 				if err != nil {
+					fmt.Printf("⚠️  Guest quota check failed: %v\n", err)
 					continue
 				}
-				update := quotaMonitor.UpdateGuests(cfg, allStats, time.Now())
 				if !update.Changed {
-					continue
-				}
-				if err := cfg.Save(); err != nil {
-					fmt.Printf("⚠️  Failed to persist guest quota state: %v\n", err)
 					continue
 				}
 				if update.RestartNeeded {
@@ -197,6 +199,9 @@ var runCmd = &cobra.Command{
 					fmt.Println("🔄 Reloading Xray to apply guest quota changes...")
 					_ = stopProcess(process, waitCh)
 					quotaMonitor.Reset()
+					if err := quotaMonitor.Save(); err != nil {
+						fmt.Printf("⚠️  Failed to reset quota monitor state: %v\n", err)
+					}
 					process, waitCh, err = startProcess(cfg)
 					if err != nil {
 						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", err)

@@ -3,7 +3,10 @@ package main
 import (
 	"fmt"
 	"strconv"
+	"strings"
+	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/quota"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -35,33 +38,81 @@ func getGuestAliases() []string {
 	return aliases
 }
 
+func findGuest(cfg *config.UserConfig, alias string) (int, *config.GuestConfig) {
+	if cfg == nil {
+		return -1, nil
+	}
+	for i := range cfg.Guests {
+		if cfg.Guests[i].Alias == alias {
+			return i, &cfg.Guests[i]
+		}
+	}
+	return -1, nil
+}
+
+func formatGuestQuota(value float64) string {
+	switch {
+	case value < 0:
+		return "Unlimited"
+	case value == 0:
+		return "Paused"
+	case value >= 10:
+		return fmt.Sprintf("%.1fGB", value)
+	case value >= 1:
+		return fmt.Sprintf("%.2fGB", value)
+	default:
+		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", value), "0"), ".") + "GB"
+	}
+}
+
+func guestStateLabel(guest config.GuestConfig) string {
+	if guest.Enabled {
+		return "ON"
+	}
+	switch guest.DisabledReason {
+	case config.GuestDisabledQuotaReached:
+		return "QUOTA"
+	case config.GuestDisabledQuotaZero:
+		return "PAUSED"
+	case config.GuestDisabledManual:
+		return "PAUSED"
+	default:
+		return "OFF"
+	}
+}
+
+func guestReasonLabel(guest config.GuestConfig) string {
+	switch guest.DisabledReason {
+	case config.GuestDisabledManual:
+		return "manual"
+	case config.GuestDisabledQuotaReached:
+		return "quota reached"
+	case config.GuestDisabledQuotaZero:
+		return "quota=0"
+	default:
+		return "-"
+	}
+}
+
 var guestsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show all guests status and quota",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
+		cfg, _ := config.LoadConfig()
 		if cfg == nil {
 			return
 		}
-		fmt.Printf("\n%-12s | %-8s | %-15s | %-8s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "OUTBOUND")
-		fmt.Println("------------------------------------------------------------------------------------")
+		fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "OUTBOUND")
+		fmt.Println("----------------------------------------------------------------------------------------------------------------")
 		for _, g := range cfg.Guests {
-			state := "OFF"
-			if g.Enabled {
-				state = "ON"
-			}
-			limit := "Unlimited"
-			if g.QuotaGB > 0 {
-				limit = fmt.Sprintf("%.1fGB", g.QuotaGB)
-			} else if g.QuotaGB == 0 {
-				limit = "PAUSED"
-			}
+			state := guestStateLabel(g)
+			limit := formatGuestQuota(g.QuotaGB)
 			used := fmt.Sprintf("%.2fGB", float64(g.UsedBytes)/(1024*1024*1024))
 			out := "direct"
 			if g.OutboundLink != "" {
 				out = "custom-link"
 			}
-			fmt.Printf("%-12s | %-8s | %-15s | %-8d | %-s\n", g.Alias, state, used+"/"+limit, g.ResetDay, out)
+			fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-s\n", g.Alias, state, guestReasonLabel(g), used+"/"+limit, g.ResetDay, out)
 		}
 		fmt.Println()
 	},
@@ -96,7 +147,7 @@ var guestsAddCmd = &cobra.Command{
 			}
 		}
 		newG := config.GuestConfig{
-			Alias: alias, UUID: uuid.New().String(), Enabled: true, QuotaGB: -1, ResetDay: 1,
+			Alias: alias, UUID: uuid.New().String(), Enabled: true, DisabledReason: config.GuestDisabledNone, QuotaGB: -1, ResetDay: 1,
 		}
 		cfg.Guests = append(cfg.Guests, newG)
 		if err := cfg.SaveEx(true); err == nil {
@@ -152,14 +203,8 @@ var guestsSetCmd = &cobra.Command{
 		if cfg == nil {
 			return
 		}
-		idx := -1
-		for i, g := range cfg.Guests {
-			if g.Alias == alias {
-				idx = i
-				break
-			}
-		}
-		if idx == -1 {
+		idx, guest := findGuest(cfg, alias)
+		if idx == -1 || guest == nil {
 			fmt.Printf("❌ Guest '%s' not found.\n", alias)
 			return
 		}
@@ -168,6 +213,11 @@ var guestsSetCmd = &cobra.Command{
 		if quotaStr != "" {
 			if quotaStr == "reset" {
 				cfg.Guests[idx].UsedBytes = 0
+				if cfg.Guests[idx].DisabledReason == config.GuestDisabledQuotaReached && cfg.Guests[idx].QuotaGB > 0 {
+					cfg.Guests[idx].Enabled = true
+					cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
+					fmt.Printf("✅ Guest '%s' re-enabled after usage reset.\n", alias)
+				}
 				fmt.Printf("✅ Usage for '%s' reset to 0.\n", alias)
 				success = true
 			} else {
@@ -176,10 +226,14 @@ var guestsSetCmd = &cobra.Command{
 					cfg.Guests[idx].QuotaGB = val
 					if val == 0 {
 						cfg.Guests[idx].Enabled = false
+						cfg.Guests[idx].DisabledReason = config.GuestDisabledQuotaZero
 					} else {
-						cfg.Guests[idx].Enabled = true
+						if cfg.Guests[idx].DisabledReason != config.GuestDisabledManual {
+							cfg.Guests[idx].Enabled = true
+							cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
+						}
 					}
-					fmt.Printf("✅ Quota for '%s' set to %.1f GB.\n", alias, val)
+					fmt.Printf("✅ Quota for '%s' set to %s.\n", alias, formatGuestQuota(val))
 					success = true
 				}
 			}
@@ -213,6 +267,127 @@ var guestsSetCmd = &cobra.Command{
 			cfg.SaveEx(true)
 			fmt.Println("🚀 Run 'apply' to commit changes.")
 		}
+	},
+}
+
+var guestsPauseCmd = &cobra.Command{
+	Use:   "pause [alias]",
+	Short: "Pause a guest manually (STAGING)",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		idx, guest := findGuest(cfg, args[0])
+		if idx == -1 || guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		cfg.Guests[idx].Enabled = false
+		cfg.Guests[idx].DisabledReason = config.GuestDisabledManual
+		if err := cfg.SaveEx(true); err == nil {
+			fmt.Printf("✅ Guest '%s' paused in STAGING.\n", args[0])
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+		}
+	},
+}
+
+var guestsResumeCmd = &cobra.Command{
+	Use:   "resume [alias]",
+	Short: "Resume a paused guest (STAGING)",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		idx, guest := findGuest(cfg, args[0])
+		if idx == -1 || guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		if cfg.Guests[idx].QuotaGB == 0 {
+			fmt.Printf("❌ Guest '%s' still has quota=0. Set a positive quota first.\n", args[0])
+			return
+		}
+		cfg.Guests[idx].Enabled = true
+		cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
+		if err := cfg.SaveEx(true); err == nil {
+			fmt.Printf("✅ Guest '%s' resumed in STAGING.\n", args[0])
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+		}
+	},
+}
+
+var guestsInfoCmd = &cobra.Command{
+	Use:   "info [alias]",
+	Short: "Show detailed guest runtime state",
+	Args:  cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfig()
+		_, guest := findGuest(cfg, args[0])
+		if guest == nil {
+			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
+			return
+		}
+		out := "direct"
+		if guest.OutboundLink != "" {
+			out = "custom-link"
+		}
+		lastReset := guest.LastResetYM
+		if lastReset == "" {
+			lastReset = "-"
+		}
+		fmt.Printf("\nGuest: %s\n", guest.Alias)
+		fmt.Printf("UUID: %s\n", guest.UUID)
+		fmt.Printf("State: %s\n", guestStateLabel(*guest))
+		fmt.Printf("Reason: %s\n", guestReasonLabel(*guest))
+		fmt.Printf("Quota: %s\n", formatGuestQuota(guest.QuotaGB))
+		fmt.Printf("Used: %.2fGB\n", float64(guest.UsedBytes)/(1024*1024*1024))
+		fmt.Printf("Reset Day: %d\n", guest.ResetDay)
+		fmt.Printf("Last Reset Month: %s\n", lastReset)
+		fmt.Printf("Outbound: %s\n\n", out)
+	},
+}
+
+var guestsCheckCmd = &cobra.Command{
+	Use:   "check",
+	Short: "Check quota usage now and update active guest states",
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, err := config.LoadConfig()
+		if err != nil || cfg == nil {
+			fmt.Println("❌ Error: Failed to load active config.")
+			return
+		}
+		monitor, err := quota.LoadMonitor()
+		if err != nil {
+			fmt.Printf("⚠️  Failed to load quota monitor state: %v\n", err)
+			monitor = quota.NewMonitor()
+		}
+		update, err := checkGuestQuotaState(cfg, monitor, time.Now())
+		if err != nil {
+			fmt.Printf("❌ Guest check failed: %v\n", err)
+			return
+		}
+		if !update.Changed {
+			fmt.Println("ℹ️ No guest state changes were needed.")
+			return
+		}
+		for _, msg := range update.Messages {
+			fmt.Printf("ℹ️  %s\n", msg)
+		}
+		if update.RestartNeeded {
+			fmt.Println("🔄 Restarting service to apply guest state changes...")
+			if err := xray.RestartXrayService(); err != nil {
+				fmt.Printf("❌ State updated, but restart failed: %v\n", err)
+				return
+			}
+		}
+		fmt.Println("✅ Guest state check completed.")
 	},
 }
 
@@ -274,6 +449,6 @@ func init() {
 	guestsShowCmd.Flags().BoolP("ipv6", "6", false, "Use IPv6")
 	guestsShowCmd.Flags().BoolP("all", "a", false, "Show all available IPs")
 
-	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsShowCmd)
+	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsShowCmd)
 	rootCmd.AddCommand(guestsCmd)
 }

@@ -1,8 +1,11 @@
 package quota
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
@@ -18,8 +21,30 @@ type Monitor struct {
 	lastObserved map[string]int64
 }
 
+type persistedState struct {
+	LastObserved map[string]int64 `json:"last_observed"`
+}
+
 func NewMonitor() *Monitor {
 	return &Monitor{lastObserved: make(map[string]int64)}
+}
+
+func LoadMonitor() (*Monitor, error) {
+	data, err := os.ReadFile(statePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return NewMonitor(), nil
+		}
+		return nil, err
+	}
+	var state persistedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	if state.LastObserved == nil {
+		state.LastObserved = make(map[string]int64)
+	}
+	return &Monitor{lastObserved: state.LastObserved}, nil
 }
 
 func (m *Monitor) Reset() {
@@ -27,6 +52,22 @@ func (m *Monitor) Reset() {
 		return
 	}
 	m.lastObserved = make(map[string]int64)
+}
+
+func (m *Monitor) Save() error {
+	if m == nil {
+		return nil
+	}
+	path := statePath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	state := persistedState{LastObserved: m.lastObserved}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
 }
 
 func (m *Monitor) UpdateGuests(cfg *config.UserConfig, allStats map[string]int64, now time.Time) UpdateResult {
@@ -63,6 +104,7 @@ func (m *Monitor) UpdateGuests(cfg *config.UserConfig, allStats map[string]int64
 			}
 			if guest.QuotaGB > 0 && !guest.Enabled {
 				guest.Enabled = true
+				guest.DisabledReason = config.GuestDisabledNone
 				result.Changed = true
 			}
 			if guest.QuotaGB != 0 {
@@ -80,8 +122,9 @@ func (m *Monitor) UpdateGuests(cfg *config.UserConfig, allStats map[string]int64
 
 		switch {
 		case guest.QuotaGB == 0:
-			if guest.Enabled {
+			if guest.Enabled || guest.DisabledReason != config.GuestDisabledQuotaZero {
 				guest.Enabled = false
+				guest.DisabledReason = config.GuestDisabledQuotaZero
 				result.Changed = true
 				result.RestartNeeded = true
 				result.Messages = append(result.Messages, fmt.Sprintf("paused guest %s because quota is 0", guest.Alias))
@@ -90,6 +133,7 @@ func (m *Monitor) UpdateGuests(cfg *config.UserConfig, allStats map[string]int64
 			limitBytes := int64(math.Round(guest.QuotaGB * 1024 * 1024 * 1024))
 			if limitBytes > 0 && guest.UsedBytes >= limitBytes && guest.Enabled {
 				guest.Enabled = false
+				guest.DisabledReason = config.GuestDisabledQuotaReached
 				result.Changed = true
 				result.RestartNeeded = true
 				result.Messages = append(result.Messages, fmt.Sprintf("disabled guest %s after quota reached", guest.Alias))
@@ -150,4 +194,8 @@ func sanitizeGuestAlias(alias string) string {
 		return "default"
 	}
 	return out
+}
+
+func statePath() string {
+	return filepath.Join(config.GetConfigDir(), "quota-monitor.json")
 }
