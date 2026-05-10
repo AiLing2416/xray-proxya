@@ -58,32 +58,44 @@ func findSubscription(cfg *config.UserConfig, alias string) (int, *config.Subscr
 	return -1, nil
 }
 
-func ensureManagedSubscription(cfg *config.UserConfig) *config.Subscription {
+func ensureManagedSubscription(cfg *config.UserConfig) *config.AdminSubConfig {
 	if cfg == nil {
 		return nil
 	}
-	if _, existing := findSubscription(cfg, managedSubAlias); existing != nil {
-		return existing
+	cfg.AdminSub.Enabled = true
+	if cfg.AdminSub.TargetType == "" {
+		cfg.AdminSub.TargetType = "direct"
 	}
-	cfg.Subscriptions = append(cfg.Subscriptions, config.Subscription{
-		Alias:      managedSubAlias,
-		TargetType: "direct",
-		Token:      utils.GenerateRandomString(24),
-	})
-	return &cfg.Subscriptions[len(cfg.Subscriptions)-1]
+	if cfg.AdminSub.Mode == "" {
+		cfg.AdminSub.Mode = config.AdminSubModeFixed
+	}
+	if cfg.AdminSub.Token == "" {
+		cfg.AdminSub.Token = utils.GenerateRandomString(24)
+	}
+	return &cfg.AdminSub
 }
 
 func ensureSubPortConfigured(cfg *config.UserConfig) {
-	if cfg == nil || cfg.SubPort > 0 {
+	if cfg == nil {
+		return
+	}
+	if cfg.AdminSub.Port > 0 {
+		cfg.SubPort = cfg.AdminSub.Port
+		return
+	}
+	if cfg.SubPort > 0 {
+		cfg.AdminSub.Port = cfg.SubPort
 		return
 	}
 	const preferredPort = 8443
 	if utils.IsPortFree(preferredPort) {
+		cfg.AdminSub.Port = preferredPort
 		cfg.SubPort = preferredPort
 		return
 	}
 	port, err := utils.GetFreePort()
 	if err == nil {
+		cfg.AdminSub.Port = port
 		cfg.SubPort = port
 	}
 }
@@ -95,10 +107,10 @@ func detectOrUseIPv6Settings(cfg *config.UserConfig, ifaceOverride string, subne
 	subnet := strings.TrimSpace(subnetOverride)
 	iface := strings.TrimSpace(ifaceOverride)
 	if subnet == "" {
-		subnet = strings.TrimSpace(cfg.IPv6Pool.Subnet)
+		subnet = strings.TrimSpace(cfg.AdminSub.IPv6Rotate.Subnet)
 	}
 	if iface == "" {
-		iface = strings.TrimSpace(cfg.IPv6Pool.Interface)
+		iface = strings.TrimSpace(cfg.AdminSub.IPv6Rotate.Interface)
 	}
 	if subnet == "" || iface == "" {
 		detectedSubnet, detectedIface, err := utils.AutoDetectIPv6Subnet()
@@ -112,25 +124,29 @@ func detectOrUseIPv6Settings(cfg *config.UserConfig, ifaceOverride string, subne
 			iface = detectedIface
 		}
 	}
-	cfg.IPv6Pool.Subnet = subnet
-	cfg.IPv6Pool.Interface = iface
+	cfg.AdminSub.IPv6Rotate.Subnet = subnet
+	cfg.AdminSub.IPv6Rotate.Interface = iface
 	if max > 0 {
-		cfg.IPv6Pool.MaxAddresses = max
-	} else if cfg.IPv6Pool.MaxAddresses <= 0 {
-		cfg.IPv6Pool.MaxAddresses = 6
+		cfg.AdminSub.IPv6Rotate.MaxAddresses = max
+	} else if cfg.AdminSub.IPv6Rotate.MaxAddresses <= 0 {
+		cfg.AdminSub.IPv6Rotate.MaxAddresses = 6
 	}
-	cfg.IPv6Pool.EnableNDP = ndp
+	cfg.AdminSub.IPv6Rotate.EnableNDP = ndp
+	cfg.AdminSub.IPv6Rotate.Enabled = true
 	return nil
 }
 
 func currentSubMode(cfg *config.UserConfig) string {
-	if cfg != nil && cfg.IPv6Pool.Enabled {
-		return "ipv6-rotate"
+	if cfg == nil {
+		return string(config.AdminSubModeFixed)
 	}
-	return "fixed"
+	if cfg.AdminSub.Mode == "" {
+		return string(config.AdminSubModeFixed)
+	}
+	return string(cfg.AdminSub.Mode)
 }
 
-func managedSubURL(cfg *config.UserConfig, subEntry *config.Subscription) string {
+func managedSubURL(cfg *config.UserConfig, subEntry *config.AdminSubConfig) string {
 	if cfg == nil || subEntry == nil || subEntry.Token == "" {
 		return ""
 	}
@@ -141,7 +157,7 @@ func managedSubURL(cfg *config.UserConfig, subEntry *config.Subscription) string
 	if _, _, err := net.SplitHostPort(host); err == nil {
 		return fmt.Sprintf("https://%s/sub/%s", host, subEntry.Token)
 	}
-	return fmt.Sprintf("https://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.SubPort)), subEntry.Token)
+	return fmt.Sprintf("https://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.AdminSub.Port)), subEntry.Token)
 }
 
 func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -173,7 +189,7 @@ var subInitCmd = &cobra.Command{
 		}
 		if err := cfg.SaveEx(true); err == nil {
 			fmt.Printf("✅ Admin subscription initialized in STAGING.\n🔗 Path: /sub/%s\n", subEntry.Token)
-			fmt.Printf("📡 Port: %d\n", cfg.SubPort)
+			fmt.Printf("📡 Port: %d\n", cfg.AdminSub.Port)
 			fmt.Println("🚀 Run 'apply' to commit changes.")
 		}
 	},
@@ -193,7 +209,8 @@ var subModeCmd = &cobra.Command{
 
 		switch args[0] {
 		case "fixed":
-			cfg.IPv6Pool.Enabled = false
+			cfg.AdminSub.Mode = config.AdminSubModeFixed
+			cfg.AdminSub.IPv6Rotate.Enabled = false
 			if subAddress != "" {
 				subEntry.Address = subAddress
 			}
@@ -206,12 +223,12 @@ var subModeCmd = &cobra.Command{
 				fmt.Printf("❌ %v\n", err)
 				return
 			}
-			cfg.IPv6Pool.Enabled = true
+			cfg.AdminSub.Mode = config.AdminSubModeIPv6Rotate
 			if subAddress != "" {
 				subEntry.Address = subAddress
 			}
 			if err := cfg.SaveEx(true); err == nil {
-				fmt.Printf("✅ Admin subscription mode set to ipv6-rotate in STAGING.\n📡 Subnet: %s\n🧭 Interface: %s\n", cfg.IPv6Pool.Subnet, cfg.IPv6Pool.Interface)
+				fmt.Printf("✅ Admin subscription mode set to ipv6-rotate in STAGING.\n📡 Subnet: %s\n🧭 Interface: %s\n", cfg.AdminSub.IPv6Rotate.Subnet, cfg.AdminSub.IPv6Rotate.Interface)
 				fmt.Println("🚀 Run 'apply' to commit changes.")
 			}
 		default:
@@ -236,23 +253,24 @@ var subSetCmd = &cobra.Command{
 			changed = true
 		}
 		if cmd.Flags().Changed("port") {
+			cfg.AdminSub.Port = subPort
 			cfg.SubPort = subPort
 			changed = true
 		}
 		if cmd.Flags().Changed("interface") {
-			cfg.IPv6Pool.Interface = subIface
+			cfg.AdminSub.IPv6Rotate.Interface = subIface
 			changed = true
 		}
 		if cmd.Flags().Changed("subnet") {
-			cfg.IPv6Pool.Subnet = subSubnet
+			cfg.AdminSub.IPv6Rotate.Subnet = subSubnet
 			changed = true
 		}
 		if cmd.Flags().Changed("max") {
-			cfg.IPv6Pool.MaxAddresses = subMax
+			cfg.AdminSub.IPv6Rotate.MaxAddresses = subMax
 			changed = true
 		}
 		if cmd.Flags().Changed("ndp") {
-			cfg.IPv6Pool.EnableNDP = subNDP
+			cfg.AdminSub.IPv6Rotate.EnableNDP = subNDP
 			changed = true
 		}
 
@@ -275,27 +293,27 @@ var subShowCmd = &cobra.Command{
 		if cfg == nil {
 			return
 		}
-		_, subEntry := findSubscription(cfg, managedSubAlias)
-		if subEntry == nil {
+		if !cfg.AdminSub.Enabled || cfg.AdminSub.Token == "" {
 			fmt.Println("ℹ️  No managed admin subscription found. Run 'sub init' first.")
 			return
 		}
+		subEntry := &cfg.AdminSub
 		mode := currentSubMode(cfg)
 		address := subEntry.Address
 		if address == "" {
 			address = "(auto)"
 		}
-		fmt.Printf("\nAlias: %s\n", subEntry.Alias)
+		fmt.Printf("\nAlias: %s\n", managedSubAlias)
 		fmt.Printf("Mode: %s\n", mode)
-		fmt.Printf("Port: %d\n", cfg.SubPort)
+		fmt.Printf("Port: %d\n", cfg.AdminSub.Port)
 		fmt.Printf("Address Override: %s\n", address)
 		fmt.Printf("URL: %s\n", managedSubURL(cfg, subEntry))
 		fmt.Printf("Token Path: /sub/%s\n", subEntry.Token)
-		if mode == "ipv6-rotate" {
-			fmt.Printf("IPv6 Subnet: %s\n", cfg.IPv6Pool.Subnet)
-			fmt.Printf("Interface: %s\n", cfg.IPv6Pool.Interface)
-			fmt.Printf("Rotation Limit: %d\n", cfg.IPv6Pool.MaxAddresses)
-			fmt.Printf("NDP: %v\n", cfg.IPv6Pool.EnableNDP)
+		if mode == string(config.AdminSubModeIPv6Rotate) {
+			fmt.Printf("IPv6 Subnet: %s\n", cfg.AdminSub.IPv6Rotate.Subnet)
+			fmt.Printf("Interface: %s\n", cfg.AdminSub.IPv6Rotate.Interface)
+			fmt.Printf("Rotation Limit: %d\n", cfg.AdminSub.IPv6Rotate.MaxAddresses)
+			fmt.Printf("NDP: %v\n", cfg.AdminSub.IPv6Rotate.EnableNDP)
 			fmt.Println("Behavior: each subscription request rotates to a fresh IPv6 address")
 		}
 		fmt.Println()
@@ -427,17 +445,20 @@ var subRunCmd = &cobra.Command{
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
-		port := subPort
-		if !cmd.Flags().Changed("port") && cfg.SubPort > 0 {
-			port = cfg.SubPort
+		adminPort := subPort
+		if !cmd.Flags().Changed("port") && cfg.AdminSub.Port > 0 {
+			adminPort = cfg.AdminSub.Port
+		} else if !cmd.Flags().Changed("port") && cfg.SubPort > 0 {
+			adminPort = cfg.SubPort
 		}
 
 		// v0.2.4: Explicitly audit and persist ONLY during RUN
-		if !utils.IsPortFree(port) {
+		if adminPort > 0 && !utils.IsPortFree(adminPort) {
 			p, _ := xray.GetFreePort()
-			fmt.Printf("⚠️  Warning: Subscription Port %d occupied, using %d\n", port, p)
-			port = p
-			cfg.SubPort = port
+			fmt.Printf("⚠️  Warning: Subscription Port %d occupied, using %d\n", adminPort, p)
+			adminPort = p
+			cfg.AdminSub.Port = p
+			cfg.SubPort = p
 			cfg.Save()
 		}
 
@@ -450,7 +471,7 @@ var subRunCmd = &cobra.Command{
 			cfg.Save()
 		}
 
-		if err := sub.StartSubServer(port, cfg.GuestSubBind, guestPort); err != nil {
+		if err := sub.StartSubServer(adminPort, cfg.GuestSubBind, guestPort); err != nil {
 
 			fmt.Printf("❌ Failed: %v\n", err)
 		}

@@ -43,11 +43,30 @@ type UserConfig struct {
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
+	AdminSub        AdminSubConfig   `json:"admin_sub,omitempty"`
 	Subscriptions   []Subscription   `json:"subscriptions"`
 	SubPort         int              `json:"sub_port"`
 	GuestSubPort    int              `json:"guest_sub_port,omitempty"`
 	GuestSubBind    string           `json:"guest_sub_bind,omitempty"`
 	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
+}
+
+type AdminSubMode string
+
+const (
+	AdminSubModeFixed      AdminSubMode = "fixed"
+	AdminSubModeIPv6Rotate AdminSubMode = "ipv6-rotate"
+)
+
+type AdminSubConfig struct {
+	Enabled     bool         `json:"enabled,omitempty"`
+	Token       string       `json:"token,omitempty"`
+	Address     string       `json:"address,omitempty"`
+	Port        int          `json:"port,omitempty"`
+	Mode        AdminSubMode `json:"mode,omitempty"`
+	TargetType  string       `json:"target_type,omitempty"`
+	TargetAlias string       `json:"target_alias,omitempty"`
+	IPv6Rotate  IPv6Config   `json:"ipv6_rotate,omitempty"`
 }
 
 type IPv6Config struct {
@@ -235,6 +254,10 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		cfg.Subscriptions = []Subscription{}
 		changes = append(changes, "initialized subscriptions")
 	}
+	if cfg.AdminSub.TargetType == "" {
+		cfg.AdminSub.TargetType = "direct"
+		changes = append(changes, "set missing admin_sub.target_type=direct")
+	}
 	if cfg.Gateway.Blacklist == nil {
 		cfg.Gateway.Blacklist = []string{}
 		changes = append(changes, "initialized gateway.blacklist")
@@ -250,6 +273,99 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if strings.TrimSpace(cfg.GuestSubBind) == "" {
 		cfg.GuestSubBind = "127.0.0.1"
 		changes = append(changes, "set missing guest_sub_bind=127.0.0.1")
+	}
+
+	legacyAdminIdx := -1
+	for i := range cfg.Subscriptions {
+		if cfg.Subscriptions[i].Alias == "admin" {
+			legacyAdminIdx = i
+			break
+		}
+	}
+	if legacyAdminIdx >= 0 {
+		legacyAdmin := cfg.Subscriptions[legacyAdminIdx]
+		if !cfg.AdminSub.Enabled {
+			cfg.AdminSub.Enabled = true
+			changes = append(changes, "migrated legacy admin subscription enablement")
+		}
+		if cfg.AdminSub.Token == "" {
+			cfg.AdminSub.Token = legacyAdmin.Token
+			changes = append(changes, "migrated legacy admin subscription token")
+		}
+		if cfg.AdminSub.Address == "" {
+			cfg.AdminSub.Address = legacyAdmin.Address
+			changes = append(changes, "migrated legacy admin subscription address")
+		}
+		if cfg.AdminSub.TargetType == "direct" && legacyAdmin.TargetType != "" {
+			cfg.AdminSub.TargetType = legacyAdmin.TargetType
+			cfg.AdminSub.TargetAlias = legacyAdmin.TargetAlias
+			changes = append(changes, "migrated legacy admin subscription target")
+		}
+	}
+	if cfg.AdminSub.Port == 0 && cfg.SubPort > 0 {
+		cfg.AdminSub.Port = cfg.SubPort
+		changes = append(changes, "migrated legacy sub_port to admin_sub.port")
+	}
+	switch cfg.AdminSub.Mode {
+	case AdminSubModeFixed, AdminSubModeIPv6Rotate:
+	default:
+		if cfg.AdminSub.IPv6Rotate.Enabled || cfg.IPv6Pool.Enabled {
+			cfg.AdminSub.Mode = AdminSubModeIPv6Rotate
+		} else {
+			cfg.AdminSub.Mode = AdminSubModeFixed
+		}
+		changes = append(changes, "normalized admin_sub.mode")
+	}
+	if cfg.AdminSub.Mode == AdminSubModeIPv6Rotate {
+		if cfg.AdminSub.IPv6Rotate.Subnet == "" && cfg.IPv6Pool.Subnet != "" {
+			cfg.AdminSub.IPv6Rotate.Subnet = cfg.IPv6Pool.Subnet
+			changes = append(changes, "migrated legacy ipv6_pool.subnet to admin_sub")
+		}
+		if cfg.AdminSub.IPv6Rotate.Interface == "" && cfg.IPv6Pool.Interface != "" {
+			cfg.AdminSub.IPv6Rotate.Interface = cfg.IPv6Pool.Interface
+			changes = append(changes, "migrated legacy ipv6_pool.interface to admin_sub")
+		}
+		if cfg.AdminSub.IPv6Rotate.MaxAddresses == 0 && cfg.IPv6Pool.MaxAddresses != 0 {
+			cfg.AdminSub.IPv6Rotate.MaxAddresses = cfg.IPv6Pool.MaxAddresses
+			changes = append(changes, "migrated legacy ipv6_pool.max_addresses to admin_sub")
+		}
+		if !cfg.AdminSub.IPv6Rotate.EnableNDP && cfg.IPv6Pool.EnableNDP {
+			cfg.AdminSub.IPv6Rotate.EnableNDP = true
+			changes = append(changes, "migrated legacy ipv6_pool.ndp to admin_sub")
+		}
+		cfg.AdminSub.IPv6Rotate.Enabled = true
+	}
+	if cfg.AdminSub.Token != "" && !cfg.AdminSub.Enabled {
+		cfg.AdminSub.Enabled = true
+		changes = append(changes, "enabled admin_sub because token is present")
+	}
+	if cfg.AdminSub.Enabled && cfg.AdminSub.Token == "" {
+		cfg.AdminSub.Token = randomHexString(24)
+		changes = append(changes, "generated missing admin_sub token")
+	}
+	if cfg.AdminSub.Enabled && cfg.AdminSub.Port == 0 && cfg.SubPort > 0 {
+		cfg.AdminSub.Port = cfg.SubPort
+	}
+	if cfg.AdminSub.Port > 0 && cfg.SubPort != cfg.AdminSub.Port {
+		cfg.SubPort = cfg.AdminSub.Port
+		changes = append(changes, "synced legacy sub_port from admin_sub.port")
+	}
+	legacyRotate := cfg.AdminSub.IPv6Rotate
+	legacyRotate.Enabled = cfg.AdminSub.Mode == AdminSubModeIPv6Rotate
+	if cfg.IPv6Pool != legacyRotate {
+		cfg.IPv6Pool = legacyRotate
+		changes = append(changes, "synced legacy ipv6_pool from admin_sub")
+	}
+	if legacyAdminIdx >= 0 {
+		newSubs := make([]Subscription, 0, len(cfg.Subscriptions)-1)
+		for _, sub := range cfg.Subscriptions {
+			if sub.Alias == "admin" {
+				continue
+			}
+			newSubs = append(newSubs, sub)
+		}
+		cfg.Subscriptions = newSubs
+		changes = append(changes, "removed managed admin alias from legacy subscriptions")
 	}
 
 	for i := range cfg.CustomOutbounds {

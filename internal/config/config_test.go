@@ -88,3 +88,47 @@ func TestBackfillDefaultsSetsDisabledReasonForDisabledGuest(t *testing.T) {
 		t.Fatalf("guest-b DisabledReason = %q, want %q", cfg.Guests[1].DisabledReason, GuestDisabledManual)
 	}
 }
+
+func TestBackfillDefaultsMigratesLegacyAdminSubscription(t *testing.T) {
+	cfg := &UserConfig{
+		Subscriptions: []Subscription{{
+			Alias:       "admin",
+			TargetType:  "direct",
+			TargetAlias: "",
+			Address:     "sub.example.com",
+			Token:       "legacy-token",
+		}},
+		SubPort: 9443,
+		IPv6Pool: IPv6Config{
+			Enabled:      true,
+			Subnet:       "2001:db8::/64",
+			Interface:    "eth0",
+			MaxAddresses: 6,
+			EnableNDP:    true,
+		},
+	}
+
+	cfg.BackfillDefaults()
+
+	if !cfg.AdminSub.Enabled {
+		t.Fatalf("expected admin_sub to be enabled")
+	}
+	if cfg.AdminSub.Token != "legacy-token" {
+		t.Fatalf("token = %q, want legacy-token", cfg.AdminSub.Token)
+	}
+	if cfg.AdminSub.Address != "sub.example.com" {
+		t.Fatalf("address = %q", cfg.AdminSub.Address)
+	}
+	if cfg.AdminSub.Port != 9443 {
+		t.Fatalf("port = %d, want 9443", cfg.AdminSub.Port)
+	}
+	if cfg.AdminSub.Mode != AdminSubModeIPv6Rotate {
+		t.Fatalf("mode = %q, want %q", cfg.AdminSub.Mode, AdminSubModeIPv6Rotate)
+	}
+	if cfg.AdminSub.IPv6Rotate.Subnet != "2001:db8::/64" {
+		t.Fatalf("subnet = %q", cfg.AdminSub.IPv6Rotate.Subnet)
+	}
+	if len(cfg.Subscriptions) != 0 {
+		t.Fatalf("expected legacy managed subscription to be removed from subscriptions, got %d", len(cfg.Subscriptions))
+	}
+}

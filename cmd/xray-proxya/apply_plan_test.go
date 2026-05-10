@@ -29,6 +29,19 @@ func testApplyConfig() *config.UserConfig {
 		Gateway: config.GatewayConfig{
 			RelayAlias: "remote",
 		},
+		AdminSub: config.AdminSubConfig{
+			Enabled:    true,
+			Token:      "admin-token",
+			Port:       8443,
+			Mode:       config.AdminSubModeIPv6Rotate,
+			TargetType: "direct",
+			IPv6Rotate: config.IPv6Config{
+				Enabled:      true,
+				Subnet:       "2001:db8::/64",
+				Interface:    "eth0",
+				MaxAddresses: 6,
+			},
+		},
 		Subscriptions: []config.Subscription{{
 			Alias:       "sub1",
 			TargetType:  "guest",
@@ -67,6 +80,7 @@ func TestBuildApplyImpactSubscriptionOnly(t *testing.T) {
 func TestBuildApplyImpactSubPortChange(t *testing.T) {
 	active := testApplyConfig()
 	staging := testApplyConfig()
+	staging.AdminSub.Port = 9443
 	staging.SubPort = 9443
 
 	impact := buildApplyImpact(active, staging)
@@ -131,6 +145,23 @@ func TestBuildApplyImpactRelayAliasChange(t *testing.T) {
 	}
 	if !impact.SubContentChanged {
 		t.Fatalf("expected relay alias change to affect generated subscriptions")
+	}
+}
+
+func TestBuildApplyImpactAdminSubTokenChange(t *testing.T) {
+	active := testApplyConfig()
+	staging := testApplyConfig()
+	staging.AdminSub.Token = "admin-token-2"
+
+	impact := buildApplyImpact(active, staging)
+	if impact.XrayConfigChanged {
+		t.Fatalf("expected admin sub token change to skip Xray restart")
+	}
+	if !impact.SubContentChanged {
+		t.Fatalf("expected admin sub token change to affect sub content")
+	}
+	if impact.SubListenerChanged {
+		t.Fatalf("expected admin sub token change to avoid listener restart")
 	}
 }
 

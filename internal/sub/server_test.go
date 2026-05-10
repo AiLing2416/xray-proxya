@@ -117,3 +117,47 @@ func TestGuestSubHandlerReturnsAnnotatedSubscription(t *testing.T) {
 		t.Fatalf("expected cert in config dir: %v", err)
 	}
 }
+
+func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		AdminSub: config.AdminSubConfig{
+			Enabled:    true,
+			Token:      "admintoken",
+			Port:       8443,
+			Mode:       config.AdminSubModeFixed,
+			Address:    "sub.example.com",
+			TargetType: "direct",
+		},
+		ActiveModes: []config.ModeInfo{{
+			Mode:    config.ModeVLESSVision,
+			Enabled: true,
+			Port:    443,
+			SNI:     "example.com",
+			Settings: config.Settings{
+				PublicKey: "pub",
+				ShortID:   "abcd",
+			},
+		}},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "https://127.0.0.1/sub/admintoken", nil)
+	rec := httptest.NewRecorder()
+	httpAdminSubHandler()(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+	if err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	body := string(decoded)
+	if !strings.Contains(body, "@sub.example.com:443?") {
+		t.Fatalf("expected admin_sub address in body, got %q", body)
+	}
+}
