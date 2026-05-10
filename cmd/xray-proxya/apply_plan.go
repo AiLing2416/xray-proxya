@@ -22,8 +22,8 @@ func buildApplyImpact(activeCfg, stagingCfg *config.UserConfig) applyImpact {
 	}
 	if activeCfg == nil {
 		impact.XrayConfigChanged = true
-		impact.SubListenerChanged = stagingCfg.SubPort > 0
-		impact.SubContentChanged = len(stagingCfg.Subscriptions) > 0
+		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
+		impact.SubContentChanged = stagingCfg.AdminSub.Enabled || len(stagingCfg.Subscriptions) > 0
 		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled
 		impact.ChangedSections = []string{"initial_apply"}
 		return impact
@@ -78,6 +78,16 @@ func buildApplyImpact(activeCfg, stagingCfg *config.UserConfig) applyImpact {
 		impact.XrayConfigChanged = true
 		impact.SubContentChanged = true
 		mark("gateway.relay_alias")
+	}
+	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
+		if activeCfg.AdminSub.Port != stagingCfg.AdminSub.Port {
+			impact.SubListenerChanged = true
+			mark("admin_sub.port")
+		}
+		if activeCfg.AdminSub != stagingCfg.AdminSub {
+			impact.SubContentChanged = true
+			mark("admin_sub")
+		}
 	}
 	if activeCfg.SubPort != stagingCfg.SubPort {
 		impact.SubListenerChanged = true

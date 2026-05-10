@@ -66,11 +66,16 @@ func httpAdminSubHandler() http.HandlerFunc {
 			return
 		}
 
-		var sub config.Subscription
+		if cfg.AdminSub.Enabled && cfg.AdminSub.Token == token {
+			handleAdminSubRequest(w, cfg)
+			return
+		}
+
+		var legacySub config.Subscription
 		found := false
 		for _, s := range cfg.Subscriptions {
 			if s.Token == token {
-				sub = s
+				legacySub = s
 				found = true
 				break
 			}
@@ -80,96 +85,112 @@ func httpAdminSubHandler() http.HandlerFunc {
 			http.Error(w, "Invalid token", http.StatusNotFound)
 			return
 		}
-
-		addr := sub.Address
-		if addr == "" {
-			addr = utils.GetSmartIP(false)
-		}
-
-		// IPv6 Rolling Pool Logic
-		if cfg.IPv6Pool.Enabled && cfg.IPv6Pool.Subnet != "" && cfg.IPv6Pool.Interface != "" {
-			newV6, err := utils.GenerateRandomIPv6(cfg.IPv6Pool.Subnet)
-			if err == nil {
-				ipMutex.Lock()
-				maxLimit := cfg.IPv6Pool.MaxAddresses
-				if maxLimit <= 0 {
-					maxLimit = 6
-				}
-
-				// 1. Load Assigned IPs from Cache
-				cachePath := filepath.Join(config.GetConfigDir(), "ipv6_pool.cache")
-				data, _ := os.ReadFile(cachePath)
-				assignedIPs := []string{}
-				if len(data) > 0 {
-					for _, v := range strings.Split(string(data), "\n") {
-						if v != "" {
-							assignedIPs = append(assignedIPs, v)
-						}
-					}
-				}
-
-				// 2. FIFO Rotation: If we're at the limit, remove oldest BEFORE adding new
-				// Use >= because we're about to add a new one
-				for len(assignedIPs) >= maxLimit && len(assignedIPs) > 0 {
-					oldIP := assignedIPs[0]
-					assignedIPs = assignedIPs[1:]
-					fmt.Printf("♻️  Rotating IPv6: Removing oldest address %s\n", oldIP)
-					utils.RemoveIPv6Addr(oldIP, cfg.IPv6Pool.Interface)
-				}
-
-				// 3. Add new address to system
-				fmt.Printf("🆕 Assigning new IPv6: %s\n", newV6)
-				utils.SetupIPv6Addr(newV6, cfg.IPv6Pool.Interface)
-				if cfg.IPv6Pool.EnableNDP {
-					utils.SetupNDPProxy(newV6, cfg.IPv6Pool.Interface)
-				}
-				assignedIPs = append(assignedIPs, newV6)
-
-				// 4. Persist updated cache
-				os.WriteFile(cachePath, []byte(strings.Join(assignedIPs, "\n")), 0600)
-
-				ipMutex.Unlock()
-				addr = newV6
-			}
-		}
-
-		var links []string
-		switch sub.TargetType {
-		case "direct":
-			links = xray.GenerateLinks(cfg, addr)
-		case "outbound":
-			var targetOutbound *config.CustomOutbound
-			for _, o := range cfg.CustomOutbounds {
-				if o.Alias == sub.TargetAlias {
-					targetOutbound = &o
-					break
-				}
-			}
-			if targetOutbound != nil {
-				links = xray.GenerateRelayLinks(cfg, addr, *targetOutbound)
-			}
-		case "guest":
-			var targetGuest *config.GuestConfig
-			for _, g := range cfg.Guests {
-				if g.Alias == sub.TargetAlias {
-					targetGuest = &g
-					break
-				}
-			}
-			if targetGuest != nil {
-				links = xray.GenerateGuestLinks(cfg, addr, targetGuest.UUID, targetGuest.Alias)
-			}
-		}
-
-		if len(links) == 0 {
-			http.Error(w, "No links generated for this subscription", http.StatusInternalServerError)
-			return
-		}
-
-		encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(encoded))
+		handleLegacySubscriptionRequest(w, cfg, legacySub)
 	}
+}
+
+func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig) {
+	addr := cfg.AdminSub.Address
+	if addr == "" {
+		addr = utils.GetSmartIP(false)
+	}
+	if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate && cfg.AdminSub.IPv6Rotate.Subnet != "" && cfg.AdminSub.IPv6Rotate.Interface != "" {
+		if rotated, ok := nextRotatedIPv6(cfg.AdminSub.IPv6Rotate); ok {
+			addr = rotated
+		}
+	}
+
+	links := generateSubscriptionLinks(cfg, cfg.AdminSub.TargetType, cfg.AdminSub.TargetAlias, addr)
+	if len(links) == 0 {
+		http.Error(w, "No links generated for this subscription", http.StatusInternalServerError)
+		return
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte(encoded))
+}
+
+func handleLegacySubscriptionRequest(w http.ResponseWriter, cfg *config.UserConfig, sub config.Subscription) {
+	addr := sub.Address
+	if addr == "" {
+		addr = utils.GetSmartIP(false)
+	}
+	links := generateSubscriptionLinks(cfg, sub.TargetType, sub.TargetAlias, addr)
+	if len(links) == 0 {
+		http.Error(w, "No links generated for this subscription", http.StatusInternalServerError)
+		return
+	}
+	encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte(encoded))
+}
+
+func generateSubscriptionLinks(cfg *config.UserConfig, targetType string, targetAlias string, addr string) []string {
+	switch targetType {
+	case "direct":
+		return xray.GenerateLinks(cfg, addr)
+	case "outbound":
+		var targetOutbound *config.CustomOutbound
+		for _, o := range cfg.CustomOutbounds {
+			if o.Alias == targetAlias {
+				targetOutbound = &o
+				break
+			}
+		}
+		if targetOutbound != nil {
+			return xray.GenerateRelayLinks(cfg, addr, *targetOutbound)
+		}
+	case "guest":
+		var targetGuest *config.GuestConfig
+		for _, g := range cfg.Guests {
+			if g.Alias == targetAlias {
+				targetGuest = &g
+				break
+			}
+		}
+		if targetGuest != nil {
+			return xray.GenerateGuestLinks(cfg, addr, targetGuest.UUID, targetGuest.Alias)
+		}
+	}
+	return nil
+}
+
+func nextRotatedIPv6(rotation config.IPv6Config) (string, bool) {
+	newV6, err := utils.GenerateRandomIPv6(rotation.Subnet)
+	if err != nil {
+		return "", false
+	}
+	ipMutex.Lock()
+	defer ipMutex.Unlock()
+
+	maxLimit := rotation.MaxAddresses
+	if maxLimit <= 0 {
+		maxLimit = 6
+	}
+	cachePath := filepath.Join(config.GetConfigDir(), "ipv6_pool.cache")
+	data, _ := os.ReadFile(cachePath)
+	assignedIPs := []string{}
+	if len(data) > 0 {
+		for _, v := range strings.Split(string(data), "\n") {
+			if v != "" {
+				assignedIPs = append(assignedIPs, v)
+			}
+		}
+	}
+	for len(assignedIPs) >= maxLimit && len(assignedIPs) > 0 {
+		oldIP := assignedIPs[0]
+		assignedIPs = assignedIPs[1:]
+		fmt.Printf("♻️  Rotating IPv6: Removing oldest address %s\n", oldIP)
+		utils.RemoveIPv6Addr(oldIP, rotation.Interface)
+	}
+	fmt.Printf("🆕 Assigning new IPv6: %s\n", newV6)
+	utils.SetupIPv6Addr(newV6, rotation.Interface)
+	if rotation.EnableNDP {
+		utils.SetupNDPProxy(newV6, rotation.Interface)
+	}
+	assignedIPs = append(assignedIPs, newV6)
+	os.WriteFile(cachePath, []byte(strings.Join(assignedIPs, "\n")), 0600)
+	return newV6, true
 }
 
 func httpGuestSubHandler() http.HandlerFunc {
