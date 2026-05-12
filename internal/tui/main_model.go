@@ -1,21 +1,21 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
-	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/google/uuid"
-	"net/http"
+	"net"
 	"os"
 	"os/exec"
-	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/presets"
+	"xray-proxya/internal/sub"
+	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 )
@@ -26,22 +26,57 @@ const (
 	tabStatus sessionTab = iota
 	tabPresets
 	tabRelays
+	tabGuests
+)
+
+type inputMode int
+
+const (
+	inputNone inputMode = iota
+	inputAddRelay
+	inputAddGuest
+	inputSetGuestQuota
+	inputSetGuestReset
+	inputSetGuestOutbound
+	inputRelayResolveDomain
 )
 
 type statsMsg struct {
-	direct int64
-	relay  int64
-	active bool
-	pid    int
+	direct   int64
+	relay    int64
+	active   bool
+	pid      int
+	allStats map[string]int64
+}
+
+type applyResultMsg struct {
+	lines []string
+	err   error
+}
+
+type relayDetailMsg struct {
+	alias string
+	body  string
+	err   error
+}
+
+type detailField struct {
+	label string
+	value string
+}
+
+type relayDetailData struct {
+	title  string
+	fields []detailField
 }
 
 type relayTestMsg struct {
-	alias   string
-	latency string
-	udp     string
-	dns     string
-	ip      string
-	country string
+	alias string
+	tcp   string
+	udp   string
+	dns   string
+	ipv4  string
+	ipv6  string
 }
 
 type Model struct {
@@ -55,117 +90,34 @@ type Model struct {
 	relayStat    int64
 	coreActive   bool
 	corePID      int
+	lastStats    map[string]int64
 	relayResults map[string]relayTestMsg
+	relayDetails map[string]relayDetailData
+	relayLoading string
 	portBuffer   string
+	detailScroll int
+	statusNote   string
 	cachedIP     string
 	localIP      string
 	useLocalIP   bool
 
-	showFullScreenShare bool
-	sharePageIndex      int
-	showAddRelay        bool
-	textInput           textinput.Model
+	inputMode inputMode
+	textInput textinput.Model
 }
 
 func tickStats(apiPort int) tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
 		active, pid := xray.GetXrayStatus()
 		allStats, _ := xray.GetXrayStats(apiPort)
-
-		var direct, relay int64
-		for name, val := range allStats {
-			if strings.HasPrefix(name, "outbound>>>direct>>>") {
-				direct += val
-			} else if strings.HasPrefix(name, "outbound>>>outbound-") && !strings.Contains(name, ">>>blocked>>>") {
-				relay += val
-			}
-		}
-		return statsMsg{direct: direct, relay: relay, active: active, pid: pid}
+		summary := trafficstats.Summarize(allStats)
+		return statsMsg{direct: summary.Direct, relay: summary.Relay, active: active, pid: pid, allStats: allStats}
 	})
 }
 
 func (m Model) performApply() tea.Cmd {
 	return func() tea.Msg {
-		cfg := m.staging
-		if err := presets.RegenerateMarkedModes(cfg); err != nil {
-			return fmt.Sprintf("apply failed: %v", err)
-		}
-		cfg.SaveEx(false)
-		config.ClearStaging()
-
-		xray.StopXray()
-		time.Sleep(500 * time.Millisecond)
-
-		home, _ := os.UserHomeDir()
-		xrayDir := filepath.Join(home, ".config", "xray-proxya")
-		jsonData, _ := xray.GenerateXrayJSON(cfg, nil, "")
-		jsonPath := filepath.Join(xrayDir, "xray_config.json")
-		os.WriteFile(jsonPath, jsonData, 0600)
-
-		cmdX, _ := xray.StartXray(jsonPath)
-		if cmdX != nil {
-			os.WriteFile(filepath.Join(xrayDir, "xray.pid"), []byte(fmt.Sprintf("%d", cmdX.Process.Pid)), 0600)
-		}
-		return "applied"
-	}
-}
-
-func runRelayTest(cfg *config.UserConfig, co config.CustomOutbound) tea.Cmd {
-	return func() tea.Msg {
-		res := relayTestMsg{alias: co.Alias, latency: "FAIL", udp: "FAIL", dns: "FAIL", ip: "Unknown", country: "XX"}
-		testSocksPort, _ := xray.GetFreePort()
-		apiPort, _ := xray.GetFreePort()
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-		jsonData, err := xray.GenerateXrayJSON(cfg, overrides, co.Alias)
-		if err != nil {
-			return res
-		}
-		_, cleanup, err := xray.StartXrayTemp(jsonData)
-		if err != nil {
-			return res
-		}
-		defer cleanup()
-
-		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-		dialer, err := utils.NewSOCKS5Dialer(socksAddr)
-		if err != nil {
-			return res
-		}
-		httpClient := &http.Client{Transport: &http.Transport{Dial: dialer.Dial}, Timeout: 5 * time.Second}
-
-		// 1. TCP & GeoIP (Exit IP, Country)
-		start := time.Now()
-		req, _ := http.NewRequest("GET", "http://ip-api.com/json", nil)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-		resp, err := httpClient.Do(req)
-		if err == nil {
-			res.latency = fmt.Sprintf("%dms", time.Since(start).Milliseconds())
-			defer resp.Body.Close()
-			var geo struct {
-				Query       string `json:"query"`
-				CountryCode string `json:"countryCode"`
-			}
-			if err := json.NewDecoder(resp.Body).Decode(&geo); err == nil {
-				res.ip = geo.Query
-				res.country = geo.CountryCode
-			}
-		}
-
-		// 2. DNS Test (Try resolve a domain via proxy)
-		dnsStart := time.Now()
-		conn, err := dialer.Dial("tcp", "8.8.8.8:53")
-		if err == nil {
-			res.dns = fmt.Sprintf("OK(%dms)", time.Since(dnsStart).Milliseconds())
-			conn.Close()
-		}
-
-		// 3. UDP Test
-		duration, err := xray.TestUDP(socksAddr, "test-"+co.Alias, "test")
-		if err == nil {
-			res.udp = fmt.Sprintf("OK(%dms)", duration.Milliseconds())
-		}
-
-		return res
+		lines, err := applyops.ApplyPending(applyops.Options{})
+		return applyResultMsg{lines: lines, err: err}
 	}
 }
 
@@ -176,16 +128,15 @@ func InitialModel() Model {
 		staging = active
 	}
 	ti := textinput.New()
-	ti.Placeholder = "Paste link..."
-	ti.Focus()
 	ti.Width = 60
 	return Model{
 		active:       active,
 		staging:      staging,
-		currentTab:   tabPresets,
+		currentTab:   tabStatus,
 		width:        80,
 		height:       24,
 		relayResults: make(map[string]relayTestMsg),
+		relayDetails: make(map[string]relayDetailData),
 		cachedIP:     utils.GetSmartIP(false),
 		localIP:      utils.GetLocalIP(),
 		textInput:    ti,
@@ -204,78 +155,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.active, _ = config.LoadConfig()
 	}
 	switch msg := msg.(type) {
-	case string:
-		if msg == "applied" {
-			m.active, _ = config.LoadConfig()
-			m.staging, _ = config.LoadConfig()
+	case applyResultMsg:
+		m.active, _ = config.LoadConfig()
+		m.staging, _ = config.LoadConfigEx(true)
+		if m.staging == nil {
+			m.staging = m.active
 		}
+		m.detailScroll = 0
+		m.statusNote = summarizeActionResult(msg.lines, msg.err)
 	case statsMsg:
-		m.directStat, m.relayStat, m.coreActive, m.corePID = msg.direct, msg.relay, msg.active, msg.pid
+		m.directStat, m.relayStat, m.coreActive, m.corePID, m.lastStats = msg.direct, msg.relay, msg.active, msg.pid, msg.allStats
 		return m, tickStats(m.active.APIInbound)
+	case relayDetailMsg:
+		m.relayLoading = ""
+		if msg.err != nil {
+			m.statusNote = fmt.Sprintf("relay info failed: %v", msg.err)
+		} else {
+			if strings.HasPrefix(msg.body, "__test__\n") {
+				m.relayResults[msg.alias] = parseRelayTestSummary(msg.alias, strings.TrimPrefix(msg.body, "__test__\n"))
+				m.statusNote = "relay test updated"
+			} else if strings.HasPrefix(msg.body, "__speed__\n") {
+				m.statusNote = "relay speed updated"
+			} else if strings.HasPrefix(msg.body, "__probe__\n") {
+				m.statusNote = "relay probe updated"
+			} else if strings.HasPrefix(msg.body, "__resolve__\n") {
+				m.statusNote = "relay resolve updated"
+			} else {
+				m.statusNote = "relay info updated"
+			}
+			m.relayDetails[msg.alias] = parseRelayDetailOutput(msg.alias, msg.body)
+		}
 	case relayTestMsg:
 		m.relayResults[msg.alias] = msg
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
 		s := msg.String()
-		if m.showAddRelay {
+		if m.inputMode != inputNone {
 			switch s {
 			case "esc":
-				m.showAddRelay = false
-				return m, nil
-			case "enter":
-				link := m.textInput.Value()
-				if link != "" {
-					out, err := xray.ParseProxyLink(link)
-					if err == nil {
-						alias := "relay-" + utils.GenerateRandomString(3)
-						newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
-						m.staging.CustomOutbounds = append(m.staging.CustomOutbounds, newCO)
-						m.staging.SaveEx(true)
-						m.showAddRelay = false
-						m.textInput.Reset()
-						m.relayResults[alias] = relayTestMsg{alias: alias, latency: "Wait..", udp: "--", ip: "--"}
-						return m, runRelayTest(m.staging, newCO)
-					}
-				}
-				m.showAddRelay = false
+				m.inputMode = inputNone
 				m.textInput.Reset()
 				return m, nil
+			case "enter":
+				return m.submitInput()
 			}
 			var cmd tea.Cmd
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
 		}
-		if m.showFullScreenShare {
-			switch s {
-			case "q", "esc", "s", "S":
-				m.showFullScreenShare = false
-			case "l", "L":
-				m.useLocalIP = !m.useLocalIP
-			case "left", "h":
-				if m.sharePageIndex > 0 {
-					m.sharePageIndex--
-				}
-			case "right", "space":
-				m.sharePageIndex++
-			case "c", "C":
-				pages := m.getSharePages()
-				if m.sharePageIndex < len(pages) {
-					clipboard.WriteAll(pages[m.sharePageIndex])
-				}
-			}
-			return m, nil
-		}
 		switch s {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
-			m.currentTab, m.cursor, m.portBuffer = (m.currentTab+1)%3, 0, ""
+			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+1)%4, 0, "", 0
+		case "shift+tab":
+			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+3)%4, 0, "", 0
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
-			m.portBuffer = ""
+			m.portBuffer, m.detailScroll = "", 0
 		case "down", "j":
 			max := 0
 			if m.staging != nil {
@@ -285,87 +225,116 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.currentTab == tabRelays {
 					max = len(m.staging.CustomOutbounds) - 1
 				}
+				if m.currentTab == tabGuests {
+					max = len(m.staging.Guests) - 1
+				}
 			}
 			if m.cursor < max {
 				m.cursor++
 			}
-			m.portBuffer = ""
+			m.portBuffer, m.detailScroll = "", 0
+		case "left":
+			m.detailScroll -= 8
+			if m.detailScroll < 0 {
+				m.detailScroll = 0
+			}
+		case "right":
+			m.detailScroll += 8
+			if maxScroll := detailMaxScroll(m.getSelectedDetailContent(), max(1, m.width-2)); m.detailScroll > maxScroll {
+				m.detailScroll = maxScroll
+			}
 		case "u", "U":
-			config.ClearStaging()
+			_ = applyops.ClearPending()
 			m.active, _ = config.LoadConfig()
-			m.staging, _ = config.LoadConfig()
+			m.staging, _ = config.LoadConfigEx(true)
+			if m.staging == nil {
+				m.staging = m.active
+			}
 			m.relayResults = make(map[string]relayTestMsg)
+			m.detailScroll = 0
+			m.statusNote = "staging reset"
+		case "n", "N":
+			if m.currentTab == tabRelays {
+				m.startInput(inputAddRelay, "Paste link...", "")
+				return m, nil
+			}
+			if m.currentTab == tabGuests {
+				m.startInput(inputAddGuest, "guest-alias", "")
+				return m, nil
+			}
 		case "a", "A":
 			return m, m.performApply()
 		case "l", "L":
 			m.useLocalIP = !m.useLocalIP
-		case "c", "C":
-			var linkPub, linkLoc string
-			if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
-				m1 := m.staging.ActiveModes[m.cursor]
-				tempCfg := *m.staging
-				tempCfg.ActiveModes = []config.ModeInfo{m1}
-				linkPub = xray.GenerateLinks(&tempCfg, m.cachedIP)[0]
-				linkLoc = xray.GenerateLinks(&tempCfg, m.localIP)[0]
-			} else if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				relay := m.staging.CustomOutbounds[m.cursor]
-				linkPub = xray.GenerateRelayLinks(m.staging, m.cachedIP, relay)[0]
-				linkLoc = xray.GenerateRelayLinks(m.staging, m.localIP, relay)[0]
-			}
-			if linkPub != "" {
-				clipboard.WriteAll(linkPub) // Try clipboard first
-				// Escape single quotes for bash
-				ePub := strings.ReplaceAll(linkPub, "'", "'\\''")
-				eLoc := strings.ReplaceAll(linkLoc, "'", "'\\''")
-				script := fmt.Sprintf(`
-					link_pub='%s'; link_loc='%s'; current='PUBLIC'
-					[ "%t" == "true" ] && current='LOCAL'
-					while true; do
-						clear; echo "=== RAW COPY MODE ==="; echo "Current IP Mode: $current"
-						echo "------------------------------------------------------------"
-						if [ "$current" == "PUBLIC" ]; then echo "$link_pub"; else echo "$link_loc"; fi
-						echo "------------------------------------------------------------"
-						echo "[L] Switch IP    [C] Copy to Clipboard    [Q/ESC] Return"
-						read -n 1 -s key
-						case "$key" in
-							l|L) [ "$current" == "PUBLIC" ] && current='LOCAL' || current='PUBLIC' ;;
-							c|C) if [ "$current" == "PUBLIC" ]; then echo -n "$link_pub" | xclip -sel clip 2>/dev/null || echo -n "$link_pub" | pbcopy 2>/dev/null; else echo -n "$link_loc" | xclip -sel clip 2>/dev/null || echo -n "$link_loc" | pbcopy 2>/dev/null; fi ;;
-							q|Q|$'\e') exit 0 ;;
-						esac
-					done`, ePub, eLoc, m.useLocalIP)
-				cmd := exec.Command("bash", "-c", script)
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
-			}
-		case "+", "=":
-			if m.currentTab == tabRelays && s == "+" {
-				m.showAddRelay = true
-				m.textInput.Focus()
+			m.detailScroll = 0
+		case "p", "P":
+			title, body := m.currentPrintView()
+			if body == "" {
+				m.statusNote = "nothing to print"
 				return m, nil
 			}
+			cmd := exec.Command("bash", "-lc", buildPrintScript(title, body))
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
+		case "b", "B":
+			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+				alias := m.staging.CustomOutbounds[m.cursor].Alias
+				m.relayLoading = alias
+				m.statusNote = "probing local relay proxy..."
+				return m, fetchRelayProbe(alias)
+			}
+		case "+", "=":
 			if m.currentTab == tabPresets && m.staging != nil {
 				m.staging.ActiveModes[m.cursor].Enabled = true
 				m.staging.SaveEx(true)
+				m.statusNote = "preset enabled"
 			}
 			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 				m.staging.CustomOutbounds[m.cursor].Enabled = true
 				m.staging.SaveEx(true)
+				m.statusNote = "relay enabled"
+			}
+			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) && s == "=" {
+				if err := m.resumeGuest(); err != nil {
+					m.statusNote = err.Error()
+				} else {
+					m.statusNote = "guest resumed"
+				}
 			}
 		case "-":
 			if m.currentTab == tabPresets && m.staging != nil {
 				m.staging.ActiveModes[m.cursor].Enabled = false
 				m.staging.SaveEx(true)
+				m.statusNote = "preset disabled"
 			}
 			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 				m.staging.CustomOutbounds[m.cursor].Enabled = false
 				m.staging.SaveEx(true)
+				m.statusNote = "relay disabled"
+			}
+			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
+				m.pauseGuest()
+				m.statusNote = "guest paused"
 			}
 		case "d", "D":
 			if m.currentTab == tabRelays && m.staging != nil && len(m.staging.CustomOutbounds) > 0 {
 				idx := m.cursor
 				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds[:idx], m.staging.CustomOutbounds[idx+1:]...)
 				m.staging.SaveEx(true)
+				m.statusNote = "relay deleted"
 				if m.cursor >= len(m.staging.CustomOutbounds) {
 					m.cursor = len(m.staging.CustomOutbounds) - 1
+				}
+				if m.cursor < 0 {
+					m.cursor = 0
+				}
+			}
+			if m.currentTab == tabGuests && m.staging != nil && len(m.staging.Guests) > 0 {
+				idx := m.cursor
+				m.staging.Guests = append(m.staging.Guests[:idx], m.staging.Guests[idx+1:]...)
+				m.staging.SaveEx(true)
+				m.statusNote = "guest deleted"
+				if m.cursor >= len(m.staging.Guests) {
+					m.cursor = len(m.staging.Guests) - 1
 				}
 				if m.cursor < 0 {
 					m.cursor = 0
@@ -374,13 +343,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "t", "T":
 			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 				co := m.staging.CustomOutbounds[m.cursor]
-				m.relayResults[co.Alias] = relayTestMsg{alias: co.Alias, latency: "Wait..", udp: "--", ip: "--"}
-				return m, runRelayTest(m.staging, co)
+				m.relayLoading = co.Alias
+				m.relayResults[co.Alias] = relayTestMsg{alias: co.Alias, tcp: "Wait..", udp: "Wait..", dns: "Wait..", ipv4: "--", ipv6: "--"}
+				m.statusNote = "testing relay..."
+				return m, fetchRelayTest(co.Alias)
+			}
+		case "v", "V":
+			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+				alias := m.staging.CustomOutbounds[m.cursor].Alias
+				m.relayLoading = alias
+				m.statusNote = "running relay speed test..."
+				return m, fetchRelaySpeed(alias)
+			}
+		case "i", "I":
+			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+				alias := m.staging.CustomOutbounds[m.cursor].Alias
+				m.relayLoading = alias
+				m.statusNote = "querying relay info..."
+				return m, fetchRelayDetail(alias)
 			}
 		case "r", "R":
 			if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
 				m.staging.ActiveModes[m.cursor].RegenFlag = !m.staging.ActiveModes[m.cursor].RegenFlag
 				m.staging.SaveEx(true)
+				m.statusNote = "regen flag toggled"
+			} else if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+				m.startInput(inputRelayResolveDomain, "domain to resolve", "openai.com")
+				return m, nil
+			} else if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
+				current := fmt.Sprintf("%d", m.staging.Guests[m.cursor].ResetDay)
+				m.startInput(inputSetGuestReset, "reset day 1-31", current)
+				return m, nil
+			}
+		case "o", "O":
+			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
+				current := m.staging.Guests[m.cursor].OutboundLink
+				if current == "" {
+					current = "direct"
+				}
+				m.startInput(inputSetGuestOutbound, "proxy link or direct", current)
+				return m, nil
+			}
+		case "e", "E":
+			if m.currentTab == tabGuests {
+				if err := m.enableGuestSub(); err != nil {
+					m.statusNote = err.Error()
+				} else {
+					m.statusNote = "guest sub enabled"
+				}
+			}
+		case "x", "X":
+			if m.currentTab == tabGuests {
+				if err := m.disableGuestSub(); err != nil {
+					m.statusNote = err.Error()
+				} else {
+					m.statusNote = "guest sub disabled"
+				}
+			}
+		case "y", "Y":
+			if m.currentTab == tabGuests {
+				if err := m.rotateGuestSub(); err != nil {
+					m.statusNote = err.Error()
+				} else {
+					m.statusNote = "guest sub rotated"
+				}
 			}
 		case "backspace":
 			if m.currentTab == tabPresets && len(m.portBuffer) > 0 {
@@ -389,14 +415,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sscanf(m.portBuffer, "%d", &port)
 				m.staging.ActiveModes[m.cursor].Port = port
 				m.staging.SaveEx(true)
+				m.statusNote = fmt.Sprintf("port => %d", port)
 			}
 		case "delete":
 			if m.currentTab == tabPresets {
 				m.portBuffer, m.staging.ActiveModes[m.cursor].Port = "", 0
 				m.staging.SaveEx(true)
+				m.statusNote = "port cleared"
 			}
 		case "s", "S":
-			m.showFullScreenShare, m.sharePageIndex = true, 0
+			body := m.shareBundle()
+			if strings.TrimSpace(body) == "" {
+				m.statusNote = "nothing to print"
+				return m, nil
+			}
+			cmd := exec.Command("bash", "-lc", buildPrintScript("SHARING LINKS", body))
+			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
+		case "g", "G":
+			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
+				current := fmt.Sprintf("%v", m.staging.Guests[m.cursor].QuotaGB)
+				m.startInput(inputSetGuestQuota, "quota: -1 / 0 / 5 / reset", current)
+				return m, nil
+			}
+		case "w", "W":
+			if m.currentTab == tabGuests {
+				title, body := m.currentGuestSubPrintView()
+				if body == "" {
+					m.statusNote = "guest sub not enabled"
+					return m, nil
+				}
+				cmd := exec.Command("bash", "-lc", buildPrintScript(title, body))
+				return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
+			}
 		default:
 			if m.currentTab == tabPresets && s >= "0" && s <= "9" {
 				if len(m.portBuffer) >= 5 {
@@ -407,6 +457,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sscanf(m.portBuffer, "%d", &port)
 				m.staging.ActiveModes[m.cursor].Port = port
 				m.staging.SaveEx(true)
+				m.statusNote = fmt.Sprintf("port => %d", port)
 			}
 		}
 	}
@@ -417,65 +468,17 @@ func (m Model) View() string {
 	if m.staging == nil {
 		return "Error: No config found."
 	}
-	if m.showAddRelay {
+	if m.inputMode != inputNone {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 			lipgloss.NewStyle().Padding(1, 2).BorderStyle(lipgloss.NormalBorder()).
-				Render("ADD CUSTOM RELAY\n\n"+m.textInput.View()+"\n\n[Enter] Confirm  [Esc] Cancel"))
-	}
-	if m.showFullScreenShare {
-		return m.renderFullScreenShare()
+				Render(m.inputTitle()+"\n\n"+m.textInput.View()+"\n\n[Enter] Confirm  [Esc] Cancel"))
 	}
 
 	// 1. Calculate Heights
 	footerHeight := 2 // TopBorder(1) + Text(1)
 
-	detailContent := ""
-	ip := m.cachedIP
-	if m.useLocalIP {
-		ip = m.localIP
-	}
-	if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
-		idx := m.cursor
-		m1 := m.staging.ActiveModes[idx]
-		isMod := m1.RegenFlag
-		if !isMod && m.active != nil && idx < len(m.active.ActiveModes) {
-			a := m.active.ActiveModes[idx]
-			if m1.Port != a.Port || m1.Path != a.Path || m1.SNI != a.SNI || m1.Enabled != a.Enabled {
-				isMod = true
-			}
-		}
-		if isMod {
-			detailContent = "⚠️ [A] Apply changes to see link."
-		} else {
-			tempCfg := *m.staging
-			tempCfg.ActiveModes = []config.ModeInfo{m1}
-			links := xray.GenerateLinks(&tempCfg, ip)
-			if len(links) > 0 {
-				detailContent = links[0]
-			} // RAW
-		}
-	} else if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-		relay := m.staging.CustomOutbounds[m.cursor]
-		links := xray.GenerateRelayLinks(m.staging, ip, relay)
-		if len(links) > 0 {
-			detailContent = links[0]
-		} // RAW
-	}
-
-	rawLines := 0
-	if detailContent != "" {
-		rawLines = strings.Count(detailContent, "\n") + 1
-	}
-
-	detailMinHeight := m.height / 4
-	if detailMinHeight < 4 {
-		detailMinHeight = 4
-	}
-
-	detailHeight := rawLines + 1 // +1 for separator line
-	if detailHeight < detailMinHeight {
-		detailHeight = detailMinHeight
-	}
+	detailContent := m.getSelectedDetailContent()
+	detailHeight := 6
 
 	mainHeight := m.height - detailHeight - footerHeight
 	if mainHeight < 5 {
@@ -491,36 +494,82 @@ func (m Model) View() string {
 	case tabPresets:
 		content = RenderPresets(m.active, m.staging, m.cursor, cWidth)
 	case tabStatus:
-		content = RenderStatus(m.active, m.directStat, m.relayStat, m.coreActive, m.corePID)
+		content = RenderStatus(m.active, m.coreActive, m.corePID, m.lastStats)
 	case tabRelays:
 		content = RenderRelays(m.active, m.staging, m.cursor, cWidth, m.relayResults)
+	case tabGuests:
+		content = RenderGuests(m.active, m.staging, m.cursor, cWidth)
 	}
 
 	// Important: mainArea must NOT have internal newlines at the end
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, lipgloss.NewStyle().Height(mainHeight).MaxHeight(mainHeight).Render(content))
 
-	var detailSb strings.Builder
-	detailSb.WriteString(strings.Repeat("─", m.width)) // Row 1
-	if detailContent != "" {
-		detailSb.WriteString("\n" + detailContent)
-	} // Row 2+
-	// Pad with newlines to reach exact detailHeight
-	currentDetailLines := 1
-	if detailContent != "" {
-		currentDetailLines = 1 + strings.Count(detailContent, "\n") + 1
-	}
-	for i := currentDetailLines; i < detailHeight; i++ {
-		detailSb.WriteString("\n")
-	}
-
+	detailPane := m.renderDetailPane(detailContent, detailHeight)
 	footer := renderFooter(m.currentTab, m.width)
 
 	// Combine components without ANY extra \n between them.
 	// Each component must have exactly its calculated height.
-	return mainArea + "\n" + detailSb.String() + "\n" + footer
+	return mainArea + "\n" + detailPane + "\n" + footer
 }
 
-func (m Model) getSharePages() []string {
+func (m Model) getSelectedDetailContent() string {
+	ip := m.cachedIP
+	if m.useLocalIP {
+		ip = m.localIP
+	}
+	if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
+		idx := m.cursor
+		m1 := m.staging.ActiveModes[idx]
+		isMod := m1.RegenFlag
+		if !isMod && m.active != nil && idx < len(m.active.ActiveModes) {
+			a := m.active.ActiveModes[idx]
+			if m1.Port != a.Port || m1.Path != a.Path || m1.SNI != a.SNI || m1.Enabled != a.Enabled {
+				isMod = true
+			}
+		}
+		if isMod {
+			return "[A] apply changes to regenerate link"
+		}
+		tempCfg := *m.staging
+		tempCfg.ActiveModes = []config.ModeInfo{m1}
+		links := xray.GenerateLinks(&tempCfg, ip)
+		if len(links) > 0 {
+			return links[0]
+		}
+		return ""
+	}
+	if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+		relay := m.staging.CustomOutbounds[m.cursor]
+		if m.relayLoading == relay.Alias {
+			return "Loading relay info..."
+		}
+		if detail, ok := m.relayDetails[relay.Alias]; ok && len(detail.fields) > 0 {
+			return "__relay_detail__"
+		}
+		return buildRelaySummary(relay)
+	}
+	if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
+		guest := m.staging.Guests[m.cursor]
+		links := xray.GenerateGuestLinks(m.staging, ip, guest.UUID, guest.Alias)
+		if len(links) > 0 {
+			return links[0]
+		}
+	}
+	return ""
+}
+
+func (m Model) getSelectedLink() string {
+	content := m.getSelectedDetailContent()
+	if strings.HasPrefix(content, "[A] ") {
+		return ""
+	}
+	return content
+}
+
+func (m Model) shareBundle() string {
+	if m.staging == nil {
+		return ""
+	}
 	var pages []string
 	ip := m.cachedIP
 	if m.useLocalIP {
@@ -541,7 +590,9 @@ func (m Model) getSharePages() []string {
 			regularSb.WriteString(fmt.Sprintf("%s:\n%s\n\n", m1.Mode, links[0]))
 		}
 	}
-	pages = append(pages, regularSb.String())
+	if regularSb.Len() > 0 {
+		pages = append(pages, regularSb.String())
+	}
 
 	// Page 2: Quantum
 	var kemSb strings.Builder
@@ -556,7 +607,9 @@ func (m Model) getSharePages() []string {
 			}
 		}
 	}
-	pages = append(pages, kemSb.String())
+	if kemSb.Len() > 0 {
+		pages = append(pages, kemSb.String())
+	}
 
 	// Page 3: Relays
 	var relaySb strings.Builder
@@ -570,26 +623,347 @@ func (m Model) getSharePages() []string {
 			relaySb.WriteString(fmt.Sprintf("RELAY [%s]:\n%s\n\n", relay.Alias, links[0]))
 		}
 	}
-	pages = append(pages, relaySb.String())
-	return pages
+	if relaySb.Len() > 0 {
+		pages = append(pages, relaySb.String())
+	}
+	// Page 4: Guests
+	var guestSb strings.Builder
+	guestSb.WriteString("\n [4/4] GUEST LINKS \n" + strings.Repeat("═", m.width) + "\n\n")
+	for _, guest := range m.staging.Guests {
+		links := xray.GenerateGuestLinks(m.staging, ip, guest.UUID, guest.Alias)
+		if len(links) > 0 {
+			guestSb.WriteString(fmt.Sprintf("GUEST [%s]:\n", guest.Alias))
+			for _, link := range links {
+				guestSb.WriteString(link)
+				guestSb.WriteString("\n")
+			}
+			guestSb.WriteString("\n")
+		}
+	}
+	if guestSb.Len() > 0 {
+		pages = append(pages, guestSb.String())
+	}
+	return strings.Join(pages, "\n")
 }
 
-func (m Model) renderFullScreenShare() string {
-	pages := m.getSharePages()
-	if m.sharePageIndex >= len(pages) {
-		m.sharePageIndex = 0
+func (m Model) renderDetailPane(detailContent string, height int) string {
+	lineWidth := m.width
+	if lineWidth < 20 {
+		lineWidth = 20
 	}
-	footer := "\n" + strings.Repeat("─", m.width) + "\n[L] Toggle IP    [C] Copy Page    [Left/Right] Switch Page    [ESC/Q] Back"
-	return pages[m.sharePageIndex] + footer
+	if detail := m.currentRelayDetailData(); detail != nil {
+		return m.renderRelayDetailGrid(*detail, height, lineWidth)
+	}
+	title := " LINK "
+	if m.useLocalIP {
+		title = " LINK [LOCAL] "
+	} else {
+		title = " LINK [PUBLIC] "
+	}
+	contentWidth := lineWidth - 2
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	if strings.Contains(detailContent, "\n") {
+		return m.renderMultilineDetailPane(detailContent, height, lineWidth)
+	}
+	effectiveScroll := m.detailScroll
+	visible, maxScroll := clipHorizontal(detailContent, effectiveScroll, contentWidth)
+	if effectiveScroll > maxScroll {
+		effectiveScroll = maxScroll
+		visible, maxScroll = clipHorizontal(detailContent, effectiveScroll, contentWidth)
+	}
+
+	scrollInfo := "[\u2190/\u2192] scroll"
+	if maxScroll == 0 {
+		scrollInfo = "no wrap"
+	}
+	note := m.statusNote
+	if note == "" {
+		note = "[P] print current  [S] print share bundle"
+	}
+
+	lines := []string{
+		padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth),
+		padOrTrim(visible, lineWidth),
+		padOrTrim(fmt.Sprintf("%s  offset:%d/%d", scrollInfo, effectiveScroll, maxScroll), lineWidth),
+		padOrTrim(note, lineWidth),
+	}
+	if height < len(lines) {
+		height = len(lines)
+	}
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	for i := len(lines); i < height; i++ {
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m Model) currentRelayDetailData() *relayDetailData {
+	if m.currentTab != tabRelays || m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.CustomOutbounds) {
+		return nil
+	}
+	alias := m.staging.CustomOutbounds[m.cursor].Alias
+	detail, ok := m.relayDetails[alias]
+	if !ok || len(detail.fields) == 0 {
+		return nil
+	}
+	return &detail
+}
+
+func (m Model) renderRelayDetailGrid(detail relayDetailData, height int, lineWidth int) string {
+	title := " RELAY DETAIL "
+	if detail.title != "" {
+		title = " RELAY DETAIL [" + detail.title + "] "
+	}
+	note := m.statusNote
+	if note == "" {
+		note = "[I] refresh relay info  [P] print current"
+	}
+
+	contentRows := height - 2
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	maxCols := lineWidth / 26
+	if maxCols < 1 {
+		maxCols = 1
+	}
+	cols := (len(detail.fields) + contentRows - 1) / contentRows
+	if cols < 1 {
+		cols = 1
+	}
+	if cols > maxCols {
+		cols = maxCols
+	}
+	colWidth := (lineWidth - (cols-1)*2) / cols
+	if colWidth < 12 {
+		colWidth = 12
+	}
+	lines := []string{padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth)}
+
+	shown := 0
+	for row := 0; row < contentRows; row++ {
+		cells := make([]string, 0, cols)
+		for col := 0; col < cols; col++ {
+			idx := row*cols + col
+			if idx >= len(detail.fields) {
+				cells = append(cells, strings.Repeat(" ", colWidth))
+				continue
+			}
+			shown++
+			field := detail.fields[idx]
+			cell := field.label + ": " + field.value
+			cells = append(cells, padOrTrim(cell, colWidth))
+		}
+		lines = append(lines, padOrTrim(strings.Join(cells, "  "), lineWidth))
+	}
+	if shown < len(detail.fields) {
+		note = fmt.Sprintf("%s  +%d more", note, len(detail.fields)-shown)
+	}
+	lines = append(lines, padOrTrim(note, lineWidth))
+
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	for i := len(lines); i < height; i++ {
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m Model) renderMultilineDetailPane(detailContent string, height int, lineWidth int) string {
+	title := " DETAIL "
+	switch m.currentTab {
+	case tabRelays:
+		title = " RELAY DETAIL "
+	case tabGuests:
+		title = " GUEST DETAIL "
+	case tabStatus:
+		title = " HOME DETAIL "
+	}
+	note := m.statusNote
+	if note == "" {
+		note = "[P] print current  [S] print share bundle"
+	}
+	lines := []string{padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth)}
+	contentLines := strings.Split(detailContent, "\n")
+	maxContentLines := height - 2
+	if maxContentLines < 1 {
+		maxContentLines = 1
+	}
+	for i := 0; i < len(contentLines) && i < maxContentLines; i++ {
+		lines = append(lines, padOrTrim(contentLines[i], lineWidth))
+	}
+	if len(contentLines) > maxContentLines {
+		note = fmt.Sprintf("%s  +%d more", note, len(contentLines)-maxContentLines)
+	}
+	lines = append(lines, padOrTrim(note, lineWidth))
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	for i := len(lines); i < height; i++ {
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m Model) currentPrintView() (string, string) {
+	switch m.currentTab {
+	case tabStatus:
+		return "HOME SNAPSHOT", buildStatusReport(m.active, m.coreActive, m.corePID, m.lastStats)
+	case tabPresets:
+		if body := m.printablePresetLinks(); body != "" {
+			return "PRESET LINKS", body
+		}
+	case tabRelays:
+		if link := m.getSelectedLink(); link != "" {
+			return "CURRENT RELAY LINK", link
+		}
+	case tabGuests:
+		if m.staging != nil && m.cursor < len(m.staging.Guests) {
+			guest := m.staging.Guests[m.cursor]
+			if link := m.getSelectedLink(); link != "" {
+				return "CURRENT GUEST LINK", BuildGuestReport(guest) + "\n\n" + link
+			}
+			return "CURRENT GUEST", BuildGuestReport(guest)
+		}
+	}
+	return "", ""
+}
+
+func (m Model) currentGuestSubPrintView() (string, string) {
+	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.Guests) {
+		return "", ""
+	}
+	guest := m.staging.Guests[m.cursor]
+	if guest.SubToken == "" {
+		return "", ""
+	}
+	host := m.cachedIP
+	if m.useLocalIP {
+		host = m.localIP
+	}
+	return "CURRENT GUEST SUB", buildGuestSubReport(m.staging, guest, host)
+}
+
+func (m Model) printablePresetLinks() string {
+	if m.staging == nil {
+		return ""
+	}
+	ip := m.cachedIP
+	if m.useLocalIP {
+		ip = m.localIP
+	}
+	var b strings.Builder
+	for _, mode := range m.staging.ActiveModes {
+		if !mode.Enabled {
+			continue
+		}
+		tempCfg := *m.staging
+		tempCfg.ActiveModes = []config.ModeInfo{mode}
+		links := xray.GenerateLinks(&tempCfg, ip)
+		if len(links) == 0 {
+			continue
+		}
+		b.WriteString(string(mode.Mode))
+		b.WriteString(":\n")
+		for _, link := range links {
+			b.WriteString(link)
+			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func buildPrintScript(title string, body string) string {
+	escapedTitle := strings.ReplaceAll(title, "'", "'\\''")
+	escapedBody := strings.ReplaceAll(body, "'", "'\\''")
+	return fmt.Sprintf("printf '\\033[2J\\033[H'; printf '=== %s ===\\n\\n'; printf '%%s\\n' '%s'; printf '\\n[Enter] Return to TUI...'; IFS= read -r _", escapedTitle, escapedBody)
+}
+
+func summarizeActionResult(lines []string, err error) string {
+	if err != nil {
+		return fmt.Sprintf("apply failed: %v", err)
+	}
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+	return "done"
+}
+
+func clipHorizontal(s string, start int, width int) (string, int) {
+	rs := []rune(s)
+	if start < 0 {
+		start = 0
+	}
+	maxScroll := len(rs) - width
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if start > maxScroll {
+		start = maxScroll
+	}
+	end := start + width
+	if end > len(rs) {
+		end = len(rs)
+	}
+	return string(rs[start:end]), maxScroll
+}
+
+func detailMaxScroll(s string, width int) int {
+	_, maxScroll := clipHorizontal(s, 0, width)
+	return maxScroll
+}
+
+func padOrTrim(s string, width int) string {
+	rs := []rune(s)
+	if len(rs) > width {
+		return string(rs[:width])
+	}
+	return s + strings.Repeat(" ", width-len(rs))
+}
+
+func runeLen(s string) int {
+	return len([]rune(s))
+}
+
+func max(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func renderFooter(tab sessionTab, width int) string {
 	var keys []string
 	keys = append(keys, "[Tab]Switch", "[Q]Quit", "[A]Apply")
+	if tab == tabStatus {
+		keys = append(keys, "[P]Print", "[S]Links", "[L]IP-Mode")
+	}
 	if tab == tabPresets {
-		keys = append(keys, "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[C]Copy", "[S]Share")
+		keys = append(keys, "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[←/→]Scroll", "[P]Print", "[S]Links")
 	} else if tab == tabRelays {
-		keys = append(keys, "[+]Add", "[+/-]On/Off", "[T]Test", "[D]Del", "[U]Undo")
+		keys = append(keys, "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
+	} else if tab == tabGuests {
+		keys = append(keys, "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
@@ -597,7 +971,7 @@ func renderFooter(tab sessionTab, width int) string {
 
 func renderSidebar(current sessionTab, height int) string {
 	var b strings.Builder
-	items := []string{"STATUS", "PRESETS", "RELAYS"}
+	items := []string{"HOME", "PRESETS", "RELAYS", "GUESTS"}
 	for i, item := range items {
 		line := " " + item + " "
 		if sessionTab(i) == current {
@@ -614,4 +988,740 @@ func Start() error {
 	p := tea.NewProgram(InitialModel(), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
+}
+
+func fetchRelayDetail(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayDetailMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "outbound", "info", alias)
+		out, err := cmd.CombinedOutput()
+		body := strings.TrimSpace(string(out))
+		return relayDetailMsg{alias: alias, body: "__info__\n" + body, err: err}
+	}
+}
+
+func fetchRelayTest(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayDetailMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "outbound", "test", alias)
+		out, err := cmd.CombinedOutput()
+		body := strings.TrimSpace(string(out))
+		return relayDetailMsg{alias: alias, body: "__test__\n" + body, err: err}
+	}
+}
+
+func fetchRelayProbe(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayDetailMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "outbound", "probe-local", alias)
+		out, err := cmd.CombinedOutput()
+		body := strings.TrimSpace(string(out))
+		return relayDetailMsg{alias: alias, body: "__probe__\n" + body, err: err}
+	}
+}
+
+func fetchRelaySpeed(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayDetailMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "outbound", "speed", alias)
+		out, err := cmd.CombinedOutput()
+		body := strings.TrimSpace(string(out))
+		return relayDetailMsg{alias: alias, body: "__speed__\n" + body, err: err}
+	}
+}
+
+func fetchRelayResolve(alias string, domain string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayDetailMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "outbound", "resolve", alias, domain)
+		out, err := cmd.CombinedOutput()
+		body := strings.TrimSpace(string(out))
+		return relayDetailMsg{alias: alias, body: "__resolve__\n" + domain + "\n" + body, err: err}
+	}
+}
+
+func parseRelayDetailOutput(alias string, raw string) relayDetailData {
+	if strings.TrimSpace(raw) == "" {
+		return relayDetailData{}
+	}
+	if strings.HasPrefix(raw, "__probe__\n") {
+		return parseRelayProbeOutput(alias, strings.TrimPrefix(raw, "__probe__\n"))
+	}
+	if strings.HasPrefix(raw, "__test__\n") {
+		return parseRelayTestOutput(alias, strings.TrimPrefix(raw, "__test__\n"))
+	}
+	if strings.HasPrefix(raw, "__speed__\n") {
+		return parseRelaySpeedOutput(alias, strings.TrimPrefix(raw, "__speed__\n"))
+	}
+	if strings.HasPrefix(raw, "__resolve__\n") {
+		payload := strings.TrimPrefix(raw, "__resolve__\n")
+		parts := strings.SplitN(payload, "\n", 2)
+		domain := ""
+		body := ""
+		if len(parts) > 0 {
+			domain = parts[0]
+		}
+		if len(parts) > 1 {
+			body = parts[1]
+		}
+		return parseRelayResolveOutput(alias, domain, body)
+	}
+	raw = strings.TrimPrefix(raw, "__info__\n")
+
+	lines := strings.Split(raw, "\n")
+	fields := map[string]string{}
+	media := map[string]string{}
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "✨ Landing Profile:") {
+			fields["title"] = strings.TrimSpace(strings.TrimPrefix(line, "✨ Landing Profile:"))
+			continue
+		}
+		if strings.HasPrefix(line, "Netflix:") {
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "Netflix:"))
+			parts := strings.Fields(rest)
+			if len(parts) >= 1 {
+				media["Netflix"] = parts[0]
+			}
+			for i := 1; i+1 < len(parts); i += 2 {
+				key := strings.TrimSuffix(parts[i], ":")
+				media[key] = parts[i+1]
+			}
+			continue
+		}
+		if idx := strings.Index(line, ":"); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			fields[key] = val
+		}
+	}
+
+	title := alias
+	if v := fields["title"]; v != "" {
+		title = v
+	}
+	return relayDetailData{
+		title: title,
+		fields: []detailField{
+			{label: "Exit", value: firstNonEmpty(fields["Exit IP"], fields["Exit IPv4"], fields["Exit IPv6"], "Unknown")},
+			{label: "IPv4", value: firstNonEmpty(fields["Exit IPv4"], "N/A")},
+			{label: "YouTube", value: emptyFallback(media["YouTube"], "?")},
+			{label: "Geo", value: emptyFallback(joinNonEmpty(", ", fields["Local"], fields["Country"]), "N/A")},
+			{label: "IPv6", value: firstNonEmpty(fields["Exit IPv6"], "N/A")},
+			{label: "Netflix", value: emptyFallback(media["Netflix"], "?")},
+			{label: "ASN", value: emptyFallback(joinNonEmpty(" ", fields["ASN Type"], fields["ASN"]), "N/A")},
+			{label: "Org", value: emptyFallback(fields["Company"], "N/A")},
+			{label: "Disney+", value: emptyFallback(media["Disney+"], "?")},
+			{label: "Time", value: emptyFallback(joinNonEmpty(" ", fields["Local Time"], fields["Time Zone"]), "N/A")},
+			{label: "Privacy", value: emptyFallback(fields["ASN Type"], "N/A")},
+		},
+	}
+}
+
+func parseRelayTestSummary(alias string, raw string) relayTestMsg {
+	result := relayTestMsg{alias: alias, tcp: "FAIL", udp: "FAIL", dns: "FAIL", ipv4: "N/A", ipv6: "N/A"}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "->") {
+			continue
+		}
+		parts := strings.SplitN(line, "->", 2)
+		for _, segment := range strings.Split(parts[1], "|") {
+			segment = strings.TrimSpace(segment)
+			idx := strings.Index(segment, ":")
+			if idx <= 0 {
+				continue
+			}
+			key := strings.TrimSpace(segment[:idx])
+			val := strings.TrimSpace(segment[idx+1:])
+			switch key {
+			case "TCP":
+				result.tcp = val
+			case "UDP":
+				result.udp = val
+			case "DNS":
+				result.dns = val
+			case "IPv4":
+				result.ipv4 = val
+			case "IPv6":
+				result.ipv6 = val
+			}
+		}
+	}
+	return result
+}
+
+func parseRelayProbeOutput(alias string, raw string) relayDetailData {
+	fields := []detailField{}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "->")
+		if len(parts) != 2 {
+			continue
+		}
+		head := strings.TrimSpace(parts[0])
+		body := strings.TrimSpace(parts[1])
+		label := head
+		if idx := strings.LastIndex(head, "/"); idx >= 0 && strings.HasSuffix(head, "]") {
+			label = strings.TrimSuffix(head[idx+1:], "]")
+		}
+		for _, segment := range strings.Split(body, "|") {
+			segment = strings.TrimSpace(segment)
+			idx := strings.Index(segment, ":")
+			if idx <= 0 {
+				continue
+			}
+			key := strings.TrimSpace(segment[:idx])
+			val := strings.TrimSpace(segment[idx+1:])
+			fields = append(fields, detailField{label: label + " " + key, value: val})
+		}
+	}
+	return relayDetailData{title: alias + " probe", fields: fields}
+}
+
+func parseRelayTestOutput(alias string, raw string) relayDetailData {
+	summary := parseRelayTestSummary(alias, raw)
+	fields := []detailField{
+		{label: "TCP", value: summary.tcp},
+		{label: "UDP", value: summary.udp},
+		{label: "DNS", value: summary.dns},
+		{label: "IPv4", value: summary.ipv4},
+		{label: "IPv6", value: summary.ipv6},
+	}
+	return relayDetailData{title: alias + " test", fields: fields}
+}
+
+func parseRelayResolveOutput(alias string, domain string, raw string) relayDetailData {
+	fields := []detailField{{label: "Domain", value: domain}}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 3 {
+			continue
+		}
+		qtype := parts[1]
+		value := strings.Join(parts[2:], " ")
+		fields = append(fields, detailField{label: qtype, value: value})
+	}
+	return relayDetailData{title: alias + " resolve", fields: fields}
+}
+
+func parseRelaySpeedOutput(alias string, raw string) relayDetailData {
+	lines := strings.Split(raw, "\n")
+	collecting := false
+	values := map[string]string{}
+	order := []string{
+		"Link",
+		"Duration",
+		"Data",
+		"Average",
+		"Peak",
+		"Low 20%",
+		"Idle Latency Avg",
+		"Load Latency Avg",
+		"Load Worst 5%",
+		"Packet Loss",
+	}
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "❌") {
+			continue
+		}
+		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "Speed Test") {
+			collecting = true
+			continue
+		}
+		if !collecting {
+			continue
+		}
+		if idx := strings.Index(line, ":"); idx > 0 {
+			label := strings.TrimSpace(line[:idx])
+			value := strings.TrimSpace(line[idx+1:])
+			if value != "" {
+				values[label] = value
+			}
+		}
+	}
+	fields := make([]detailField, 0, len(order))
+	for _, label := range order {
+		if value := strings.TrimSpace(values[label]); value != "" {
+			fields = append(fields, detailField{label: label, value: value})
+		}
+	}
+	return relayDetailData{title: alias + " speed", fields: fields}
+}
+
+func joinNonEmpty(sep string, values ...string) string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" && v != "N/A" {
+			out = append(out, v)
+		}
+	}
+	return strings.Join(out, sep)
+}
+
+func emptyFallback(value string, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
+}
+
+func buildRelaySummary(co config.CustomOutbound) string {
+	var b strings.Builder
+	status := "OFF"
+	if co.Enabled {
+		status = "ON"
+	}
+	internal := "-"
+	if co.InternalProxyPort > 0 {
+		internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, co.InternalProxyPort+1)
+	}
+	strategy := co.DNSStrategy
+	if strategy == "" {
+		strategy = "default"
+	}
+	b.WriteString(fmt.Sprintf("Alias: %s\n", co.Alias))
+	b.WriteString(fmt.Sprintf("State: %s\n", status))
+	b.WriteString(fmt.Sprintf("Proto: %s\n", relayProtocol(co)))
+	b.WriteString(fmt.Sprintf("Remote: %s\n", relayRemoteSummary(co)))
+	b.WriteString(fmt.Sprintf("Transport: %s\n", relayTransportSummary(co)))
+	b.WriteString(fmt.Sprintf("Internal: %s\n", internal))
+	b.WriteString(fmt.Sprintf("DNS: %s", relayDNSSummary(co, strategy)))
+	return b.String()
+}
+
+func relayProtocol(co config.CustomOutbound) string {
+	if proto, _ := co.Config["protocol"].(string); proto != "" {
+		return proto
+	}
+	return "unknown"
+}
+
+func relayRemoteSummary(co config.CustomOutbound) string {
+	settings, _ := co.Config["settings"].(map[string]interface{})
+	switch relayProtocol(co) {
+	case "vless", "vmess":
+		vnext := getMapSlice(settings, "vnext")
+		if len(vnext) == 0 {
+			return "-"
+		}
+		return joinHostPort(vnext[0]["address"], vnext[0]["port"])
+	case "shadowsocks", "socks", "http":
+		servers := getMapSlice(settings, "servers")
+		if len(servers) == 0 {
+			return "-"
+		}
+		return joinHostPort(servers[0]["address"], servers[0]["port"])
+	case "freedom":
+		sendThrough, _ := co.Config["sendThrough"].(string)
+		if sendThrough != "" {
+			return sendThrough
+		}
+		return "direct"
+	default:
+		return "-"
+	}
+}
+
+func relayTransportSummary(co config.CustomOutbound) string {
+	stream, _ := co.Config["streamSettings"].(map[string]interface{})
+	parts := []string{}
+	network := stringValue(stream["network"])
+	if network == "" {
+		switch relayProtocol(co) {
+		case "shadowsocks", "socks", "http", "freedom":
+			network = "tcp"
+		}
+	}
+	if network != "" {
+		parts = append(parts, network)
+	}
+	security := stringValue(stream["security"])
+	if security != "" && security != "none" {
+		parts = append(parts, security)
+	}
+	serverName := firstNonEmpty(nestedString(stream, "realitySettings", "serverName"), nestedString(stream, "tlsSettings", "serverName"))
+	if serverName != "" {
+		parts = append(parts, "sni="+serverName)
+	}
+	host := relayHeaderHost(stream)
+	if host != "" && host != serverName {
+		parts = append(parts, "host="+host)
+	}
+	path := firstNonEmpty(nestedString(stream, "wsSettings", "path"), nestedString(stream, "xhttpSettings", "path"))
+	if path != "" {
+		parts = append(parts, "path="+path)
+	}
+	if len(parts) == 0 {
+		return "-"
+	}
+	return strings.Join(parts, " ")
+}
+
+func relayHeaderHost(stream map[string]interface{}) string {
+	if host := nestedString(stream, "xhttpSettings", "host"); host != "" {
+		return host
+	}
+	if host := nestedString(stream, "wsSettings", "headers", "Host"); host != "" {
+		return host
+	}
+	return ""
+}
+
+func relayDNSSummary(co config.CustomOutbound, fallback string) string {
+	if len(co.DNSServers) == 0 {
+		return fallback
+	}
+	return fallback + " " + strings.Join(co.DNSServers, ",")
+}
+
+func getMapSlice(m map[string]interface{}, key string) []map[string]interface{} {
+	raw, _ := m[key].([]interface{})
+	out := make([]map[string]interface{}, 0, len(raw))
+	for _, item := range raw {
+		if mm, ok := item.(map[string]interface{}); ok {
+			out = append(out, mm)
+		}
+	}
+	return out
+}
+
+func joinHostPort(host interface{}, port interface{}) string {
+	return fmt.Sprintf("%v:%v", host, port)
+}
+
+func stringValue(v interface{}) string {
+	s, _ := v.(string)
+	return s
+}
+
+func nestedString(m map[string]interface{}, keys ...string) string {
+	var cur interface{} = m
+	for _, key := range keys {
+		next, ok := cur.(map[string]interface{})
+		if !ok {
+			return ""
+		}
+		cur, ok = next[key]
+		if !ok {
+			return ""
+		}
+	}
+	return stringValue(cur)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func (m *Model) startInput(mode inputMode, placeholder string, value string) {
+	m.inputMode = mode
+	m.textInput.Placeholder = placeholder
+	m.textInput.SetValue(value)
+	m.textInput.CursorEnd()
+	m.textInput.Focus()
+}
+
+func (m Model) inputTitle() string {
+	switch m.inputMode {
+	case inputAddRelay:
+		return "ADD CUSTOM RELAY"
+	case inputAddGuest:
+		return "ADD GUEST"
+	case inputSetGuestQuota:
+		return "SET GUEST QUOTA"
+	case inputSetGuestReset:
+		return "SET GUEST RESET DAY"
+	case inputSetGuestOutbound:
+		return "SET GUEST OUTBOUND"
+	case inputRelayResolveDomain:
+		return "RESOLVE DOMAIN VIA RELAY"
+	default:
+		return "INPUT"
+	}
+}
+
+func (m Model) submitInput() (tea.Model, tea.Cmd) {
+	value := strings.TrimSpace(m.textInput.Value())
+	mode := m.inputMode
+	m.inputMode = inputNone
+	m.textInput.Reset()
+	switch mode {
+	case inputAddRelay:
+		if value != "" {
+			out, err := xray.ParseProxyLink(value)
+			if err == nil {
+				alias := "relay-" + utils.GenerateRandomString(3)
+				newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
+				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds, newCO)
+				m.staging.SaveEx(true)
+				m.relayLoading = alias
+				m.relayResults[alias] = relayTestMsg{alias: alias, tcp: "Wait..", udp: "Wait..", dns: "Wait..", ipv4: "--", ipv6: "--"}
+				m.statusNote = "relay added"
+				return m, fetchRelayTest(alias)
+			}
+			m.statusNote = fmt.Sprintf("parse failed: %v", err)
+		}
+	case inputAddGuest:
+		if err := m.addGuest(value); err != nil {
+			m.statusNote = err.Error()
+		} else {
+			m.statusNote = "guest added"
+		}
+	case inputSetGuestQuota:
+		if err := m.setGuestQuota(value); err != nil {
+			m.statusNote = err.Error()
+		} else {
+			m.statusNote = "guest quota updated"
+		}
+	case inputSetGuestReset:
+		if err := m.setGuestReset(value); err != nil {
+			m.statusNote = err.Error()
+		} else {
+			m.statusNote = "guest reset day updated"
+		}
+	case inputSetGuestOutbound:
+		if err := m.setGuestOutbound(value); err != nil {
+			m.statusNote = err.Error()
+		} else {
+			m.statusNote = "guest outbound updated"
+		}
+	case inputRelayResolveDomain:
+		if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+			alias := m.staging.CustomOutbounds[m.cursor].Alias
+			m.relayLoading = alias
+			m.statusNote = "resolving via relay..."
+			return m, fetchRelayResolve(alias, value)
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) selectedGuest() *config.GuestConfig {
+	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.Guests) {
+		return nil
+	}
+	return &m.staging.Guests[m.cursor]
+}
+
+func (m *Model) addGuest(alias string) error {
+	if alias == "" {
+		return fmt.Errorf("guest alias required")
+	}
+	if len(alias) < 3 || len(alias) > 20 {
+		return fmt.Errorf("guest alias must be 3-20 chars")
+	}
+	for _, r := range alias {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return fmt.Errorf("alias allows only alnum/_/-")
+		}
+	}
+	for _, g := range m.staging.Guests {
+		if g.Alias == alias {
+			return fmt.Errorf("guest already exists")
+		}
+	}
+	m.staging.Guests = append(m.staging.Guests, config.GuestConfig{
+		Alias: alias, UUID: uuid.New().String(), Enabled: true, DisabledReason: config.GuestDisabledNone, QuotaGB: -1, ResetDay: 1,
+	})
+	m.staging.SaveEx(true)
+	m.cursor = len(m.staging.Guests) - 1
+	return nil
+}
+
+func (m *Model) pauseGuest() {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return
+	}
+	guest.Enabled = false
+	guest.DisabledReason = config.GuestDisabledManual
+	m.staging.SaveEx(true)
+}
+
+func (m *Model) resumeGuest() error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	if guest.QuotaGB == 0 {
+		return fmt.Errorf("guest still has quota=0")
+	}
+	guest.Enabled = true
+	guest.DisabledReason = config.GuestDisabledNone
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func (m *Model) setGuestQuota(raw string) error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	if raw == "reset" {
+		guest.UsedBytes = 0
+		if guest.DisabledReason == config.GuestDisabledQuotaReached && guest.QuotaGB > 0 {
+			guest.Enabled = true
+			guest.DisabledReason = config.GuestDisabledNone
+		}
+		m.staging.SaveEx(true)
+		return nil
+	}
+	val, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return fmt.Errorf("invalid quota")
+	}
+	guest.QuotaGB = val
+	if val == 0 {
+		guest.Enabled = false
+		guest.DisabledReason = config.GuestDisabledQuotaZero
+	} else if guest.DisabledReason != config.GuestDisabledManual {
+		guest.Enabled = true
+		guest.DisabledReason = config.GuestDisabledNone
+	}
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func (m *Model) setGuestReset(raw string) error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	day, err := strconv.Atoi(raw)
+	if err != nil || day < 1 || day > 31 {
+		return fmt.Errorf("reset day must be 1-31")
+	}
+	guest.ResetDay = day
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func (m *Model) setGuestOutbound(raw string) error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	if raw == "" || raw == "direct" {
+		guest.OutboundLink = ""
+		guest.OutboundConf = nil
+		m.staging.SaveEx(true)
+		return nil
+	}
+	conf, err := xray.ParseProxyLink(raw)
+	if err != nil {
+		return fmt.Errorf("invalid link: %v", err)
+	}
+	guest.OutboundLink = raw
+	guest.OutboundConf = conf
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func (m *Model) enableGuestSub() error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	ensureGuestSubListenerConfig(m.staging)
+	if guest.SubToken == "" {
+		guest.SubToken = utils.GenerateRandomString(32)
+	}
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func (m *Model) disableGuestSub() error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	guest.SubToken = ""
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func (m *Model) rotateGuestSub() error {
+	guest := m.selectedGuest()
+	if guest == nil {
+		return fmt.Errorf("no guest selected")
+	}
+	ensureGuestSubListenerConfig(m.staging)
+	guest.SubToken = utils.GenerateRandomString(32)
+	m.staging.SaveEx(true)
+	return nil
+}
+
+func ensureGuestSubListenerConfig(cfg *config.UserConfig) {
+	if cfg == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.GuestSubBind) == "" {
+		cfg.GuestSubBind = "127.0.0.1"
+	}
+	if cfg.GuestSubPort > 0 {
+		return
+	}
+	const preferredPort = 9444
+	if utils.IsPortFree(preferredPort) {
+		cfg.GuestSubPort = preferredPort
+		return
+	}
+	port, _ := xray.GetFreePort()
+	cfg.GuestSubPort = port
+}
+
+func guestSubURL(host string, port int, token string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("https://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
+}
+
+func buildGuestSubReport(cfg *config.UserConfig, guest config.GuestConfig, host string) string {
+	var b strings.Builder
+	b.WriteString(BuildGuestReport(guest))
+	if cfg == nil {
+		return b.String()
+	}
+	ensureGuestSubListenerConfig(cfg)
+	b.WriteString(fmt.Sprintf("Listener: %s:%d\n", cfg.GuestSubBind, cfg.GuestSubPort))
+	b.WriteString(fmt.Sprintf("Path: /guest-sub/%s\n", guest.SubToken))
+	b.WriteString(fmt.Sprintf("URL: %s\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken)))
+	b.WriteString(fmt.Sprintf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(guest, time.Now())))
+	return b.String()
 }

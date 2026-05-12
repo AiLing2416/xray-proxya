@@ -8,12 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"xray-proxya/internal/buildinfo"
 
 	"github.com/spf13/cobra"
 )
 
 var (
-	Version       = "0.3.1"
+	Version       = buildinfo.Version
 	shellOverride string
 	setupDeps     bool
 )
