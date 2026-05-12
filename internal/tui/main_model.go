@@ -70,6 +70,10 @@ type serviceLogsMsg struct {
 	err  error
 }
 
+type publicIPMsg struct {
+	ip string
+}
+
 type relayDetailMsg struct {
 	alias string
 	body  string
@@ -157,6 +161,7 @@ func InitialModel() Model {
 	}
 	ti := textinput.New()
 	ti.Width = 60
+	localIP := utils.GetLocalIP()
 	return Model{
 		active:       active,
 		staging:      staging,
@@ -165,8 +170,8 @@ func InitialModel() Model {
 		height:       24,
 		relayResults: make(map[string]relayTestMsg),
 		relayDetails: make(map[string]relayDetailData),
-		cachedIP:     utils.GetSmartIP(false),
-		localIP:      utils.GetLocalIP(),
+		cachedIP:     localIP,
+		localIP:      localIP,
 		serviceState: xray.GetServiceState(),
 		textInput:    ti,
 	}
@@ -174,9 +179,9 @@ func InitialModel() Model {
 
 func (m Model) Init() tea.Cmd {
 	if m.active != nil {
-		return tickStats(m.active.APIInbound)
+		return tea.Batch(tickStats(m.active.APIInbound), fetchPublicIP())
 	}
-	return nil
+	return fetchPublicIP()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -210,6 +215,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.serviceLogs = "no log lines yet"
 		} else {
 			m.serviceLogs = strings.TrimRight(msg.body, "\n")
+		}
+	case publicIPMsg:
+		if strings.TrimSpace(msg.ip) != "" {
+			m.cachedIP = msg.ip
 		}
 	case statsMsg:
 		m.directStat, m.relayStat, m.coreActive, m.corePID, m.lastStats = msg.direct, msg.relay, msg.active, msg.pid, msg.allStats
@@ -1291,6 +1300,12 @@ func refreshServiceLogs(lines int) tea.Cmd {
 	return func() tea.Msg {
 		body, err := xray.ReadLogTail(lines)
 		return serviceLogsMsg{body: body, err: err}
+	}
+}
+
+func fetchPublicIP() tea.Cmd {
+	return func() tea.Msg {
+		return publicIPMsg{ip: utils.GetSmartIP(false)}
 	}
 }
 
