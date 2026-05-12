@@ -161,12 +161,10 @@ func StartXrayBackground() error {
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 	os.WriteFile(pidPath, []byte(pidStr), 0600)
 
-	fmt.Printf("✅ Xray started in background (PID: %s)\n", pidStr)
 	return nil
 }
 
 func RestartXrayService() error {
-	fmt.Println("🔄 Restarting Xray service...")
 	isRoot := os.Geteuid() == 0
 
 	if isRoot {

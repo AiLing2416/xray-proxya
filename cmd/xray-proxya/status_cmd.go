@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 	"sort"
-	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -34,58 +34,18 @@ var statusCmd = &cobra.Command{
 		fmt.Printf("⏱️  UpTime: %s\n", uptime)
 		fmt.Println("------------------------------------------------------------")
 
-		direct, relay, serviceStats, relayStats, guestStats, inboundStats := summarizeStats(allStats)
+		summary := trafficstats.Summarize(allStats)
 
 		fmt.Printf("🌐 Total Traffic:\n")
-		fmt.Printf("   Direct Outbound: %s\n", utils.FormatBytes(direct))
-		fmt.Printf("   Relay Outbound:  %s\n", utils.FormatBytes(relay))
+		fmt.Printf("   Direct Outbound: %s\n", utils.FormatBytes(summary.Direct))
+		fmt.Printf("   Relay Outbound:  %s\n", utils.FormatBytes(summary.Relay))
 
-		printNamedStats("\n📥 Service Inbounds:", inboundStats)
-		printNamedStats("\n🧭 Direct / Service Usage:", serviceStats)
-		printNamedStats("\n🔁 Relay Usage:", relayStats)
-		printNamedStats("\n👥 Guest Usage:", guestStats)
+		printNamedStats("\n📥 Service Inbounds:", summary.InboundStats)
+		printNamedStats("\n🧭 Direct / Service Usage:", summary.ServiceStats)
+		printNamedStats("\n🔁 Relay Usage:", summary.RelayStats)
+		printNamedStats("\n👥 Guest Usage:", summary.GuestStats)
 		fmt.Println("------------------------------------------------------------")
 	},
-}
-
-func summarizeStats(allStats map[string]int64) (int64, int64, map[string]int64, map[string]int64, map[string]int64, map[string]int64) {
-	var direct, relay int64
-	serviceStats := make(map[string]int64)
-	relayStats := make(map[string]int64)
-	guestStats := make(map[string]int64)
-	inboundStats := make(map[string]int64)
-
-	for name, val := range allStats {
-		switch {
-		case strings.HasPrefix(name, "outbound>>>direct>>>"):
-			direct += val
-		case strings.HasPrefix(name, "outbound>>>outbound-") && !strings.Contains(name, ">>>blocked>>>"):
-			relay += val
-		case strings.HasPrefix(name, "user>>>"):
-			parts := strings.Split(name, ">>>")
-			if len(parts) < 2 {
-				continue
-			}
-			email := parts[1]
-			switch {
-			case email == "service-user":
-				serviceStats["service-user"] += val
-			case strings.HasPrefix(email, "relay-"):
-				relayStats[strings.TrimPrefix(email, "relay-")] += val
-			case strings.HasPrefix(email, "guest-"):
-				guestStats[strings.TrimPrefix(email, "guest-")] += val
-			default:
-				serviceStats[email] += val
-			}
-		case strings.HasPrefix(name, "inbound>>>") && !strings.Contains(name, ">>>api>>>"):
-			parts := strings.Split(name, ">>>")
-			if len(parts) >= 2 {
-				inboundStats[parts[1]] += val
-			}
-		}
-	}
-
-	return direct, relay, serviceStats, relayStats, guestStats, inboundStats
 }
 
 func printNamedStats(title string, stats map[string]int64) {
@@ -101,6 +61,11 @@ func printNamedStats(title string, stats map[string]int64) {
 	for _, key := range keys {
 		fmt.Printf("   %-25s: %s\n", key, utils.FormatBytes(stats[key]))
 	}
+}
+
+func summarizeStats(allStats map[string]int64) (int64, int64, map[string]int64, map[string]int64, map[string]int64, map[string]int64) {
+	summary := trafficstats.Summarize(allStats)
+	return summary.Direct, summary.Relay, summary.ServiceStats, summary.RelayStats, summary.GuestStats, summary.InboundStats
 }
 
 func init() {

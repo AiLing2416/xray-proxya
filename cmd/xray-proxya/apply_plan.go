@@ -1,174 +1,20 @@
 package main
 
 import (
-	"os"
-	"os/exec"
-	"reflect"
+	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
 )
 
-type applyImpact struct {
-	XrayConfigChanged     bool
-	SubListenerChanged    bool
-	SubContentChanged     bool
-	GatewayRuntimeChanged bool
-	ChangedSections       []string
-}
+type applyImpact = applyops.Impact
 
 func buildApplyImpact(activeCfg, stagingCfg *config.UserConfig) applyImpact {
-	impact := applyImpact{}
-	if stagingCfg == nil {
-		return impact
-	}
-	if activeCfg == nil {
-		impact.XrayConfigChanged = true
-		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
-		impact.SubContentChanged = stagingCfg.AdminSub.Enabled || len(stagingCfg.Subscriptions) > 0
-		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled
-		impact.ChangedSections = []string{"initial_apply"}
-		return impact
-	}
-
-	mark := func(section string) {
-		for _, existing := range impact.ChangedSections {
-			if existing == section {
-				return
-			}
-		}
-		impact.ChangedSections = append(impact.ChangedSections, section)
-	}
-
-	if activeCfg.Role != stagingCfg.Role {
-		impact.XrayConfigChanged = true
-		impact.SubContentChanged = true
-		mark("role")
-	}
-	if activeCfg.UUID != stagingCfg.UUID {
-		impact.XrayConfigChanged = true
-		impact.SubContentChanged = true
-		mark("uuid")
-	}
-	if activeCfg.APIInbound != stagingCfg.APIInbound {
-		impact.XrayConfigChanged = true
-		mark("api_inbound")
-	}
-	if activeCfg.TestInbound != stagingCfg.TestInbound {
-		impact.XrayConfigChanged = true
-		mark("test_inbound")
-	}
-	if !reflect.DeepEqual(activeCfg.ActiveModes, stagingCfg.ActiveModes) {
-		impact.XrayConfigChanged = true
-		impact.SubContentChanged = true
-		mark("active_modes")
-	}
-	if !reflect.DeepEqual(activeCfg.CustomOutbounds, stagingCfg.CustomOutbounds) {
-		impact.XrayConfigChanged = true
-		impact.SubContentChanged = true
-		mark("custom_outbounds")
-	}
-	if guestsAffectXray(activeCfg.Guests, stagingCfg.Guests) {
-		impact.XrayConfigChanged = true
-		mark("guests")
-	}
-	if guestsAffectGuestSub(activeCfg.Guests, stagingCfg.Guests) {
-		impact.SubContentChanged = true
-		mark("guest_sub")
-	}
-	if activeCfg.Gateway.RelayAlias != stagingCfg.Gateway.RelayAlias {
-		impact.XrayConfigChanged = true
-		impact.SubContentChanged = true
-		mark("gateway.relay_alias")
-	}
-	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
-		if activeCfg.AdminSub.Port != stagingCfg.AdminSub.Port {
-			impact.SubListenerChanged = true
-			mark("admin_sub.port")
-		}
-		if activeCfg.AdminSub != stagingCfg.AdminSub {
-			impact.SubContentChanged = true
-			mark("admin_sub")
-		}
-	}
-	if activeCfg.SubPort != stagingCfg.SubPort {
-		impact.SubListenerChanged = true
-		mark("sub_port")
-	}
-	if activeCfg.GuestSubPort != stagingCfg.GuestSubPort || activeCfg.GuestSubBind != stagingCfg.GuestSubBind {
-		impact.SubListenerChanged = true
-		mark("guest_sub_listener")
-	}
-	if !reflect.DeepEqual(activeCfg.Subscriptions, stagingCfg.Subscriptions) {
-		impact.SubContentChanged = true
-		mark("subscriptions")
-	}
-	if !reflect.DeepEqual(activeCfg.IPv6Pool, stagingCfg.IPv6Pool) {
-		impact.SubContentChanged = true
-		mark("ipv6_pool")
-	}
-
-	if activeCfg.Gateway.LocalEnabled != stagingCfg.Gateway.LocalEnabled ||
-		activeCfg.Gateway.LANEnabled != stagingCfg.Gateway.LANEnabled ||
-		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
-		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||
-		!reflect.DeepEqual(activeCfg.Gateway.Blacklist, stagingCfg.Gateway.Blacklist) ||
-		!reflect.DeepEqual(activeCfg.Gateway.BlacklistIPs, stagingCfg.Gateway.BlacklistIPs) {
-		impact.GatewayRuntimeChanged = true
-		mark("gateway.runtime")
-	}
-
-	return impact
+	return applyops.BuildImpact(activeCfg, stagingCfg)
 }
 
 func hasSubServiceInstalled() bool {
-	return fileExists(getSubServicePath())
+	return applyops.HasSubServiceInstalled()
 }
 
 func restartSubServiceIfInstalled() error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
-	if !hasSubServiceInstalled() {
-		return nil
-	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil
-	}
-	return exec.Command("systemctl", "restart", "xray-proxya-sub").Run()
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
-func guestsAffectXray(activeGuests, stagingGuests []config.GuestConfig) bool {
-	if len(activeGuests) != len(stagingGuests) {
-		return true
-	}
-	for i := range activeGuests {
-		a := activeGuests[i]
-		b := stagingGuests[i]
-		if a.Alias != b.Alias ||
-			a.UUID != b.UUID ||
-			a.Enabled != b.Enabled ||
-			a.OutboundLink != b.OutboundLink ||
-			!reflect.DeepEqual(a.OutboundConf, b.OutboundConf) {
-			return true
-		}
-	}
-	return false
-}
-
-func guestsAffectGuestSub(activeGuests, stagingGuests []config.GuestConfig) bool {
-	if len(activeGuests) != len(stagingGuests) {
-		return true
-	}
-	for i := range activeGuests {
-		a := activeGuests[i]
-		b := stagingGuests[i]
-		if !reflect.DeepEqual(a, b) {
-			return true
-		}
-	}
-	return false
+	return applyops.RestartSubServiceIfInstalled()
 }
