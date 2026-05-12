@@ -24,6 +24,7 @@ type sessionTab int
 
 const (
 	tabStatus sessionTab = iota
+	tabService
 	tabPresets
 	tabRelays
 	tabGuests
@@ -47,11 +48,26 @@ type statsMsg struct {
 	active   bool
 	pid      int
 	allStats map[string]int64
+	service  xray.ServiceState
 }
 
 type applyResultMsg struct {
 	lines []string
 	err   error
+}
+
+type serviceActionMsg struct {
+	action string
+	output string
+	err    error
+	state  xray.ServiceState
+}
+
+type serviceFollowTickMsg struct{}
+
+type serviceLogsMsg struct {
+	body string
+	err  error
 }
 
 type relayDetailMsg struct {
@@ -79,27 +95,39 @@ type relayTestMsg struct {
 	ipv6  string
 }
 
+type serviceDetailView int
+
+const (
+	serviceDetailOverview serviceDetailView = iota
+	serviceDetailLogs
+	serviceDetailRuntime
+)
+
 type Model struct {
-	active       *config.UserConfig
-	staging      *config.UserConfig
-	currentTab   sessionTab
-	cursor       int
-	width        int
-	height       int
-	directStat   int64
-	relayStat    int64
-	coreActive   bool
-	corePID      int
-	lastStats    map[string]int64
-	relayResults map[string]relayTestMsg
-	relayDetails map[string]relayDetailData
-	relayLoading string
-	portBuffer   string
-	detailScroll int
-	statusNote   string
-	cachedIP     string
-	localIP      string
-	useLocalIP   bool
+	active        *config.UserConfig
+	staging       *config.UserConfig
+	currentTab    sessionTab
+	cursor        int
+	width         int
+	height        int
+	directStat    int64
+	relayStat     int64
+	coreActive    bool
+	corePID       int
+	lastStats     map[string]int64
+	relayResults  map[string]relayTestMsg
+	relayDetails  map[string]relayDetailData
+	relayLoading  string
+	portBuffer    string
+	detailScroll  int
+	statusNote    string
+	cachedIP      string
+	localIP       string
+	useLocalIP    bool
+	serviceState  xray.ServiceState
+	serviceView   serviceDetailView
+	serviceFollow bool
+	serviceLogs   string
 
 	inputMode inputMode
 	textInput textinput.Model
@@ -110,7 +138,7 @@ func tickStats(apiPort int) tea.Cmd {
 		active, pid := xray.GetXrayStatus()
 		allStats, _ := xray.GetXrayStats(apiPort)
 		summary := trafficstats.Summarize(allStats)
-		return statsMsg{direct: summary.Direct, relay: summary.Relay, active: active, pid: pid, allStats: allStats}
+		return statsMsg{direct: summary.Direct, relay: summary.Relay, active: active, pid: pid, allStats: allStats, service: xray.GetServiceState()}
 	})
 }
 
@@ -139,6 +167,7 @@ func InitialModel() Model {
 		relayDetails: make(map[string]relayDetailData),
 		cachedIP:     utils.GetSmartIP(false),
 		localIP:      utils.GetLocalIP(),
+		serviceState: xray.GetServiceState(),
 		textInput:    ti,
 	}
 }
@@ -163,8 +192,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.detailScroll = 0
 		m.statusNote = summarizeActionResult(msg.lines, msg.err)
+	case serviceActionMsg:
+		m.serviceState = msg.state
+		m.detailScroll = 0
+		m.statusNote = summarizeServiceActionResult(msg.action, msg.output, msg.err)
+		if m.currentTab == tabService && m.serviceView == serviceDetailLogs {
+			return m, refreshServiceLogs(32)
+		}
+	case serviceFollowTickMsg:
+		if m.serviceFollow && m.currentTab == tabService && m.serviceView == serviceDetailLogs {
+			return m, tea.Batch(refreshServiceLogs(32), tickServiceLogs())
+		}
+	case serviceLogsMsg:
+		if msg.err != nil {
+			m.serviceLogs = fmt.Sprintf("log read error: %v", msg.err)
+		} else if strings.TrimSpace(msg.body) == "" {
+			m.serviceLogs = "no log lines yet"
+		} else {
+			m.serviceLogs = strings.TrimRight(msg.body, "\n")
+		}
 	case statsMsg:
 		m.directStat, m.relayStat, m.coreActive, m.corePID, m.lastStats = msg.direct, msg.relay, msg.active, msg.pid, msg.allStats
+		m.serviceState = msg.service
 		return m, tickStats(m.active.APIInbound)
 	case relayDetailMsg:
 		m.relayLoading = ""
@@ -208,9 +257,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
-			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+1)%4, 0, "", 0
+			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+1)%5, 0, "", 0
 		case "shift+tab":
-			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+3)%4, 0, "", 0
+			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+4)%5, 0, "", 0
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -240,10 +289,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "right":
 			m.detailScroll += 8
-			if maxScroll := detailMaxScroll(m.getSelectedDetailContent(), max(1, m.width-2)); m.detailScroll > maxScroll {
+			maxScroll := detailMaxScroll(m.getSelectedDetailContent(), max(1, m.width-2))
+			if m.currentTab == tabService && m.serviceView == serviceDetailLogs {
+				maxScroll = m.currentServiceLogMaxScroll(max(1, m.width))
+			}
+			if m.detailScroll > maxScroll {
 				m.detailScroll = maxScroll
 			}
 		case "u", "U":
+			if m.currentTab == tabService {
+				m.statusNote = "removing managed service..."
+				return m, runServiceAction("uninstall", "service", "uninstall")
+			}
 			_ = applyops.ClearPending()
 			m.active, _ = config.LoadConfig()
 			m.staging, _ = config.LoadConfigEx(true)
@@ -263,10 +320,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		case "a", "A":
-			return m, m.performApply()
+			if m.currentTab != tabService {
+				return m, m.performApply()
+			}
 		case "l", "L":
-			m.useLocalIP = !m.useLocalIP
-			m.detailScroll = 0
+			if m.currentTab == tabService {
+				m.serviceView = serviceDetailLogs
+				m.serviceFollow = false
+				m.detailScroll = 0
+				m.statusNote = ""
+				return m, refreshServiceLogs(32)
+			} else {
+				m.useLocalIP = !m.useLocalIP
+				m.detailScroll = 0
+			}
 		case "p", "P":
 			title, body := m.currentPrintView()
 			if body == "" {
@@ -341,6 +408,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "t", "T":
+			if m.currentTab == tabService {
+				m.statusNote = "stopping service..."
+				m.serviceView = serviceDetailRuntime
+				return m, runServiceAction("stop", "stop")
+			}
 			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 				co := m.staging.CustomOutbounds[m.cursor]
 				m.relayLoading = co.Alias
@@ -356,6 +428,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, fetchRelaySpeed(alias)
 			}
 		case "i", "I":
+			if m.currentTab == tabService {
+				m.statusNote = "installing managed service..."
+				m.serviceView = serviceDetailRuntime
+				return m, runServiceAction("install", "service", "install")
+			}
 			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 				alias := m.staging.CustomOutbounds[m.cursor].Alias
 				m.relayLoading = alias
@@ -363,6 +440,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, fetchRelayDetail(alias)
 			}
 		case "r", "R":
+			if m.currentTab == tabService {
+				m.statusNote = "restarting service..."
+				m.serviceView = serviceDetailRuntime
+				return m, runServiceAction("restart", "restart")
+			}
 			if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
 				m.staging.ActiveModes[m.cursor].RegenFlag = !m.staging.ActiveModes[m.cursor].RegenFlag
 				m.staging.SaveEx(true)
@@ -424,6 +506,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusNote = "port cleared"
 			}
 		case "s", "S":
+			if m.currentTab == tabService {
+				m.statusNote = "starting service..."
+				m.serviceView = serviceDetailRuntime
+				return m, runServiceAction("start", "start")
+			}
 			body := m.shareBundle()
 			if strings.TrimSpace(body) == "" {
 				m.statusNote = "nothing to print"
@@ -436,6 +523,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				current := fmt.Sprintf("%v", m.staging.Guests[m.cursor].QuotaGB)
 				m.startInput(inputSetGuestQuota, "quota: -1 / 0 / 5 / reset", current)
 				return m, nil
+			}
+		case "c", "C":
+			if m.currentTab == tabService {
+				m.statusNote = ""
+				if m.serviceView == serviceDetailLogs {
+					return m, tea.Batch(refreshServiceState(), refreshServiceLogs(32))
+				}
+				return m, refreshServiceState()
+			}
+		case "m", "M":
+			if m.currentTab == tabService {
+				m.serviceView = nextServiceDetailView(m.serviceView)
+				if m.serviceView != serviceDetailLogs {
+					m.serviceFollow = false
+				}
+				m.detailScroll = 0
+			}
+		case "f", "F":
+			if m.currentTab == tabService {
+				m.serviceView = serviceDetailLogs
+				m.serviceFollow = !m.serviceFollow
+				m.detailScroll = 0
+				m.statusNote = ""
+				if m.serviceFollow {
+					return m, tea.Batch(refreshServiceLogs(32), tickServiceLogs())
+				}
+				return m, refreshServiceLogs(32)
 			}
 		case "w", "W":
 			if m.currentTab == tabGuests {
@@ -491,6 +605,8 @@ func (m Model) View() string {
 	cWidth := m.width - 12
 	var content string
 	switch m.currentTab {
+	case tabService:
+		content = RenderService(m.serviceState, cWidth)
 	case tabPresets:
 		content = RenderPresets(m.active, m.staging, m.cursor, cWidth)
 	case tabStatus:
@@ -513,6 +629,9 @@ func (m Model) View() string {
 }
 
 func (m Model) getSelectedDetailContent() string {
+	if m.currentTab == tabService {
+		return m.currentServiceDetailContent()
+	}
 	ip := m.cachedIP
 	if m.useLocalIP {
 		ip = m.localIP
@@ -651,6 +770,9 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	if lineWidth < 20 {
 		lineWidth = 20
 	}
+	if m.currentTab == tabService && m.serviceView == serviceDetailLogs {
+		return m.renderServiceLogPane(height, lineWidth)
+	}
 	if detail := m.currentRelayDetailData(); detail != nil {
 		return m.renderRelayDetailGrid(*detail, height, lineWidth)
 	}
@@ -680,7 +802,11 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	}
 	note := m.statusNote
 	if note == "" {
-		note = "[P] print current  [S] print share bundle"
+		if m.currentTab == tabService {
+			note = "[L] logs  [F] follow  [M] cycle detail  [C] refresh"
+		} else {
+			note = "[P] print current  [S] print share bundle"
+		}
 	}
 
 	lines := []string{
@@ -785,6 +911,8 @@ func (m Model) renderRelayDetailGrid(detail relayDetailData, height int, lineWid
 func (m Model) renderMultilineDetailPane(detailContent string, height int, lineWidth int) string {
 	title := " DETAIL "
 	switch m.currentTab {
+	case tabService:
+		title = " SERVICE DETAIL "
 	case tabRelays:
 		title = " RELAY DETAIL "
 	case tabGuests:
@@ -861,6 +989,107 @@ func (m Model) currentGuestSubPrintView() (string, string) {
 	return "CURRENT GUEST SUB", buildGuestSubReport(m.staging, guest, host)
 }
 
+func (m Model) currentServiceDetailContent() string {
+	switch m.serviceView {
+	case serviceDetailRuntime:
+		var lines []string
+		lines = append(lines,
+			fmt.Sprintf("Runtime Mode: %s", serviceRuntimeLabel(m.serviceState)),
+			fmt.Sprintf("Init System: %s", m.serviceState.InitSystem),
+			fmt.Sprintf("Control Mode: %s", m.serviceState.ControlMode),
+			fmt.Sprintf("Installed: %s", yesNo(m.serviceState.UnitInstalled)),
+			fmt.Sprintf("Active: %s", serviceActiveLabel(m.serviceState)),
+			fmt.Sprintf("PID: %s", servicePIDLabel(m.serviceState)),
+			fmt.Sprintf("Uptime: %s", m.serviceState.Uptime),
+		)
+		if m.serviceState.ServiceFile != "" {
+			lines = append(lines, fmt.Sprintf("Service File: %s", m.serviceState.ServiceFile))
+		}
+		lines = append(lines,
+			fmt.Sprintf("Config Path: %s", m.serviceState.ConfigPath),
+			fmt.Sprintf("Log Path: %s", m.serviceState.LogPath),
+		)
+		return strings.Join(lines, "\n")
+	default:
+		return strings.Join([]string{
+			"Service overview",
+			"",
+			m.serviceState.Hint,
+			"",
+			"[S] Start  [T] Stop  [R] Restart",
+			"[I] Install  [U] Uninstall  [L] Logs  [F] Follow  [C] Refresh",
+			"[M] Cycle detail view  [←/→] Horizontal scroll",
+		}, "\n")
+	}
+}
+
+func (m Model) renderServiceLogPane(height int, lineWidth int) string {
+	title := " SERVICE LOGS "
+	note := fmt.Sprintf("[F] follow:%s  [C] refresh  [←/→] scroll", onOff(m.serviceFollow))
+	contentRows := height - 2
+	if contentRows < 1 {
+		contentRows = 1
+	}
+	var rawLines []string
+	if strings.TrimSpace(m.serviceLogs) == "" {
+		rawLines = []string{"no log lines yet"}
+	} else {
+		rawLines = strings.Split(strings.TrimRight(m.serviceLogs, "\n"), "\n")
+	}
+	if len(rawLines) > contentRows {
+		rawLines = rawLines[len(rawLines)-contentRows:]
+	}
+	contentWidth := lineWidth
+	maxScroll := 0
+	for _, line := range rawLines {
+		rs := []rune(line)
+		if len(rs)-contentWidth > maxScroll {
+			maxScroll = len(rs) - contentWidth
+		}
+	}
+	effectiveScroll := m.detailScroll
+	if effectiveScroll > maxScroll {
+		effectiveScroll = maxScroll
+	}
+
+	lines := []string{padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth)}
+	for i := 0; i < contentRows; i++ {
+		line := ""
+		if i < len(rawLines) {
+			line, _ = clipHorizontal(rawLines[i], effectiveScroll, contentWidth)
+		}
+		lines = append(lines, padOrTrim(line, lineWidth))
+	}
+	lines = append(lines, padOrTrim(note, lineWidth))
+
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+func (m Model) currentServiceLogMaxScroll(width int) int {
+	if strings.TrimSpace(m.serviceLogs) == "" {
+		return 0
+	}
+	lines := strings.Split(strings.TrimRight(m.serviceLogs, "\n"), "\n")
+	maxScroll := 0
+	for _, line := range lines {
+		rs := []rune(line)
+		if len(rs)-width > maxScroll {
+			maxScroll = len(rs) - width
+		}
+	}
+	if maxScroll < 0 {
+		return 0
+	}
+	return maxScroll
+}
+
 func (m Model) printablePresetLinks() string {
 	if m.staging == nil {
 		return ""
@@ -909,6 +1138,21 @@ func summarizeActionResult(lines []string, err error) string {
 	return "done"
 }
 
+func summarizeServiceActionResult(action string, output string, err error) string {
+	if err != nil {
+		if trimmed := strings.TrimSpace(output); trimmed != "" {
+			lines := strings.Split(trimmed, "\n")
+			return fmt.Sprintf("%s failed: %s", action, strings.TrimSpace(lines[len(lines)-1]))
+		}
+		return fmt.Sprintf("%s failed: %v", action, err)
+	}
+	if trimmed := strings.TrimSpace(output); trimmed != "" {
+		lines := strings.Split(trimmed, "\n")
+		return strings.TrimSpace(lines[len(lines)-1])
+	}
+	return action + " done"
+}
+
 func clipHorizontal(s string, start int, width int) (string, int) {
 	rs := []rune(s)
 	if start < 0 {
@@ -952,18 +1196,32 @@ func max(a int, b int) int {
 	return b
 }
 
+func nextServiceDetailView(view serviceDetailView) serviceDetailView {
+	switch view {
+	case serviceDetailOverview:
+		return serviceDetailLogs
+	case serviceDetailLogs:
+		return serviceDetailRuntime
+	default:
+		return serviceDetailOverview
+	}
+}
+
 func renderFooter(tab sessionTab, width int) string {
 	var keys []string
-	keys = append(keys, "[Tab]Switch", "[Q]Quit", "[A]Apply")
+	keys = append(keys, "[Tab]Switch", "[Q]Quit")
 	if tab == tabStatus {
-		keys = append(keys, "[P]Print", "[S]Links", "[L]IP-Mode")
+		keys = append(keys, "[A]Apply", "[P]Print", "[S]Links", "[L]IP-Mode")
+	}
+	if tab == tabService {
+		keys = append(keys, "[S]Start", "[T]Stop", "[R]Restart", "[I/U]Install", "[L]Logs", "[F]Follow", "[M]Detail", "[C]Refresh")
 	}
 	if tab == tabPresets {
-		keys = append(keys, "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[←/→]Scroll", "[P]Print", "[S]Links")
+		keys = append(keys, "[A]Apply", "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[←/→]Scroll", "[P]Print", "[S]Links")
 	} else if tab == tabRelays {
-		keys = append(keys, "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
+		keys = append(keys, "[A]Apply", "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
 	} else if tab == tabGuests {
-		keys = append(keys, "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
+		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
@@ -971,7 +1229,7 @@ func renderFooter(tab sessionTab, width int) string {
 
 func renderSidebar(current sessionTab, height int) string {
 	var b strings.Builder
-	items := []string{"HOME", "PRESETS", "RELAYS", "GUESTS"}
+	items := []string{"HOME", "SERVICE", "PRESETS", "RELAYS", "GUESTS"}
 	for i, item := range items {
 		line := " " + item + " "
 		if sessionTab(i) == current {
@@ -1001,6 +1259,52 @@ func fetchRelayDetail(alias string) tea.Cmd {
 		body := strings.TrimSpace(string(out))
 		return relayDetailMsg{alias: alias, body: "__info__\n" + body, err: err}
 	}
+}
+
+func runServiceAction(action string, args ...string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return serviceActionMsg{action: action, err: err, state: xray.GetServiceState()}
+		}
+		cmd := exec.Command(exe, args...)
+		out, err := cmd.CombinedOutput()
+		return serviceActionMsg{
+			action: action,
+			output: strings.TrimSpace(string(out)),
+			err:    err,
+			state:  xray.GetServiceState(),
+		}
+	}
+}
+
+func refreshServiceState() tea.Cmd {
+	return func() tea.Msg {
+		return serviceActionMsg{
+			action: "refresh",
+			state:  xray.GetServiceState(),
+		}
+	}
+}
+
+func refreshServiceLogs(lines int) tea.Cmd {
+	return func() tea.Msg {
+		body, err := xray.ReadLogTail(lines)
+		return serviceLogsMsg{body: body, err: err}
+	}
+}
+
+func tickServiceLogs() tea.Cmd {
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
+		return serviceFollowTickMsg{}
+	})
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
 }
 
 func fetchRelayTest(alias string) tea.Cmd {
