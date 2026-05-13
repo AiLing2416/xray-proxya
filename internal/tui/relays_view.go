@@ -2,9 +2,10 @@ package tui
 
 import (
 	"fmt"
-	"github.com/charmbracelet/lipgloss"
 	"strings"
 	"xray-proxya/internal/config"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int, results map[string]relayTestMsg) string {
@@ -12,33 +13,7 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 		return "No configuration found."
 	}
 
-	if width < 20 {
-		width = 100
-	}
-	contentWidth := width - 15
-	if contentWidth < 80 {
-		contentWidth = 80
-	}
-
-	wIndicator := 4
-	wState := 5
-	wProto := 8
-	wPort := 7
-	wTCP := 16
-	wUDP := 10
-	wDNS := 10
-	wIPv6 := 18
-	wRemaining := contentWidth - wIndicator - wState - wProto - wPort - wTCP - wUDP - wDNS - wIPv6 - 9
-	if wRemaining < 18 {
-		wRemaining = 18
-	}
-
-	wAlias := int(float64(wRemaining) * 0.4)
-	wIPv4 := wRemaining - wAlias
-
 	headers := []string{"  ", "ALIAS", "STATE", "PROTO", "PORT", "TCP", "UDP", "DNS", "IPv4", "IPv6"}
-	widths := []int{wIndicator, wAlias, wState, wProto, wPort, wTCP, wUDP, wDNS, wIPv4, wIPv6}
-
 	var rows [][]string
 	for _, co := range staging.CustomOutbounds {
 		indicator := "   "
@@ -95,9 +70,9 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 		return lipgloss.NewStyle().Padding(2, 5).Render("No custom relays. Press [N] to add.")
 	}
 
+	widths := fitTableWidths(headers, rows, []int{3, 8, 3, 5, 4, 6, 4, 4, 6, 6}, width)
+
 	var b strings.Builder
-	b.WriteString(headerStyle.Render(" CUSTOM RELAY MATRIX "))
-	b.WriteString("\n\n")
 	b.WriteString(renderRow(headers, widths, true))
 	b.WriteString("\n")
 
@@ -111,5 +86,5 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 		b.WriteString("\n")
 	}
 
-	return lipgloss.NewStyle().Padding(1, 1).Render(b.String())
+	return b.String()
 }

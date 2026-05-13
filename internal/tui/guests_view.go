@@ -18,30 +18,11 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		return lipgloss.NewStyle().Padding(2, 5).Render("No guests. Press [N] to add.")
 	}
 
-	availableWidth := width - 10
-	if availableWidth < 50 {
-		availableWidth = 50
-	}
-
-	wIndicator := 4
-	wAlias := 14
-	wState := 8
-	wSub := 7
-	wReason := 13
-	wQuota := 20
-	wReset := 7
-	wOutbound := availableWidth - wIndicator - wAlias - wState - wSub - wReason - wQuota - wReset
-	if wOutbound < 10 {
-		wOutbound = 10
-	}
-
 	headers := []string{"  ", "ALIAS", "STATE", "SUB", "REASON", "QUOTA (USED/LIM)", "RESET", "OUTBOUND"}
-	widths := []int{wIndicator, wAlias, wState, wSub, wReason, wQuota, wReset, wOutbound}
+	rows := make([][]string, 0, len(staging.Guests))
+	disabled := make([]bool, 0, len(staging.Guests))
 
-	var b strings.Builder
-	b.WriteString(renderRow(headers, widths, true))
-	b.WriteString("\n")
-	for i, g := range staging.Guests {
+	for _, g := range staging.Guests {
 		indicator := "   "
 		if guestChanged(active, g) {
 			indicator = "[*]"
@@ -57,8 +38,18 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 			fmt.Sprintf("%d", g.ResetDay),
 			guestOutboundLabel(g),
 		}
+		rows = append(rows, row)
+		disabled = append(disabled, !g.Enabled)
+	}
+
+	widths := fitTableWidths(headers, rows, []int{3, 8, 5, 3, 6, 14, 5, 7}, width)
+
+	var b strings.Builder
+	b.WriteString(renderRow(headers, widths, true))
+	b.WriteString("\n")
+	for i, row := range rows {
 		s := renderRow(row, widths, false)
-		if !g.Enabled {
+		if disabled[i] {
 			s = faintStyle.Render(s)
 		}
 		if i == selectedIdx {
