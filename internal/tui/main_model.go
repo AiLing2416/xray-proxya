@@ -655,6 +655,14 @@ func (m Model) getSelectedDetailContent() string {
 	if m.currentTab == tabService {
 		return m.currentServiceDetailContent()
 	}
+	if m.currentTab == tabStatus {
+		return strings.Join([]string{
+			"Xray-Proxya",
+			"",
+			"Project:",
+			"https://github.com/AiLing2416/xray-proxya",
+		}, "\n")
+	}
 	ip := m.cachedIP
 	if m.useLocalIP {
 		ip = m.localIP
@@ -941,7 +949,7 @@ func (m Model) renderMultilineDetailPane(detailContent string, height int, lineW
 	case tabGuests:
 		title = " GUEST DETAIL "
 	case tabStatus:
-		title = " HOME DETAIL "
+		title = " ABOUT "
 	}
 	note := m.statusNote
 	if note == "" {
