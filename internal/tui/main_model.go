@@ -34,6 +34,7 @@ type inputMode int
 
 const (
 	inputNone inputMode = iota
+	inputAddRelayAlias
 	inputAddRelay
 	inputAddGuest
 	inputSetGuestQuota
@@ -132,6 +133,7 @@ type Model struct {
 	serviceView   serviceDetailView
 	serviceFollow bool
 	serviceLogs   string
+	relayAlias    string
 
 	inputMode inputMode
 	textInput textinput.Model
@@ -256,6 +258,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inputMode != inputNone {
 			switch s {
 			case "esc":
+				m.relayAlias = ""
 				m.inputMode = inputNone
 				m.textInput.Reset()
 				return m, nil
@@ -325,7 +328,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusNote = "staging reset"
 		case "n", "N":
 			if m.currentTab == tabRelays {
-				m.startInput(inputAddRelay, "Paste link...", "")
+				m.relayAlias = ""
+				m.startInput(inputAddRelayAlias, "relay alias (empty = auto)", "")
 				return m, nil
 			}
 			if m.currentTab == tabGuests {
@@ -1848,6 +1852,8 @@ func (m *Model) startInput(mode inputMode, placeholder string, value string) {
 
 func (m Model) inputTitle() string {
 	switch m.inputMode {
+	case inputAddRelayAlias:
+		return "SET RELAY ALIAS"
 	case inputAddRelay:
 		return "ADD CUSTOM RELAY"
 	case inputAddGuest:
@@ -1871,19 +1877,33 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	m.inputMode = inputNone
 	m.textInput.Reset()
 	switch mode {
+	case inputAddRelayAlias:
+		m.relayAlias = value
+		m.startInput(inputAddRelay, "Paste link...", "")
+		return m, nil
 	case inputAddRelay:
 		if value != "" {
 			out, err := xray.ParseProxyLink(value)
 			if err == nil {
-				alias := "relay-" + utils.GenerateRandomString(3)
+				alias := strings.TrimSpace(m.relayAlias)
+				if alias == "" {
+					alias = m.nextRelayAlias()
+				}
+				if err := m.validateRelayAlias(alias); err != nil {
+					m.statusNote = err.Error()
+					m.relayAlias = ""
+					return m, nil
+				}
 				newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
 				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds, newCO)
 				m.staging.SaveEx(true)
 				m.relayLoading = alias
 				m.relayResults[alias] = relayTestMsg{alias: alias, tcp: "Wait..", udp: "Wait..", dns: "Wait..", ipv4: "--", ipv6: "--"}
 				m.statusNote = "relay added"
+				m.relayAlias = ""
 				return m, fetchRelayTest(alias)
 			}
+			m.relayAlias = ""
 			m.statusNote = fmt.Sprintf("parse failed: %v", err)
 		}
 	case inputAddGuest:
@@ -1919,6 +1939,47 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+func (m Model) nextRelayAlias() string {
+	for {
+		alias := "relay-" + utils.GenerateRandomString(3)
+		if m.staging == nil {
+			return alias
+		}
+		exists := false
+		for _, co := range m.staging.CustomOutbounds {
+			if co.Alias == alias {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			return alias
+		}
+	}
+}
+
+func (m Model) validateRelayAlias(alias string) error {
+	if alias == "" {
+		return fmt.Errorf("relay alias required")
+	}
+	if len(alias) < 3 || len(alias) > 20 {
+		return fmt.Errorf("relay alias must be 3-20 chars")
+	}
+	for _, r := range alias {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
+			return fmt.Errorf("relay alias allows only alnum/_/-")
+		}
+	}
+	if m.staging != nil {
+		for _, co := range m.staging.CustomOutbounds {
+			if co.Alias == alias {
+				return fmt.Errorf("relay alias '%s' already exists", alias)
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Model) selectedGuest() *config.GuestConfig {
