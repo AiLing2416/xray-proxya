@@ -601,12 +601,18 @@ func (m Model) View() string {
 	footerHeight := 2 // TopBorder(1) + Text(1)
 
 	detailContent := m.getSelectedDetailContent()
-	detailHeight := 6
+	detailHeight := m.height / 5
+	if detailHeight < 4 {
+		detailHeight = 4
+	}
 
 	mainHeight := m.height - detailHeight - footerHeight
 	if mainHeight < 5 {
 		mainHeight = 5
 		detailHeight = m.height - mainHeight - footerHeight
+		if detailHeight < 0 {
+			detailHeight = 0
+		}
 	}
 
 	// 2. Render Components
