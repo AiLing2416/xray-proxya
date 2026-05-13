@@ -226,12 +226,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickStats(m.active.APIInbound)
 	case relayDetailMsg:
 		m.relayLoading = ""
-		if msg.err != nil {
+		if msg.err != nil && !strings.HasPrefix(msg.body, "__test__\n") {
 			m.statusNote = fmt.Sprintf("relay info failed: %v", msg.err)
 		} else {
 			if strings.HasPrefix(msg.body, "__test__\n") {
 				m.relayResults[msg.alias] = parseRelayTestSummary(msg.alias, strings.TrimPrefix(msg.body, "__test__\n"))
-				m.statusNote = "relay test updated"
+				if msg.err != nil {
+					m.statusNote = fmt.Sprintf("relay test finished with errors: %v", msg.err)
+				} else {
+					m.statusNote = "relay test updated"
+				}
 			} else if strings.HasPrefix(msg.body, "__speed__\n") {
 				m.statusNote = "relay speed updated"
 			} else if strings.HasPrefix(msg.body, "__probe__\n") {
@@ -1480,11 +1484,11 @@ func parseRelayTestSummary(alias string, raw string) relayTestMsg {
 			val := strings.TrimSpace(segment[idx+1:])
 			switch key {
 			case "TCP":
-				result.tcp = val
+				result.tcp = summarizeRelayTestValue(val)
 			case "UDP":
-				result.udp = val
+				result.udp = summarizeRelayTestValue(val)
 			case "DNS":
-				result.dns = val
+				result.dns = summarizeRelayTestValue(val)
 			case "IPv4":
 				result.ipv4 = val
 			case "IPv6":
@@ -1527,15 +1531,77 @@ func parseRelayProbeOutput(alias string, raw string) relayDetailData {
 }
 
 func parseRelayTestOutput(alias string, raw string) relayDetailData {
-	summary := parseRelayTestSummary(alias, raw)
+	detail := relayTestMsg{alias: alias, tcp: "FAIL", udp: "FAIL", dns: "FAIL", ipv4: "N/A", ipv6: "N/A"}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || !strings.Contains(line, "->") {
+			continue
+		}
+		parts := strings.SplitN(line, "->", 2)
+		for _, segment := range strings.Split(parts[1], "|") {
+			segment = strings.TrimSpace(segment)
+			idx := strings.Index(segment, ":")
+			if idx <= 0 {
+				continue
+			}
+			key := strings.TrimSpace(segment[:idx])
+			val := strings.TrimSpace(segment[idx+1:])
+			switch key {
+			case "TCP":
+				detail.tcp = val
+			case "UDP":
+				detail.udp = val
+			case "DNS":
+				detail.dns = val
+			case "IPv4":
+				detail.ipv4 = val
+			case "IPv6":
+				detail.ipv6 = val
+			}
+		}
+	}
 	fields := []detailField{
-		{label: "TCP", value: summary.tcp},
-		{label: "UDP", value: summary.udp},
-		{label: "DNS", value: summary.dns},
-		{label: "IPv4", value: summary.ipv4},
-		{label: "IPv6", value: summary.ipv6},
+		{label: "TCP", value: detail.tcp},
+		{label: "UDP", value: detail.udp},
+		{label: "DNS", value: detail.dns},
+		{label: "IPv4", value: detail.ipv4},
+		{label: "IPv6", value: detail.ipv6},
 	}
 	return relayDetailData{title: alias + " test", fields: fields}
+}
+
+func summarizeRelayTestValue(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "FAIL"
+	}
+	upper := strings.ToUpper(value)
+	if strings.HasPrefix(upper, "OK") {
+		return value
+	}
+	lower := strings.ToLower(value)
+	switch {
+	case strings.Contains(lower, "timeout"):
+		return "FAIL(timeout)"
+	case strings.Contains(lower, "i/o timeout"):
+		return "FAIL(timeout)"
+	case strings.Contains(lower, "context deadline exceeded"):
+		return "FAIL(timeout)"
+	case strings.Contains(lower, "eof"):
+		return "FAIL(eof)"
+	case strings.Contains(lower, "connection refused"):
+		return "FAIL(refused)"
+	case strings.Contains(lower, "network is unreachable"):
+		return "FAIL(unreachable)"
+	case strings.Contains(lower, "no route to host"):
+		return "FAIL(no-route)"
+	case strings.Contains(lower, "reset by peer"):
+		return "FAIL(reset)"
+	}
+	if idx := strings.Index(value, "("); idx > 0 {
+		return strings.TrimSpace(value[:idx])
+	}
+	return value
 }
 
 func parseRelayResolveOutput(alias string, domain string, raw string) relayDetailData {
