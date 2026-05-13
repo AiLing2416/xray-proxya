@@ -3,8 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
-	"xray-proxya/internal/config"
 	"github.com/charmbracelet/lipgloss"
+	"xray-proxya/internal/config"
 )
 
 var (
@@ -18,26 +18,9 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 		return "No presets found. Run 'init' first."
 	}
 
-	// Logic: We have 6 columns and 5 gaps (each 2 spaces). Total gap = 10.
-	availableWidth := width - 10
-	if availableWidth < 30 { availableWidth = 30 }
-
-	wIndicator := 4
-	wStatus := 6
-	wPort := 6
-	wNet := 6
-	
-	// Remaining for Preset Name and Security
-	wRem := availableWidth - wIndicator - wStatus - wPort - wNet
-	wPreset := int(float64(wRem) * 0.4)
-	wSecurity := wRem - wPreset
-
 	headers := []string{"  ", "PRESETS", "PORT", "NET", "SECURITY", "STATUS"}
-	widths := []int{wIndicator, wPreset, wPort, wNet, wSecurity, wStatus}
-
-	var b strings.Builder
-	b.WriteString(renderRow(headers, widths, true))
-	b.WriteString("\n")
+	rows := make([][]string, 0, len(staging.ActiveModes))
+	disabled := make([]bool, 0, len(staging.ActiveModes))
 
 	for i, m := range staging.ActiveModes {
 		indicator := "   "
@@ -54,8 +37,19 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 		}
 
 		row := []string{indicator, string(m.Mode), fmt.Sprintf("%d", m.Port), getNetworkName(m.Mode), getSecurityName(m), status}
+		rows = append(rows, row)
+		disabled = append(disabled, !m.Enabled)
+	}
+
+	widths := fitTableWidths(headers, rows, []int{3, 10, 4, 3, 8, 4}, width)
+
+	var b strings.Builder
+	b.WriteString(renderRow(headers, widths, true))
+	b.WriteString("\n")
+
+	for i, row := range rows {
 		s := renderRow(row, widths, false)
-		if !m.Enabled { s = faintStyle.Render(s) }
+		if disabled[i] { s = faintStyle.Render(s) }
 		
 		if i == selectedIdx {
 			b.WriteString(activeStyle.Render(s))
@@ -66,22 +60,6 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 	}
 
 	return b.String()
-}
-
-func renderRow(cols []string, widths []int, isHeader bool) string {
-	var line []string
-	for i, c := range cols {
-		w := widths[i]
-		if w < 1 { w = 1 }
-		if len(c) > w {
-			if w > 3 { c = c[:w-3] + ".." } else { c = c[:w] }
-		}
-		padded := c + strings.Repeat(" ", w-len(c))
-		line = append(line, padded)
-	}
-	res := strings.Join(line, "  ")
-	if isHeader { return headerStyle.Render(res) }
-	return res
 }
 
 func getSecurityName(m config.ModeInfo) string {
