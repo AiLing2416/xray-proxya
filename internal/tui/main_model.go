@@ -351,14 +351,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.useLocalIP = !m.useLocalIP
 				m.detailScroll = 0
 			}
-		case "p", "P":
-			title, body := m.currentPrintView()
-			if body == "" {
-				m.statusNote = "nothing to print"
-				return m, nil
-			}
-			cmd := exec.Command("bash", "-lc", buildPrintScript(title, body))
-			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
 		case "b", "B":
 			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 				alias := m.staging.CustomOutbounds[m.cursor].Alias
@@ -528,12 +520,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.serviceView = serviceDetailRuntime
 				return m, runServiceAction("start", "start")
 			}
-			body := m.shareBundle()
+			title, body := m.currentShowView()
 			if strings.TrimSpace(body) == "" {
-				m.statusNote = "nothing to print"
+				m.statusNote = "nothing to show"
 				return m, nil
 			}
-			cmd := exec.Command("bash", "-lc", buildPrintScript("SHARING LINKS", body))
+			cmd := exec.Command("bash", "-lc", buildShowScript(title, body))
 			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
 		case "g", "G":
 			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
@@ -575,7 +567,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.statusNote = "guest sub not enabled"
 					return m, nil
 				}
-				cmd := exec.Command("bash", "-lc", buildPrintScript(title, body))
+				cmd := exec.Command("bash", "-lc", buildShowScript(title, body))
 				return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
 			}
 		default:
@@ -716,86 +708,6 @@ func (m Model) getSelectedLink() string {
 	return content
 }
 
-func (m Model) shareBundle() string {
-	if m.staging == nil {
-		return ""
-	}
-	var pages []string
-	ip := m.cachedIP
-	if m.useLocalIP {
-		ip = m.localIP
-	}
-
-	// Page 1: Presets
-	var regularSb strings.Builder
-	regularSb.WriteString("\n [1/3] REGULAR PRESETS \n" + strings.Repeat("═", m.width) + "\n\n")
-	for _, m1 := range m.staging.ActiveModes {
-		if !m1.Enabled || m1.Mode == config.ModeVLESSXHTTP {
-			continue
-		}
-		tempCfg := *m.staging
-		tempCfg.ActiveModes = []config.ModeInfo{m1}
-		links := xray.GenerateLinks(&tempCfg, ip)
-		if len(links) > 0 {
-			regularSb.WriteString(fmt.Sprintf("%s:\n%s\n\n", m1.Mode, links[0]))
-		}
-	}
-	if regularSb.Len() > 0 {
-		pages = append(pages, regularSb.String())
-	}
-
-	// Page 2: Quantum
-	var kemSb strings.Builder
-	kemSb.WriteString("\n [2/3] QUANTUM KEM768 \n" + strings.Repeat("═", m.width) + "\n\n")
-	for _, m1 := range m.staging.ActiveModes {
-		if m1.Enabled && m1.Mode == config.ModeVLESSXHTTP {
-			tempCfg := *m.staging
-			tempCfg.ActiveModes = []config.ModeInfo{m1}
-			links := xray.GenerateLinks(&tempCfg, ip)
-			if len(links) > 0 {
-				kemSb.WriteString("VLESS-XHTTP-KEM768:\n" + links[0] + "\n\n")
-			}
-		}
-	}
-	if kemSb.Len() > 0 {
-		pages = append(pages, kemSb.String())
-	}
-
-	// Page 3: Relays
-	var relaySb strings.Builder
-	relaySb.WriteString("\n [3/3] CUSTOM RELAYS \n" + strings.Repeat("═", m.width) + "\n\n")
-	for _, relay := range m.staging.CustomOutbounds {
-		if !relay.Enabled {
-			continue
-		}
-		links := xray.GenerateRelayLinks(m.staging, ip, relay)
-		if len(links) > 0 {
-			relaySb.WriteString(fmt.Sprintf("RELAY [%s]:\n%s\n\n", relay.Alias, links[0]))
-		}
-	}
-	if relaySb.Len() > 0 {
-		pages = append(pages, relaySb.String())
-	}
-	// Page 4: Guests
-	var guestSb strings.Builder
-	guestSb.WriteString("\n [4/4] GUEST LINKS \n" + strings.Repeat("═", m.width) + "\n\n")
-	for _, guest := range m.staging.Guests {
-		links := xray.GenerateGuestLinks(m.staging, ip, guest.UUID, guest.Alias)
-		if len(links) > 0 {
-			guestSb.WriteString(fmt.Sprintf("GUEST [%s]:\n", guest.Alias))
-			for _, link := range links {
-				guestSb.WriteString(link)
-				guestSb.WriteString("\n")
-			}
-			guestSb.WriteString("\n")
-		}
-	}
-	if guestSb.Len() > 0 {
-		pages = append(pages, guestSb.String())
-	}
-	return strings.Join(pages, "\n")
-}
-
 func (m Model) renderDetailPane(detailContent string, height int) string {
 	lineWidth := m.width
 	if lineWidth < 20 {
@@ -827,24 +739,18 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 		visible, maxScroll = clipHorizontal(detailContent, effectiveScroll, contentWidth)
 	}
 
-	scrollInfo := "[\u2190/\u2192] scroll"
-	if maxScroll == 0 {
-		scrollInfo = "no wrap"
-	}
 	note := m.statusNote
-	if note == "" {
-		if m.currentTab == tabService {
-			note = "[L] logs  [F] follow  [M] cycle detail  [C] refresh"
-		} else {
-			note = "[P] print current  [S] print share bundle"
-		}
+	if note == "" && m.currentTab == tabService {
+		note = "[L] logs  [F] follow  [M] cycle detail  [C] refresh"
 	}
 
+	header := detailPaneHeader(title, lineWidth, fmt.Sprintf("[\u2190/\u2192] scroll  offset:%d/%d", effectiveScroll, maxScroll))
 	lines := []string{
-		padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth),
+		header,
 		padOrTrim(visible, lineWidth),
-		padOrTrim(fmt.Sprintf("%s  offset:%d/%d", scrollInfo, effectiveScroll, maxScroll), lineWidth),
-		padOrTrim(note, lineWidth),
+	}
+	if note != "" {
+		lines = append(lines, padOrTrim(note, lineWidth))
 	}
 	if height < len(lines) {
 		height = len(lines)
@@ -881,7 +787,7 @@ func (m Model) renderRelayDetailGrid(detail relayDetailData, height int, lineWid
 	}
 	note := m.statusNote
 	if note == "" {
-		note = "[I] refresh relay info  [P] print current"
+		note = "[I] refresh relay info"
 	}
 
 	contentRows := height - 2
@@ -903,7 +809,7 @@ func (m Model) renderRelayDetailGrid(detail relayDetailData, height int, lineWid
 	if colWidth < 12 {
 		colWidth = 12
 	}
-	lines := []string{padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth)}
+	lines := []string{detailPaneHeader(title, lineWidth, "")}
 
 	shown := 0
 	for row := 0; row < contentRows; row++ {
@@ -952,10 +858,7 @@ func (m Model) renderMultilineDetailPane(detailContent string, height int, lineW
 		title = " ABOUT "
 	}
 	note := m.statusNote
-	if note == "" {
-		note = "[P] print current  [S] print share bundle"
-	}
-	lines := []string{padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth)}
+	lines := []string{detailPaneHeader(title, lineWidth, "")}
 	contentLines := strings.Split(detailContent, "\n")
 	maxContentLines := height - 2
 	if maxContentLines < 1 {
@@ -967,7 +870,9 @@ func (m Model) renderMultilineDetailPane(detailContent string, height int, lineW
 	if len(contentLines) > maxContentLines {
 		note = fmt.Sprintf("%s  +%d more", note, len(contentLines)-maxContentLines)
 	}
-	lines = append(lines, padOrTrim(note, lineWidth))
+	if note != "" {
+		lines = append(lines, padOrTrim(note, lineWidth))
+	}
 	var b strings.Builder
 	for i, line := range lines {
 		if i > 0 {
@@ -981,25 +886,35 @@ func (m Model) renderMultilineDetailPane(detailContent string, height int, lineW
 	return b.String()
 }
 
-func (m Model) currentPrintView() (string, string) {
+func detailPaneHeader(title string, width int, right string) string {
+	if width < 1 {
+		return ""
+	}
+	if right == "" {
+		return padOrTrim(title+strings.Repeat("─", max(0, width-runeLen(title))), width)
+	}
+	right = " " + right
+	leftWidth := width - runeLen(right)
+	if leftWidth < runeLen(title) {
+		leftWidth = runeLen(title)
+	}
+	left := title + strings.Repeat("─", max(0, leftWidth-runeLen(title)))
+	return padOrTrim(left+right, width)
+}
+
+func (m Model) currentShowView() (string, string) {
 	switch m.currentTab {
-	case tabStatus:
-		return "HOME SNAPSHOT", buildStatusReport(m.active, m.coreActive, m.corePID, m.lastStats)
 	case tabPresets:
-		if body := m.printablePresetLinks(); body != "" {
-			return "PRESET LINKS", body
+		if body := m.currentPresetLinks(); body != "" {
+			return "CURRENT PRESET LINKS", body
 		}
 	case tabRelays:
-		if link := m.getSelectedLink(); link != "" {
-			return "CURRENT RELAY LINK", link
+		if body := m.currentRelayLinks(); body != "" {
+			return "CURRENT RELAY LINKS", body
 		}
 	case tabGuests:
-		if m.staging != nil && m.cursor < len(m.staging.Guests) {
-			guest := m.staging.Guests[m.cursor]
-			if link := m.getSelectedLink(); link != "" {
-				return "CURRENT GUEST LINK", BuildGuestReport(guest) + "\n\n" + link
-			}
-			return "CURRENT GUEST", BuildGuestReport(guest)
+		if body := m.currentGuestLinks(); body != "" {
+			return "CURRENT GUEST LINKS", body
 		}
 	}
 	return "", ""
@@ -1121,40 +1036,72 @@ func (m Model) currentServiceLogMaxScroll(width int) int {
 	return maxScroll
 }
 
-func (m Model) printablePresetLinks() string {
+func (m Model) currentPresetLinks() string {
 	if m.staging == nil {
+		return ""
+	}
+	if m.cursor < 0 || m.cursor >= len(m.staging.ActiveModes) {
 		return ""
 	}
 	ip := m.cachedIP
 	if m.useLocalIP {
 		ip = m.localIP
 	}
+	mode := m.staging.ActiveModes[m.cursor]
+	tempCfg := *m.staging
+	tempCfg.ActiveModes = []config.ModeInfo{mode}
+	links := xray.GenerateLinks(&tempCfg, ip)
+	if len(links) == 0 {
+		return ""
+	}
 	var b strings.Builder
-	for _, mode := range m.staging.ActiveModes {
-		if !mode.Enabled {
-			continue
+	b.WriteString(string(mode.Mode))
+	b.WriteString(":\n")
+	for i, link := range links {
+		if i > 0 {
+			b.WriteByte('\n')
 		}
-		tempCfg := *m.staging
-		tempCfg.ActiveModes = []config.ModeInfo{mode}
-		links := xray.GenerateLinks(&tempCfg, ip)
-		if len(links) == 0 {
-			continue
-		}
-		b.WriteString(string(mode.Mode))
-		b.WriteString(":\n")
-		for _, link := range links {
-			b.WriteString(link)
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
+		b.WriteString(link)
 	}
 	return strings.TrimSpace(b.String())
 }
 
-func buildPrintScript(title string, body string) string {
+func (m Model) currentRelayLinks() string {
+	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.CustomOutbounds) {
+		return ""
+	}
+	ip := m.cachedIP
+	if m.useLocalIP {
+		ip = m.localIP
+	}
+	relay := m.staging.CustomOutbounds[m.cursor]
+	links := xray.GenerateRelayLinks(m.staging, ip, relay)
+	if len(links) == 0 {
+		return ""
+	}
+	return strings.Join(links, "\n")
+}
+
+func (m Model) currentGuestLinks() string {
+	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.Guests) {
+		return ""
+	}
+	ip := m.cachedIP
+	if m.useLocalIP {
+		ip = m.localIP
+	}
+	guest := m.staging.Guests[m.cursor]
+	links := xray.GenerateGuestLinks(m.staging, ip, guest.UUID, guest.Alias)
+	if len(links) == 0 {
+		return ""
+	}
+	return strings.Join(links, "\n")
+}
+
+func buildShowScript(title string, body string) string {
 	escapedTitle := strings.ReplaceAll(title, "'", "'\\''")
 	escapedBody := strings.ReplaceAll(body, "'", "'\\''")
-	return fmt.Sprintf("printf '\\033[2J\\033[H'; printf '=== %s ===\\n\\n'; printf '%%s\\n' '%s'; printf '\\n[Enter] Return to TUI...'; IFS= read -r _", escapedTitle, escapedBody)
+	return fmt.Sprintf("printf '\\033[2J\\033[H'; printf '=== %s ===\\n\\n'; printf '%%s' '%s'; printf '\\n\\n[Enter] Return to TUI...'; IFS= read -r _", escapedTitle, escapedBody)
 }
 
 func summarizeActionResult(lines []string, err error) string {
@@ -1242,17 +1189,17 @@ func renderFooter(tab sessionTab, width int) string {
 	var keys []string
 	keys = append(keys, "[Tab]Switch", "[Q]Quit")
 	if tab == tabStatus {
-		keys = append(keys, "[A]Apply", "[P]Print", "[S]Links", "[L]IP-Mode")
+		keys = append(keys, "[A]Apply", "[L]IP-Mode")
 	}
 	if tab == tabService {
 		keys = append(keys, "[S]Start", "[T]Stop", "[R]Restart", "[I/U]Install", "[L]Logs", "[F]Follow", "[M]Detail", "[C]Refresh")
 	}
 	if tab == tabPresets {
-		keys = append(keys, "[A]Apply", "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[←/→]Scroll", "[P]Print", "[S]Links")
+		keys = append(keys, "[A]Apply", "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[←/→]Scroll", "[S]Show")
 	} else if tab == tabRelays {
-		keys = append(keys, "[A]Apply", "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
+		keys = append(keys, "[A]Apply", "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
 	} else if tab == tabGuests {
-		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[P]Print", "[S]Links", "[U]Undo")
+		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
