@@ -1452,16 +1452,16 @@ func parseRelayDetailOutput(alias string, raw string) relayDetailData {
 		title: title,
 		fields: []detailField{
 			{label: "Exit", value: firstNonEmpty(fields["Exit IP"], fields["Exit IPv4"], fields["Exit IPv6"], "Unknown")},
-			{label: "IPv4", value: firstNonEmpty(fields["Exit IPv4"], "N/A")},
-			{label: "YouTube", value: emptyFallback(media["YouTube"], "?")},
 			{label: "Geo", value: emptyFallback(joinNonEmpty(", ", fields["Local"], fields["Country"]), "N/A")},
+			{label: "IPv4", value: firstNonEmpty(fields["Exit IPv4"], "N/A")},
 			{label: "IPv6", value: firstNonEmpty(fields["Exit IPv6"], "N/A")},
-			{label: "Netflix", value: emptyFallback(media["Netflix"], "?")},
-			{label: "ASN", value: emptyFallback(joinNonEmpty(" ", fields["ASN Type"], fields["ASN"]), "N/A")},
 			{label: "Org", value: emptyFallback(fields["Company"], "N/A")},
-			{label: "Disney+", value: emptyFallback(media["Disney+"], "?")},
+			{label: "ASN", value: emptyFallback(joinNonEmpty(" ", fields["ASN Type"], fields["ASN"]), "N/A")},
 			{label: "Time", value: emptyFallback(joinNonEmpty(" ", fields["Local Time"], fields["Time Zone"]), "N/A")},
 			{label: "Privacy", value: emptyFallback(fields["ASN Type"], "N/A")},
+			{label: "Netflix", value: emptyFallback(media["Netflix"], "?")},
+			{label: "YouTube", value: emptyFallback(media["YouTube"], "?")},
+			{label: "Disney+", value: emptyFallback(media["Disney+"], "?")},
 		},
 	}
 }
