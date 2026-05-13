@@ -12,6 +12,11 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type namedStatRow struct {
+	name  string
+	value int64
+}
+
 func RenderStatus(cfg *config.UserConfig, active bool, pid int, allStats map[string]int64) string {
 	statusStr := "Inactive"
 	uptimeStr := "-"
@@ -49,7 +54,7 @@ func RenderStatus(cfg *config.UserConfig, active bool, pid int, allStats map[str
 		b.WriteString(fmt.Sprintf("%-16s %s\n", r[0]+":", r[1]))
 	}
 
-	appendNamedStats(&b, "\nInbound Usage", summary.InboundStats)
+	appendOrderedInboundStats(&b, "\nInbound Usage", cfg, summary.InboundStats)
 	appendNamedStats(&b, "\nService Usage", summary.ServiceStats)
 	appendNamedStats(&b, "\nRelay Usage", summary.RelayStats)
 	appendNamedStats(&b, "\nGuest Usage", summary.GuestStats)
@@ -80,11 +85,26 @@ func buildStatusReport(cfg *config.UserConfig, active bool, pid int, allStats ma
 		b.WriteString(fmt.Sprintf("Test Inbound: 127.0.0.1:%d\n", cfg.TestInbound))
 		b.WriteString(fmt.Sprintf("Config Path: %s\n", config.GetConfigPath()))
 	}
-	appendPlainNamedStats(&b, "\nInbound Usage:", summary.InboundStats)
+	appendOrderedPlainInboundStats(&b, "\nInbound Usage:", cfg, summary.InboundStats)
 	appendPlainNamedStats(&b, "\nService Usage:", summary.ServiceStats)
 	appendPlainNamedStats(&b, "\nRelay Usage:", summary.RelayStats)
 	appendPlainNamedStats(&b, "\nGuest Usage:", summary.GuestStats)
 	return b.String()
+}
+
+func appendOrderedInboundStats(b *strings.Builder, title string, cfg *config.UserConfig, stats map[string]int64) {
+	if len(stats) == 0 {
+		return
+	}
+	rows := orderedInboundRows(cfg, stats)
+	if len(rows) == 0 {
+		return
+	}
+	b.WriteString(title)
+	b.WriteString("\n")
+	for _, row := range rows {
+		b.WriteString(fmt.Sprintf("  %-20s %s\n", row.name, HumanizeBytes(row.value)))
+	}
 }
 
 func appendNamedStats(b *strings.Builder, title string, stats map[string]int64) {
@@ -111,6 +131,21 @@ func renderHomeTitle() string {
 	return strings.Join(lines, "\n")
 }
 
+func appendOrderedPlainInboundStats(b *strings.Builder, title string, cfg *config.UserConfig, stats map[string]int64) {
+	if len(stats) == 0 {
+		return
+	}
+	rows := orderedInboundRows(cfg, stats)
+	if len(rows) == 0 {
+		return
+	}
+	b.WriteString(title)
+	b.WriteString("\n")
+	for _, row := range rows {
+		b.WriteString(fmt.Sprintf("  %-22s %s\n", row.name, HumanizeBytes(row.value)))
+	}
+}
+
 func appendPlainNamedStats(b *strings.Builder, title string, stats map[string]int64) {
 	if len(stats) == 0 {
 		return
@@ -130,6 +165,35 @@ func sortedKeys(stats map[string]int64) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func orderedInboundRows(cfg *config.UserConfig, stats map[string]int64) []namedStatRow {
+	if len(stats) == 0 {
+		return nil
+	}
+	rows := make([]namedStatRow, 0, len(stats))
+	seen := make(map[string]bool, len(stats))
+	if cfg != nil {
+		for _, mode := range cfg.ActiveModes {
+			if !mode.Enabled {
+				continue
+			}
+			key := string(mode.Mode)
+			val, ok := stats[key]
+			if !ok {
+				continue
+			}
+			rows = append(rows, namedStatRow{name: key, value: val})
+			seen[key] = true
+		}
+	}
+	for _, key := range sortedKeys(stats) {
+		if seen[key] {
+			continue
+		}
+		rows = append(rows, namedStatRow{name: key, value: stats[key]})
+	}
+	return rows
 }
 
 func HumanizeBytes(b int64) string {
