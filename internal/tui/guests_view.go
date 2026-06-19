@@ -18,7 +18,7 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		return lipgloss.NewStyle().Padding(2, 5).Render("No guests. Press [N] to add.")
 	}
 
-	headers := []string{"  ", "ALIAS", "STATE", "SUB", "REASON", "QUOTA (USED/LIM)", "RESET", "OUTBOUND"}
+	headers := []string{"  ", "ALIAS", "STATE", "SUB", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY"}
 	rows := make([][]string, 0, len(staging.Guests))
 	disabled := make([]bool, 0, len(staging.Guests))
 

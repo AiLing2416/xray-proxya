@@ -16,6 +16,7 @@ import (
 )
 
 var (
+	subRelay    string
 	subOutbound string
 	subGuest    string
 	subAddress  string
@@ -492,9 +493,13 @@ var subGenCmd = &cobra.Command{
 		cfg, _ := config.LoadConfigEx(true)
 		targetType := "direct"
 		targetAlias := ""
-		if subOutbound != "" {
+		targetRelay := subRelay
+		if targetRelay == "" {
+			targetRelay = subOutbound
+		}
+		if targetRelay != "" {
 			targetType = "outbound"
-			targetAlias = subOutbound
+			targetAlias = targetRelay
 		} else if subGuest != "" {
 			targetType = "guest"
 			targetAlias = subGuest
@@ -557,7 +562,9 @@ var subDelCmd = &cobra.Command{
 }
 
 func init() {
-	subGenCmd.Flags().StringVarP(&subOutbound, "outbound", "o", "", "Target custom outbound alias")
+	subGenCmd.Flags().StringVarP(&subRelay, "relay", "r", "", "Target relay node alias")
+	subGenCmd.Flags().StringVarP(&subOutbound, "outbound", "o", "", "Target custom outbound alias (deprecated)")
+	subGenCmd.Flags().MarkHidden("outbound")
 	subGenCmd.Flags().StringVarP(&subGuest, "guest", "g", "", "Target guest alias")
 	subGenCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override address in links")
 	subInitCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override address/hostname in the managed admin subscription")

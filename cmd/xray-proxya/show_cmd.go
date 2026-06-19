@@ -13,6 +13,7 @@ var (
 	showIPv4     bool
 	showIPv6     bool
 	showAddr     string
+	showRelay    string
 	showOutbound string
 	showGuest    string
 	showAll      bool
@@ -53,7 +54,12 @@ var showCmd = &cobra.Command{
 		fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ip)
 		fmt.Println("============================================================")
 		
-		showDirect := !showAll && showOutbound == "" && showGuest == ""
+		targetRelay := showRelay
+		if targetRelay == "" {
+			targetRelay = showOutbound
+		}
+		
+		showDirect := !showAll && targetRelay == "" && showGuest == ""
 		
 		if showAll || showDirect {
 			fmt.Println("# DIRECT (PRESET) LINKS")
@@ -92,11 +98,11 @@ var showCmd = &cobra.Command{
 			}
 		}
 
-		if showAll || showOutbound != "" {
-			if showOutbound != "" {
+		if showAll || targetRelay != "" {
+			if targetRelay != "" {
 				var target *config.CustomOutbound
 				for _, o := range cfg.CustomOutbounds {
-					if o.Alias == showOutbound {
+					if o.Alias == targetRelay {
 						target = &o
 						break
 					}
@@ -108,7 +114,7 @@ var showCmd = &cobra.Command{
 						fmt.Println(link)
 					}
 				} else {
-					fmt.Printf("❌ Outbound '%s' not found.\n", showOutbound)
+					fmt.Printf("❌ Relay '%s' not found.\n", targetRelay)
 				}
 			} else if len(cfg.CustomOutbounds) > 0 {
 				fmt.Println("\n# ALL RELAY LINKS")
@@ -129,10 +135,16 @@ func init() {
 	showCmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "Use public IPv4 address")
 	showCmd.Flags().BoolVarP(&showIPv6, "ipv6", "6", false, "Use public IPv6 address")
 	showCmd.Flags().StringVarP(&showAddr, "address", "a", "", "Override server address/hostname in links")
-	showCmd.Flags().StringVarP(&showOutbound, "outbound", "o", "", "Show links for specific custom outbound")
+	showCmd.Flags().StringVarP(&showRelay, "relay", "r", "", "Show links for specific relay node")
+	showCmd.Flags().StringVarP(&showOutbound, "outbound", "o", "", "Show links for specific custom outbound (deprecated)")
 	showCmd.Flags().StringVarP(&showGuest, "guest", "g", "", "Show links for specific guest user")
 	showCmd.Flags().BoolVar(&showAll, "all", false, "Show all sharing links")
 
+	showCmd.Flags().MarkHidden("outbound")
+
+	showCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
 	showCmd.RegisterFlagCompletionFunc("outbound", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 	})

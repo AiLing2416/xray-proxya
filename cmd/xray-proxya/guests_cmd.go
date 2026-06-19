@@ -18,6 +18,7 @@ import (
 
 var (
 	quotaStr         string
+	relayStr         string
 	outboundStr      string
 	resetDay         int
 	guestSubShowAddr string
@@ -135,7 +136,7 @@ var guestsListCmd = &cobra.Command{
 		if cfg == nil {
 			return
 		}
-		fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "OUTBOUND")
+		fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY")
 		fmt.Println("----------------------------------------------------------------------------------------------------------------")
 		for _, g := range cfg.Guests {
 			state := guestStateLabel(g)
@@ -271,18 +272,22 @@ var guestsSetCmd = &cobra.Command{
 				}
 			}
 		}
-		if outboundStr != "" {
-			if outboundStr == "direct" {
+		targetRelay := relayStr
+		if targetRelay == "" {
+			targetRelay = outboundStr
+		}
+		if targetRelay != "" {
+			if targetRelay == "direct" {
 				cfg.Guests[idx].OutboundLink = ""
 				cfg.Guests[idx].OutboundConf = nil
-				fmt.Printf("✅ Outbound for '%s' set to direct.\n", alias)
+				fmt.Printf("✅ Relay for '%s' set to direct.\n", alias)
 				success = true
 			} else {
-				conf, err := xray.ParseProxyLink(outboundStr)
+				conf, err := xray.ParseProxyLink(targetRelay)
 				if err == nil {
-					cfg.Guests[idx].OutboundLink = outboundStr
+					cfg.Guests[idx].OutboundLink = targetRelay
 					cfg.Guests[idx].OutboundConf = conf
-					fmt.Printf("✅ Outbound for '%s' updated via link.\n", alias)
+					fmt.Printf("✅ Relay for '%s' updated via link.\n", alias)
 					success = true
 				} else {
 					fmt.Printf("❌ Failed to parse link: %v\n", err)
@@ -383,7 +388,7 @@ var guestsInfoCmd = &cobra.Command{
 		fmt.Printf("Used: %.2fGB\n", float64(guest.UsedBytes)/(1024*1024*1024))
 		fmt.Printf("Reset Day: %d\n", guest.ResetDay)
 		fmt.Printf("Last Reset Month: %s\n", lastReset)
-		fmt.Printf("Outbound: %s\n\n", out)
+		fmt.Printf("Relay: %s\n\n", out)
 	},
 }
 
@@ -583,8 +588,13 @@ var guestsSubShowCmd = &cobra.Command{
 
 func init() {
 	guestsSetCmd.Flags().StringVarP(&quotaStr, "quota", "q", "", "Set quota (GB, -1, 0, or 'reset')")
-	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct'")
+	guestsSetCmd.Flags().StringVar(&relayStr, "relay", "", "Set relay node to a proxy link or 'direct'")
+	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct' (deprecated)")
+	guestsSetCmd.Flags().MarkHidden("outbound")
 	guestsSetCmd.Flags().IntVarP(&resetDay, "reset", "r", 1, "Monthly reset day (1-31)")
+	guestsSetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	guestsSetCmd.RegisterFlagCompletionFunc("outbound", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
 	})
