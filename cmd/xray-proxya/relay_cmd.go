@@ -65,8 +65,8 @@ const (
 )
 
 var outboundCmd = &cobra.Command{
-	Use:     "outbound",
-	Aliases: []string{"node", "relay"},
+	Use:     "relay",
+	Aliases: []string{"relays", "outbound", "outbounds", "node"},
 	Short:   "Manage relay nodes (custom outbounds) in the staging config",
 }
 

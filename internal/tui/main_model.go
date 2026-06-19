@@ -1232,7 +1232,7 @@ func fetchRelayDetail(alias string) tea.Cmd {
 		if err != nil {
 			return relayDetailMsg{alias: alias, err: err}
 		}
-		cmd := exec.Command(exe, "outbound", "info", alias)
+		cmd := exec.Command(exe, "relay", "info", alias)
 		out, err := cmd.CombinedOutput()
 		body := strings.TrimSpace(string(out))
 		return relayDetailMsg{alias: alias, body: "__info__\n" + body, err: err}
@@ -1297,7 +1297,7 @@ func fetchRelayTest(alias string) tea.Cmd {
 		if err != nil {
 			return relayDetailMsg{alias: alias, err: err}
 		}
-		cmd := exec.Command(exe, "outbound", "test", alias)
+		cmd := exec.Command(exe, "relay", "test", alias)
 		out, err := cmd.CombinedOutput()
 		body := strings.TrimSpace(string(out))
 		return relayDetailMsg{alias: alias, body: "__test__\n" + body, err: err}
@@ -1310,7 +1310,7 @@ func fetchRelayProbe(alias string) tea.Cmd {
 		if err != nil {
 			return relayDetailMsg{alias: alias, err: err}
 		}
-		cmd := exec.Command(exe, "outbound", "probe-local", alias)
+		cmd := exec.Command(exe, "relay", "probe-local", alias)
 		out, err := cmd.CombinedOutput()
 		body := strings.TrimSpace(string(out))
 		return relayDetailMsg{alias: alias, body: "__probe__\n" + body, err: err}
@@ -1323,7 +1323,7 @@ func fetchRelaySpeed(alias string) tea.Cmd {
 		if err != nil {
 			return relayDetailMsg{alias: alias, err: err}
 		}
-		cmd := exec.Command(exe, "outbound", "speed", alias)
+		cmd := exec.Command(exe, "relay", "speed", alias)
 		out, err := cmd.CombinedOutput()
 		body := strings.TrimSpace(string(out))
 		return relayDetailMsg{alias: alias, body: "__speed__\n" + body, err: err}
@@ -1336,7 +1336,7 @@ func fetchRelayResolve(alias string, domain string) tea.Cmd {
 		if err != nil {
 			return relayDetailMsg{alias: alias, err: err}
 		}
-		cmd := exec.Command(exe, "outbound", "resolve", alias, domain)
+		cmd := exec.Command(exe, "relay", "resolve", alias, domain)
 		out, err := cmd.CombinedOutput()
 		body := strings.TrimSpace(string(out))
 		return relayDetailMsg{alias: alias, body: "__resolve__\n" + domain + "\n" + body, err: err}
