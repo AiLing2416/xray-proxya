@@ -36,7 +36,7 @@ func TestManagedSubURLUsesOverrideAddress(t *testing.T) {
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}
 	subEntry := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com"}
 	got := managedSubURL(cfg, subEntry)
-	want := "https://sub.example.com:8443/sub/abc123"
+	want := "http://sub.example.com:8443/sub/abc123"
 	if got != want {
 		t.Fatalf("managedSubURL = %q, want %q", got, want)
 	}
@@ -46,7 +46,7 @@ func TestManagedSubURLHandlesHostWithPort(t *testing.T) {
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}
 	subEntry := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com:9443"}
 	got := managedSubURL(cfg, subEntry)
-	want := "https://sub.example.com:9443/sub/abc123"
+	want := "http://sub.example.com:9443/sub/abc123"
 	if got != want {
 		t.Fatalf("managedSubURL = %q, want %q", got, want)
 	}

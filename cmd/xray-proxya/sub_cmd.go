@@ -132,9 +132,9 @@ func managedSubURL(cfg *config.UserConfig, subEntry *config.AdminSubConfig) stri
 		host = utils.GetSmartIP(false)
 	}
 	if _, _, err := net.SplitHostPort(host); err == nil {
-		return fmt.Sprintf("https://%s/sub/%s", host, subEntry.Token)
+		return fmt.Sprintf("http://%s/sub/%s", host, subEntry.Token)
 	}
-	return fmt.Sprintf("https://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.AdminSub.Port)), subEntry.Token)
+	return fmt.Sprintf("http://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.AdminSub.Port)), subEntry.Token)
 }
 
 func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

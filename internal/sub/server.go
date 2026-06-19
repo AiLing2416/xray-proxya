@@ -20,11 +20,6 @@ import (
 var ipMutex sync.Mutex
 
 func StartSubServer(port int, guestBind string, guestPort int) error {
-	certPath, keyPath, err := EnsureCertificates()
-	if err != nil {
-		return fmt.Errorf("failed to ensure certificates: %v", err)
-	}
-
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("/sub/", httpAdminSubHandler())
 
@@ -34,8 +29,8 @@ func StartSubServer(port int, guestBind string, guestPort int) error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		fmt.Printf("🔒 Subscription server listening on HTTPS port %d\n", port)
-		errCh <- http.ListenAndServeTLS(fmt.Sprintf(":%d", port), certPath, keyPath, adminMux)
+		fmt.Printf("🔓 Admin subscription server listening on http://127.0.0.1:%d (local only)\n", port)
+		errCh <- http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), adminMux)
 	}()
 
 	if guestPort > 0 {
@@ -44,8 +39,8 @@ func StartSubServer(port int, guestBind string, guestPort int) error {
 		}
 		addr := net.JoinHostPort(guestBind, strconv.Itoa(guestPort))
 		go func() {
-			fmt.Printf("🔐 Guest subscription server listening on https://%s\n", addr)
-			errCh <- http.ListenAndServeTLS(addr, certPath, keyPath, guestMux)
+			fmt.Printf("🔓 Guest subscription server listening on http://%s\n", addr)
+			errCh <- http.ListenAndServe(addr, guestMux)
 		}()
 	}
 

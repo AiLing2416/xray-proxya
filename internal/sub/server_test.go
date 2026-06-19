@@ -3,8 +3,6 @@ package sub
 import (
 	"encoding/base64"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -80,18 +78,7 @@ func TestGuestSubHandlerReturnsAnnotatedSubscription(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	certPath, keyPath, err := EnsureCertificates()
-	if err != nil {
-		t.Fatalf("EnsureCertificates: %v", err)
-	}
-	if _, err := os.Stat(certPath); err != nil {
-		t.Fatalf("cert file missing: %v", err)
-	}
-	if _, err := os.Stat(keyPath); err != nil {
-		t.Fatalf("key file missing: %v", err)
-	}
-
-	req := httptest.NewRequest("GET", "https://127.0.0.1/guest-sub/token123", nil)
+	req := httptest.NewRequest("GET", "http://127.0.0.1/guest-sub/token123", nil)
 	req.Host = "sub.example.com"
 	rec := httptest.NewRecorder()
 
@@ -111,10 +98,6 @@ func TestGuestSubHandlerReturnsAnnotatedSubscription(t *testing.T) {
 	}
 	if !strings.Contains(body, "@sub.example.com:443?") {
 		t.Fatalf("expected request host in generated link, got %q", body)
-	}
-
-	if _, err := os.Stat(filepath.Join(config.GetConfigDir(), "certs", "server.crt")); err != nil {
-		t.Fatalf("expected cert in config dir: %v", err)
 	}
 }
 
@@ -146,7 +129,7 @@ func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
 		t.Fatalf("save config: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "https://127.0.0.1/sub/admintoken", nil)
+	req := httptest.NewRequest("GET", "http://127.0.0.1/sub/admintoken", nil)
 	rec := httptest.NewRecorder()
 	httpAdminSubHandler()(rec, req)
 	if rec.Code != 200 {
