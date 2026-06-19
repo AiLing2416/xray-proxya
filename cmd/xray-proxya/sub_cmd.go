@@ -35,7 +35,7 @@ var (
 
 var subCmd = &cobra.Command{
 	Use:   "sub",
-	Short: "Manage admin subscription and standalone HTTPS server",
+	Short: "Manage subscriptions (admin, guests, relays) and standalone HTTP server",
 }
 
 const managedSubAlias = "admin"
@@ -738,7 +738,7 @@ var subResetCmd = &cobra.Command{
 
 var subRunCmd = &cobra.Command{
 	Use:    "run",
-	Short:  "Run the subscription HTTPS server in foreground (Requires Root for IPv6 rotate)",
+	Short:  "Run the subscription HTTP server in foreground (Requires Root for IPv6 rotate)",
 	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
@@ -799,7 +799,7 @@ var subRunCmd = &cobra.Command{
 func init() {
 	subModeCmd.Flags().StringVarP(&subModeStr, "mode", "m", "", "Subscription server mode ('fixed' or 'ipv6-rotate')")
 	subModeCmd.Flags().StringVarP(&subHostname, "hostname", "H", "", "Override external domain/hostname in subscription links")
-	subModeCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTPS port")
+	subModeCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTP port")
 	subModeCmd.Flags().StringVarP(&subIface, "interface", "i", "", "IPv6 interface for rotate mode")
 	subModeCmd.Flags().StringVar(&subSubnet, "subnet", "", "IPv6 subnet for rotate mode")
 	subModeCmd.Flags().IntVar(&subMax, "max", 0, "Max active rotated IPv6 addresses")
@@ -813,7 +813,7 @@ func init() {
 	subResetCmd.Flags().StringVarP(&subResetGuest, "guest", "g", "", "Reset guest subscription URL token(s) (use 'all' or empty for all guests)")
 	subResetCmd.Flags().StringVarP(&subResetRelay, "relay", "r", "", "Reset relay subscription URL token(s) (use 'all' or empty for all relays)")
 
-	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTPS port")
+	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTP port")
 
 	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subShowCmd, subResetCmd, subRunCmd)
 	rootCmd.AddCommand(subCmd)

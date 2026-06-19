@@ -500,7 +500,7 @@ var guestsSubEnableCmd = &cobra.Command{
 		}
 		if err := cfg.SaveEx(true); err == nil {
 			fmt.Printf("✅ Guest sub enabled for '%s' in STAGING.\n", args[0])
-			fmt.Printf("🔒 Listener: https://%s:%d/guest-sub/<token>\n", cfg.GuestSubBind, cfg.GuestSubPort)
+			fmt.Printf("🔒 Listener: http://%s:%d/guest-sub/<token>\n", cfg.GuestSubBind, cfg.GuestSubPort)
 			fmt.Println("🚀 Run 'apply' to commit changes.")
 		}
 	},

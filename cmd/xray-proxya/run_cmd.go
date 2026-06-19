@@ -32,6 +32,13 @@ var runCmd = &cobra.Command{
 			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 			os.Exit(1)
 		}
+
+		// Ensure no background/service processes of Xray core are running
+		if active, pid := xray.GetXrayStatus(); active {
+			fmt.Printf("❌ Error: Xray Core is already running (PID %d) in the background. Stop the background service first.\n", pid)
+			os.Exit(1)
+		}
+
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			fmt.Printf("❌ Failed to load config: %v\n", err)
