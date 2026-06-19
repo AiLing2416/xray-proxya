@@ -18,6 +18,7 @@ chromium.log
 !README.md
 !WIKI/
 !WIKI/*.md
+!MD/vulnerability_analysis.md
 GEMINI.md
 NETWORK_VERIFICATION.md
 TransparentProxy.md

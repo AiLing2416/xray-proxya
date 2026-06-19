@@ -184,6 +184,13 @@ var runCmd = &cobra.Command{
 				fmt.Println("\nℹ️ Xray core exited normally.")
 				return
 			case <-quotaTicker.C:
+				reloadedCfg, err := config.LoadConfig()
+				if err != nil {
+					fmt.Printf("⚠️  Failed to reload config for guest quota check: %v\n", err)
+					continue
+				}
+				cfg = reloadedCfg
+
 				update, err := checkGuestQuotaState(cfg, quotaMonitor, time.Now())
 				if err != nil {
 					fmt.Printf("⚠️  Guest quota check failed: %v\n", err)

@@ -3,6 +3,7 @@ package xray
 import (
 	"archive/zip"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -45,14 +46,37 @@ func GetXrayStatus() (bool, int) {
 	// Verify identity: Check if /proc/[pid]/exe points to our xray binary
 	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err == nil {
-		if !strings.Contains(exePath, "xray") {
+		base := filepath.Base(exePath)
+		if base != "xray" {
+			return false, 0
+		}
+	} else {
+		// Fallback for permission errors: try reading /proc/[pid]/comm or /proc/[pid]/cmdline
+		if commData, commErr := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); commErr == nil {
+			commStr := strings.TrimSpace(string(commData))
+			if commStr != "xray" {
+				return false, 0
+			}
+		} else if cmdlineData, cmdlineErr := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid)); cmdlineErr == nil {
+			cmdlineStr := string(cmdlineData)
+			firstArg := cmdlineStr
+			if idx := strings.IndexByte(cmdlineStr, 0); idx >= 0 {
+				firstArg = cmdlineStr[:idx]
+			}
+			base := filepath.Base(firstArg)
+			if base != "xray" {
+				return false, 0
+			}
+		} else {
+			// If verification fails completely under permission error, return false to avoid security bypass
 			return false, 0
 		}
 	}
 
 	process, err := os.FindProcess(pid)
 	if err == nil {
-		if err := process.Signal(syscall.Signal(0)); err == nil {
+		sigErr := process.Signal(syscall.Signal(0))
+		if sigErr == nil || sigErr == syscall.EPERM {
 			return true, pid
 		}
 	}
@@ -475,6 +499,37 @@ func GetRandomShortID() string {
 	return hex.EncodeToString(b)
 }
 
+func extractSHA256(content string) (string, error) {
+	lines := strings.Split(content, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		normalized := strings.ToLower(line)
+		var hashPart string
+		if idx := strings.Index(normalized, "sha256="); idx >= 0 {
+			hashPart = line[idx+len("sha256="):]
+		} else if idx := strings.Index(normalized, "sha-256="); idx >= 0 {
+			hashPart = line[idx+len("sha-256="):]
+		} else if idx := strings.Index(normalized, "sha256:"); idx >= 0 {
+			hashPart = line[idx+len("sha256:"):]
+		} else if idx := strings.Index(normalized, "256="); idx >= 0 {
+			hashPart = line[idx+len("256="):]
+		}
+		
+		if hashPart != "" {
+			hashPart = strings.TrimSpace(hashPart)
+			if len(hashPart) == 64 {
+				if _, err := hex.DecodeString(hashPart); err == nil {
+					return hashPart, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("no valid SHA256 hash found in digest")
+}
+
 func DownloadXray() error {
 	arch := "64"
 	out, _ := exec.Command("uname", "-m").Output()
@@ -486,11 +541,33 @@ func DownloadXray() error {
 	binDir := filepath.Dir(binPath)
 	os.MkdirAll(binDir, 0755)
 
+	// 1. Download digest file first to verify the ZIP file
+	respDgst, err := http.Get(url + ".dgst")
+	if err != nil {
+		return fmt.Errorf("failed to download xray digest: %w", err)
+	}
+	defer respDgst.Body.Close()
+	if respDgst.StatusCode != http.StatusOK {
+		return fmt.Errorf("xray digest download returned status %s", respDgst.Status)
+	}
+	dgstBytes, err := io.ReadAll(respDgst.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read xray digest body: %w", err)
+	}
+	expectedHash, err := extractSHA256(string(dgstBytes))
+	if err != nil {
+		return fmt.Errorf("invalid xray digest format: %w", err)
+	}
+
+	// 2. Download the core zip file
 	resp, err := http.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("xray download returned status %s", resp.Status)
+	}
 
 	tmpZip, err := os.CreateTemp("", "xray-*.zip")
 	if err != nil {
@@ -503,6 +580,21 @@ func DownloadXray() error {
 	}
 	tmpZip.Close()
 
+	// 3. Compute SHA256 of the downloaded file
+	zipBytes, err := os.ReadFile(tmpZip.Name())
+	if err != nil {
+		return fmt.Errorf("failed to read downloaded zip: %w", err)
+	}
+	hasher := sha256.New()
+	hasher.Write(zipBytes)
+	actualHash := hex.EncodeToString(hasher.Sum(nil))
+
+	// 4. Verify integrity
+	if actualHash != expectedHash {
+		return fmt.Errorf("integrity check failed: xray zip SHA256 mismatch (got %s, expected %s)", actualHash, expectedHash)
+	}
+
+	// 5. Unpack
 	r, err := zip.OpenReader(tmpZip.Name())
 	if err != nil {
 		return err

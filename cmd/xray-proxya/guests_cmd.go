@@ -245,7 +245,7 @@ var guestsSetCmd = &cobra.Command{
 		success := false
 		if quotaStr != "" {
 			if quotaStr == "reset" {
-				cfg.Guests[idx].UsedBytes = 0
+				cfg.Guests[idx].UsedBytes = -1
 				if cfg.Guests[idx].DisabledReason == config.GuestDisabledQuotaReached && cfg.Guests[idx].QuotaGB > 0 {
 					cfg.Guests[idx].Enabled = true
 					cfg.Guests[idx].DisabledReason = config.GuestDisabledNone

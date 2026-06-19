@@ -54,38 +54,65 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	defer os.Remove(tmpFile)
 
 	CleanupFirewall()
-	SetupKernel()
-	run("sudo", "ip", "addr", "replace", tunIPv4CIDR, "dev", tunName)
-	run("sudo", "ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName)
+	if err := SetupKernel(); err != nil {
+		return fmt.Errorf("kernel setup failed: %w", err)
+	}
+	if err := run("sudo", "ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
+		return err
+	}
+	if err := run("sudo", "ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
+		return err
+	}
 
-	run("sudo", "ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100")
-	run("sudo", "ip", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10")
-	run("sudo", "ip", "rule", "add", "to", lanCIDR, "table", "main", "pref", "50")
-	run("sudo", "ip", "rule", "add", "to", "127.0.0.0/8", "table", "main", "pref", "51")
-	run("sudo", "ip", "route", "replace", "default", "dev", tunName, "table", "100")
+	if err := run("sudo", "ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
+		return err
+	}
+	if err := run("sudo", "ip", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
+		return err
+	}
+	if err := run("sudo", "ip", "rule", "add", "to", lanCIDR, "table", "main", "pref", "50"); err != nil {
+		return err
+	}
+	if err := run("sudo", "ip", "rule", "add", "to", "127.0.0.0/8", "table", "main", "pref", "51"); err != nil {
+		return err
+	}
+	if err := run("sudo", "ip", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
+		return err
+	}
 
-	run("sudo", "nft", "-f", tmpFile)
+	if err := run("sudo", "nft", "-f", tmpFile); err != nil {
+		return err
+	}
 	return nil
 }
 
 func CleanupFirewall() {
-	run("sudo", "nft", "delete", "table", "inet", tableName)
-	run("sudo", "ip", "rule", "del", "pref", "10")
-	run("sudo", "ip", "rule", "del", "pref", "50")
-	run("sudo", "ip", "rule", "del", "pref", "51")
-	run("sudo", "ip", "rule", "del", "pref", "100")
-	run("sudo", "ip", "route", "flush", "table", "100")
-	run("sudo", "ip", "-6", "rule", "del", "pref", "10")
-	run("sudo", "ip", "-6", "rule", "del", "pref", "50")
-	run("sudo", "ip", "-6", "rule", "del", "pref", "100")
-	run("sudo", "ip", "-6", "route", "flush", "table", "100")
+	_ = run("sudo", "nft", "delete", "table", "inet", tableName)
+	_ = run("sudo", "ip", "rule", "del", "pref", "10")
+	_ = run("sudo", "ip", "rule", "del", "pref", "50")
+	_ = run("sudo", "ip", "rule", "del", "pref", "51")
+	_ = run("sudo", "ip", "rule", "del", "pref", "100")
+	_ = run("sudo", "ip", "route", "flush", "table", "100")
+	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "10")
+	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "50")
+	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "100")
+	_ = run("sudo", "ip", "-6", "route", "flush", "table", "100")
 }
 
-func SetupKernel() {
-	run("sudo", "sysctl", "-w", "net.ipv4.ip_forward=1")
-	run("sudo", "sysctl", "-w", "net.ipv6.conf.all.forwarding=1")
-	run("sudo", "sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")
-	run("sudo", "sysctl", "-w", "net.ipv4.conf.default.rp_filter=0")
+func SetupKernel() error {
+	if err := run("sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+		return err
+	}
+	if err := run("sudo", "sysctl", "-w", "net.ipv6.conf.all.forwarding=1"); err != nil {
+		return err
+	}
+	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
+		return err
+	}
+	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.default.rp_filter=0"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func DetectDefaultInterface() (string, error) {
@@ -281,6 +308,11 @@ func getSSHPorts() []string {
 	return ports
 }
 
-func run(name string, args ...string) {
-	exec.Command(name, args...).Run()
+func run(name string, args ...string) error {
+	cmd := exec.Command(name, args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("command %s %v failed: %w (output: %q)", name, args, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

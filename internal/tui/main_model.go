@@ -1101,7 +1101,7 @@ func (m Model) currentGuestLinks() string {
 func buildShowScript(title string, body string) string {
 	escapedTitle := strings.ReplaceAll(title, "'", "'\\''")
 	escapedBody := strings.ReplaceAll(body, "'", "'\\''")
-	return fmt.Sprintf("printf '\\033[2J\\033[H'; printf '=== %s ===\\n\\n'; printf '%%s' '%s'; printf '\\n\\n[Enter] Return to TUI...'; IFS= read -r _", escapedTitle, escapedBody)
+	return fmt.Sprintf("printf '\\033[2J\\033[H'; printf '=== %%s ===\\n\\n' '%s'; printf '%%s' '%s'; printf '\\n\\n[Enter] Return to TUI...'; IFS= read -r _", escapedTitle, escapedBody)
 }
 
 func summarizeActionResult(lines []string, err error) string {
@@ -1999,7 +1999,7 @@ func (m *Model) setGuestQuota(raw string) error {
 		return fmt.Errorf("no guest selected")
 	}
 	if raw == "reset" {
-		guest.UsedBytes = 0
+		guest.UsedBytes = -1
 		if guest.DisabledReason == config.GuestDisabledQuotaReached && guest.QuotaGB > 0 {
 			guest.Enabled = true
 			guest.DisabledReason = config.GuestDisabledNone

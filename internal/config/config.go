@@ -394,6 +394,10 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			guest.UUID = randomHexString(32)
 			changes = append(changes, "generated missing UUID for guest "+guest.Alias)
 		}
+		if guest.UsedBytes < 0 {
+			guest.UsedBytes = 0
+			changes = append(changes, "normalized negative used_bytes for guest "+guest.Alias)
+		}
 		switch guest.DisabledReason {
 		case GuestDisabledNone, GuestDisabledManual, GuestDisabledQuotaReached, GuestDisabledQuotaZero:
 		default:
@@ -518,15 +522,77 @@ func CommitStaging() error {
 	if _, err := os.Stat(src); os.IsNotExist(err) {
 		return nil
 	}
-	data, err := os.ReadFile(src)
+
+	stagingCfg, err := LoadConfigFile(src, false)
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, data, 0600); err != nil {
+
+	// Try to load the active config to merge background runtime updates
+	if activeCfg, err := LoadConfigFile(dst, false); err == nil {
+		// Merge background-mutable fields of guests
+		for i := range stagingCfg.Guests {
+			sg := &stagingCfg.Guests[i]
+			// Find corresponding guest in active config
+			var activeG *GuestConfig
+			for j := range activeCfg.Guests {
+				if activeCfg.Guests[j].Alias == sg.Alias {
+					activeG = &activeCfg.Guests[j]
+					break
+				}
+			}
+			if activeG == nil {
+				if sg.UsedBytes < 0 {
+					sg.UsedBytes = 0
+				}
+				continue
+			}
+
+			// 1. Merge UsedBytes and LastResetYM (unless explicitly reset to -1 by admin)
+			if sg.UsedBytes < 0 {
+				sg.UsedBytes = 0
+			} else {
+				sg.UsedBytes = activeG.UsedBytes
+				sg.LastResetYM = activeG.LastResetYM
+			}
+
+			// 2. Merge Enabled and DisabledReason (unless explicitly changed by admin)
+			adminChangedEnablement := false
+			if sg.UsedBytes == 0 && activeG.UsedBytes > 0 && activeG.DisabledReason == GuestDisabledQuotaReached {
+				// Admin reset the usage via -1 which we just set to 0 above
+				adminChangedEnablement = true
+			} else if sg.QuotaGB != activeG.QuotaGB {
+				adminChangedEnablement = true
+			} else if sg.DisabledReason == GuestDisabledManual && activeG.DisabledReason != GuestDisabledManual {
+				// Admin manually paused
+				adminChangedEnablement = true
+			} else if sg.DisabledReason == GuestDisabledNone && activeG.DisabledReason == GuestDisabledManual {
+				// Admin manually resumed
+				adminChangedEnablement = true
+			}
+
+			if !adminChangedEnablement {
+				sg.Enabled = activeG.Enabled
+				sg.DisabledReason = activeG.DisabledReason
+			}
+		}
+	}
+
+	// Normalize any remaining -1 values before saving to config.json
+	for i := range stagingCfg.Guests {
+		if stagingCfg.Guests[i].UsedBytes < 0 {
+			stagingCfg.Guests[i].UsedBytes = 0
+		}
+	}
+
+	// Save the merged configuration directly to active config path
+	if err := stagingCfg.SaveEx(false); err != nil {
 		return err
 	}
+
 	return os.Remove(src)
 }
+
 
 func ClearStaging() error {
 	path := GetConfigPath() + ".staging"

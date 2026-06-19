@@ -65,17 +65,17 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 		case config.ModeVLESSReality:
 			ps := fmt.Sprintf("VLess-XHTTP-Reality-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=chrome&type=xhttp&serviceName=&path=%s&sni=%s&sid=%s&spx=%%2F#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, mode.Path, mode.SNI, mode.Settings.ShortID, ps)
+				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(mode.Path), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
 
 		case config.ModeVLESSVision:
 			ps := fmt.Sprintf("VLess-Vision-Reality-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s&sid=%s#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, mode.SNI, mode.Settings.ShortID, ps)
+				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
 
 		case config.ModeVLESSXHTTP:
 			ps := fmt.Sprintf("VLess-XHTTP-KEM768-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=none&encryption=%s&type=xhttp&path=%s#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.Password, mode.Path, ps)
+				userUUID, formattedIP, mode.Port, mode.Settings.Password, url.QueryEscape(mode.Path), url.QueryEscape(ps))
 
 		case config.ModeVMessWS:
 			ps := fmt.Sprintf("VMess-WS%s", psSuffix)
@@ -91,7 +91,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 			if suffix == "" {
 				ps := fmt.Sprintf("SS-TCP-%d", mode.Port)
 				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", mode.Settings.Cipher, mode.Settings.Password)))
-				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, ps)
+				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, url.QueryEscape(ps))
 			}
 		}
 		if link != "" {
