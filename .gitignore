@@ -18,8 +18,6 @@ chromium.log
 !README.md
 !WIKI/
 !WIKI/*.md
-!MD/vulnerability_analysis.md
-!MD/tui_cli_inconsistencies.md
 GEMINI.md
 NETWORK_VERIFICATION.md
 TransparentProxy.md
@@ -27,4 +25,4 @@ WIKI_ZH.md
 v0.2.0.txt
 
 # Local tool state
-.codex/
+.codex
