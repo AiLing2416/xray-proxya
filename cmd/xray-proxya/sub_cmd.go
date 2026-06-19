@@ -338,7 +338,8 @@ func startSubBackground() error {
 	}
 
 	pidStr := fmt.Sprintf("%d", cmd.Process.Pid)
-	os.WriteFile(getSubPidPath(), []byte(pidStr), 0600)
+	os.WriteFile(getSubPidPath(), []byte(pidStr), 0644)
+	os.Chmod(getSubPidPath(), 0644)
 	return nil
 }
 
@@ -745,6 +746,14 @@ var subRunCmd = &cobra.Command{
 			fmt.Printf("❌ Failed to load config: %v\n", err)
 			os.Exit(1)
 		}
+
+		pidPath := getSubPidPath()
+		if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+			fmt.Printf("⚠️  Warning: Failed to write sub.pid: %v\n", err)
+		} else {
+			os.Chmod(pidPath, 0644)
+		}
+		defer os.Remove(pidPath)
 
 		if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate && !utils.IsRoot() {
 			fmt.Println("❌ IPv6 Rolling Pool requires root privileges.")

@@ -22,8 +22,23 @@ var statusCmd = &cobra.Command{
 		}
 
 		active, pid := xray.GetXrayStatus()
-		if !active {
+		subActive, subPid := getSubStatus()
+
+		if active {
+			uptime := xray.GetXrayUptime(pid)
+			fmt.Printf("🟢 Xray Core: Active (PID %d)\n", pid)
+			fmt.Printf("⏱️  UpTime: %s\n", uptime)
+		} else {
 			fmt.Println("❌ Xray Core: Inactive")
+		}
+
+		if subActive {
+			fmt.Printf("🟢 Subscription Server: Active (PID %d)\n", subPid)
+		} else {
+			fmt.Println("❌ Subscription Server: Inactive")
+		}
+
+		if !active {
 			return
 		}
 
@@ -33,11 +48,7 @@ var statusCmd = &cobra.Command{
 			return
 		}
 
-		uptime := xray.GetXrayUptime(pid)
 		allStats, _ := xray.GetXrayStats(cfg.APIInbound)
-
-		fmt.Printf("🟢 Xray Core: Active (PID %d)\n", pid)
-		fmt.Printf("⏱️  UpTime: %s\n", uptime)
 		fmt.Println("------------------------------------------------------------")
 
 		summary := trafficstats.Summarize(allStats)
