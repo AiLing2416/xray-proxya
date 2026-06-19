@@ -19,6 +19,7 @@ chromium.log
 !WIKI/
 !WIKI/*.md
 !MD/vulnerability_analysis.md
+!MD/tui_cli_inconsistencies.md
 GEMINI.md
 NETWORK_VERIFICATION.md
 TransparentProxy.md
