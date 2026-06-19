@@ -8,6 +8,8 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/sub"
 	"xray-proxya/internal/xray"
@@ -17,11 +19,8 @@ import (
 )
 
 var (
-	subRelay    string
-	subOutbound string
-	subGuest    string
-	subAddress  string
-	subAll      bool
+	subModeStr  string
+	subHostname string
 	subPort     int
 	subIface    string
 	subSubnet   string
@@ -35,30 +34,6 @@ var subCmd = &cobra.Command{
 }
 
 const managedSubAlias = "admin"
-
-func getSubscriptionAliases() []string {
-	cfg, _ := config.LoadConfigEx(true)
-	if cfg == nil {
-		return nil
-	}
-	var aliases []string
-	for _, s := range cfg.Subscriptions {
-		aliases = append(aliases, s.Alias)
-	}
-	return aliases
-}
-
-func findSubscription(cfg *config.UserConfig, alias string) (int, *config.Subscription) {
-	if cfg == nil {
-		return -1, nil
-	}
-	for i := range cfg.Subscriptions {
-		if cfg.Subscriptions[i].Alias == alias {
-			return i, &cfg.Subscriptions[i]
-		}
-	}
-	return -1, nil
-}
 
 func ensureManagedSubscription(cfg *config.UserConfig) *config.AdminSubConfig {
 	if cfg == nil {
@@ -117,7 +92,7 @@ func detectOrUseIPv6Settings(cfg *config.UserConfig, ifaceOverride string, subne
 	if subnet == "" || iface == "" {
 		detectedSubnet, detectedIface, err := utils.AutoDetectIPv6Subnet()
 		if err != nil {
-			return fmt.Errorf("could not auto-detect IPv6 subnet/interface; use 'sub set --subnet ... --interface ...'")
+			return fmt.Errorf("could not auto-detect IPv6 subnet/interface; use '--subnet ... --interface ...'")
 		}
 		if subnet == "" {
 			subnet = detectedSubnet
@@ -176,82 +151,231 @@ func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete str
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
-var subInitCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Initialize the managed admin subscription (STAGING)",
+// --- Service Management ---
+
+func getSubServicePath() string {
+	return "/etc/systemd/system/xray-proxya-sub.service"
+}
+
+func getSubPidPath() string {
+	return filepath.Join(config.GetConfigDir(), "sub.pid")
+}
+
+func getSubLogPath() string {
+	return filepath.Join(config.GetConfigDir(), "sub.log")
+}
+
+func getSubStatus() (bool, int) {
+	pidPath := getSubPidPath()
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return false, 0
+	}
+	var pid int
+	fmt.Sscanf(string(data), "%d", &pid)
+	if pid <= 0 {
+		return false, 0
+	}
+	// Check if process exists
+	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
+		return false, 0
+	}
+	// Verify identity
+	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	if err == nil {
+		base := filepath.Base(exePath)
+		if base != "xray-proxya" {
+			return false, 0
+		}
+	} else {
+		if commData, commErr := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); commErr == nil {
+			commStr := strings.TrimSpace(string(commData))
+			if commStr != "xray-proxya" {
+				return false, 0
+			}
+		}
+	}
+	process, err := os.FindProcess(pid)
+	if err == nil {
+		sigErr := process.Signal(syscall.Signal(0))
+		if sigErr == nil || sigErr == syscall.EPERM {
+			return true, pid
+		}
+	}
+	return false, 0
+}
+
+func startSubBackground() error {
+	active, pid := getSubStatus()
+	if active {
+		fmt.Printf("ℹ️ Subscription server is already running (PID: %d).\n", pid)
+		return nil
+	}
+
+	path, err := os.Executable()
+	if err != nil || path == "" {
+		path = os.Args[0]
+	}
+	absPath, _ := filepath.Abs(path)
+
+	logPath := getSubLogPath()
+	os.MkdirAll(filepath.Dir(logPath), 0700)
+
+	cmd := exec.Command(absPath, "sub", "run")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setsid: true,
+	}
+
+	if err := cmd.Start(); err != nil {
+		logFile.Close()
+		return err
+	}
+	logFile.Close()
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
+	}()
+
+	select {
+	case err := <-waitCh:
+		if err != nil {
+			return fmt.Errorf("subscription server exited immediately. Check logs at %s: %w", logPath, err)
+		}
+		return fmt.Errorf("subscription server exited immediately. Check logs at %s", logPath)
+	case <-time.After(1 * time.Second):
+	}
+
+	pidStr := fmt.Sprintf("%d", cmd.Process.Pid)
+	os.WriteFile(getSubPidPath(), []byte(pidStr), 0600)
+	return nil
+}
+
+func stopSubBackground() {
+	active, pid := getSubStatus()
+	if active {
+		process, _ := os.FindProcess(pid)
+		process.Signal(syscall.SIGTERM)
+		time.Sleep(500 * time.Millisecond)
+		if active, _ := getSubStatus(); active {
+			process.Kill()
+		}
+	}
+	os.Remove(getSubPidPath())
+}
+
+var subEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Enable subscription server (auto-start on boot or run in background)",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
+		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
+			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 			return
 		}
-		subEntry := ensureManagedSubscription(cfg)
-		ensureSubPortConfigured(cfg)
-		if subAddress != "" {
-			subEntry.Address = subAddress
+
+		if utils.IsRoot() {
+			binPath, _ := os.Executable()
+			home, _ := os.UserHomeDir()
+			if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+				if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
+					home = u.HomeDir
+				}
+			} else if os.Geteuid() == 0 {
+				home = "/root"
+			}
+			workDir := filepath.Join(home, ".local", "share", "xray-proxya")
+			os.MkdirAll(workDir, 0700)
+			configDir := config.GetConfigDir()
+
+			content := fmt.Sprintf(`[Unit]
+Description=Xray-Proxya Subscription Server
+After=network.target xray-proxya.service
+
+[Service]
+Type=simple
+ExecStart=%s sub run
+Restart=on-failure
+WorkingDirectory=%s
+Environment=XRAY_PROXYA_CONFIG_DIR=%s
+
+[Install]
+WantedBy=multi-user.target
+`, binPath, workDir, configDir)
+
+			if err := os.WriteFile(getSubServicePath(), []byte(content), 0644); err != nil {
+				fmt.Printf("❌ Failed to write systemd service file: %v\n", err)
+				return
+			}
+			exec.Command("systemctl", "daemon-reload").Run()
+			exec.Command("systemctl", "enable", "xray-proxya-sub").Run()
+			exec.Command("systemctl", "start", "xray-proxya-sub").Run()
+			fmt.Println("✅ Subscription service enabled, installed, and started.")
+		} else {
+			if err := startSubBackground(); err != nil {
+				fmt.Printf("❌ Failed to start subscription server: %v\n", err)
+				return
+			}
+			fmt.Println("✅ Subscription server started in background (rootless).")
 		}
-		if err := cfg.SaveEx(true); err == nil {
-			fmt.Printf("✅ Admin subscription initialized in STAGING.\n🔗 Path: /sub/%s\n", subEntry.Token)
-			fmt.Printf("📡 Port: %d\n", cfg.AdminSub.Port)
-			fmt.Println("🚀 Run 'apply' to commit changes.")
+	},
+}
+
+var subDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Disable subscription server (uninstall service or stop background process)",
+	Run: func(cmd *cobra.Command, args []string) {
+		if utils.IsRoot() {
+			exec.Command("systemctl", "stop", "xray-proxya-sub").Run()
+			exec.Command("systemctl", "disable", "xray-proxya-sub").Run()
+			os.Remove(getSubServicePath())
+			exec.Command("systemctl", "daemon-reload").Run()
+			fmt.Println("✅ Subscription service stopped, disabled, and removed.")
+		} else {
+			stopSubBackground()
+			fmt.Println("✅ Subscription server stopped (rootless).")
 		}
 	},
 }
 
 var subModeCmd = &cobra.Command{
-	Use:   "mode [fixed|ipv6-rotate]",
-	Short: "Set the managed admin subscription address strategy (STAGING)",
-	Args:  cobra.ExactArgs(1),
+	Use:   "mode",
+	Short: "Configure subscription server mode and settings (STAGING)",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
 			return
 		}
+
 		subEntry := ensureManagedSubscription(cfg)
 		ensureSubPortConfigured(cfg)
 
-		switch args[0] {
-		case "fixed":
-			cfg.AdminSub.Mode = config.AdminSubModeFixed
-			cfg.AdminSub.IPv6Rotate.Enabled = false
-			if subAddress != "" {
-				subEntry.Address = subAddress
-			}
-			if err := cfg.SaveEx(true); err == nil {
-				fmt.Println("✅ Admin subscription mode set to fixed in STAGING.")
-				fmt.Println("🚀 Run 'apply' to commit changes.")
-			}
-		case "ipv6-rotate":
-			if err := detectOrUseIPv6Settings(cfg, subIface, subSubnet, subMax, subNDP); err != nil {
-				fmt.Printf("❌ %v\n", err)
-				return
-			}
-			cfg.AdminSub.Mode = config.AdminSubModeIPv6Rotate
-			if subAddress != "" {
-				subEntry.Address = subAddress
-			}
-			if err := cfg.SaveEx(true); err == nil {
-				fmt.Printf("✅ Admin subscription mode set to ipv6-rotate in STAGING.\n📡 Subnet: %s\n🧭 Interface: %s\n", cfg.AdminSub.IPv6Rotate.Subnet, cfg.AdminSub.IPv6Rotate.Interface)
-				fmt.Println("🚀 Run 'apply' to commit changes.")
-			}
-		default:
-			fmt.Println("❌ Mode must be 'fixed' or 'ipv6-rotate'.")
-		}
-	},
-}
-
-var subSetCmd = &cobra.Command{
-	Use:   "set",
-	Short: "Update managed admin subscription settings (STAGING)",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		subEntry := ensureManagedSubscription(cfg)
 		changed := false
 
-		if cmd.Flags().Changed("address") {
-			subEntry.Address = subAddress
+		if cmd.Flags().Changed("mode") {
+			switch subModeStr {
+			case "fixed":
+				cfg.AdminSub.Mode = config.AdminSubModeFixed
+				cfg.AdminSub.IPv6Rotate.Enabled = false
+				changed = true
+			case "ipv6-rotate":
+				cfg.AdminSub.Mode = config.AdminSubModeIPv6Rotate
+				cfg.AdminSub.IPv6Rotate.Enabled = true
+				changed = true
+			default:
+				fmt.Println("❌ Mode must be 'fixed' or 'ipv6-rotate'.")
+				return
+			}
+		}
+
+		if cmd.Flags().Changed("hostname") {
+			subEntry.Address = subHostname
 			changed = true
 		}
 		if cmd.Flags().Changed("port") {
@@ -277,9 +401,38 @@ var subSetCmd = &cobra.Command{
 		}
 
 		if !changed {
-			fmt.Println("❌ No settings specified.")
+			if !cfg.AdminSub.Enabled || cfg.AdminSub.Token == "" {
+				fmt.Println("ℹ️  No managed admin subscription found. Run 'sub mode --mode fixed' or 'sub mode --mode ipv6-rotate' first.")
+				return
+			}
+			mode := currentSubMode(cfg)
+			address := subEntry.Address
+			if address == "" {
+				address = "(auto)"
+			}
+			fmt.Printf("\nAlias: %s\n", managedSubAlias)
+			fmt.Printf("Mode: %s\n", mode)
+			fmt.Printf("Port: %d\n", cfg.AdminSub.Port)
+			fmt.Printf("Hostname/Address Override: %s\n", address)
+			fmt.Printf("URL: %s\n", managedSubURL(cfg, subEntry))
+			fmt.Printf("Token Path: /sub/%s\n", subEntry.Token)
+			if mode == string(config.AdminSubModeIPv6Rotate) {
+				fmt.Printf("IPv6 Subnet: %s\n", cfg.AdminSub.IPv6Rotate.Subnet)
+				fmt.Printf("Interface: %s\n", cfg.AdminSub.IPv6Rotate.Interface)
+				fmt.Printf("Rotation Limit: %d\n", cfg.AdminSub.IPv6Rotate.MaxAddresses)
+				fmt.Printf("NDP: %v\n", cfg.AdminSub.IPv6Rotate.EnableNDP)
+			}
+			fmt.Println()
 			return
 		}
+
+		if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate {
+			if err := detectOrUseIPv6Settings(cfg, subIface, subSubnet, subMax, subNDP); err != nil {
+				fmt.Printf("❌ %v\n", err)
+				return
+			}
+		}
+
 		if err := cfg.SaveEx(true); err == nil {
 			fmt.Println("✅ Admin subscription settings updated in STAGING.")
 			fmt.Println("🚀 Run 'apply' to commit changes.")
@@ -287,44 +440,9 @@ var subSetCmd = &cobra.Command{
 	},
 }
 
-var subShowCmd = &cobra.Command{
-	Use:   "show",
-	Short: "Show the managed admin subscription summary",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		if !cfg.AdminSub.Enabled || cfg.AdminSub.Token == "" {
-			fmt.Println("ℹ️  No managed admin subscription found. Run 'sub init' first.")
-			return
-		}
-		subEntry := &cfg.AdminSub
-		mode := currentSubMode(cfg)
-		address := subEntry.Address
-		if address == "" {
-			address = "(auto)"
-		}
-		fmt.Printf("\nAlias: %s\n", managedSubAlias)
-		fmt.Printf("Mode: %s\n", mode)
-		fmt.Printf("Port: %d\n", cfg.AdminSub.Port)
-		fmt.Printf("Address Override: %s\n", address)
-		fmt.Printf("URL: %s\n", managedSubURL(cfg, subEntry))
-		fmt.Printf("Token Path: /sub/%s\n", subEntry.Token)
-		if mode == string(config.AdminSubModeIPv6Rotate) {
-			fmt.Printf("IPv6 Subnet: %s\n", cfg.AdminSub.IPv6Rotate.Subnet)
-			fmt.Printf("Interface: %s\n", cfg.AdminSub.IPv6Rotate.Interface)
-			fmt.Printf("Rotation Limit: %d\n", cfg.AdminSub.IPv6Rotate.MaxAddresses)
-			fmt.Printf("NDP: %v\n", cfg.AdminSub.IPv6Rotate.EnableNDP)
-			fmt.Println("Behavior: each subscription request rotates to a fresh IPv6 address")
-		}
-		fmt.Println()
-	},
-}
-
-var subRotateTokenCmd = &cobra.Command{
-	Use:   "rotate-token",
-	Short: "Rotate the managed admin subscription token (STAGING)",
+var subResetCmd = &cobra.Command{
+	Use:   "reset",
+	Short: "Reset subscription configuration and generate a new access token (STAGING)",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
@@ -333,131 +451,29 @@ var subRotateTokenCmd = &cobra.Command{
 		subEntry := ensureManagedSubscription(cfg)
 		subEntry.Token = utils.GenerateRandomString(24)
 		if err := cfg.SaveEx(true); err == nil {
-			fmt.Println("✅ Admin subscription token rotated in STAGING.")
+			fmt.Println("✅ Admin subscription reset/token rotated in STAGING.")
+			fmt.Printf("🔗 New Path: /sub/%s\n", subEntry.Token)
 			fmt.Println("🚀 Run 'apply' to commit changes.")
 		}
 	},
 }
 
-// --- Service Management ---
-
-func getSubServicePath() string {
-	return "/etc/systemd/system/xray-proxya-sub.service"
-}
-
-var subStartCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the subscription service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ Requires root.")
-			return
-		}
-		exec.Command("systemctl", "start", "xray-proxya-sub").Run()
-		fmt.Println("✅ Subscription service started.")
-	},
-}
-
-var subStopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the subscription service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ Requires root.")
-			return
-		}
-		exec.Command("systemctl", "stop", "xray-proxya-sub").Run()
-		fmt.Println("✅ Subscription service stopped.")
-	},
-}
-
-var subRestartCmd = &cobra.Command{
-	Use:   "restart",
-	Short: "Restart the subscription service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ Requires root.")
-			return
-		}
-		exec.Command("systemctl", "restart", "xray-proxya-sub").Run()
-		fmt.Println("✅ Subscription service restarted.")
-	},
-}
-
-var subEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Enable sub-server (Install service & autostart)",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ Requires root.")
-			return
-		}
-		binPath, _ := os.Executable()
-		home, _ := os.UserHomeDir()
-		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-			if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-				home = u.HomeDir
-			}
-		} else if os.Geteuid() == 0 {
-			home = "/root"
-		}
-		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
-		os.MkdirAll(workDir, 0700)
-		configDir := config.GetConfigDir()
-
-		content := fmt.Sprintf(`[Unit]
-Description=Xray-Proxya Subscription Server
-After=network.target xray-proxya.service
-
-[Service]
-Type=simple
-ExecStart=%s sub run
-Restart=on-failure
-WorkingDirectory=%s
-Environment=XRAY_PROXYA_CONFIG_DIR=%s
-
-[Install]
-WantedBy=multi-user.target
-`, binPath, workDir, configDir)
-
-		os.WriteFile(getSubServicePath(), []byte(content), 0644)
-		exec.Command("systemctl", "daemon-reload").Run()
-		exec.Command("systemctl", "enable", "xray-proxya-sub").Run()
-		fmt.Println("✅ Subscription service enabled and installed.")
-	},
-}
-
-var subDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Disable sub-server (Uninstall service)",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ Requires root.")
-			return
-		}
-		exec.Command("systemctl", "stop", "xray-proxya-sub").Run()
-		exec.Command("systemctl", "disable", "xray-proxya-sub").Run()
-		os.Remove(getSubServicePath())
-		exec.Command("systemctl", "daemon-reload").Run()
-		fmt.Println("✅ Subscription service disabled and removed.")
-	},
-}
-
 var subRunCmd = &cobra.Command{
-	Use:   "run",
-	Short: "Run the subscription HTTPS server in foreground (Requires Root)",
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ IPv6 Rolling Pool requires root privileges.")
-			os.Exit(1)
-		}
-	},
+	Use:    "run",
+	Short:  "Run the subscription HTTPS server in foreground (Requires Root for IPv6 rotate)",
+	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			fmt.Printf("❌ Failed to load config: %v\n", err)
 			os.Exit(1)
 		}
+
+		if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate && !utils.IsRoot() {
+			fmt.Println("❌ IPv6 Rolling Pool requires root privileges.")
+			os.Exit(1)
+		}
+
 		adminPort := subPort
 		if !cmd.Flags().Changed("port") && cfg.AdminSub.Port > 0 {
 			adminPort = cfg.AdminSub.Port
@@ -465,7 +481,11 @@ var subRunCmd = &cobra.Command{
 			adminPort = cfg.SubPort
 		}
 
-		// v0.2.4: Explicitly audit and persist ONLY during RUN
+		if adminPort > 0 && adminPort <= 1024 && !utils.IsRoot() {
+			fmt.Println("❌ Listening on ports <= 1024 requires root privileges.")
+			os.Exit(1)
+		}
+
 		if adminPort > 0 && !utils.IsPortFree(adminPort) {
 			p, _ := xray.GetFreePort()
 			fmt.Printf("⚠️  Warning: Subscription Port %d occupied, using %d\n", adminPort, p)
@@ -485,118 +505,24 @@ var subRunCmd = &cobra.Command{
 		}
 
 		if err := sub.StartSubServer(adminPort, cfg.GuestSubBind, guestPort); err != nil {
-
 			fmt.Printf("❌ Failed: %v\n", err)
 		}
 	},
 }
 
-// --- Link Management (Remains same) ---
-
-var subGenCmd = &cobra.Command{
-	Use:   "gen [alias]",
-	Short: "Generate a subscription link (STAGING)",
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		alias := ""
-		if len(args) > 0 {
-			alias = args[0]
-		}
-		cfg, _ := config.LoadConfigEx(true)
-		targetType := "direct"
-		targetAlias := ""
-		targetRelay := subRelay
-		if targetRelay == "" {
-			targetRelay = subOutbound
-		}
-		if targetRelay != "" {
-			targetType = "outbound"
-			targetAlias = targetRelay
-		} else if subGuest != "" {
-			targetType = "guest"
-			targetAlias = subGuest
-		}
-
-		foundIdx := -1
-		for i, s := range cfg.Subscriptions {
-			if s.Alias == alias {
-				foundIdx = i
-				break
-			}
-		}
-
-		newToken := utils.GenerateRandomString(8)
-		newSub := config.Subscription{Alias: alias, TargetType: targetType, TargetAlias: targetAlias, Address: subAddress, Token: newToken}
-
-		if foundIdx != -1 {
-			cfg.Subscriptions[foundIdx] = newSub
-		} else {
-			cfg.Subscriptions = append(cfg.Subscriptions, newSub)
-		}
-
-		if err := cfg.SaveEx(true); err == nil {
-			fmt.Printf("✅ Subscription '%s' generated in STAGING.\n🔗 Path: /sub/%s\n", alias, newToken)
-			fmt.Println("🚀 Run 'apply' to commit changes.")
-		}
-	},
-}
-
-var subDelCmd = &cobra.Command{
-	Use:   "del [alias]",
-	Short: "Delete a subscription link (STAGING)",
-	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if subAll {
-			cfg.Subscriptions = nil
-			cfg.SaveEx(true)
-			return
-		}
-		alias := ""
-		if len(args) > 0 {
-			alias = args[0]
-		}
-		var newSubs []config.Subscription
-		found := false
-		for _, s := range cfg.Subscriptions {
-			if s.Alias == alias {
-				found = true
-				continue
-			}
-			newSubs = append(newSubs, s)
-		}
-		if found {
-			cfg.Subscriptions = newSubs
-			cfg.SaveEx(true)
-			fmt.Printf("✅ Deleted '%s' from STAGING.\n", alias)
-		}
-	},
-}
-
 func init() {
-	subGenCmd.Flags().StringVarP(&subRelay, "relay", "r", "", "Target relay node alias")
-	subGenCmd.Flags().StringVarP(&subOutbound, "outbound", "o", "", "Target custom outbound alias (deprecated)")
-	subGenCmd.Flags().MarkHidden("outbound")
-	subGenCmd.Flags().StringVarP(&subGuest, "guest", "g", "", "Target guest alias")
-	subGenCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override address in links")
-	subInitCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override address/hostname in the managed admin subscription")
-	subModeCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override address/hostname in the managed admin subscription")
+	subModeCmd.Flags().StringVarP(&subModeStr, "mode", "m", "", "Subscription server mode ('fixed' or 'ipv6-rotate')")
+	subModeCmd.Flags().StringVarP(&subHostname, "hostname", "H", "", "Override external domain/hostname in subscription links")
+	subModeCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTPS port")
 	subModeCmd.Flags().StringVarP(&subIface, "interface", "i", "", "IPv6 interface for rotate mode")
 	subModeCmd.Flags().StringVar(&subSubnet, "subnet", "", "IPv6 subnet for rotate mode")
-	subModeCmd.Flags().IntVarP(&subMax, "max", "m", 6, "Max active rotated IPv6 addresses")
+	subModeCmd.Flags().IntVar(&subMax, "max", 0, "Max active rotated IPv6 addresses")
 	subModeCmd.Flags().BoolVarP(&subNDP, "ndp", "n", true, "Enable NDP while rotating IPv6 addresses")
-	subSetCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Override address/hostname in the managed admin subscription")
-	subSetCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Managed admin subscription HTTPS port")
-	subSetCmd.Flags().StringVarP(&subIface, "interface", "i", "", "IPv6 interface for rotate mode")
-	subSetCmd.Flags().StringVar(&subSubnet, "subnet", "", "IPv6 subnet for rotate mode")
-	subSetCmd.Flags().IntVarP(&subMax, "max", "m", 0, "Max active rotated IPv6 addresses")
-	subSetCmd.Flags().BoolVarP(&subNDP, "ndp", "n", true, "Enable NDP while rotating IPv6 addresses")
 
-	subDelCmd.Flags().BoolVarP(&subAll, "all", "A", false, "Delete all subscriptions")
-	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTPS port")
 	subModeCmd.RegisterFlagCompletionFunc("interface", completeNetworkInterfaces)
-	subSetCmd.RegisterFlagCompletionFunc("interface", completeNetworkInterfaces)
 
-	subCmd.AddCommand(subInitCmd, subModeCmd, subSetCmd, subShowCmd, subRotateTokenCmd, subGenCmd, subDelCmd, subRunCmd, subStartCmd, subStopCmd, subRestartCmd, subEnableCmd, subDisableCmd)
+	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTPS port")
+
+	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subResetCmd, subRunCmd)
 	rootCmd.AddCommand(subCmd)
 }

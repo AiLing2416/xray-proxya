@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildSystemdServiceContentIncludesUnifiedLogPath(t *testing.T) {
-	content := buildSystemdServiceContent("/usr/local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya/xray.log")
+	content := buildSystemdServiceContent("/usr/local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya/xray.log", "/root/.config/xray-proxya")
 	if !strings.Contains(content, "StandardOutput=append:/root/.config/xray-proxya/xray.log") {
 		t.Fatalf("systemd content missing StandardOutput append path:\n%s", content)
 	}
