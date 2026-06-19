@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -14,6 +15,12 @@ import (
 var serviceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Manage background service (Systemd/OpenRC for Root, Nohup for Rootless)",
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
+			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
+			os.Exit(1)
+		}
+	},
 }
 
 func getSystemdPath() string {

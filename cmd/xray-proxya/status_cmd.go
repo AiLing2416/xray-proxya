@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/trafficstats"
@@ -15,6 +16,11 @@ var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show Xray core status and detailed traffic stats",
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
+			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
+			os.Exit(1)
+		}
+
 		active, pid := xray.GetXrayStatus()
 		if !active {
 			fmt.Println("❌ Xray Core: Inactive")

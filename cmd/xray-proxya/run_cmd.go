@@ -28,10 +28,14 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run Xray core in foreground",
 	Run: func(cmd *cobra.Command, args []string) {
+		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
+			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
+			os.Exit(1)
+		}
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			fmt.Println("❌ Failed to load config. Please run 'init' first.")
-			return
+			fmt.Printf("❌ Failed to load config: %v\n", err)
+			os.Exit(1)
 		}
 
 		// v0.2.4 Port Policy:
