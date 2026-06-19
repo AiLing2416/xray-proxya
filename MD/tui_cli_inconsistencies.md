@@ -10,11 +10,11 @@
 * **JSON 配置文件**：底层结构体中的字段为 `CustomOutbounds`（在 `config.json` 中表现为 `custom_outbounds`）。
 * **后果**：用户在界面中配置的是“Relays”，但在通过命令行调试或直接编辑配置文件时却需要使用“outbound”。
 
-### 2. 预设入口命名不一致（Presets vs ActiveModes）
+### 2. 预设入口命名不一致（Presets vs Presets）
 * **TUI 界面**：侧边栏标签及展示页面显示为 **`PRESETS`**（预设）。
 * **CLI 命令行**：对应命令为 `xray-proxya presets`（如 `presets list`、`presets set`）。
-* **JSON 配置文件**：底层结构体字段为 `ActiveModes`（在 `config.json` 中表现为 `active_modes`）。
-* **后果**：相同的概念在 TUI、CLI 和配置文件中分别使用了三个不同的单词（Presets / presets / active_modes），增加了新用户的理解成本。
+* **JSON 配置文件**：底层结构体字段为 `Presets`（在 `config.json` 中表现为 `presets`）。
+* **后果**：相同的概念在 TUI、CLI 和配置文件中分别使用了三个不同的单词（Presets / presets / presets），增加了新用户的理解成本。
 
 ### 3. 状态主页命名不同步（HOME vs Status）
 * **TUI 界面**：侧边栏的第一个标签页命名为 **`HOME`**，但代码内部枚举是 `tabStatus`，渲染函数是 `RenderStatus`。

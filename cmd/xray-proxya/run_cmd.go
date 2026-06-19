@@ -60,9 +60,9 @@ var runCmd = &cobra.Command{
 		}
 
 		auditPort("API", &cfg.APIInbound)
-		for i := range cfg.ActiveModes {
-			if cfg.ActiveModes[i].Enabled {
-				auditPort(string(cfg.ActiveModes[i].Mode), &cfg.ActiveModes[i].Port)
+		for i := range cfg.Presets {
+			if cfg.Presets[i].Enabled {
+				auditPort(string(cfg.Presets[i].Mode), &cfg.Presets[i].Port)
 			}
 		}
 
@@ -73,7 +73,7 @@ var runCmd = &cobra.Command{
 		// Camouflage Setup
 		camoPort := 0
 		hasSkin := false
-		for _, m := range cfg.ActiveModes {
+		for _, m := range cfg.Presets {
 			if m.Enabled && m.Skin {
 				hasSkin = true
 				break
@@ -90,7 +90,7 @@ var runCmd = &cobra.Command{
 				fmt.Printf("⚠️  Failed to generate camouflage certs: %v\n", err)
 			}
 
-			camoMgr := camouflage.NewManager(cfg.ActiveModes)
+			camoMgr := camouflage.NewManager(cfg.Presets)
 			go func() {
 				if err := http.ListenAndServeTLS(fmt.Sprintf("127.0.0.1:%d", camoPort), certPath, keyPath, camoMgr); err != nil {
 					fmt.Printf("⚠️  Camouflage server error: %v\n", err)

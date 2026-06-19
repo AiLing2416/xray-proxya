@@ -14,25 +14,25 @@ var (
 )
 
 func RenderPresets(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int) string {
-	if staging == nil || len(staging.ActiveModes) == 0 {
+	if staging == nil || len(staging.Presets) == 0 {
 		return "No presets found. Run 'init' first."
 	}
 
 	headers := []string{"  ", "PRESETS", "PORT", "NET", "SECURITY", "STATUS"}
-	rows := make([][]string, 0, len(staging.ActiveModes))
-	disabled := make([]bool, 0, len(staging.ActiveModes))
+	rows := make([][]string, 0, len(staging.Presets))
+	disabled := make([]bool, 0, len(staging.Presets))
 
-	for i, m := range staging.ActiveModes {
+	for i, m := range staging.Presets {
 		indicator := "   "
 		isMod := false
-		if m.RegenFlag { indicator = "[R]" } else if active != nil && i < len(active.ActiveModes) {
-			a := active.ActiveModes[i]
+		if m.RegenFlag { indicator = "[R]" } else if active != nil && i < len(active.Presets) {
+			a := active.Presets[i]
 			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Enabled != a.Enabled { isMod = true }
 		} else if active == nil { isMod = true }
 		if isMod && !m.RegenFlag { indicator = "[*]" }
 
 		status := "UP"
-		if !m.Enabled || isMod { status = "DOWN" } else if active == nil || i >= len(active.ActiveModes) || !active.ActiveModes[i].Enabled {
+		if !m.Enabled || isMod { status = "DOWN" } else if active == nil || i >= len(active.Presets) || !active.Presets[i].Enabled {
 			status = "DOWN"
 		}
 

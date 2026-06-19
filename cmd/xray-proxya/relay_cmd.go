@@ -526,7 +526,7 @@ var infoOutboundCmd = &cobra.Command{
 
 		// v0.2.4: Randomize all active presets to avoid "device busy" during info test
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-		for _, m := range testCfg.ActiveModes {
+		for _, m := range testCfg.Presets {
 			if m.Enabled {
 				p, _ := xray.GetFreePort()
 				overrides[string(m.Mode)] = p
@@ -845,7 +845,7 @@ without changing the running service.
 		apiPort, _ := xray.GetFreePort()
 		dnsPort, _ := xray.GetFreePort()
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
-		for _, m := range testCfg.ActiveModes {
+		for _, m := range testCfg.Presets {
 			if m.Enabled {
 				p, _ := xray.GetFreePort()
 				overrides[string(m.Mode)] = p
@@ -1030,7 +1030,7 @@ func startIsolatedOutboundInstance(cfg *config.UserConfig, alias string) (*http.
 	testCfg.Gateway = config.GatewayConfig{}
 
 	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-	for _, m := range testCfg.ActiveModes {
+	for _, m := range testCfg.Presets {
 		if m.Enabled {
 			p, _ := xray.GetFreePort()
 			overrides[string(m.Mode)] = p

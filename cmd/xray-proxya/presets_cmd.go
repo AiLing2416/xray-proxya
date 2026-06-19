@@ -40,7 +40,7 @@ var presetsListCmd = &cobra.Command{
 
 		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-6s | %-s\n", "ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SKIN", "SNI/PATH")
 		fmt.Println("------------------------------------------------------------------------------------------------")
-		for i, mode := range cfg.ActiveModes {
+		for i, mode := range cfg.Presets {
 			status := "OFF"
 			if mode.Enabled {
 				status = "ON"
@@ -97,13 +97,13 @@ Smart Mirroring (Skin) highlights:
 		if cfg == nil {
 			return
 		}
-		if id < 1 || id > len(cfg.ActiveModes) {
+		if id < 1 || id > len(cfg.Presets) {
 			fmt.Printf("❌ Invalid ID: %d\n", id)
 			return
 		}
 
 		idx := id - 1
-		m := &cfg.ActiveModes[idx]
+		m := &cfg.Presets[idx]
 
 		if presetOff {
 			m.Enabled = false
@@ -156,8 +156,8 @@ func getPresetIDs() []string {
 	if cfg == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(cfg.ActiveModes))
-	for i := range cfg.ActiveModes {
+	ids := make([]string, 0, len(cfg.Presets))
+	for i := range cfg.Presets {
 		ids = append(ids, strconv.Itoa(i+1))
 	}
 	return ids

@@ -285,7 +285,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			max := 0
 			if m.staging != nil {
 				if m.currentTab == tabPresets {
-					max = len(m.staging.ActiveModes) - 1
+					max = len(m.staging.Presets) - 1
 				}
 				if m.currentTab == tabRelays {
 					max = len(m.staging.CustomOutbounds) - 1
@@ -360,7 +360,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "+", "=":
 			if m.currentTab == tabPresets && m.staging != nil {
-				m.staging.ActiveModes[m.cursor].Enabled = true
+				m.staging.Presets[m.cursor].Enabled = true
 				m.staging.SaveEx(true)
 				m.statusNote = "preset enabled"
 			}
@@ -378,7 +378,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "-":
 			if m.currentTab == tabPresets && m.staging != nil {
-				m.staging.ActiveModes[m.cursor].Enabled = false
+				m.staging.Presets[m.cursor].Enabled = false
 				m.staging.SaveEx(true)
 				m.statusNote = "preset disabled"
 			}
@@ -454,8 +454,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.serviceView = serviceDetailRuntime
 				return m, runServiceAction("restart", "restart")
 			}
-			if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
-				m.staging.ActiveModes[m.cursor].RegenFlag = !m.staging.ActiveModes[m.cursor].RegenFlag
+			if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.Presets) {
+				m.staging.Presets[m.cursor].RegenFlag = !m.staging.Presets[m.cursor].RegenFlag
 				m.staging.SaveEx(true)
 				m.statusNote = "regen flag toggled"
 			} else if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
@@ -504,13 +504,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.portBuffer = m.portBuffer[:len(m.portBuffer)-1]
 				var port int
 				fmt.Sscanf(m.portBuffer, "%d", &port)
-				m.staging.ActiveModes[m.cursor].Port = port
+				m.staging.Presets[m.cursor].Port = port
 				m.staging.SaveEx(true)
 				m.statusNote = fmt.Sprintf("port => %d", port)
 			}
 		case "delete":
 			if m.currentTab == tabPresets {
-				m.portBuffer, m.staging.ActiveModes[m.cursor].Port = "", 0
+				m.portBuffer, m.staging.Presets[m.cursor].Port = "", 0
 				m.staging.SaveEx(true)
 				m.statusNote = "port cleared"
 			}
@@ -578,7 +578,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.portBuffer += s
 				var port int
 				fmt.Sscanf(m.portBuffer, "%d", &port)
-				m.staging.ActiveModes[m.cursor].Port = port
+				m.staging.Presets[m.cursor].Port = port
 				m.staging.SaveEx(true)
 				m.statusNote = fmt.Sprintf("port => %d", port)
 			}
@@ -659,12 +659,12 @@ func (m Model) getSelectedDetailContent() string {
 	if m.useLocalIP {
 		ip = m.localIP
 	}
-	if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.ActiveModes) {
+	if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.Presets) {
 		idx := m.cursor
-		m1 := m.staging.ActiveModes[idx]
+		m1 := m.staging.Presets[idx]
 		isMod := m1.RegenFlag
-		if !isMod && m.active != nil && idx < len(m.active.ActiveModes) {
-			a := m.active.ActiveModes[idx]
+		if !isMod && m.active != nil && idx < len(m.active.Presets) {
+			a := m.active.Presets[idx]
 			if m1.Port != a.Port || m1.Path != a.Path || m1.SNI != a.SNI || m1.Enabled != a.Enabled {
 				isMod = true
 			}
@@ -673,7 +673,7 @@ func (m Model) getSelectedDetailContent() string {
 			return "[A] apply changes to regenerate link"
 		}
 		tempCfg := *m.staging
-		tempCfg.ActiveModes = []config.ModeInfo{m1}
+		tempCfg.Presets = []config.ModeInfo{m1}
 		links := xray.GenerateLinks(&tempCfg, ip)
 		if len(links) > 0 {
 			return links[0]
@@ -1040,16 +1040,16 @@ func (m Model) currentPresetLinks() string {
 	if m.staging == nil {
 		return ""
 	}
-	if m.cursor < 0 || m.cursor >= len(m.staging.ActiveModes) {
+	if m.cursor < 0 || m.cursor >= len(m.staging.Presets) {
 		return ""
 	}
 	ip := m.cachedIP
 	if m.useLocalIP {
 		ip = m.localIP
 	}
-	mode := m.staging.ActiveModes[m.cursor]
+	mode := m.staging.Presets[m.cursor]
 	tempCfg := *m.staging
-	tempCfg.ActiveModes = []config.ModeInfo{mode}
+	tempCfg.Presets = []config.ModeInfo{mode}
 	links := xray.GenerateLinks(&tempCfg, ip)
 	if len(links) == 0 {
 		return ""

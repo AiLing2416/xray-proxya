@@ -174,7 +174,7 @@ func orderedInboundRows(cfg *config.UserConfig, stats map[string]int64) []namedS
 	rows := make([]namedStatRow, 0, len(stats))
 	seen := make(map[string]bool, len(stats))
 	if cfg != nil {
-		for _, mode := range cfg.ActiveModes {
+		for _, mode := range cfg.Presets {
 			if !mode.Enabled {
 				continue
 			}

@@ -61,7 +61,7 @@ func ApplyPending(opts Options) ([]string, error) {
 		testSocksPort, _ := xray.GetFreePort()
 		apiPort, _ := xray.GetFreePort()
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "gateway-tun-disabled": 1}
-		for _, m := range cfg.ActiveModes {
+		for _, m := range cfg.Presets {
 			if m.Enabled {
 				p, _ := xray.GetFreePort()
 				overrides[string(m.Mode)] = p
@@ -170,10 +170,10 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.XrayConfigChanged = true
 		mark("test_inbound")
 	}
-	if !reflect.DeepEqual(activeCfg.ActiveModes, stagingCfg.ActiveModes) {
+	if !reflect.DeepEqual(activeCfg.Presets, stagingCfg.Presets) {
 		impact.XrayConfigChanged = true
 		impact.SubContentChanged = true
-		mark("active_modes")
+		mark("presets")
 	}
 	if !reflect.DeepEqual(activeCfg.CustomOutbounds, stagingCfg.CustomOutbounds) {
 		impact.XrayConfigChanged = true

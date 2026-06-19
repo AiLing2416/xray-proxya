@@ -57,7 +57,7 @@ func TestGuestSubHandlerReturnsAnnotatedSubscription(t *testing.T) {
 		Role:         config.RoleServer,
 		UUID:         "server-uuid",
 		GuestSubBind: "127.0.0.1",
-		ActiveModes: []config.ModeInfo{{
+		Presets: []config.ModeInfo{{
 			Mode:    config.ModeVLESSVision,
 			Enabled: true,
 			Port:    443,
@@ -131,7 +131,7 @@ func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
 			Address:    "sub.example.com",
 			TargetType: "direct",
 		},
-		ActiveModes: []config.ModeInfo{{
+		Presets: []config.ModeInfo{{
 			Mode:    config.ModeVLESSVision,
 			Enabled: true,
 			Port:    443,

@@ -259,7 +259,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		)
 	}
 
-	for _, m := range userCfg.ActiveModes {
+	for _, m := range userCfg.Presets {
 		if !m.Enabled {
 			continue
 		}

@@ -109,7 +109,7 @@ var initCmd = &cobra.Command{
 			case config.ModeShadowsocksTCP:
 				m.Settings.Cipher, m.Settings.Password = "aes-256-gcm", utils.GenerateRandomString(16)
 			}
-			cfg.ActiveModes = append(cfg.ActiveModes, m)
+			cfg.Presets = append(cfg.Presets, m)
 		}
 
 		if err := cfg.SaveEx(true); err != nil {

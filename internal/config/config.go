@@ -39,7 +39,7 @@ type UserConfig struct {
 	UUID            string           `json:"uuid"`
 	APIInbound      int              `json:"api_inbound"`
 	TestInbound     int              `json:"test_inbound"`
-	ActiveModes     []ModeInfo       `json:"active_modes"`
+	Presets     []ModeInfo       `json:"presets"`
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
@@ -49,6 +49,23 @@ type UserConfig struct {
 	GuestSubPort    int              `json:"guest_sub_port,omitempty"`
 	GuestSubBind    string           `json:"guest_sub_bind,omitempty"`
 	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
+}
+
+func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
+	type Alias UserConfig
+	aux := &struct {
+		ActiveModes []ModeInfo `json:"active_modes"`
+		*Alias
+	}{
+		Alias: (*Alias)(cfg),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(aux.ActiveModes) > 0 && len(cfg.Presets) == 0 {
+		cfg.Presets = aux.ActiveModes
+	}
+	return nil
 }
 
 type AdminSubMode string
@@ -155,7 +172,7 @@ func (cfg *UserConfig) Normalize() {
 	newModes := make([]ModeInfo, 0, len(PresetOrder))
 	for _, target := range PresetOrder {
 		found := false
-		for _, m := range cfg.ActiveModes {
+		for _, m := range cfg.Presets {
 			if m.Mode == target {
 				newModes = append(newModes, m)
 				found = true
@@ -166,7 +183,7 @@ func (cfg *UserConfig) Normalize() {
 			newModes = append(newModes, ModeInfo{Mode: target, Enabled: false})
 		}
 	}
-	cfg.ActiveModes = newModes
+	cfg.Presets = newModes
 }
 
 func randomHexString(length int) string {
@@ -238,9 +255,9 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		cfg.UUID = randomHexString(32)
 		changes = append(changes, "generated missing service UUID")
 	}
-	if cfg.ActiveModes == nil {
-		cfg.ActiveModes = []ModeInfo{}
-		changes = append(changes, "initialized active_modes")
+	if cfg.Presets == nil {
+		cfg.Presets = []ModeInfo{}
+		changes = append(changes, "initialized presets")
 	}
 	if cfg.CustomOutbounds == nil {
 		cfg.CustomOutbounds = []CustomOutbound{}
@@ -423,10 +440,10 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		}
 	}
 
-	beforeModes := len(cfg.ActiveModes)
+	beforeModes := len(cfg.Presets)
 	cfg.Normalize()
-	if cfg.Role == RoleServer && len(cfg.ActiveModes) != beforeModes {
-		changes = append(changes, "completed active_modes to current preset set")
+	if cfg.Role == RoleServer && len(cfg.Presets) != beforeModes {
+		changes = append(changes, "completed presets to current preset set")
 	}
 
 	return changes

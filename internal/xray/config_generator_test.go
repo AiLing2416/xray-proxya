@@ -293,7 +293,7 @@ func TestGenerateXrayJSONUsesConfiguredTestInboundPort(t *testing.T) {
 func TestGenerateXrayJSONSkipsDisabledGuests(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
-		ActiveModes: []config.ModeInfo{
+		Presets: []config.ModeInfo{
 			{
 				Mode:    config.ModeVLESSVision,
 				Enabled: true,
@@ -400,7 +400,7 @@ func TestGenerateXrayJSONOutboundSetDNSOverrides(t *testing.T) {
 func TestGenerateXrayJSONCamouflageSkinning(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
-		ActiveModes: []config.ModeInfo{
+		Presets: []config.ModeInfo{
 			{
 				Mode:    config.ModeVLESSVision,
 				Enabled: true,

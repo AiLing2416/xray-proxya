@@ -45,7 +45,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 
 	for _, targetMode := range order {
 		var mode *config.ModeInfo
-		for _, m := range cfg.ActiveModes {
+		for _, m := range cfg.Presets {
 			if m.Mode == targetMode {
 				mode = &m
 				break

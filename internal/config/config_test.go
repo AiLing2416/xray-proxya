@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestBackfillDefaultsPopulatesMissingFields(t *testing.T) {
 	cfg := &UserConfig{
@@ -50,8 +53,8 @@ func TestBackfillDefaultsPopulatesMissingFields(t *testing.T) {
 	if cfg.Gateway.Blacklist == nil || cfg.Gateway.BlacklistIPs == nil {
 		t.Fatalf("Gateway blacklist slices were not initialized")
 	}
-	if len(cfg.ActiveModes) != len(PresetOrder) {
-		t.Fatalf("len(ActiveModes) = %d, want %d", len(cfg.ActiveModes), len(PresetOrder))
+	if len(cfg.Presets) != len(PresetOrder) {
+		t.Fatalf("len(Presets) = %d, want %d", len(cfg.Presets), len(PresetOrder))
 	}
 }
 
@@ -66,8 +69,8 @@ func TestBackfillDefaultsGatewayMode(t *testing.T) {
 	if cfg.Gateway.Mode != "tun" {
 		t.Fatalf("Gateway.Mode = %q, want tun", cfg.Gateway.Mode)
 	}
-	if len(cfg.ActiveModes) != 0 {
-		t.Fatalf("gateway config should not auto-expand active modes; got %d", len(cfg.ActiveModes))
+	if len(cfg.Presets) != 0 {
+		t.Fatalf("gateway config should not auto-expand active modes; got %d", len(cfg.Presets))
 	}
 }
 
@@ -130,5 +133,24 @@ func TestBackfillDefaultsMigratesLegacyAdminSubscription(t *testing.T) {
 	}
 	if len(cfg.Subscriptions) != 0 {
 		t.Fatalf("expected legacy managed subscription to be removed from subscriptions, got %d", len(cfg.Subscriptions))
+	}
+}
+
+func TestUserConfigUnmarshalLegacyActiveModes(t *testing.T) {
+	jsonData := []byte(`{
+		"role": "server",
+		"active_modes": [
+			{"mode": "vless-vision-reality-tcp", "enabled": true, "port": 443}
+		]
+	}`)
+	var cfg UserConfig
+	if err := json.Unmarshal(jsonData, &cfg); err != nil {
+		t.Fatalf("Unmarshal failed: %v", err)
+	}
+	if len(cfg.Presets) != 1 {
+		t.Fatalf("expected 1 preset, got %d", len(cfg.Presets))
+	}
+	if cfg.Presets[0].Mode != ModeVLESSVision {
+		t.Fatalf("expected mode %q, got %q", ModeVLESSVision, cfg.Presets[0].Mode)
 	}
 }

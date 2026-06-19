@@ -9,11 +9,11 @@ import (
 // RegenerateMarkedModes refreshes secrets or paths for any preset with RegenFlag set.
 // It mutates cfg in place and clears RegenFlag after regeneration succeeds.
 func RegenerateMarkedModes(cfg *config.UserConfig) error {
-	for i := range cfg.ActiveModes {
-		if !cfg.ActiveModes[i].RegenFlag {
+	for i := range cfg.Presets {
+		if !cfg.Presets[i].RegenFlag {
 			continue
 		}
-		mode := &cfg.ActiveModes[i]
+		mode := &cfg.Presets[i]
 
 		switch mode.Mode {
 		case config.ModeVLESSVision:
