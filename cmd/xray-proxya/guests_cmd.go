@@ -123,9 +123,9 @@ func guestSubURL(host string, port int, token string) string {
 		host = "127.0.0.1"
 	}
 	if _, _, err := net.SplitHostPort(host); err == nil {
-		return fmt.Sprintf("https://%s/guest-sub/%s", host, token)
+		return fmt.Sprintf("http://%s/guest-sub/%s", host, token)
 	}
-	return fmt.Sprintf("https://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
+	return fmt.Sprintf("http://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
 }
 
 var guestsListCmd = &cobra.Command{

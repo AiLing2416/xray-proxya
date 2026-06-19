@@ -26,6 +26,11 @@ var (
 	subSubnet   string
 	subMax      int
 	subNDP      bool
+
+	subShowGuest  string
+	subShowRelay  string
+	subResetGuest string
+	subResetRelay string
 )
 
 var subCmd = &cobra.Command{
@@ -137,6 +142,32 @@ func managedSubURL(cfg *config.UserConfig, subEntry *config.AdminSubConfig) stri
 	return fmt.Sprintf("http://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.AdminSub.Port)), subEntry.Token)
 }
 
+func subGuestSubURL(cfg *config.UserConfig, token string) string {
+	host := strings.TrimSpace(cfg.AdminSub.Address)
+	if host == "" {
+		host = utils.GetSmartIP(false)
+	}
+	port := cfg.GuestSubPort
+	if port <= 0 {
+		port = cfg.AdminSub.Port
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return fmt.Sprintf("http://%s/guest-sub/%s", host, token)
+	}
+	return fmt.Sprintf("http://%s/guest-sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", port)), token)
+}
+
+func customSubURL(cfg *config.UserConfig, token string) string {
+	host := strings.TrimSpace(cfg.AdminSub.Address)
+	if host == "" {
+		host = utils.GetSmartIP(false)
+	}
+	if _, _, err := net.SplitHostPort(host); err == nil {
+		return fmt.Sprintf("http://%s/sub/%s", host, token)
+	}
+	return fmt.Sprintf("http://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", cfg.AdminSub.Port)), token)
+}
+
 func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -149,6 +180,61 @@ func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete str
 		}
 	}
 	return names, cobra.ShellCompDirectiveNoFileComp
+}
+
+func reconcileSubscriptions(cfg *config.UserConfig) bool {
+	changed := false
+
+	// 1. Reconcile Guest tokens
+	for i := range cfg.Guests {
+		if cfg.Guests[i].SubToken == "" {
+			cfg.Guests[i].SubToken = utils.GenerateRandomString(24)
+			changed = true
+		}
+	}
+
+	// 2. Reconcile Relay (Outbound) subscriptions
+	activeRelays := make(map[string]bool)
+	for _, r := range cfg.CustomOutbounds {
+		activeRelays[r.Alias] = true
+	}
+
+	// Remove custom subs for deleted relays
+	var newSubs []config.Subscription
+	for _, s := range cfg.Subscriptions {
+		if s.TargetType == "outbound" {
+			if activeRelays[s.TargetAlias] {
+				newSubs = append(newSubs, s)
+			} else {
+				changed = true
+			}
+		} else {
+			newSubs = append(newSubs, s)
+		}
+	}
+
+	// Add missing custom subs for active relays
+	for alias := range activeRelays {
+		found := false
+		for _, s := range newSubs {
+			if s.TargetType == "outbound" && s.TargetAlias == alias {
+				found = true
+				break
+			}
+		}
+		if !found {
+			newSubs = append(newSubs, config.Subscription{
+				Alias:       alias,
+				TargetType:  "outbound",
+				TargetAlias: alias,
+				Token:       utils.GenerateRandomString(24),
+			})
+			changed = true
+		}
+	}
+	cfg.Subscriptions = newSubs
+
+	return changed
 }
 
 // --- Service Management ---
@@ -176,11 +262,9 @@ func getSubStatus() (bool, int) {
 	if pid <= 0 {
 		return false, 0
 	}
-	// Check if process exists
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
 		return false, 0
 	}
-	// Verify identity
 	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	if err == nil {
 		base := filepath.Base(exePath)
@@ -278,6 +362,13 @@ var subEnableCmd = &cobra.Command{
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
 			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 			return
+		}
+
+		cfg, _ := config.LoadConfig()
+		if cfg != nil {
+			if reconcileSubscriptions(cfg) {
+				cfg.Save()
+			}
 		}
 
 		if utils.IsRoot() {
@@ -401,28 +492,7 @@ var subModeCmd = &cobra.Command{
 		}
 
 		if !changed {
-			if !cfg.AdminSub.Enabled || cfg.AdminSub.Token == "" {
-				fmt.Println("ℹ️  No managed admin subscription found. Run 'sub mode --mode fixed' or 'sub mode --mode ipv6-rotate' first.")
-				return
-			}
-			mode := currentSubMode(cfg)
-			address := subEntry.Address
-			if address == "" {
-				address = "(auto)"
-			}
-			fmt.Printf("\nAlias: %s\n", managedSubAlias)
-			fmt.Printf("Mode: %s\n", mode)
-			fmt.Printf("Port: %d\n", cfg.AdminSub.Port)
-			fmt.Printf("Hostname/Address Override: %s\n", address)
-			fmt.Printf("URL: %s\n", managedSubURL(cfg, subEntry))
-			fmt.Printf("Token Path: /sub/%s\n", subEntry.Token)
-			if mode == string(config.AdminSubModeIPv6Rotate) {
-				fmt.Printf("IPv6 Subnet: %s\n", cfg.AdminSub.IPv6Rotate.Subnet)
-				fmt.Printf("Interface: %s\n", cfg.AdminSub.IPv6Rotate.Interface)
-				fmt.Printf("Rotation Limit: %d\n", cfg.AdminSub.IPv6Rotate.MaxAddresses)
-				fmt.Printf("NDP: %v\n", cfg.AdminSub.IPv6Rotate.EnableNDP)
-			}
-			fmt.Println()
+			subShowCmd.Run(cmd, args)
 			return
 		}
 
@@ -440,6 +510,136 @@ var subModeCmd = &cobra.Command{
 	},
 }
 
+var subShowCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Show subscription URLs and details",
+	Run: func(cmd *cobra.Command, args []string) {
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return
+		}
+
+		if reconcileSubscriptions(cfg) {
+			cfg.SaveEx(true)
+		}
+
+		guestFlagPassed := cmd.Flags().Changed("guest")
+		relayFlagPassed := cmd.Flags().Changed("relay")
+
+		if !guestFlagPassed && !relayFlagPassed {
+			if cfg.AdminSub.Enabled && cfg.AdminSub.Token != "" {
+				subEntry := &cfg.AdminSub
+				mode := currentSubMode(cfg)
+				address := subEntry.Address
+				if address == "" {
+					address = "(auto)"
+				}
+				fmt.Printf("\n--- Admin Subscription ---\n")
+				fmt.Printf("Alias: %s\n", managedSubAlias)
+				fmt.Printf("Mode: %s\n", mode)
+				fmt.Printf("Port: %d\n", cfg.AdminSub.Port)
+				fmt.Printf("Hostname/Address Override: %s\n", address)
+				fmt.Printf("URL: %s\n", managedSubURL(cfg, subEntry))
+				fmt.Printf("Token Path: /sub/%s\n", subEntry.Token)
+				if mode == string(config.AdminSubModeIPv6Rotate) {
+					fmt.Printf("IPv6 Subnet: %s\n", cfg.AdminSub.IPv6Rotate.Subnet)
+					fmt.Printf("Interface: %s\n", cfg.AdminSub.IPv6Rotate.Interface)
+					fmt.Printf("Rotation Limit: %d\n", cfg.AdminSub.IPv6Rotate.MaxAddresses)
+					fmt.Printf("NDP: %v\n", cfg.AdminSub.IPv6Rotate.EnableNDP)
+				}
+			} else {
+				fmt.Println("ℹ️  No managed admin subscription found. Run 'sub mode --mode fixed' to configure.")
+			}
+
+			fmt.Printf("\n--- Guest Subscriptions ---\n")
+			if len(cfg.Guests) == 0 {
+				fmt.Println("ℹ️  No guests configured.")
+			} else {
+				for _, g := range cfg.Guests {
+					fmt.Printf("Guest: %-15s URL: %s\n", g.Alias, subGuestSubURL(cfg, g.SubToken))
+				}
+			}
+
+			fmt.Printf("\n--- Relay Subscriptions ---\n")
+			outboundSubs := []config.Subscription{}
+			for _, s := range cfg.Subscriptions {
+				if s.TargetType == "outbound" {
+					outboundSubs = append(outboundSubs, s)
+				}
+			}
+			if len(outboundSubs) == 0 {
+				fmt.Println("ℹ️  No relay subscriptions found.")
+			} else {
+				for _, s := range outboundSubs {
+					fmt.Printf("Relay: %-15s URL: %s\n", s.TargetAlias, customSubURL(cfg, s.Token))
+				}
+			}
+			fmt.Println()
+			return
+		}
+
+		if guestFlagPassed {
+			fmt.Printf("\n--- Guest Subscriptions ---\n")
+			if strings.ToLower(subShowGuest) == "all" || subShowGuest == "" {
+				if len(cfg.Guests) == 0 {
+					fmt.Println("ℹ️  No guests configured.")
+				} else {
+					for _, g := range cfg.Guests {
+						fmt.Printf("Guest: %-15s URL: %s\n", g.Alias, subGuestSubURL(cfg, g.SubToken))
+					}
+				}
+			} else {
+				var target *config.GuestConfig
+				for i := range cfg.Guests {
+					if cfg.Guests[i].Alias == subShowGuest {
+						target = &cfg.Guests[i]
+						break
+					}
+				}
+				if target == nil {
+					fmt.Printf("❌ Guest '%s' not found.\n", subShowGuest)
+				} else {
+					fmt.Printf("Guest: %-15s URL: %s\n", target.Alias, subGuestSubURL(cfg, target.SubToken))
+				}
+			}
+			fmt.Println()
+		}
+
+		if relayFlagPassed {
+			fmt.Printf("\n--- Relay Subscriptions ---\n")
+			if strings.ToLower(subShowRelay) == "all" || subShowRelay == "" {
+				outboundSubs := []config.Subscription{}
+				for _, s := range cfg.Subscriptions {
+					if s.TargetType == "outbound" {
+						outboundSubs = append(outboundSubs, s)
+					}
+				}
+				if len(outboundSubs) == 0 {
+					fmt.Println("ℹ️  No relay subscriptions found.")
+				} else {
+					for _, s := range outboundSubs {
+						fmt.Printf("Relay: %-15s URL: %s\n", s.TargetAlias, customSubURL(cfg, s.Token))
+					}
+				}
+			} else {
+				var target *config.Subscription
+				for i := range cfg.Subscriptions {
+					if cfg.Subscriptions[i].TargetType == "outbound" && cfg.Subscriptions[i].TargetAlias == subShowRelay {
+						target = &cfg.Subscriptions[i]
+						break
+					}
+				}
+				if target == nil {
+					fmt.Printf("❌ Relay '%s' subscription not found.\n", subShowRelay)
+				} else {
+					fmt.Printf("Relay: %-15s URL: %s\n", target.TargetAlias, customSubURL(cfg, target.Token))
+				}
+			}
+			fmt.Println()
+		}
+	},
+}
+
 var subResetCmd = &cobra.Command{
 	Use:   "reset",
 	Short: "Reset subscription configuration and generate a new access token (STAGING)",
@@ -448,12 +648,89 @@ var subResetCmd = &cobra.Command{
 		if cfg == nil {
 			return
 		}
-		subEntry := ensureManagedSubscription(cfg)
-		subEntry.Token = utils.GenerateRandomString(24)
-		if err := cfg.SaveEx(true); err == nil {
-			fmt.Println("✅ Admin subscription reset/token rotated in STAGING.")
-			fmt.Printf("🔗 New Path: /sub/%s\n", subEntry.Token)
-			fmt.Println("🚀 Run 'apply' to commit changes.")
+
+		reconcileSubscriptions(cfg)
+
+		guestFlagPassed := cmd.Flags().Changed("guest")
+		relayFlagPassed := cmd.Flags().Changed("relay")
+
+		if !guestFlagPassed && !relayFlagPassed {
+			subEntry := ensureManagedSubscription(cfg)
+			subEntry.Token = utils.GenerateRandomString(24)
+			if err := cfg.SaveEx(true); err == nil {
+				fmt.Println("✅ Admin subscription reset/token rotated in STAGING.")
+				fmt.Printf("🔗 New Path: /sub/%s\n", subEntry.Token)
+				fmt.Println("🚀 Run 'apply' to commit changes.")
+			}
+			return
+		}
+
+		changed := false
+
+		if guestFlagPassed {
+			if strings.ToLower(subResetGuest) == "all" || subResetGuest == "" {
+				if len(cfg.Guests) == 0 {
+					fmt.Println("ℹ️  No guests configured.")
+				} else {
+					for i := range cfg.Guests {
+						cfg.Guests[i].SubToken = utils.GenerateRandomString(24)
+					}
+					changed = true
+					fmt.Println("✅ Reset subscription tokens for all guests in STAGING.")
+				}
+			} else {
+				found := false
+				for i := range cfg.Guests {
+					if cfg.Guests[i].Alias == subResetGuest {
+						cfg.Guests[i].SubToken = utils.GenerateRandomString(24)
+						found = true
+						changed = true
+						fmt.Printf("✅ Reset subscription token for guest '%s' in STAGING.\n", subResetGuest)
+						break
+					}
+				}
+				if !found {
+					fmt.Printf("❌ Guest '%s' not found.\n", subResetGuest)
+				}
+			}
+		}
+
+		if relayFlagPassed {
+			if strings.ToLower(subResetRelay) == "all" || subResetRelay == "" {
+				relayResetCount := 0
+				for i := range cfg.Subscriptions {
+					if cfg.Subscriptions[i].TargetType == "outbound" {
+						cfg.Subscriptions[i].Token = utils.GenerateRandomString(24)
+						relayResetCount++
+					}
+				}
+				if relayResetCount == 0 {
+					fmt.Println("ℹ️  No relay subscriptions found.")
+				} else {
+					changed = true
+					fmt.Println("✅ Reset subscription tokens for all relays in STAGING.")
+				}
+			} else {
+				found := false
+				for i := range cfg.Subscriptions {
+					if cfg.Subscriptions[i].TargetType == "outbound" && cfg.Subscriptions[i].TargetAlias == subResetRelay {
+						cfg.Subscriptions[i].Token = utils.GenerateRandomString(24)
+						found = true
+						changed = true
+						fmt.Printf("✅ Reset subscription token for relay '%s' in STAGING.\n", subResetRelay)
+						break
+					}
+				}
+				if !found {
+					fmt.Printf("❌ Relay '%s' subscription not found.\n", subResetRelay)
+				}
+			}
+		}
+
+		if changed {
+			if err := cfg.SaveEx(true); err == nil {
+				fmt.Println("🚀 Run 'apply' to commit changes.")
+			}
 		}
 	},
 }
@@ -521,8 +798,14 @@ func init() {
 
 	subModeCmd.RegisterFlagCompletionFunc("interface", completeNetworkInterfaces)
 
+	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Show guest subscription URL(s) (use 'all' or empty for all guests)")
+	subShowCmd.Flags().StringVarP(&subShowRelay, "relay", "r", "", "Show relay subscription URL(s) (use 'all' or empty for all relays)")
+
+	subResetCmd.Flags().StringVarP(&subResetGuest, "guest", "g", "", "Reset guest subscription URL token(s) (use 'all' or empty for all guests)")
+	subResetCmd.Flags().StringVarP(&subResetRelay, "relay", "r", "", "Reset relay subscription URL token(s) (use 'all' or empty for all relays)")
+
 	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTPS port")
 
-	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subResetCmd, subRunCmd)
+	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subShowCmd, subResetCmd, subRunCmd)
 	rootCmd.AddCommand(subCmd)
 }
