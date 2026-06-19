@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -450,9 +451,16 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 }
 
 func GetConfigDir() string {
+	if envDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR"); envDir != "" {
+		os.MkdirAll(envDir, 0700)
+		return envDir
+	}
 	home, _ := os.UserHomeDir()
-	// Fallback for some environments where UserHomeDir might fail for root
-	if os.Geteuid() == 0 && home == "" {
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
+			home = u.HomeDir
+		}
+	} else if os.Geteuid() == 0 && home == "" {
 		home = "/root"
 	}
 	dir := filepath.Join(home, ".config", "xray-proxya")

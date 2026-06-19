@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"xray-proxya/internal/config"
@@ -393,10 +394,16 @@ var subEnableCmd = &cobra.Command{
 		}
 		binPath, _ := os.Executable()
 		home, _ := os.UserHomeDir()
-		if os.Geteuid() == 0 {
+		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+			if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
+				home = u.HomeDir
+			}
+		} else if os.Geteuid() == 0 {
 			home = "/root"
 		}
 		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
+		os.MkdirAll(workDir, 0700)
+		configDir := config.GetConfigDir()
 
 		content := fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Subscription Server
@@ -407,10 +414,11 @@ Type=simple
 ExecStart=%s sub run
 Restart=on-failure
 WorkingDirectory=%s
+Environment=XRAY_PROXYA_CONFIG_DIR=%s
 
 [Install]
 WantedBy=multi-user.target
-`, binPath, workDir)
+`, binPath, workDir, configDir)
 
 		os.WriteFile(getSubServicePath(), []byte(content), 0644)
 		exec.Command("systemctl", "daemon-reload").Run()
@@ -445,7 +453,11 @@ var subRunCmd = &cobra.Command{
 		}
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfig()
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			fmt.Printf("❌ Failed to load config: %v\n", err)
+			os.Exit(1)
+		}
 		adminPort := subPort
 		if !cmd.Flags().Changed("port") && cfg.AdminSub.Port > 0 {
 			adminPort = cfg.AdminSub.Port
