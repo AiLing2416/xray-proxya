@@ -146,6 +146,8 @@ type Model struct {
 	gatewayInputMode int // 0: normal, 1: selecting LAN interface, 2: selecting Relay
 	gatewayChoices   []string
 	gatewayChoiceIdx int
+	gwLocalTestIP    string
+	gwLANTestIP      string
 }
 
 func tickStats(apiPort int) tea.Cmd {
@@ -187,17 +189,19 @@ func InitialModel() Model {
 	ti.Width = 60
 	localIP := utils.GetLocalIP()
 	m := Model{
-		active:       active,
-		staging:      staging,
-		currentTab:   tabStatus,
-		width:        80,
-		height:       24,
-		relayResults: make(map[string]relayTestMsg),
-		relayDetails: make(map[string]relayDetailData),
-		cachedIP:     localIP,
-		localIP:      localIP,
-		serviceState: xray.GetServiceState(),
-		textInput:    ti,
+		active:        active,
+		staging:       staging,
+		currentTab:    tabStatus,
+		width:         80,
+		height:        24,
+		relayResults:  make(map[string]relayTestMsg),
+		relayDetails:  make(map[string]relayDetailData),
+		cachedIP:      localIP,
+		localIP:       localIP,
+		serviceState:  xray.GetServiceState(),
+		textInput:     ti,
+		gwLocalTestIP: "",
+		gwLANTestIP:   "",
 	}
 	if active != nil && active.Role == config.RoleGateway {
 		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
@@ -262,6 +266,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusNote = fmt.Sprintf("✅ Gateway runtime rules applied (%s).", msg.action)
 		}
 		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+		return m, nil
+	case gatewayTestResultMsg:
+		if msg.err != nil {
+			m.statusNote = fmt.Sprintf("❌ Test failed: %v", msg.err)
+			if msg.row == 0 {
+				m.gwLocalTestIP = "fail"
+			} else {
+				m.gwLANTestIP = "fail"
+			}
+		} else {
+			m.statusNote = "✅ Test completed successfully."
+			if msg.row == 0 {
+				m.gwLocalTestIP = msg.ip
+			} else {
+				m.gwLANTestIP = msg.ip
+			}
+		}
 		return m, nil
 	case relayDetailMsg:
 		m.relayLoading = ""
@@ -596,6 +617,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "t", "T":
+			if m.currentTab == tabGateway {
+				if m.cursor == 0 {
+					m.gwLocalTestIP = "testing..."
+					m.statusNote = "Testing local proxy IP..."
+					return m, testLocalProxy()
+				}
+				if m.cursor == 1 {
+					m.gwLANTestIP = "testing..."
+					m.statusNote = "Testing simulated LAN IP (this takes a few seconds)..."
+					return m, testLANGateway(m.active)
+				}
+				return m, nil
+			}
 			if m.currentTab == tabService {
 				m.statusNote = "stopping service..."
 				m.serviceView = serviceDetailRuntime
@@ -810,7 +844,7 @@ func (m Model) View() string {
 	case tabGuests:
 		content = RenderGuests(m.active, m.staging, m.cursor, cWidth)
 	case tabGateway:
-		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTun, m.gwForward)
+		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
 	}
 
 	// Important: mainArea must NOT have internal newlines at the end
@@ -1388,7 +1422,7 @@ func renderFooter(tab sessionTab, width int) string {
 	} else if tab == tabGuests {
 		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
 	} else if tab == tabGateway {
-		keys = append(keys, "[Enter]Toggle/Select", "[+/-]Change State", "[A]Apply", "[U]Undo")
+		keys = append(keys, "[Enter]Toggle/Select", "[+/-]Change State", "[T]Test Route", "[A]Apply", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
@@ -2394,4 +2428,105 @@ func runGatewayDown() tea.Cmd {
 		gateway.CleanupFirewall()
 		return gatewayActionResultMsg{action: "down", err: nil}
 	}
+}
+
+func testLocalProxy() tea.Cmd {
+	return func() tea.Msg {
+		ip, err := runLocalProxyTest()
+		return gatewayTestResultMsg{row: 0, ip: ip, err: err}
+	}
+}
+
+func testLANGateway(cfg *config.UserConfig) tea.Cmd {
+	return func() tea.Msg {
+		ip, err := runSimulatedLANTest(cfg)
+		return gatewayTestResultMsg{row: 1, ip: ip, err: err}
+	}
+}
+
+func runLocalProxyTest() (string, error) {
+	endpoints := []string{"http://icanhazip.com", "http://api.ipify.org", "http://ip.sb"}
+	var lastErr error
+	for _, ep := range endpoints {
+		out, err := exec.Command("curl", "-s", "-m", "3", ep).Output()
+		if err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func runSimulatedLANTest(cfg *config.UserConfig) (string, error) {
+	if err := exec.Command("nft", "list", "table", "inet", "xray_proxya").Run(); err != nil {
+		return "", fmt.Errorf("gateway rules are inactive")
+	}
+
+	nsName := "ns-prov-test"
+	exec.Command("ip", "netns", "del", nsName).Run()
+	exec.Command("ip", "link", "del", "veth-tg").Run()
+
+	if err := runCmdSlice([]string{"ip", "netns", "add", nsName}); err != nil {
+		return "", err
+	}
+	defer exec.Command("ip", "netns", "del", nsName).Run()
+
+	if err := runCmdSlice([]string{"ip", "link", "add", "veth-tc", "type", "veth", "peer", "name", "veth-tg"}); err != nil {
+		return "", err
+	}
+	defer exec.Command("ip", "link", "del", "veth-tg").Run()
+
+	if err := runCmdSlice([]string{"ip", "link", "set", "veth-tc", "netns", nsName}); err != nil {
+		return "", err
+	}
+
+	if err := runCmdSlice([]string{"ip", "addr", "add", "192.168.250.1/24", "dev", "veth-tg"}); err != nil {
+		return "", err
+	}
+	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "addr", "add", "192.168.250.2/24", "dev", "veth-tc"}); err != nil {
+		return "", err
+	}
+
+	if err := runCmdSlice([]string{"ip", "link", "set", "veth-tg", "up"}); err != nil {
+		return "", err
+	}
+	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "link", "set", "veth-tc", "up"}); err != nil {
+		return "", err
+	}
+	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "link", "set", "lo", "up"}); err != nil {
+		return "", err
+	}
+
+	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "route", "add", "default", "via", "192.168.250.1", "dev", "veth-tc"}); err != nil {
+		return "", err
+	}
+
+	if err := runCmdSlice([]string{"nft", "insert", "rule", "inet", "xray_proxya", "prerouting", "iifname", "veth-tg", "meta", "l4proto", "{", "tcp,", "udp", "}", "meta", "mark", "set", "1"}); err != nil {
+		return "", err
+	}
+	defer func() {
+		gateway.ApplyFirewall(cfg)
+	}()
+
+	endpoints := []string{"http://icanhazip.com", "http://api.ipify.org", "http://ip.sb"}
+	var lastErr error
+	for _, ep := range endpoints {
+		out, err := exec.Command("ip", "netns", "exec", nsName, "curl", "-s", "-m", "3", ep).Output()
+		if err == nil {
+			return strings.TrimSpace(string(out)), nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func runCmdSlice(args []string) error {
+	cmd := exec.Command(args[0], args[1:]...)
+	return cmd.Run()
+}
+
+type gatewayTestResultMsg struct {
+	row int
+	ip  string
+	err error
 }
