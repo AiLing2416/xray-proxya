@@ -157,9 +157,22 @@ func tickStats(apiPort int) tea.Cmd {
 	})
 }
 
-func (m Model) performApply() tea.Cmd {
+func (m Model) performApply(applyGatewayUp bool) tea.Cmd {
 	return func() tea.Msg {
 		lines, err := applyops.ApplyPending(applyops.Options{})
+		if err == nil && applyGatewayUp {
+			cfg, loadErr := config.LoadConfig()
+			if loadErr == nil {
+				err = gateway.ApplyFirewall(cfg)
+				if err == nil {
+					lines = append(lines, "✅ Gateway runtime rules applied successfully.")
+				} else {
+					lines = append(lines, fmt.Sprintf("❌ Failed to apply gateway runtime rules: %v", err))
+				}
+			} else {
+				err = loadErr
+			}
+		}
 		return applyResultMsg{lines: lines, err: err}
 	}
 }
@@ -474,7 +487,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "a", "A":
 			if m.currentTab != tabService {
-				return m, m.performApply()
+				return m, m.performApply(m.currentTab == tabGateway)
 			}
 		case "l", "L":
 			if m.currentTab == tabService {

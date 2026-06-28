@@ -119,7 +119,7 @@ func ApplyPending(opts Options) ([]string, error) {
 		lines = append(lines, "✅ All changes applied.")
 	}
 	if cfg.Role == config.RoleGateway && impact.GatewayRuntimeChanged {
-		lines = append(lines, "ℹ️  Gateway runtime rules are not changed by apply. Use 'sudo xray-proxya gateway up' when gateway system rules need updating.")
+		lines = append(lines, "ℹ️  Gateway runtime rules are not changed by apply. Use 'xray-proxya gateway up' when gateway system rules need updating.")
 	}
 
 	return lines, nil
