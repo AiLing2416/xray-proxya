@@ -151,3 +151,11 @@ func TestUserConfigUnmarshalLegacyActiveModes(t *testing.T) {
 		t.Fatalf("expected mode %q, got %q", ModeVLESSVision, cfg.Presets[0].Mode)
 	}
 }
+
+func TestGetConfigDir(t *testing.T) {
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", "/tmp/xray-proxya-test-dir")
+	dir := GetConfigDir()
+	if dir != "/tmp/xray-proxya-test-dir" {
+		t.Fatalf("GetConfigDir() = %q, want /tmp/xray-proxya-test-dir", dir)
+	}
+}
