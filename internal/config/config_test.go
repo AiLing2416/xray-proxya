@@ -50,9 +50,6 @@ func TestBackfillDefaultsPopulatesMissingFields(t *testing.T) {
 	if cfg.CustomOutbounds[0].Config == nil {
 		t.Fatalf("Custom outbound config was not initialized")
 	}
-	if cfg.Gateway.Blacklist == nil || cfg.Gateway.BlacklistIPs == nil {
-		t.Fatalf("Gateway blacklist slices were not initialized")
-	}
 	if len(cfg.Presets) != len(PresetOrder) {
 		t.Fatalf("len(Presets) = %d, want %d", len(cfg.Presets), len(PresetOrder))
 	}

@@ -223,9 +223,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if activeCfg.Gateway.LocalEnabled != stagingCfg.Gateway.LocalEnabled ||
 		activeCfg.Gateway.LANEnabled != stagingCfg.Gateway.LANEnabled ||
 		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
-		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||
-		!reflect.DeepEqual(activeCfg.Gateway.Blacklist, stagingCfg.Gateway.Blacklist) ||
-		!reflect.DeepEqual(activeCfg.Gateway.BlacklistIPs, stagingCfg.Gateway.BlacklistIPs) {
+		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface {
 		impact.GatewayRuntimeChanged = true
 		mark("gateway.runtime")
 	}

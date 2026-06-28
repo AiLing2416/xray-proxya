@@ -131,8 +131,6 @@ type GatewayConfig struct {
 	LANEnabled   bool     `json:"lan_enabled"`
 	Mode         string   `json:"mode"` // "tun" or "tproxy"
 	RelayAlias   string   `json:"relay_alias"`
-	Blacklist    []string `json:"blacklist"`
-	BlacklistIPs []string `json:"blacklist_ips"`
 	LANInterface string   `json:"lan_interface"`
 }
 
@@ -275,14 +273,6 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if cfg.AdminSub.TargetType == "" {
 		cfg.AdminSub.TargetType = "direct"
 		changes = append(changes, "set missing admin_sub.target_type=direct")
-	}
-	if cfg.Gateway.Blacklist == nil {
-		cfg.Gateway.Blacklist = []string{}
-		changes = append(changes, "initialized gateway.blacklist")
-	}
-	if cfg.Gateway.BlacklistIPs == nil {
-		cfg.Gateway.BlacklistIPs = []string{}
-		changes = append(changes, "initialized gateway.blacklist_ips")
 	}
 	if cfg.Role == RoleGateway && cfg.Gateway.Mode == "" {
 		cfg.Gateway.Mode = "tun"

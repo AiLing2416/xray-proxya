@@ -92,8 +92,7 @@ func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget 
 
 func buildDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget string, isGateway bool) map[string]interface{} {
 	_, strategy, serverStrings := resolveDNSConfig(userCfg, relayAlias, testTarget, isGateway)
-	servers := make([]interface{}, 0, len(serverStrings)+1)
-	servers = append(servers, "fakedns")
+	servers := make([]interface{}, 0, len(serverStrings))
 	for _, server := range serverStrings {
 		servers = append(servers, server)
 	}
@@ -192,6 +191,15 @@ func buildDNSInbound(port int) map[string]interface{} {
 	}
 }
 
+func buildSniffingConfig(userCfg *config.UserConfig) map[string]interface{} {
+	return map[string]interface{}{
+		"enabled":      true,
+		"destOverride": []string{"http", "tls", "quic"},
+		"metadataOnly": true,
+		"routeOnly":    true,
+	}
+}
+
 func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, testTarget string) ([]byte, error) {
 	isGateway := userCfg.Role == config.RoleGateway
 	relayAlias := ""
@@ -247,15 +255,15 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if dnsInPort > 0 {
 		inbounds = append(inbounds, buildDNSInbound(dnsInPort))
 	}
-	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}})
+	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)})
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
 			continue
 		}
 		tags := relayInboundTags[co.Alias]
 		inbounds = append(inbounds,
-			map[string]interface{}{"tag": tags[0], "port": co.InternalProxyPort, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}},
-			map[string]interface{}{"tag": tags[1], "port": co.InternalProxyPort + 1, "listen": "127.0.0.1", "protocol": "http", "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}},
+			map[string]interface{}{"tag": tags[0], "port": co.InternalProxyPort, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)},
+			map[string]interface{}{"tag": tags[1], "port": co.InternalProxyPort + 1, "listen": "127.0.0.1", "protocol": "http", "sniffing": buildSniffingConfig(userCfg)},
 		)
 	}
 
@@ -264,7 +272,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			continue
 		}
 		mPort := getPort(string(m.Mode), m.Port)
-		in := map[string]interface{}{"tag": string(m.Mode), "port": mPort, "listen": "::", "sniffing": map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}}}
+		in := map[string]interface{}{"tag": string(m.Mode), "port": mPort, "listen": "::", "sniffing": buildSniffingConfig(userCfg)}
 
 		dest := m.Dest
 		if m.Skin && camoPort > 0 {
@@ -326,10 +334,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				"address":   []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
 				"autoRoute": false, "strictRoute": true, "stack": "gvisor",
 			},
-			"sniffing": map[string]interface{}{
-				"enabled":      true,
-				"destOverride": []string{"http", "tls", "quic", "fakedns"},
-			},
+			"sniffing": buildSniffingConfig(userCfg),
 		})
 	}
 	xc["inbounds"] = inbounds

@@ -24,7 +24,7 @@ func TestParseDefaultInterfaceNoDefault(t *testing.T) {
 }
 
 func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
-	rules := buildNFT(testGatewayConfig(), "ens18", "192.168.50.0/24")
+	rules := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24")
 	if !strings.Contains(rules, `iifname != "ens18" return`) {
 		t.Fatalf("rules should use configured LAN interface: %s", rules)
 	}
@@ -33,12 +33,41 @@ func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	}
 }
 
-func testGatewayConfig() *config.UserConfig {
+func TestBuildNFTConditionalChains(t *testing.T) {
+	// Both enabled
+	rulesBoth := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24")
+	if !strings.Contains(rulesBoth, "chain prerouting") {
+		t.Error("rules should contain prerouting chain when LANEnabled is true")
+	}
+	if !strings.Contains(rulesBoth, "chain output") {
+		t.Error("rules should contain output chain when LocalEnabled is true")
+	}
+
+	// LAN only
+	rulesLANOnly := buildNFT(testGatewayConfig(false, true), "ens18", "192.168.50.0/24")
+	if !strings.Contains(rulesLANOnly, "chain prerouting") {
+		t.Error("rules should contain prerouting chain when LANEnabled is true")
+	}
+	if strings.Contains(rulesLANOnly, "chain output") {
+		t.Error("rules should not contain output chain when LocalEnabled is false")
+	}
+
+	// Local only
+	rulesLocalOnly := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24")
+	if strings.Contains(rulesLocalOnly, "chain prerouting") {
+		t.Error("rules should not contain prerouting chain when LANEnabled is false")
+	}
+	if !strings.Contains(rulesLocalOnly, "chain output") {
+		t.Error("rules should contain output chain when LocalEnabled is true")
+	}
+}
+
+func testGatewayConfig(local, lan bool) *config.UserConfig {
 	return &config.UserConfig{
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
-			LocalEnabled: true,
-			LANEnabled:   true,
+			LocalEnabled: local,
+			LANEnabled:   lan,
 			Mode:         "tun",
 		},
 	}

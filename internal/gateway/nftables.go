@@ -112,6 +112,12 @@ func SetupKernel() error {
 	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.default.rp_filter=0"); err != nil {
 		return err
 	}
+	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.all.send_redirects=0"); err != nil {
+		return err
+	}
+	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.default.send_redirects=0"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -198,17 +204,19 @@ func interfaceHasCIDR(name, cidr string) bool {
 func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR string) string {
 	var b strings.Builder
 	b.WriteString("table inet " + tableName + " {\n")
-	b.WriteString("    chain prerouting {\n")
-	b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
-	b.WriteString("        meta mark " + xrayMark + " return\n")
-	b.WriteString("        iifname != \"" + lanIface + "\" return\n")
-	b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
-	b.WriteString("        ip daddr " + lanCIDR + " return\n")
-	for _, ip := range outboundIPs(cfg) {
-		b.WriteString("        ip daddr " + ip + " return\n")
+	if cfg.Gateway.LANEnabled {
+		b.WriteString("    chain prerouting {\n")
+		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
+		b.WriteString("        meta mark " + xrayMark + " return\n")
+		b.WriteString("        iifname != \"" + lanIface + "\" return\n")
+		b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
+		b.WriteString("        ip daddr " + lanCIDR + " return\n")
+		for _, ip := range outboundIPs(cfg) {
+			b.WriteString("        ip daddr " + ip + " return\n")
+		}
+		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
+		b.WriteString("    }\n")
 	}
-	b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
-	b.WriteString("    }\n")
 
 	if cfg.Gateway.LocalEnabled {
 		b.WriteString("    chain output {\n")

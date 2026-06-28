@@ -23,7 +23,7 @@ func TestGenerateXrayJSONUsesDefaultDNSConfig(t *testing.T) {
 	}
 
 	servers := getStringSlice(t, dns, "servers")
-	want := []string{"fakedns", "https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
+	want := []string{"https://dns.google/dns-query", "https://cloudflare-dns.com/dns-query"}
 	assertStringSliceEqual(t, servers, want)
 }
 
@@ -49,7 +49,7 @@ func TestGenerateXrayJSONUsesTestTargetDNSConfig(t *testing.T) {
 	}
 
 	servers := getStringSlice(t, dns, "servers")
-	want := []string{"fakedns", "1.1.1.1", "https://dns.google/dns-query"}
+	want := []string{"1.1.1.1", "https://dns.google/dns-query"}
 	assertStringSliceEqual(t, servers, want)
 }
 
@@ -78,7 +78,7 @@ func TestGenerateXrayJSONUsesGatewayRelayDNSConfig(t *testing.T) {
 	}
 
 	servers := getStringSlice(t, dns, "servers")
-	want := []string{"fakedns", "https://cloudflare-dns.com/dns-query"}
+	want := []string{"https://cloudflare-dns.com/dns-query"}
 	assertStringSliceEqual(t, servers, want)
 }
 
@@ -385,8 +385,8 @@ func TestGenerateXrayJSONOutboundSetDNSOverrides(t *testing.T) {
 		t.Fatalf("queryStrategy = %q, want %q", got, "UseIPv6")
 	}
 	servers := getStringSlice(t, dns, "servers")
-	// Should be fakedns + custom server
-	want := []string{"fakedns", "8.8.4.4"}
+	// Should be custom server
+	want := []string{"8.8.4.4"}
 	assertStringSliceEqual(t, servers, want)
 
 	// 2. Verify routing rules for custom DNS servers are added

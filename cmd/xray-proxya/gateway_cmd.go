@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/pkg/utils"
@@ -41,8 +40,7 @@ var gatewayStatusCmd = &cobra.Command{
 		fmt.Printf("Local Proxy: %s\n", localState)
 		fmt.Printf("LAN Gateway: %s\n", lanState)
 		fmt.Printf("Relay:       %s\n", cfg.Gateway.RelayAlias)
-		fmt.Printf("LAN Iface:   %s\n", cfg.Gateway.LANInterface)
-		fmt.Printf("Blacklist:   %d domains, %d IPs\n\n", len(cfg.Gateway.Blacklist), len(cfg.Gateway.BlacklistIPs))
+		fmt.Printf("LAN Iface:   %s\n\n", cfg.Gateway.LANInterface)
 	},
 }
 
@@ -166,41 +164,6 @@ var gatewaySetCmd = &cobra.Command{
 
 		cfg.SaveEx(true)
 		fmt.Println("✅ Gateway parameters updated in STAGING.")
-	},
-}
-
-var gatewayBlacklistAddCmd = &cobra.Command{
-	Use:   "blacklist-add [domain/ip]",
-	Short: "Add a domain or IP to the gateway blacklist",
-	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		target := args[0]
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		if net.ParseIP(target) != nil || strings.Contains(target, "/") {
-			cfg.Gateway.BlacklistIPs = append(cfg.Gateway.BlacklistIPs, target)
-		} else {
-			cfg.Gateway.Blacklist = append(cfg.Gateway.Blacklist, target)
-		}
-		cfg.SaveEx(true)
-		fmt.Printf("✅ Added '%s' to blacklist in STAGING.\n", target)
-	},
-}
-
-var gatewayBlacklistClearCmd = &cobra.Command{
-	Use:   "blacklist-clear",
-	Short: "Clear all domains and IPs from the gateway blacklist",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.Blacklist = []string{}
-		cfg.Gateway.BlacklistIPs = []string{}
-		cfg.SaveEx(true)
-		fmt.Println("✅ Gateway blacklist CLEARED in STAGING.")
 	},
 }
 
@@ -340,8 +303,6 @@ func init() {
 		gatewayLANEnableCmd,
 		gatewayLANDisableCmd,
 		gatewaySetCmd,
-		gatewayBlacklistAddCmd,
-		gatewayBlacklistClearCmd,
 		gatewayUpCmd,
 		gatewayApplyCompatCmd,
 		gatewaySyncFirewallCompatCmd,
