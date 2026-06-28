@@ -621,7 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cursor == 1 {
 					m.gwLocalTestIP = "testing..."
 					m.statusNote = "Testing local proxy IP..."
-					return m, testLocalProxy()
+					return m, testLocalProxy(m.active)
 				}
 				if m.cursor == 2 {
 					m.gwLANTestIP = "testing..."
@@ -2430,9 +2430,9 @@ func runGatewayDown() tea.Cmd {
 	}
 }
 
-func testLocalProxy() tea.Cmd {
+func testLocalProxy(cfg *config.UserConfig) tea.Cmd {
 	return func() tea.Msg {
-		ip, err := RunLocalProxyTest()
+		ip, err := RunLocalProxyTest(cfg)
 		return gatewayTestResultMsg{row: 0, ip: ip, err: err}
 	}
 }
@@ -2453,25 +2453,33 @@ func parseCloudflareTraceIP(body string) string {
 	return ""
 }
 
-func RunLocalProxyTest() (string, error) {
-	endpoints := []string{"http://1.1.1.1/cdn-cgi/trace", "http://1.0.0.1/cdn-cgi/trace"}
+func RunLocalProxyTest(cfg *config.UserConfig) (string, error) {
+	// Ensure gateway rules are up and table 100 has the route
+	if err := gateway.ApplyFirewall(cfg); err != nil {
+		return "", fmt.Errorf("failed to apply firewall rules: %v", err)
+	}
+
+	endpoints := []string{"https://1.1.1.1/cdn-cgi/trace", "https://1.0.0.1/cdn-cgi/trace"}
 	var lastErr error
 	for _, ep := range endpoints {
-		out, err := exec.Command("curl", "-s", "-m", "3", ep).Output()
+		out, err := exec.Command("curl", "-sk", "-m", "5", ep).Output()
 		if err == nil {
 			ip := parseCloudflareTraceIP(string(out))
 			if ip != "" {
 				return ip, nil
 			}
+			lastErr = fmt.Errorf("empty IP in trace response")
+		} else {
+			lastErr = err
 		}
-		lastErr = err
 	}
 	return "", lastErr
 }
 
 func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
-	if err := exec.Command("nft", "list", "table", "inet", "xray_proxya").Run(); err != nil {
-		return "", fmt.Errorf("gateway rules are inactive")
+	// Ensure gateway rules are up and table 100 has the route
+	if err := gateway.ApplyFirewall(cfg); err != nil {
+		return "", fmt.Errorf("failed to apply firewall rules: %v", err)
 	}
 
 	nsName := "ns-prov-test"
@@ -2520,17 +2528,21 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 		gateway.ApplyFirewall(cfg)
 	}()
 
-	endpoints := []string{"http://1.1.1.1/cdn-cgi/trace", "http://1.0.0.1/cdn-cgi/trace"}
+	time.Sleep(500 * time.Millisecond)
+
+	endpoints := []string{"https://1.1.1.1/cdn-cgi/trace", "https://1.0.0.1/cdn-cgi/trace"}
 	var lastErr error
 	for _, ep := range endpoints {
-		out, err := exec.Command("ip", "netns", "exec", nsName, "curl", "-s", "-m", "3", ep).Output()
+		out, err := exec.Command("ip", "netns", "exec", nsName, "curl", "-sk", "-m", "5", ep).Output()
 		if err == nil {
 			ip := parseCloudflareTraceIP(string(out))
 			if ip != "" {
 				return ip, nil
 			}
+			lastErr = fmt.Errorf("empty IP in trace response")
+		} else {
+			lastErr = err
 		}
-		lastErr = err
 	}
 	return "", lastErr
 }

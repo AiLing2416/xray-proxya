@@ -262,8 +262,14 @@ var gatewayTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Test gateway routing (both local proxy and simulated LAN)",
 	Run: func(cmd *cobra.Command, args []string) {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			fmt.Printf("❌ Failed to load active config: %v\n", err)
+			return
+		}
+
 		fmt.Println("🔍 Running Local Proxy Route Test (fetching direct/proxy public IP)...")
-		localIP, err := tui.RunLocalProxyTest()
+		localIP, err := tui.RunLocalProxyTest(cfg)
 		if err != nil {
 			fmt.Printf("❌ Local Proxy Test Failed: %v\n", err)
 		} else {
@@ -271,11 +277,6 @@ var gatewayTestCmd = &cobra.Command{
 		}
 
 		fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (fetching simulated client public IP)...")
-		cfg, err := config.LoadConfig()
-		if err != nil {
-			fmt.Printf("❌ Failed to load active config: %v\n", err)
-			return
-		}
 		lanIP, err := tui.RunSimulatedLANTest(cfg)
 		if err != nil {
 			fmt.Printf("❌ Simulated LAN Test Failed: %v\n", err)
