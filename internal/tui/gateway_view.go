@@ -73,9 +73,8 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 	if relayInfo == "" {
 		relayInfo = "none"
 	}
-	relayStatus := "READY"
+	relayStatus := "NON READY"
 	if staging.Gateway.RelayAlias != "" {
-		relayStatus = "NON READY"
 		for _, co := range staging.CustomOutbounds {
 			if co.Alias == staging.Gateway.RelayAlias {
 				if co.Enabled {
@@ -92,11 +91,11 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 	rulesStatus := getBoolStatus(isActiveRules)
 
 	rows := [][]string{
+		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
 		{getIndicator(0), "Local Proxy", localInfo, localStatus, localIP},
 		{getIndicator(1), "LAN Gateway", lanInfo, lanStatus, lanIP},
 		{getIndicator(2), "LAN Interface", ifaceInfo, ifaceStatus, ""},
 		{getIndicator(3), "Outbound Relay", relayInfo, relayStatus, ""},
-		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)
