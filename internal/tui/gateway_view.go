@@ -12,13 +12,6 @@ import (
 func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tun, fwd bool, localIP, lanIP string) string {
 	var b strings.Builder
 
-	// 1. Block A: Compact Status Indicator at the very top of the table
-	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD", 
-		getStatusEmoji(nft), getStatusEmoji(tun), getStatusEmoji(fwd))
-	b.WriteString(lipgloss.NewStyle().Bold(true).Render(statusLine))
-	b.WriteString("\n\n")
-
-	// 2. Block B: Configuration Options in a Table Format
 	if staging == nil {
 		b.WriteString("No configuration loaded.")
 		return b.String()
@@ -108,7 +101,18 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 
 	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)
 
-	b.WriteString(renderRow(headers, widths, true))
+	// Combine headers and status tags on the same line (right-aligned)
+	res := renderRow(headers, widths, false)
+	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD", 
+		getStatusEmoji(nft), getStatusEmoji(tun), getStatusEmoji(fwd))
+	
+	spacing := width - lipgloss.Width(res) - lipgloss.Width(statusLine) - 2
+	if spacing < 2 {
+		spacing = 2
+	}
+	combinedHeaders := res + strings.Repeat(" ", spacing) + statusLine
+
+	b.WriteString(headerStyle.Width(width).Render(combinedHeaders))
 	b.WriteString("\n")
 
 	for i, r := range rows {
