@@ -115,7 +115,7 @@ xray-proxya outbound probe-local hk-node -4
 - `guests`: Manage multi-tenant users, quotas, and dedicated outbounds.
 - `presets`: Manage pre-defined inbound protocols (Reality, Vision, KEM, etc.).
 - `outbound`: Manage relay nodes, **physical interface bindings**, and **internal proxies**.
-- `gateway`: Configure transparent proxy settings, dual-stack forwarding, and blacklists.
+- `gateway`: Configure transparent proxy settings and dual-stack forwarding.
 - `tune`: Apply and rollback temporary kernel tuning profiles for gateway, relay, and server roles.
 - `status`: Real-time traffic stats and process monitoring.
 - `apply / undo`: Commit or discard staging changes with automatic validation.
