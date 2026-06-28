@@ -6,6 +6,7 @@ import (
 	"os"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/tui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -257,6 +258,33 @@ var gatewayDownCmd = &cobra.Command{
 	},
 }
 
+var gatewayTestCmd = &cobra.Command{
+	Use:   "test",
+	Short: "Test gateway routing (both local proxy and simulated LAN)",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("🔍 Running Local Proxy Route Test (fetching direct/proxy public IP)...")
+		localIP, err := tui.RunLocalProxyTest()
+		if err != nil {
+			fmt.Printf("❌ Local Proxy Test Failed: %v\n", err)
+		} else {
+			fmt.Printf("✅ Local Proxy Test Passed! Public IP: %s\n", localIP)
+		}
+
+		fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (fetching simulated client public IP)...")
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			fmt.Printf("❌ Failed to load active config: %v\n", err)
+			return
+		}
+		lanIP, err := tui.RunSimulatedLANTest(cfg)
+		if err != nil {
+			fmt.Printf("❌ Simulated LAN Test Failed: %v\n", err)
+		} else {
+			fmt.Printf("✅ Simulated LAN Test Passed! Public IP: %s\n", lanIP)
+		}
+	},
+}
+
 var gatewayRollbackCompatCmd = &cobra.Command{
 	Use:    "rollback",
 	Short:  "Remove xray-proxya gateway runtime rules",
@@ -311,6 +339,7 @@ func init() {
 		gatewayCheckCmd,
 		gatewayVerifyCompatCmd,
 		gatewayDiffCmd,
+		gatewayTestCmd,
 	)
 	rootCmd.AddCommand(gatewayCmd)
 }

@@ -2432,32 +2432,44 @@ func runGatewayDown() tea.Cmd {
 
 func testLocalProxy() tea.Cmd {
 	return func() tea.Msg {
-		ip, err := runLocalProxyTest()
+		ip, err := RunLocalProxyTest()
 		return gatewayTestResultMsg{row: 0, ip: ip, err: err}
 	}
 }
 
 func testLANGateway(cfg *config.UserConfig) tea.Cmd {
 	return func() tea.Msg {
-		ip, err := runSimulatedLANTest(cfg)
+		ip, err := RunSimulatedLANTest(cfg)
 		return gatewayTestResultMsg{row: 1, ip: ip, err: err}
 	}
 }
 
-func runLocalProxyTest() (string, error) {
-	endpoints := []string{"http://icanhazip.com", "http://api.ipify.org", "http://ip.sb"}
+func parseCloudflareTraceIP(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		if strings.HasPrefix(line, "ip=") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "ip="))
+		}
+	}
+	return ""
+}
+
+func RunLocalProxyTest() (string, error) {
+	endpoints := []string{"http://1.1.1.1/cdn-cgi/trace", "http://1.0.0.1/cdn-cgi/trace"}
 	var lastErr error
 	for _, ep := range endpoints {
 		out, err := exec.Command("curl", "-s", "-m", "3", ep).Output()
 		if err == nil {
-			return strings.TrimSpace(string(out)), nil
+			ip := parseCloudflareTraceIP(string(out))
+			if ip != "" {
+				return ip, nil
+			}
 		}
 		lastErr = err
 	}
 	return "", lastErr
 }
 
-func runSimulatedLANTest(cfg *config.UserConfig) (string, error) {
+func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 	if err := exec.Command("nft", "list", "table", "inet", "xray_proxya").Run(); err != nil {
 		return "", fmt.Errorf("gateway rules are inactive")
 	}
@@ -2508,12 +2520,15 @@ func runSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 		gateway.ApplyFirewall(cfg)
 	}()
 
-	endpoints := []string{"http://icanhazip.com", "http://api.ipify.org", "http://ip.sb"}
+	endpoints := []string{"http://1.1.1.1/cdn-cgi/trace", "http://1.0.0.1/cdn-cgi/trace"}
 	var lastErr error
 	for _, ep := range endpoints {
 		out, err := exec.Command("ip", "netns", "exec", nsName, "curl", "-s", "-m", "3", ep).Output()
 		if err == nil {
-			return strings.TrimSpace(string(out)), nil
+			ip := parseCloudflareTraceIP(string(out))
+			if ip != "" {
+				return ip, nil
+			}
 		}
 		lastErr = err
 	}
