@@ -12,17 +12,10 @@ import (
 func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tun, fwd bool, localIP, lanIP string) string {
 	var b strings.Builder
 
-	// 1. Block A: Compact Status Indicator on the right of the table header
-	title := "GATEWAY CONFIGURATION"
-	statusLine := fmt.Sprintf("%sNFTABLES  %sTUN  %sFORWARD", 
+	// 1. Block A: Compact Status Indicator at the very top of the table
+	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD", 
 		getStatusEmoji(nft), getStatusEmoji(tun), getStatusEmoji(fwd))
-	
-	spacing := width - lipgloss.Width(title) - lipgloss.Width(statusLine) - 2
-	if spacing < 2 {
-		spacing = 2
-	}
-	headerRow := title + strings.Repeat(" ", spacing) + statusLine
-	b.WriteString(headerStyle.Width(width).Render(headerRow))
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(statusLine))
 	b.WriteString("\n\n")
 
 	// 2. Block B: Configuration Options in a Table Format
@@ -31,78 +24,94 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		return b.String()
 	}
 
-	headers := []string{"  ", "OPTION", "INFO / VALUE", "STATUS"}
-	
-	localStatus := "DOWN"
-	if staging.Gateway.LocalEnabled {
-		localStatus = "UP"
+	headers := []string{"  ", "OPTION", "INFO", "STATUS", "TEST IP"}
+
+	// Staging change check helper
+	isMod := func(rowIdx int) bool {
+		if active == nil {
+			return true
+		}
+		switch rowIdx {
+		case 0:
+			return active.Gateway.LocalEnabled != staging.Gateway.LocalEnabled
+		case 1:
+			return active.Gateway.LANEnabled != staging.Gateway.LANEnabled
+		case 2:
+			return active.Gateway.LANInterface != staging.Gateway.LANInterface
+		case 3:
+			return active.Gateway.RelayAlias != staging.Gateway.RelayAlias
+		}
+		return false
 	}
-	lanStatus := "DOWN"
-	if staging.Gateway.LANEnabled {
-		lanStatus = "UP"
+
+	getIndicator := func(rowIdx int) string {
+		if isMod(rowIdx) {
+			return "*"
+		}
+		return " "
 	}
-	
-	ifaceStatus := "DOWN"
+
+	// Local Proxy (Bool)
+	localInfo := getBoolText(staging.Gateway.LocalEnabled)
+	localStatus := getBoolStatus(staging.Gateway.LocalEnabled)
+
+	// LAN Gateway (Bool)
+	lanInfo := getBoolText(staging.Gateway.LANEnabled)
+	lanStatus := getBoolStatus(staging.Gateway.LANEnabled)
+
+	// LAN Interface (Non-Bool)
 	ifaceInfo := staging.Gateway.LANInterface
 	if ifaceInfo == "" {
 		ifaceInfo = "none"
-	} else {
-		if _, err := net.InterfaceByName(staging.Gateway.LANInterface); err == nil {
-			ifaceStatus = "UP"
-		}
 	}
-	
-	relayStatus := "DOWN"
+	ifaceStatus := "NON READY"
+	if staging.Gateway.LANInterface != "" {
+		if _, err := net.InterfaceByName(staging.Gateway.LANInterface); err == nil {
+			ifaceStatus = "READY"
+		}
+	} else if staging.Gateway.LANEnabled {
+		ifaceStatus = "NON READY"
+	} else {
+		ifaceStatus = "READY"
+	}
+
+	// Outbound Relay (Non-Bool)
 	relayInfo := staging.Gateway.RelayAlias
 	if relayInfo == "" {
 		relayInfo = "none"
-	} else {
+	}
+	relayStatus := "READY"
+	if staging.Gateway.RelayAlias != "" {
+		relayStatus = "NON READY"
 		for _, co := range staging.CustomOutbounds {
 			if co.Alias == staging.Gateway.RelayAlias {
 				if co.Enabled {
-					relayStatus = "UP"
+					relayStatus = "READY"
 				}
 				break
 			}
 		}
 	}
-	
-	rulesStatus := "DOWN"
-	if nft && tun && fwd {
-		rulesStatus = "UP"
-	}
 
-	localInfo := getCheckboxText(staging.Gateway.LocalEnabled)
-	if localIP != "" {
-		localInfo += fmt.Sprintf(" (IP: %s)", localIP)
-	} else if staging.Gateway.LocalEnabled {
-		localInfo += " (Press [T] to test)"
-	}
-	
-	lanInfo := getCheckboxText(staging.Gateway.LANEnabled)
-	if lanIP != "" {
-		lanInfo += fmt.Sprintf(" (IP: %s)", lanIP)
-	} else if staging.Gateway.LANEnabled {
-		lanInfo += " (Press [T] to test)"
-	}
+	// Gateway Rules (Bool)
+	isActiveRules := nft && tun && fwd
+	rulesInfo := getBoolText(isActiveRules)
+	rulesStatus := getBoolStatus(isActiveRules)
 
 	rows := [][]string{
-		{"  ", "Local Proxy", localInfo, localStatus},
-		{"  ", "LAN Gateway", lanInfo, lanStatus},
-		{"  ", "LAN Interface", ifaceInfo, ifaceStatus},
-		{"  ", "Outbound Relay", relayInfo, relayStatus},
-		{"  ", "Gateway Rules", "nftables & TUN running", rulesStatus},
+		{getIndicator(0), "Local Proxy", localInfo, localStatus, localIP},
+		{getIndicator(1), "LAN Gateway", lanInfo, lanStatus, lanIP},
+		{getIndicator(2), "LAN Interface", ifaceInfo, ifaceStatus, ""},
+		{getIndicator(3), "Outbound Relay", relayInfo, relayStatus, ""},
+		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
 	}
 
-	widths := fitTableWidths(headers, rows, []int{3, 16, 26, 6}, width)
+	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)
 
 	b.WriteString(renderRow(headers, widths, true))
 	b.WriteString("\n")
 
 	for i, r := range rows {
-		if i == cursor {
-			r[0] = "-> "
-		}
 		s := renderRow(r, widths, false)
 		if i == cursor {
 			b.WriteString(activeStyle.Render(s))
@@ -122,9 +131,16 @@ func getStatusEmoji(val bool) string {
 	return "🔴"
 }
 
-func getCheckboxText(val bool) string {
+func getBoolText(val bool) string {
 	if val {
-		return "[X] enabled"
+		return "ENABLE"
 	}
-	return "[ ] disabled"
+	return "DISABLE"
+}
+
+func getBoolStatus(val bool) string {
+	if val {
+		return "UP"
+	}
+	return "DOWN"
 }
