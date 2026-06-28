@@ -374,7 +374,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					max = len(m.staging.Guests) - 1
 				}
 				if m.currentTab == tabGateway {
-					max = 3
+					max = 4
 				}
 			}
 			if m.cursor < max {
@@ -423,7 +423,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ifaces, _ := net.Interfaces()
 					choices := []string{"none"}
 					for _, iface := range ifaces {
-						choices = append(choices, iface.Name)
+						if iface.Name != "proxya-tun" {
+							choices = append(choices, iface.Name)
+						}
 					}
 					m.gatewayInputMode = 1
 					m.gatewayChoices = choices
@@ -447,6 +449,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.gatewayChoiceIdx = i
 							break
 						}
+					}
+				} else if m.cursor == 4 {
+					isActive := m.gwNftables && m.gwTun && m.gwForward
+					if isActive {
+						m.statusNote = "Applying 'gateway down' runtime rules..."
+						return m, runGatewayDown()
+					} else {
+						m.statusNote = "Applying 'gateway up' runtime rules..."
+						return m, runGatewayUp(m.active)
 					}
 				}
 				return m, nil
@@ -484,6 +495,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, fetchRelayProbe(alias)
 			}
 		case "+", "=":
+			if m.currentTab == tabGateway {
+				if m.cursor == 0 {
+					m.staging.Gateway.LocalEnabled = true
+					m.staging.SaveEx(true)
+					m.statusNote = "Local proxy enabled"
+				} else if m.cursor == 1 {
+					m.staging.Gateway.LANEnabled = true
+					m.staging.SaveEx(true)
+					m.statusNote = "LAN gateway enabled"
+				} else if m.cursor == 4 {
+					m.statusNote = "Applying 'gateway up' runtime rules..."
+					return m, runGatewayUp(m.active)
+				}
+				return m, nil
+			}
 			if m.currentTab == tabPresets && m.staging != nil {
 				m.staging.Presets[m.cursor].Enabled = true
 				m.staging.SaveEx(true)
@@ -502,6 +528,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "-":
+			if m.currentTab == tabGateway {
+				if m.cursor == 0 {
+					m.staging.Gateway.LocalEnabled = false
+					m.staging.SaveEx(true)
+					m.statusNote = "Local proxy disabled"
+				} else if m.cursor == 1 {
+					m.staging.Gateway.LANEnabled = false
+					m.staging.SaveEx(true)
+					m.statusNote = "LAN gateway disabled"
+				} else if m.cursor == 4 {
+					m.statusNote = "Applying 'gateway down' runtime rules..."
+					return m, runGatewayDown()
+				}
+				return m, nil
+			}
 			if m.currentTab == tabPresets && m.staging != nil {
 				m.staging.Presets[m.cursor].Enabled = false
 				m.staging.SaveEx(true)
@@ -517,10 +558,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusNote = "guest paused"
 			}
 		case "d", "D":
-			if m.currentTab == tabGateway {
-				m.statusNote = "Applying 'gateway down' runtime rules..."
-				return m, runGatewayDown()
-			}
 			if m.currentTab == tabRelays && m.staging != nil && len(m.staging.CustomOutbounds) > 0 {
 				idx := m.cursor
 				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds[:idx], m.staging.CustomOutbounds[idx+1:]...)
@@ -643,18 +680,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.staging.SaveEx(true)
 				m.statusNote = "port cleared"
 			}
-		case "s", "S", " ":
-			if m.currentTab == tabGateway {
-				m.statusNote = "Applying 'gateway up' runtime rules..."
-				return m, runGatewayUp(m.active)
-			}
-			if m.currentTab == tabService && (s == "s" || s == "S") {
+		case "s", "S":
+			if m.currentTab == tabService {
 				m.statusNote = "starting service..."
 				m.serviceView = serviceDetailRuntime
 				return m, runServiceAction("start", "start")
-			}
-			if s == " " {
-				return m, nil
 			}
 			title, body := m.currentShowView()
 			if strings.TrimSpace(body) == "" {
@@ -839,7 +869,7 @@ func (m Model) getSelectedDetailContent() string {
 		if m.gatewayInputMode > 0 {
 			return m.renderGatewayChoices()
 		}
-		return "Press [Enter] to modify selection or toggle. [A] Apply config, [U] Reset config. [S/Space] gateway up, [D] gateway down."
+		return ""
 	}
 	return ""
 }
@@ -1345,7 +1375,7 @@ func renderFooter(tab sessionTab, width int) string {
 	} else if tab == tabGuests {
 		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
 	} else if tab == tabGateway {
-		keys = append(keys, "[Enter]Toggle/Select", "[S/Space]Up", "[D]Down", "[A]Apply", "[U]Undo")
+		keys = append(keys, "[Enter]Toggle/Select", "[+/-]Change State", "[A]Apply", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)

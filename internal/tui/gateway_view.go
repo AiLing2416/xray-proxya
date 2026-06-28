@@ -17,12 +17,13 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 	b.WriteString(lipgloss.NewStyle().Bold(true).Render(statusLine))
 	b.WriteString("\n\n")
 
-	// 2. Block B: Configuration Options
+	// 2. Block B: Configuration & Master Options
 	if staging == nil {
 		b.WriteString("No configuration loaded.")
 		return b.String()
 	}
 
+	isActive := nft && tun && fwd
 	rows := []struct {
 		label string
 		val   string
@@ -31,6 +32,7 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		{"LAN Gateway", getCheckboxText(staging.Gateway.LANEnabled)},
 		{"LAN Interface", staging.Gateway.LANInterface},
 		{"Outbound Relay", staging.Gateway.RelayAlias},
+		{"Gateway Rules", getCheckboxText(isActive)},
 	}
 
 	for i, r := range rows {
