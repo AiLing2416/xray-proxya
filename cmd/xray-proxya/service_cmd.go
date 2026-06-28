@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
@@ -85,11 +84,7 @@ var serviceInstallCmd = &cobra.Command{
 		}
 
 		home, _ := os.UserHomeDir()
-		if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-			if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-				home = u.HomeDir
-			}
-		} else if os.Geteuid() == 0 {
+		if os.Geteuid() == 0 && (home == "" || home == "/root") {
 			home = "/root"
 		}
 		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
@@ -184,11 +179,7 @@ var serviceStatusCmd = &cobra.Command{
 func installOpenRC(isRoot bool) {
 	binPath := xray.GetXrayProxyaPath()
 	home, _ := os.UserHomeDir()
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-			home = u.HomeDir
-		}
-	} else if os.Geteuid() == 0 {
+	if os.Geteuid() == 0 && (home == "" || home == "/root") {
 		home = "/root"
 	}
 	assetDir := filepath.Join(home, ".local", "share", "xray-proxya", "bin")

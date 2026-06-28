@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"os/user"
 	"path/filepath"
 	"strings"
 )
@@ -446,11 +445,7 @@ func GetConfigDir() string {
 		return envDir
 	}
 	home, _ := os.UserHomeDir()
-	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-		if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-			home = u.HomeDir
-		}
-	} else if os.Geteuid() == 0 && home == "" {
+	if os.Geteuid() == 0 && (home == "" || home == "/root") {
 		home = "/root"
 	}
 	dir := filepath.Join(home, ".config", "xray-proxya")
