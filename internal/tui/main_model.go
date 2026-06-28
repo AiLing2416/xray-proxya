@@ -28,6 +28,7 @@ const (
 	tabPresets
 	tabRelays
 	tabGuests
+	tabGateway
 )
 
 type inputMode int
@@ -273,9 +274,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
-			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+1)%5, 0, "", 0
+			visible := m.getVisibleTabs()
+			idx := 0
+			for i, t := range visible {
+				if t == m.currentTab {
+					idx = i
+					break
+				}
+			}
+			m.currentTab = visible[(idx+1)%len(visible)]
+			m.cursor, m.portBuffer, m.detailScroll = 0, "", 0
 		case "shift+tab":
-			m.currentTab, m.cursor, m.portBuffer, m.detailScroll = (m.currentTab+4)%5, 0, "", 0
+			visible := m.getVisibleTabs()
+			idx := 0
+			for i, t := range visible {
+				if t == m.currentTab {
+					idx = i
+					break
+				}
+			}
+			m.currentTab = visible[(idx+len(visible)-1)%len(visible)]
+			m.cursor, m.portBuffer, m.detailScroll = 0, "", 0
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -616,7 +635,7 @@ func (m Model) View() string {
 	}
 
 	// 2. Render Components
-	sidebar := renderSidebar(m.currentTab, mainHeight)
+	sidebar := m.renderSidebar(mainHeight)
 	cWidth := m.width - 12
 	var content string
 	switch m.currentTab {
@@ -630,6 +649,8 @@ func (m Model) View() string {
 		content = RenderRelays(m.active, m.staging, m.cursor, cWidth, m.relayResults)
 	case tabGuests:
 		content = RenderGuests(m.active, m.staging, m.cursor, cWidth)
+	case tabGateway:
+		content = RenderGateway(m.active, cWidth)
 	}
 
 	// Important: mainArea must NOT have internal newlines at the end
@@ -696,6 +717,9 @@ func (m Model) getSelectedDetailContent() string {
 		if len(links) > 0 {
 			return links[0]
 		}
+	}
+	if m.currentTab == tabGateway {
+		return "Press [A] to apply gateway configurations, [U] to undo changes."
 	}
 	return ""
 }
@@ -1200,17 +1224,37 @@ func renderFooter(tab sessionTab, width int) string {
 		keys = append(keys, "[A]Apply", "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
 	} else if tab == tabGuests {
 		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
+	} else if tab == tabGateway {
+		keys = append(keys, "[A]Apply", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
 }
 
-func renderSidebar(current sessionTab, height int) string {
+func (m Model) getVisibleTabs() []sessionTab {
+	if m.active == nil || m.active.Role == config.RoleServer {
+		return []sessionTab{tabStatus, tabService, tabPresets, tabRelays, tabGuests}
+	}
+	return []sessionTab{tabStatus, tabService, tabGateway, tabRelays}
+}
+
+func (m Model) renderSidebar(height int) string {
 	var b strings.Builder
-	items := []string{"HOME", "SERVICE", "PRESETS", "RELAYS", "GUESTS"}
-	for i, item := range items {
-		line := " " + item + " "
-		if sessionTab(i) == current {
+	visible := m.getVisibleTabs()
+
+	tabNames := map[sessionTab]string{
+		tabStatus:  "HOME",
+		tabService: "SERVICE",
+		tabPresets: "PRESETS",
+		tabRelays:  "RELAYS",
+		tabGuests:  "GUESTS",
+		tabGateway: "GATEWAY",
+	}
+
+	for _, tab := range visible {
+		name := tabNames[tab]
+		line := " " + name + " "
+		if tab == m.currentTab {
 			b.WriteString(lipgloss.NewStyle().Reverse(true).Render(line))
 		} else {
 			b.WriteString(line)
