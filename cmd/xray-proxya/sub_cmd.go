@@ -182,6 +182,30 @@ func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete str
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
+func completeGuestAliases(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	res := []string{"all"}
+	for _, g := range cfg.Guests {
+		res = append(res, g.Alias)
+	}
+	return res, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeRelayAliases(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	res := []string{"all"}
+	for _, co := range cfg.CustomOutbounds {
+		res = append(res, co.Alias)
+	}
+	return res, cobra.ShellCompDirectiveNoFileComp
+}
+
 func reconcileSubscriptions(cfg *config.UserConfig) bool {
 	changed := false
 
@@ -806,12 +830,19 @@ func init() {
 	subModeCmd.Flags().BoolVarP(&subNDP, "ndp", "n", true, "Enable NDP while rotating IPv6 addresses")
 
 	subModeCmd.RegisterFlagCompletionFunc("interface", completeNetworkInterfaces)
+	subModeCmd.RegisterFlagCompletionFunc("mode", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"fixed", "ipv6-rotate"}, cobra.ShellCompDirectiveNoFileComp
+	})
 
 	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Show guest subscription URL(s) (use 'all' or empty for all guests)")
 	subShowCmd.Flags().StringVarP(&subShowRelay, "relay", "r", "", "Show relay subscription URL(s) (use 'all' or empty for all relays)")
+	subShowCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
+	subShowCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
 
 	subResetCmd.Flags().StringVarP(&subResetGuest, "guest", "g", "", "Reset guest subscription URL token(s) (use 'all' or empty for all guests)")
 	subResetCmd.Flags().StringVarP(&subResetRelay, "relay", "r", "", "Reset relay subscription URL token(s) (use 'all' or empty for all relays)")
+	subResetCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
+	subResetCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
 
 	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTP port")
 
