@@ -11,6 +11,7 @@ import (
 	"time"
 	"xray-proxya/internal/camouflage"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -160,12 +161,25 @@ var runCmd = &cobra.Command{
 
 		cleanup := func() {
 			os.Remove(pidPath)
+			if cfg.Role == config.RoleGateway {
+				gateway.CleanupFirewall()
+			}
 		}
 
 		process, waitCh, err := startProcess(cfg)
 		if err != nil {
 			fmt.Printf("❌ Failed to start Xray: %v\n", err)
 			return
+		}
+
+		// Apply gateway firewall & routing rules on startup if role is gateway
+		if cfg.Role == config.RoleGateway {
+			fmt.Println("⚙️  Applying gateway firewall and routing rules...")
+			if err := gateway.ApplyFirewall(cfg); err != nil {
+				fmt.Printf("⚠️  Failed to apply gateway firewall rules: %v\n", err)
+			} else {
+				fmt.Println("✅ Gateway firewall and routing rules applied successfully.")
+			}
 		}
 
 		sigChan := make(chan os.Signal, 1)

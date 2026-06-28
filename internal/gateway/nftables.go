@@ -54,7 +54,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	defer os.Remove(tmpFile)
 
 	CleanupFirewall()
-	if err := SetupKernel(); err != nil {
+	if err := SetupKernel(lanIface); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
 	if err := run("sudo", "ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
@@ -99,7 +99,7 @@ func CleanupFirewall() {
 	_ = run("sudo", "ip", "-6", "route", "flush", "table", "100")
 }
 
-func SetupKernel() error {
+func SetupKernel(lanIface string) error {
 	if err := run("sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
@@ -117,6 +117,11 @@ func SetupKernel() error {
 	}
 	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.default.send_redirects=0"); err != nil {
 		return err
+	}
+	if lanIface != "" {
+		if err := run("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.send_redirects=0", lanIface)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
