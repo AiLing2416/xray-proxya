@@ -8,18 +8,58 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func RenderGateway(cfg *config.UserConfig, width int) string {
+func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tun, fwd bool) string {
 	var b strings.Builder
-	b.WriteString("Transparent Gateway Management\n")
-	b.WriteString(strings.Repeat("─", 30))
+
+	// 1. Block A: Compact Status Indicator
+	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD", 
+		getStatusEmoji(nft), getStatusEmoji(tun), getStatusEmoji(fwd))
+	b.WriteString(lipgloss.NewStyle().Bold(true).Render(statusLine))
 	b.WriteString("\n\n")
-	b.WriteString("This feature will be populated in subsequent tasks.\n\n")
-	if cfg != nil {
-		b.WriteString(fmt.Sprintf("Mode:          %s\n", cfg.Gateway.Mode))
-		b.WriteString(fmt.Sprintf("Local Enabled: %t\n", cfg.Gateway.LocalEnabled))
-		b.WriteString(fmt.Sprintf("LAN Enabled:   %t\n", cfg.Gateway.LANEnabled))
-		b.WriteString(fmt.Sprintf("LAN Interface: %s\n", cfg.Gateway.LANInterface))
-		b.WriteString(fmt.Sprintf("Relay Alias:   %s\n", cfg.Gateway.RelayAlias))
+
+	// 2. Block B: Configuration Options
+	if staging == nil {
+		b.WriteString("No configuration loaded.")
+		return b.String()
 	}
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+
+	rows := []struct {
+		label string
+		val   string
+	}{
+		{"Local Proxy", getCheckboxText(staging.Gateway.LocalEnabled)},
+		{"LAN Gateway", getCheckboxText(staging.Gateway.LANEnabled)},
+		{"LAN Interface", staging.Gateway.LANInterface},
+		{"Outbound Relay", staging.Gateway.RelayAlias},
+	}
+
+	for i, r := range rows {
+		valStr := r.val
+		if valStr == "" {
+			valStr = "none"
+		}
+		rowStr := fmt.Sprintf("  %-16s : %s", r.label, valStr)
+		if i == cursor {
+			b.WriteString(lipgloss.NewStyle().Reverse(true).Width(width).Render(rowStr))
+		} else {
+			b.WriteString(rowStr)
+		}
+		b.WriteString("\n")
+	}
+
+	return lipgloss.NewStyle().Padding(1, 1).Render(b.String())
+}
+
+func getStatusEmoji(val bool) string {
+	if val {
+		return "🟢"
+	}
+	return "🔴"
+}
+
+func getCheckboxText(val bool) string {
+	if val {
+		return "[X] enabled"
+	}
+	return "[ ] disabled"
 }

@@ -14,6 +14,7 @@ import (
 	"time"
 	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/sub"
 	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
@@ -138,6 +139,13 @@ type Model struct {
 
 	inputMode inputMode
 	textInput textinput.Model
+
+	gwNftables       bool
+	gwTun            bool
+	gwForward        bool
+	gatewayInputMode int // 0: normal, 1: selecting LAN interface, 2: selecting Relay
+	gatewayChoices   []string
+	gatewayChoiceIdx int
 }
 
 func tickStats(apiPort int) tea.Cmd {
@@ -165,7 +173,7 @@ func InitialModel() Model {
 	ti := textinput.New()
 	ti.Width = 60
 	localIP := utils.GetLocalIP()
-	return Model{
+	m := Model{
 		active:       active,
 		staging:      staging,
 		currentTab:   tabStatus,
@@ -178,6 +186,10 @@ func InitialModel() Model {
 		serviceState: xray.GetServiceState(),
 		textInput:    ti,
 	}
+	if active != nil && active.Role == config.RoleGateway {
+		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+	}
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
@@ -226,7 +238,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statsMsg:
 		m.directStat, m.relayStat, m.coreActive, m.corePID, m.lastStats = msg.direct, msg.relay, msg.active, msg.pid, msg.allStats
 		m.serviceState = msg.service
+		if m.active != nil && m.active.Role == config.RoleGateway {
+			m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+		}
 		return m, tickStats(m.active.APIInbound)
+	case gatewayActionResultMsg:
+		if msg.err != nil {
+			m.statusNote = fmt.Sprintf("❌ Gateway %s failed! View logs: tail -n 20 %s/xray.log", msg.action, config.GetConfigDir())
+		} else {
+			m.statusNote = fmt.Sprintf("✅ Gateway runtime rules applied (%s).", msg.action)
+		}
+		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+		return m, nil
 	case relayDetailMsg:
 		m.relayLoading = ""
 		if msg.err != nil && !strings.HasPrefix(msg.body, "__test__\n") {
@@ -270,6 +293,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
 		}
+		if m.gatewayInputMode > 0 {
+			switch s {
+			case "esc":
+				m.gatewayInputMode = 0
+				m.statusNote = "Selection cancelled."
+				return m, nil
+			case "enter":
+				if m.gatewayInputMode == 1 {
+					m.staging.Gateway.LANInterface = m.gatewayChoices[m.gatewayChoiceIdx]
+					if m.staging.Gateway.LANInterface == "none" {
+						m.staging.Gateway.LANInterface = ""
+					}
+					m.staging.SaveEx(true)
+					m.statusNote = "LAN Interface updated in staging."
+				} else if m.gatewayInputMode == 2 {
+					m.staging.Gateway.RelayAlias = m.gatewayChoices[m.gatewayChoiceIdx]
+					if m.staging.Gateway.RelayAlias == "direct" {
+						m.staging.Gateway.RelayAlias = ""
+					}
+					m.staging.SaveEx(true)
+					m.statusNote = "Outbound Relay updated in staging."
+				}
+				m.gatewayInputMode = 0
+				return m, nil
+			case "left":
+				if m.gatewayChoiceIdx > 0 {
+					m.gatewayChoiceIdx--
+				}
+				return m, nil
+			case "right":
+				if m.gatewayChoiceIdx < len(m.gatewayChoices)-1 {
+					m.gatewayChoiceIdx++
+				}
+				return m, nil
+			}
+			return m, nil
+		}
+
 		switch s {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -312,6 +373,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.currentTab == tabGuests {
 					max = len(m.staging.Guests) - 1
 				}
+				if m.currentTab == tabGateway {
+					max = 3
+				}
 			}
 			if m.cursor < max {
 				m.cursor++
@@ -345,6 +409,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.relayResults = make(map[string]relayTestMsg)
 			m.detailScroll = 0
 			m.statusNote = "staging reset"
+		case "enter":
+			if m.currentTab == tabGateway {
+				if m.cursor == 0 {
+					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
+					m.staging.SaveEx(true)
+					m.statusNote = "Local proxy toggled"
+				} else if m.cursor == 1 {
+					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
+					m.staging.SaveEx(true)
+					m.statusNote = "LAN gateway toggled"
+				} else if m.cursor == 2 {
+					ifaces, _ := net.Interfaces()
+					choices := []string{"none"}
+					for _, iface := range ifaces {
+						choices = append(choices, iface.Name)
+					}
+					m.gatewayInputMode = 1
+					m.gatewayChoices = choices
+					m.gatewayChoiceIdx = 0
+					for i, c := range choices {
+						if c == m.staging.Gateway.LANInterface {
+							m.gatewayChoiceIdx = i
+							break
+						}
+					}
+				} else if m.cursor == 3 {
+					choices := []string{"direct"}
+					for _, co := range m.staging.CustomOutbounds {
+						choices = append(choices, co.Alias)
+					}
+					m.gatewayInputMode = 2
+					m.gatewayChoices = choices
+					m.gatewayChoiceIdx = 0
+					for i, c := range choices {
+						if c == m.staging.Gateway.RelayAlias {
+							m.gatewayChoiceIdx = i
+							break
+						}
+					}
+				}
+				return m, nil
+			}
 		case "n", "N":
 			if m.currentTab == tabRelays {
 				m.relayAlias = ""
@@ -411,6 +517,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.statusNote = "guest paused"
 			}
 		case "d", "D":
+			if m.currentTab == tabGateway {
+				m.statusNote = "Applying 'gateway down' runtime rules..."
+				return m, runGatewayDown()
+			}
 			if m.currentTab == tabRelays && m.staging != nil && len(m.staging.CustomOutbounds) > 0 {
 				idx := m.cursor
 				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds[:idx], m.staging.CustomOutbounds[idx+1:]...)
@@ -533,11 +643,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.staging.SaveEx(true)
 				m.statusNote = "port cleared"
 			}
-		case "s", "S":
-			if m.currentTab == tabService {
+		case "s", "S", " ":
+			if m.currentTab == tabGateway {
+				m.statusNote = "Applying 'gateway up' runtime rules..."
+				return m, runGatewayUp(m.active)
+			}
+			if m.currentTab == tabService && (s == "s" || s == "S") {
 				m.statusNote = "starting service..."
 				m.serviceView = serviceDetailRuntime
 				return m, runServiceAction("start", "start")
+			}
+			if s == " " {
+				return m, nil
 			}
 			title, body := m.currentShowView()
 			if strings.TrimSpace(body) == "" {
@@ -650,7 +767,7 @@ func (m Model) View() string {
 	case tabGuests:
 		content = RenderGuests(m.active, m.staging, m.cursor, cWidth)
 	case tabGateway:
-		content = RenderGateway(m.active, cWidth)
+		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTun, m.gwForward)
 	}
 
 	// Important: mainArea must NOT have internal newlines at the end
@@ -719,7 +836,10 @@ func (m Model) getSelectedDetailContent() string {
 		}
 	}
 	if m.currentTab == tabGateway {
-		return "Press [A] to apply gateway configurations, [U] to undo changes."
+		if m.gatewayInputMode > 0 {
+			return m.renderGatewayChoices()
+		}
+		return "Press [Enter] to modify selection or toggle. [A] Apply config, [U] Reset config. [S/Space] gateway up, [D] gateway down."
 	}
 	return ""
 }
@@ -1225,7 +1345,7 @@ func renderFooter(tab sessionTab, width int) string {
 	} else if tab == tabGuests {
 		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
 	} else if tab == tabGateway {
-		keys = append(keys, "[A]Apply", "[U]Undo")
+		keys = append(keys, "[Enter]Toggle/Select", "[S/Space]Up", "[D]Down", "[A]Apply", "[U]Undo")
 	}
 	s := strings.Join(keys, "  ")
 	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
@@ -2175,4 +2295,60 @@ func buildGuestSubReport(cfg *config.UserConfig, guest config.GuestConfig, host 
 	b.WriteString(fmt.Sprintf("URL: %s\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken)))
 	b.WriteString(fmt.Sprintf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(guest, time.Now())))
 	return b.String()
+}
+
+func (m Model) renderGatewayChoices() string {
+	var b strings.Builder
+	if m.gatewayInputMode == 1 {
+		b.WriteString("Select LAN Interface: ")
+	} else if m.gatewayInputMode == 2 {
+		b.WriteString("Select Outbound Relay: ")
+	}
+	for i, c := range m.gatewayChoices {
+		if i > 0 {
+			b.WriteString("  ")
+		}
+		if i == m.gatewayChoiceIdx {
+			b.WriteString(lipgloss.NewStyle().Reverse(true).Render(" " + c + " "))
+		} else {
+			b.WriteString(" " + c + " ")
+		}
+	}
+	b.WriteString("  [Enter]Confirm [Esc]Cancel")
+	return b.String()
+}
+
+func checkGatewayStatus() (nft bool, tun bool, fwd bool) {
+	if _, err := net.InterfaceByName("proxya-tun"); err == nil {
+		tun = true
+	}
+	cmd := exec.Command("nft", "list", "table", "inet", "xray_proxya")
+	if err := cmd.Run(); err == nil {
+		nft = true
+	}
+	if data, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward"); err == nil {
+		if strings.TrimSpace(string(data)) == "1" {
+			fwd = true
+		}
+	}
+	return
+}
+
+type gatewayActionResultMsg struct {
+	action string
+	err    error
+}
+
+func runGatewayUp(cfg *config.UserConfig) tea.Cmd {
+	return func() tea.Msg {
+		err := gateway.ApplyFirewall(cfg)
+		return gatewayActionResultMsg{action: "up", err: err}
+	}
+}
+
+func runGatewayDown() tea.Cmd {
+	return func() tea.Msg {
+		gateway.CleanupFirewall()
+		return gatewayActionResultMsg{action: "down", err: nil}
+	}
 }
