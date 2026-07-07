@@ -134,6 +134,18 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	if err := run("sudo", "nft", "-f", tmpFile); err != nil {
 		return err
 	}
+
+	// Ensure system filter table and forward chain exist
+	_ = run("sudo", "nft", "add", "table", "inet", "filter")
+	_ = run("sudo", "nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
+
+	// Add forward rules to allow traffic to/from proxya-tun and bypassed local interface traffic
+	_ = run("sudo", "nft", "add", "rule", "inet", "filter", "forward", "iifname", tunName, "accept", "comment", "\"xray-proxya\"")
+	_ = run("sudo", "nft", "add", "rule", "inet", "filter", "forward", "oifname", tunName, "accept", "comment", "\"xray-proxya\"")
+	if lanIface != "" {
+		_ = run("sudo", "nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", lanIface, "accept", "comment", "\"xray-proxya\"")
+	}
+
 	return nil
 }
 
@@ -153,6 +165,7 @@ func deleteRulesByPref(pref string, ipv6 bool) {
 
 func CleanupFirewall() {
 	_ = run("sudo", "nft", "delete", "table", "inet", tableName)
+	cleanupFilterForwardRules()
 	
 	deleteRulesByPref("10", false)
 	deleteRulesByPref("50", false)
@@ -510,4 +523,31 @@ func run(name string, args ...string) error {
 		return fmt.Errorf("command %s %v failed: %w (output: %q)", name, args, err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+func cleanupFilterForwardRules() {
+	out, err := exec.Command("sudo", "nft", "-a", "list", "chain", "inet", "filter", "forward").Output()
+	if err != nil {
+		return
+	}
+	lines := strings.Split(string(out), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "xray-proxya") || strings.Contains(line, "proxya-tun") {
+			idx := strings.Index(line, "handle ")
+			if idx != -1 {
+				handleStr := strings.TrimSpace(line[idx+7:])
+				digits := ""
+				for _, r := range handleStr {
+					if r >= '0' && r <= '9' {
+						digits += string(r)
+					} else {
+						break
+					}
+				}
+				if digits != "" {
+					_ = run("sudo", "nft", "delete", "rule", "inet", "filter", "forward", "handle", digits)
+				}
+			}
+		}
+	}
 }

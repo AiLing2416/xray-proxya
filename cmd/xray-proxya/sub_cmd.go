@@ -412,7 +412,8 @@ var subEnableCmd = &cobra.Command{
 
 			content := fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Subscription Server
-After=network.target xray-proxya.service
+After=network-online.target xray-proxya.service
+Wants=network-online.target
 
 [Service]
 Type=simple

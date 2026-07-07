@@ -412,9 +412,10 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if dnsInPort > 0 {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"})
 	}
+	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
+	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
 	rules = append(rules,
-		map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"},
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	)
 

@@ -30,7 +30,8 @@ func getSystemdPath() string {
 func buildSystemdServiceContent(binPath string, workDir string, assetDir string, logPath string, configDir string) string {
 	return fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Service
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
