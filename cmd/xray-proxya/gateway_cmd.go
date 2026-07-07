@@ -44,7 +44,8 @@ var gatewayStatusCmd = &cobra.Command{
 		fmt.Printf("Relay:       %s\n", cfg.Gateway.RelayAlias)
 		fmt.Printf("LAN Iface:   %s\n", cfg.Gateway.LANInterface)
 		fmt.Printf("State:       %s\n", cfg.Gateway.State)
-		fmt.Printf("Bypass DNS:  %s\n\n", strings.Join(cfg.Gateway.BypassDNS, ", "))
+		fmt.Printf("Bypass DNS:  %s\n", strings.Join(cfg.Gateway.BypassDNS, ", "))
+		fmt.Printf("Bypass Geo:  %s\n\n", strings.Join(cfg.Gateway.BypassCountries, ", "))
 	},
 }
 
@@ -177,6 +178,10 @@ var gatewaySetCmd = &cobra.Command{
 		if cmd.Flags().Changed("bypass-dns") {
 			bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
 			cfg.Gateway.BypassDNS = bypassDNS
+		}
+		if cmd.Flags().Changed("bypass-countries") {
+			bypassCountries, _ := cmd.Flags().GetStringSlice("bypass-countries")
+			cfg.Gateway.BypassCountries = bypassCountries
 		}
 
 		cfg.SaveEx(true)
@@ -313,10 +318,15 @@ func init() {
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
+	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
 	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, forward-only, proxy)")
 
 	gatewaySetCmd.RegisterFlagCompletionFunc("state", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"disabled", "forward-only", "proxy"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	gatewaySetCmd.RegisterFlagCompletionFunc("bypass-countries", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"CN", "US", "HK", "SG", "JP", "TW", "GB", "DE"}, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	// Dynamic completions

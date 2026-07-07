@@ -568,3 +568,69 @@ func assertStringSliceEqual(t *testing.T, got []string, want []string) {
 		}
 	}
 }
+
+func TestGenerateXrayJSONBypassCountries(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:            "tun",
+			RelayAlias:      "us-relay",
+			BypassCountries: []string{"CN", "US"},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "us-relay", Enabled: true, UserUUID: "some-uuid"},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	routing := getMap(t, parsed, "routing")
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		t.Fatalf("routing.rules has type %T, want []interface{}", routing["rules"])
+	}
+
+	foundDomainRule := false
+	foundIPRule := false
+	for _, ruleRaw := range rules {
+		rule, ok := ruleRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		outbound, _ := rule["outboundTag"].(string)
+		if outbound != "direct" {
+			continue
+		}
+		inboundsRaw, _ := rule["inboundTag"].([]interface{})
+		if len(inboundsRaw) != 1 || inboundsRaw[0] != "tun-in" {
+			continue
+		}
+
+		if domainsRaw, ok := rule["domain"].([]interface{}); ok {
+			domains := make([]string, 0, len(domainsRaw))
+			for _, d := range domainsRaw {
+				domains = append(domains, d.(string))
+			}
+			if len(domains) == 1 && domains[0] == "geosite:cn" {
+				foundDomainRule = true
+			}
+		}
+
+		if ipsRaw, ok := rule["ip"].([]interface{}); ok {
+			ips := make([]string, 0, len(ipsRaw))
+			for _, ip := range ipsRaw {
+				ips = append(ips, ip.(string))
+			}
+			if len(ips) == 2 && ips[0] == "geoip:cn" && ips[1] == "geoip:us" {
+				foundIPRule = true
+			}
+		}
+	}
+
+	if !foundDomainRule {
+		t.Errorf("expected bypass domain routing rule not found or incorrect")
+	}
+	if !foundIPRule {
+		t.Errorf("expected bypass ip routing rule not found or incorrect")
+	}
+}
+

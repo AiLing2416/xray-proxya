@@ -126,13 +126,14 @@ type GuestConfig struct {
 }
 
 type GatewayConfig struct {
-	LocalEnabled bool     `json:"local_enabled"`
-	LANEnabled   bool     `json:"lan_enabled"`
-	Mode         string   `json:"mode"` // "tun" or "tproxy"
-	RelayAlias   string   `json:"relay_alias"`
-	LANInterface string   `json:"lan_interface"`
-	BypassDNS    []string `json:"bypass_dns,omitempty"`
-	State        string   `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
+	LocalEnabled    bool     `json:"local_enabled"`
+	LANEnabled      bool     `json:"lan_enabled"`
+	Mode            string   `json:"mode"` // "tun" or "tproxy"
+	RelayAlias      string   `json:"relay_alias"`
+	LANInterface    string   `json:"lan_interface"`
+	BypassDNS       []string `json:"bypass_dns,omitempty"`
+	State           string   `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
+	BypassCountries []string `json:"bypass_countries,omitempty"`
 }
 
 type CustomOutbound struct {
@@ -307,6 +308,13 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		if changed {
 			cfg.Gateway.BypassDNS = normalized
 			changes = append(changes, "normalized gateway.bypass_dns")
+		}
+	}
+	if cfg.Gateway.BypassCountries != nil {
+		normalized, changed := normalizeStringSlice(cfg.Gateway.BypassCountries)
+		if changed {
+			cfg.Gateway.BypassCountries = normalized
+			changes = append(changes, "normalized gateway.bypass_countries")
 		}
 	}
 	if strings.TrimSpace(cfg.GuestSubBind) == "" {

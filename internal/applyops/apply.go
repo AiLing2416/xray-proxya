@@ -193,6 +193,10 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubContentChanged = true
 		mark("gateway.relay_alias")
 	}
+	if !reflect.DeepEqual(activeCfg.Gateway.BypassCountries, stagingCfg.Gateway.BypassCountries) {
+		impact.XrayConfigChanged = true
+		mark("gateway.bypass_countries")
+	}
 	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
 		if activeCfg.AdminSub.Port != stagingCfg.AdminSub.Port {
 			impact.SubListenerChanged = true

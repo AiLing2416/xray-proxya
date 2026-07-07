@@ -43,6 +43,7 @@ const (
 	inputSetGuestReset
 	inputSetGuestOutbound
 	inputRelayResolveDomain
+	inputBypassCountries
 )
 
 type statsMsg struct {
@@ -412,7 +413,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					max = len(m.staging.Guests) - 1
 				}
 				if m.currentTab == tabGateway {
-					max = 5
+					max = 6
 				}
 			}
 			if m.cursor < max {
@@ -508,6 +509,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
+				} else if m.cursor == 6 {
+					m.startInput(inputBypassCountries, "Bypass countries (comma separated, e.g., CN)", strings.Join(m.staging.Gateway.BypassCountries, ", "))
 				}
 				return m, nil
 			}
@@ -2077,6 +2080,8 @@ func (m Model) inputTitle() string {
 		return "SET GUEST OUTBOUND"
 	case inputRelayResolveDomain:
 		return "RESOLVE DOMAIN VIA RELAY"
+	case inputBypassCountries:
+		return "SET BYPASS COUNTRIES"
 	default:
 		return "INPUT"
 	}
@@ -2148,6 +2153,18 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			m.statusNote = "resolving via relay..."
 			return m, fetchRelayResolve(alias, value)
 		}
+	case inputBypassCountries:
+		var countries []string
+		parts := strings.Split(value, ",")
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed != "" {
+				countries = append(countries, trimmed)
+			}
+		}
+		m.staging.Gateway.BypassCountries = countries
+		m.staging.SaveEx(true)
+		m.statusNote = "Bypass countries updated"
 	}
 	return m, nil
 }

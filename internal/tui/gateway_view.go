@@ -35,6 +35,8 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 			return active.Gateway.LANInterface != staging.Gateway.LANInterface
 		case 4:
 			return active.Gateway.RelayAlias != staging.Gateway.RelayAlias
+		case 5:
+			return !sliceEqual(active.Gateway.BypassCountries, staging.Gateway.BypassCountries)
 		}
 		return false
 	}
@@ -99,6 +101,13 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 	}
 	stateStatus := "READY"
 
+	// Bypass Countries (Non-Bool)
+	bypassInfo := strings.Join(staging.Gateway.BypassCountries, ", ")
+	if bypassInfo == "" {
+		bypassInfo = "none"
+	}
+	bypassStatus := "READY"
+
 	rows := [][]string{
 		{getIndicator(0), "Gateway State", stateInfo, stateStatus, ""},
 		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
@@ -106,6 +115,7 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		{getIndicator(2), "LAN Gateway", lanInfo, lanStatus, lanIP},
 		{getIndicator(3), "LAN Interface", ifaceInfo, ifaceStatus, ""},
 		{getIndicator(4), "Outbound Relay", relayInfo, relayStatus, ""},
+		{getIndicator(5), "Bypass Geo", bypassInfo, bypassStatus, ""},
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)
@@ -156,4 +166,16 @@ func getBoolStatus(val bool) string {
 		return "UP"
 	}
 	return "DOWN"
+}
+
+func sliceEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -418,6 +418,36 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	)
 
+	if isGateway && len(userCfg.Gateway.BypassCountries) > 0 {
+		var bypassGeoIPs []string
+		var bypassGeoSites []string
+		for _, country := range userCfg.Gateway.BypassCountries {
+			code := strings.ToLower(strings.TrimSpace(country))
+			if code != "" {
+				if code == "cn" {
+					bypassGeoSites = append(bypassGeoSites, "geosite:"+code)
+				}
+				bypassGeoIPs = append(bypassGeoIPs, "geoip:"+code)
+			}
+		}
+		if len(bypassGeoSites) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{"tun-in"},
+				"domain":      bypassGeoSites,
+				"outboundTag": "direct",
+			})
+		}
+		if len(bypassGeoIPs) > 0 {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{"tun-in"},
+				"ip":          bypassGeoIPs,
+				"outboundTag": "direct",
+			})
+		}
+	}
+
 	if relayAlias != "" {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
