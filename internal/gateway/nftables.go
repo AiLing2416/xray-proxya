@@ -33,13 +33,36 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	if cfg.Gateway.Mode != "tun" {
 		return nil
 	}
-	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
+
+	state := cfg.Gateway.State
+	if state == "" {
+		state = "proxy"
+	}
+
+	if state == "disabled" {
+		CleanupFirewall()
 		return nil
 	}
 
 	lanIface := cfg.Gateway.LANInterface
 	if lanIface == "" {
 		return fmt.Errorf("gateway LAN interface is not configured; run 'gateway set --lan <iface>'")
+	}
+
+	if state == "forward-only" {
+		CleanupFirewall()
+		if err := SetupKernel(lanIface); err != nil {
+			return fmt.Errorf("kernel setup failed: %w", err)
+		}
+		return nil
+	}
+
+	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
+		CleanupFirewall()
+		if err := SetupKernel(lanIface); err != nil {
+			return fmt.Errorf("kernel setup failed: %w", err)
+		}
+		return nil
 	}
 
 	lanCIDR, err := getInterfaceCIDR(lanIface)
@@ -176,7 +199,17 @@ func ParseDefaultInterface(routeOutput string) (string, error) {
 }
 
 func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
-	if cfg == nil || cfg.Role != config.RoleGateway || cfg.Gateway.Mode != "tun" || (!cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled) {
+	if cfg == nil || cfg.Role != config.RoleGateway || cfg.Gateway.Mode != "tun" {
+		return "", nil
+	}
+	state := cfg.Gateway.State
+	if state == "" {
+		state = "proxy"
+	}
+	if state == "disabled" || state == "forward-only" {
+		return "", nil
+	}
+	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
 		return "", nil
 	}
 	if cfg.Gateway.LANInterface == "" {
@@ -206,6 +239,32 @@ func Verify(cfg *config.UserConfig) []string {
 	} else if _, err := net.InterfaceByName(cfg.Gateway.LANInterface); err != nil {
 		problems = append(problems, fmt.Sprintf("LAN interface %s not found", cfg.Gateway.LANInterface))
 	}
+
+	state := cfg.Gateway.State
+	if state == "" {
+		state = "proxy"
+	}
+
+	if state == "disabled" {
+		if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err == nil {
+			problems = append(problems, "nft table inet "+tableName+" is still present but gateway state is disabled")
+		}
+		return problems
+	}
+
+	// For both forward-only and proxy, check IP forwarding is enabled
+	if out, err := exec.Command("sysctl", "-n", "net.ipv4.ip_forward").Output(); err != nil || strings.TrimSpace(string(out)) != "1" {
+		problems = append(problems, "net.ipv4.ip_forward is not enabled")
+	}
+
+	if state == "forward-only" {
+		if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err == nil {
+			problems = append(problems, "nft table inet "+tableName+" is present but gateway state is forward-only")
+		}
+		return problems
+	}
+
+	// For proxy state, perform full verification
 	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
 		problems = append(problems, tunName+" interface is not present")
 	} else {

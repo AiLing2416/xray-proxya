@@ -194,7 +194,54 @@ func installOpenRC(isRoot bool) {
 	fmt.Println("✅ OpenRC service installed (Disabled by default).")
 }
 
+var (
+	serviceNow bool
+)
+
+var serviceEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Enable autostart for the system service",
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := xray.EnableService(serviceNow); err != nil {
+			fmt.Printf("❌ Failed to enable service: %v\n", err)
+			os.Exit(1)
+		}
+		if serviceNow {
+			fmt.Println("✅ Service enabled and started.")
+		} else {
+			fmt.Println("✅ Service enabled.")
+		}
+	},
+}
+
+var serviceDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Disable autostart for the system service",
+	Run: func(cmd *cobra.Command, args []string) {
+		if err := xray.DisableService(serviceNow); err != nil {
+			fmt.Printf("❌ Failed to disable service: %v\n", err)
+			os.Exit(1)
+		}
+		if serviceNow {
+			fmt.Println("✅ Service disabled and stopped.")
+		} else {
+			fmt.Println("✅ Service disabled.")
+		}
+	},
+}
+
 func init() {
-	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStartCmd, serviceStopCmd, serviceRestartCmd, serviceStatusCmd)
+	serviceEnableCmd.Flags().BoolVar(&serviceNow, "now", false, "Start the service immediately after enabling")
+	serviceDisableCmd.Flags().BoolVar(&serviceNow, "now", false, "Stop the service immediately after disabling")
+	serviceCmd.AddCommand(
+		serviceInstallCmd,
+		serviceUninstallCmd,
+		serviceStartCmd,
+		serviceStopCmd,
+		serviceRestartCmd,
+		serviceStatusCmd,
+		serviceEnableCmd,
+		serviceDisableCmd,
+	)
 	rootCmd.AddCommand(serviceCmd)
 }

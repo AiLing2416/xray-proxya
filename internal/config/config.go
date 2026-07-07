@@ -132,6 +132,7 @@ type GatewayConfig struct {
 	RelayAlias   string   `json:"relay_alias"`
 	LANInterface string   `json:"lan_interface"`
 	BypassDNS    []string `json:"bypass_dns,omitempty"`
+	State        string   `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
 }
 
 type CustomOutbound struct {
@@ -274,9 +275,32 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		cfg.AdminSub.TargetType = "direct"
 		changes = append(changes, "set missing admin_sub.target_type=direct")
 	}
-	if cfg.Role == RoleGateway && cfg.Gateway.Mode == "" {
-		cfg.Gateway.Mode = "tun"
-		changes = append(changes, "set missing gateway.mode=tun")
+	if cfg.Role == RoleGateway {
+		if cfg.Gateway.Mode == "" {
+			cfg.Gateway.Mode = "tun"
+			changes = append(changes, "set missing gateway.mode=tun")
+		}
+		if cfg.Gateway.State == "" {
+			if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {
+				cfg.Gateway.State = "proxy"
+				changes = append(changes, "initialized gateway.state to proxy")
+			} else {
+				cfg.Gateway.State = "disabled"
+				changes = append(changes, "initialized gateway.state to disabled")
+			}
+		} else {
+			state := strings.ToLower(strings.TrimSpace(cfg.Gateway.State))
+			switch state {
+			case "disabled", "forward-only", "proxy":
+				if state != cfg.Gateway.State {
+					cfg.Gateway.State = state
+					changes = append(changes, "normalized gateway.state")
+				}
+			default:
+				cfg.Gateway.State = "disabled"
+				changes = append(changes, "reset invalid gateway.state to disabled")
+			}
+		}
 	}
 	if cfg.Gateway.BypassDNS != nil {
 		normalized, changed := normalizeStringSlice(cfg.Gateway.BypassDNS)

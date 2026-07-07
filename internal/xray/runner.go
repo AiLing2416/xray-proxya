@@ -625,3 +625,61 @@ func DownloadXray() error {
 	}
 	return nil
 }
+
+func EnableService(now bool) error {
+	isRoot := os.Geteuid() == 0
+	if !isRoot {
+		return fmt.Errorf("this command requires root privileges")
+	}
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		if hasSystemdService("xray-proxya.service") {
+			args := []string{"enable"}
+			if now {
+				args = append(args, "--now")
+			}
+			args = append(args, "xray-proxya")
+			return exec.Command("systemctl", args...).Run()
+		}
+	}
+	if _, err := exec.LookPath("rc-update"); err == nil {
+		if err := exec.Command("rc-update", "add", "xray-proxya", "default").Run(); err != nil {
+			return err
+		}
+		if now {
+			if _, err := exec.LookPath("rc-service"); err == nil {
+				return exec.Command("rc-service", "xray-proxya", "start").Run()
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("no supported init system (systemd/openrc) found")
+}
+
+func DisableService(now bool) error {
+	isRoot := os.Geteuid() == 0
+	if !isRoot {
+		return fmt.Errorf("this command requires root privileges")
+	}
+	if _, err := exec.LookPath("systemctl"); err == nil {
+		if hasSystemdService("xray-proxya.service") {
+			args := []string{"disable"}
+			if now {
+				args = append(args, "--now")
+			}
+			args = append(args, "xray-proxya")
+			return exec.Command("systemctl", args...).Run()
+		}
+	}
+	if _, err := exec.LookPath("rc-update"); err == nil {
+		if err := exec.Command("rc-update", "del", "xray-proxya", "default").Run(); err != nil {
+			return err
+		}
+		if now {
+			if _, err := exec.LookPath("rc-service"); err == nil {
+				return exec.Command("rc-service", "xray-proxya", "stop").Run()
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("no supported init system (systemd/openrc) found")
+}

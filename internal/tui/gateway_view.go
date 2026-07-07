@@ -26,12 +26,14 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		}
 		switch rowIdx {
 		case 0:
-			return active.Gateway.LocalEnabled != staging.Gateway.LocalEnabled
+			return active.Gateway.State != staging.Gateway.State
 		case 1:
-			return active.Gateway.LANEnabled != staging.Gateway.LANEnabled
+			return active.Gateway.LocalEnabled != staging.Gateway.LocalEnabled
 		case 2:
-			return active.Gateway.LANInterface != staging.Gateway.LANInterface
+			return active.Gateway.LANEnabled != staging.Gateway.LANEnabled
 		case 3:
+			return active.Gateway.LANInterface != staging.Gateway.LANInterface
+		case 4:
 			return active.Gateway.RelayAlias != staging.Gateway.RelayAlias
 		}
 		return false
@@ -90,12 +92,20 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 	rulesInfo := getBoolText(isActiveRules)
 	rulesStatus := getBoolStatus(isActiveRules)
 
+	// Gateway State (Non-Bool)
+	stateInfo := strings.ToUpper(staging.Gateway.State)
+	if stateInfo == "" {
+		stateInfo = "DISABLED"
+	}
+	stateStatus := "READY"
+
 	rows := [][]string{
 		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
-		{getIndicator(0), "Local Proxy", localInfo, localStatus, localIP},
-		{getIndicator(1), "LAN Gateway", lanInfo, lanStatus, lanIP},
-		{getIndicator(2), "LAN Interface", ifaceInfo, ifaceStatus, ""},
-		{getIndicator(3), "Outbound Relay", relayInfo, relayStatus, ""},
+		{getIndicator(0), "Gateway State", stateInfo, stateStatus, ""},
+		{getIndicator(1), "Local Proxy", localInfo, localStatus, localIP},
+		{getIndicator(2), "LAN Gateway", lanInfo, lanStatus, lanIP},
+		{getIndicator(3), "LAN Interface", ifaceInfo, ifaceStatus, ""},
+		{getIndicator(4), "Outbound Relay", relayInfo, relayStatus, ""},
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)

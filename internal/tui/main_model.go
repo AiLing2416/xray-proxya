@@ -348,6 +348,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					m.staging.SaveEx(true)
 					m.statusNote = "Outbound Relay updated in staging."
+				} else if m.gatewayInputMode == 3 {
+					m.staging.Gateway.State = m.gatewayChoices[m.gatewayChoiceIdx]
+					m.staging.SaveEx(true)
+					m.statusNote = "Gateway State updated in staging."
 				}
 				m.gatewayInputMode = 0
 				return m, nil
@@ -408,7 +412,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					max = len(m.staging.Guests) - 1
 				}
 				if m.currentTab == tabGateway {
-					max = 4
+					max = 5
 				}
 			}
 			if m.cursor < max {
@@ -455,14 +459,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, runGatewayUp(m.active)
 					}
 				} else if m.cursor == 1 {
+					choices := []string{"disabled", "forward-only", "proxy"}
+					m.gatewayInputMode = 3
+					m.gatewayChoices = choices
+					m.gatewayChoiceIdx = 0
+					for i, c := range choices {
+						if c == m.staging.Gateway.State {
+							m.gatewayChoiceIdx = i
+							break
+						}
+					}
+				} else if m.cursor == 2 {
 					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
 					m.staging.SaveEx(true)
 					m.statusNote = "Local proxy toggled"
-				} else if m.cursor == 2 {
+				} else if m.cursor == 3 {
 					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
 					m.staging.SaveEx(true)
 					m.statusNote = "LAN gateway toggled"
-				} else if m.cursor == 3 {
+				} else if m.cursor == 4 {
 					ifaces, _ := net.Interfaces()
 					choices := []string{"none"}
 					for _, iface := range ifaces {
@@ -479,7 +494,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-				} else if m.cursor == 4 {
+				} else if m.cursor == 5 {
 					choices := []string{"direct"}
 					for _, co := range m.staging.CustomOutbounds {
 						choices = append(choices, co.Alias)
@@ -2380,6 +2395,8 @@ func (m Model) renderGatewayChoices() string {
 		b.WriteString("Select LAN Interface: ")
 	} else if m.gatewayInputMode == 2 {
 		b.WriteString("Select Outbound Relay: ")
+	} else if m.gatewayInputMode == 3 {
+		b.WriteString("Select Gateway State: ")
 	}
 	for i, c := range m.gatewayChoices {
 		if i > 0 {
