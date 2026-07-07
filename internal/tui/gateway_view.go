@@ -100,8 +100,8 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 	stateStatus := "READY"
 
 	rows := [][]string{
-		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
 		{getIndicator(0), "Gateway State", stateInfo, stateStatus, ""},
+		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
 		{getIndicator(1), "Local Proxy", localInfo, localStatus, localIP},
 		{getIndicator(2), "LAN Gateway", lanInfo, lanStatus, lanIP},
 		{getIndicator(3), "LAN Interface", ifaceInfo, ifaceStatus, ""},

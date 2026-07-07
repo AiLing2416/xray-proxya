@@ -450,15 +450,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			if m.currentTab == tabGateway {
 				if m.cursor == 0 {
-					isActive := m.gwNftables && m.gwTun && m.gwForward
-					if isActive {
-						m.statusNote = "Applying 'gateway down' runtime rules..."
-						return m, runGatewayDown()
-					} else {
-						m.statusNote = "Applying 'gateway up' runtime rules..."
-						return m, runGatewayUp(m.active)
-					}
-				} else if m.cursor == 1 {
 					choices := []string{"disabled", "forward-only", "proxy"}
 					m.gatewayInputMode = 3
 					m.gatewayChoices = choices
@@ -468,6 +459,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.gatewayChoiceIdx = i
 							break
 						}
+					}
+				} else if m.cursor == 1 {
+					isActive := m.gwNftables && m.gwTun && m.gwForward
+					if isActive {
+						m.statusNote = "Applying 'gateway down' runtime rules..."
+						return m, runGatewayDown()
+					} else {
+						m.statusNote = "Applying 'gateway up' runtime rules..."
+						return m, runGatewayUp(m.active)
 					}
 				} else if m.cursor == 2 {
 					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
