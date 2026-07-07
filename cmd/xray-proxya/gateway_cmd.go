@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/tui"
@@ -41,7 +42,8 @@ var gatewayStatusCmd = &cobra.Command{
 		fmt.Printf("Local Proxy: %s\n", localState)
 		fmt.Printf("LAN Gateway: %s\n", lanState)
 		fmt.Printf("Relay:       %s\n", cfg.Gateway.RelayAlias)
-		fmt.Printf("LAN Iface:   %s\n\n", cfg.Gateway.LANInterface)
+		fmt.Printf("LAN Iface:   %s\n", cfg.Gateway.LANInterface)
+		fmt.Printf("Bypass DNS:  %s\n\n", strings.Join(cfg.Gateway.BypassDNS, ", "))
 	},
 }
 
@@ -161,6 +163,10 @@ var gatewaySetCmd = &cobra.Command{
 				}
 			}
 			cfg.Gateway.LANInterface = lan
+		}
+		if cmd.Flags().Changed("bypass-dns") {
+			bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
+			cfg.Gateway.BypassDNS = bypassDNS
 		}
 
 		cfg.SaveEx(true)
@@ -296,6 +302,7 @@ var gatewayRollbackCompatCmd = &cobra.Command{
 func init() {
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
+	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 
 	// Dynamic completions
 	gatewaySetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

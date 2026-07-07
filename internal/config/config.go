@@ -131,6 +131,7 @@ type GatewayConfig struct {
 	Mode         string   `json:"mode"` // "tun" or "tproxy"
 	RelayAlias   string   `json:"relay_alias"`
 	LANInterface string   `json:"lan_interface"`
+	BypassDNS    []string `json:"bypass_dns,omitempty"`
 }
 
 type CustomOutbound struct {
@@ -276,6 +277,13 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if cfg.Role == RoleGateway && cfg.Gateway.Mode == "" {
 		cfg.Gateway.Mode = "tun"
 		changes = append(changes, "set missing gateway.mode=tun")
+	}
+	if cfg.Gateway.BypassDNS != nil {
+		normalized, changed := normalizeStringSlice(cfg.Gateway.BypassDNS)
+		if changed {
+			cfg.Gateway.BypassDNS = normalized
+			changes = append(changes, "normalized gateway.bypass_dns")
+		}
 	}
 	if strings.TrimSpace(cfg.GuestSubBind) == "" {
 		cfg.GuestSubBind = "127.0.0.1"

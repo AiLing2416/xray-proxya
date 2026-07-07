@@ -46,7 +46,8 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	if err != nil {
 		return fmt.Errorf("detect LAN subnet for %s: %w", lanIface, err)
 	}
-	rules := buildNFT(cfg, lanIface, lanCIDR)
+	lanIPv6CIDR, _ := getInterfaceIPv6CIDR(lanIface)
+	rules := buildNFT(cfg, lanIface, lanCIDR, lanIPv6CIDR)
 	tmpFile := filepath.Join(os.TempDir(), "xray-proxya.nft")
 	if err := os.WriteFile(tmpFile, []byte(rules), 0600); err != nil {
 		return fmt.Errorf("write nft rules: %w", err)
@@ -62,6 +63,11 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 	if err := run("sudo", "ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
 		return err
+	}
+
+	ipv6Supported := false
+	if _, err := os.Stat("/proc/net/if_inet6"); err == nil {
+		ipv6Supported = true
 	}
 
 	if err := run("sudo", "ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
@@ -80,6 +86,26 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		return err
 	}
 
+	if ipv6Supported {
+		if err := run("sudo", "ip", "-6", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
+			return err
+		}
+		if err := run("sudo", "ip", "-6", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
+			return err
+		}
+		if lanIPv6CIDR != "" {
+			if err := run("sudo", "ip", "-6", "rule", "add", "to", lanIPv6CIDR, "table", "main", "pref", "50"); err != nil {
+				return err
+			}
+		}
+		if err := run("sudo", "ip", "-6", "rule", "add", "to", "::1/128", "table", "main", "pref", "51"); err != nil {
+			return err
+		}
+		if err := run("sudo", "ip", "-6", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
+			return err
+		}
+	}
+
 	if err := run("sudo", "nft", "-f", tmpFile); err != nil {
 		return err
 	}
@@ -95,6 +121,7 @@ func CleanupFirewall() {
 	_ = run("sudo", "ip", "route", "flush", "table", "100")
 	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "10")
 	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "50")
+	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "51")
 	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "100")
 	_ = run("sudo", "ip", "-6", "route", "flush", "table", "100")
 }
@@ -159,7 +186,8 @@ func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return buildNFT(cfg, cfg.Gateway.LANInterface, lanCIDR), nil
+	lanIPv6CIDR, _ := getInterfaceIPv6CIDR(cfg.Gateway.LANInterface)
+	return buildNFT(cfg, cfg.Gateway.LANInterface, lanCIDR, lanIPv6CIDR), nil
 }
 
 func Verify(cfg *config.UserConfig) []string {
@@ -180,8 +208,17 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
 		problems = append(problems, tunName+" interface is not present")
-	} else if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
-		problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
+	} else {
+		if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
+			problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
+		}
+		ipv6Supported := false
+		if _, err := os.Stat("/proc/net/if_inet6"); err == nil {
+			ipv6Supported = true
+		}
+		if ipv6Supported && !interfaceHasCIDR(tunName, tunIPv6CIDR) {
+			problems = append(problems, tunName+" is missing IPv6 address "+tunIPv6CIDR)
+		}
 	}
 	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err != nil {
 		problems = append(problems, "nft table inet "+tableName+" is not present")
@@ -206,7 +243,7 @@ func interfaceHasCIDR(name, cidr string) bool {
 	return false
 }
 
-func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR string) string {
+func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) string {
 	var b strings.Builder
 	b.WriteString("table inet " + tableName + " {\n")
 	if cfg.Gateway.LANEnabled {
@@ -216,8 +253,29 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR string) string {
 		b.WriteString("        iifname != \"" + lanIface + "\" return\n")
 		b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
 		b.WriteString("        ip daddr " + lanCIDR + " return\n")
+		b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return\n")
+		if lanIPv6CIDR != "" {
+			b.WriteString("        ip6 daddr " + lanIPv6CIDR + " return\n")
+		}
 		for _, ip := range outboundIPs(cfg) {
-			b.WriteString("        ip daddr " + ip + " return\n")
+			parsedIP := net.ParseIP(ip)
+			if parsedIP != nil {
+				if parsedIP.To4() != nil {
+					b.WriteString("        ip daddr " + ip + " return\n")
+				} else {
+					b.WriteString("        ip6 daddr " + ip + " return\n")
+				}
+			}
+		}
+		for _, ip := range cfg.Gateway.BypassDNS {
+			parsedIP := net.ParseIP(ip)
+			if parsedIP != nil {
+				if parsedIP.To4() != nil {
+					b.WriteString("        ip daddr " + parsedIP.String() + " return\n")
+				} else {
+					b.WriteString("        ip6 daddr " + parsedIP.String() + " return\n")
+				}
+			}
 		}
 		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
 		b.WriteString("    }\n")
@@ -229,8 +287,29 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR string) string {
 		b.WriteString("        meta mark " + xrayMark + " return\n")
 		b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
 		b.WriteString("        ip daddr " + lanCIDR + " return\n")
+		b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return\n")
+		if lanIPv6CIDR != "" {
+			b.WriteString("        ip6 daddr " + lanIPv6CIDR + " return\n")
+		}
 		for _, ip := range outboundIPs(cfg) {
-			b.WriteString("        ip daddr " + ip + " return\n")
+			parsedIP := net.ParseIP(ip)
+			if parsedIP != nil {
+				if parsedIP.To4() != nil {
+					b.WriteString("        ip daddr " + ip + " return\n")
+				} else {
+					b.WriteString("        ip6 daddr " + ip + " return\n")
+				}
+			}
+		}
+		for _, ip := range cfg.Gateway.BypassDNS {
+			parsedIP := net.ParseIP(ip)
+			if parsedIP != nil {
+				if parsedIP.To4() != nil {
+					b.WriteString("        ip daddr " + parsedIP.String() + " return\n")
+				} else {
+					b.WriteString("        ip6 daddr " + parsedIP.String() + " return\n")
+				}
+			}
 		}
 		for _, port := range getSSHPorts() {
 			b.WriteString("        tcp dport " + port + " return\n")
@@ -261,6 +340,29 @@ func getInterfaceCIDR(name string) (string, error) {
 		return (&net.IPNet{IP: networkIP, Mask: ipNet.Mask}).String(), nil
 	}
 	return "", fmt.Errorf("no IPv4 subnet found on %s", name)
+}
+
+func getInterfaceIPv6CIDR(name string) (string, error) {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return "", err
+	}
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return "", err
+	}
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok || ipNet.IP == nil || ipNet.IP.To4() != nil {
+			continue
+		}
+		if ipNet.IP.IsLinkLocalUnicast() || ipNet.IP.IsLoopback() {
+			continue
+		}
+		networkIP := ipNet.IP.Mask(ipNet.Mask)
+		return (&net.IPNet{IP: networkIP, Mask: ipNet.Mask}).String(), nil
+	}
+	return "", fmt.Errorf("no IPv6 subnet found on %s", name)
 }
 
 func outboundIPs(cfg *config.UserConfig) []string {

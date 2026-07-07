@@ -24,7 +24,7 @@ func TestParseDefaultInterfaceNoDefault(t *testing.T) {
 }
 
 func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
-	rules := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24")
+	rules := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24", "")
 	if !strings.Contains(rules, `iifname != "ens18" return`) {
 		t.Fatalf("rules should use configured LAN interface: %s", rules)
 	}
@@ -35,7 +35,7 @@ func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 
 func TestBuildNFTConditionalChains(t *testing.T) {
 	// Both enabled
-	rulesBoth := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24")
+	rulesBoth := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24", "")
 	if !strings.Contains(rulesBoth, "chain prerouting") {
 		t.Error("rules should contain prerouting chain when LANEnabled is true")
 	}
@@ -44,7 +44,7 @@ func TestBuildNFTConditionalChains(t *testing.T) {
 	}
 
 	// LAN only
-	rulesLANOnly := buildNFT(testGatewayConfig(false, true), "ens18", "192.168.50.0/24")
+	rulesLANOnly := buildNFT(testGatewayConfig(false, true), "ens18", "192.168.50.0/24", "")
 	if !strings.Contains(rulesLANOnly, "chain prerouting") {
 		t.Error("rules should contain prerouting chain when LANEnabled is true")
 	}
@@ -53,7 +53,7 @@ func TestBuildNFTConditionalChains(t *testing.T) {
 	}
 
 	// Local only
-	rulesLocalOnly := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24")
+	rulesLocalOnly := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24", "")
 	if strings.Contains(rulesLocalOnly, "chain prerouting") {
 		t.Error("rules should not contain prerouting chain when LANEnabled is false")
 	}
@@ -70,5 +70,17 @@ func testGatewayConfig(local, lan bool) *config.UserConfig {
 			LANEnabled:   lan,
 			Mode:         "tun",
 		},
+	}
+}
+
+func TestBuildNFTWithBypassDNS(t *testing.T) {
+	cfg := testGatewayConfig(true, true)
+	cfg.Gateway.BypassDNS = []string{"8.8.8.8", "2001:4860:4860::8888"}
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "fd00::/64")
+	if !strings.Contains(rules, "ip daddr 8.8.8.8 return") {
+		t.Fatalf("rules should bypass IPv4 DNS 8.8.8.8: %s", rules)
+	}
+	if !strings.Contains(rules, "ip6 daddr 2001:4860:4860::8888 return") {
+		t.Fatalf("rules should bypass IPv6 DNS 2001:4860:4860::8888: %s", rules)
 	}
 }
