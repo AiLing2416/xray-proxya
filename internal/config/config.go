@@ -199,7 +199,7 @@ func randomHexString(length int) string {
 
 func normalizeStringSlice(values []string) ([]string, bool) {
 	if values == nil {
-		return []string{}, true
+		return nil, false
 	}
 	out := make([]string, 0, len(values))
 	seen := make(map[string]struct{}, len(values))

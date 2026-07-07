@@ -158,6 +158,23 @@ func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []inte
 		return nil
 	}
 	domains, ips := dnsRoutingTargets(servers)
+
+	hasGoogle := false
+	hasCloudflare := false
+	for _, d := range domains {
+		if d == "dns.google" {
+			hasGoogle = true
+		} else if d == "cloudflare-dns.com" {
+			hasCloudflare = true
+		}
+	}
+	if hasGoogle {
+		ips = append(ips, "8.8.8.8")
+	}
+	if hasCloudflare {
+		ips = append(ips, "1.1.1.1")
+	}
+
 	rules := make([]interface{}, 0, 2)
 	outboundTag := "outbound-" + selectedAlias
 	if len(domains) > 0 {

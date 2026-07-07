@@ -71,7 +71,9 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 	lanIPv6CIDR, _ := getInterfaceIPv6CIDR(lanIface)
 	rules := buildNFT(cfg, lanIface, lanCIDR, lanIPv6CIDR)
-	tmpFile := filepath.Join(os.TempDir(), "xray-proxya.nft")
+	configDir := filepath.Dir(config.GetConfigPathEx(false))
+	_ = os.MkdirAll(configDir, 0700)
+	tmpFile := filepath.Join(configDir, "xray-proxya.nft")
 	if err := os.WriteFile(tmpFile, []byte(rules), 0600); err != nil {
 		return fmt.Errorf("write nft rules: %w", err)
 	}
@@ -135,17 +137,33 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	return nil
 }
 
+func deleteRulesByPref(pref string, ipv6 bool) {
+	for i := 0; i < 10; i++ {
+		var err error
+		if ipv6 {
+			err = run("sudo", "ip", "-6", "rule", "del", "pref", pref)
+		} else {
+			err = run("sudo", "ip", "rule", "del", "pref", pref)
+		}
+		if err != nil {
+			break
+		}
+	}
+}
+
 func CleanupFirewall() {
 	_ = run("sudo", "nft", "delete", "table", "inet", tableName)
-	_ = run("sudo", "ip", "rule", "del", "pref", "10")
-	_ = run("sudo", "ip", "rule", "del", "pref", "50")
-	_ = run("sudo", "ip", "rule", "del", "pref", "51")
-	_ = run("sudo", "ip", "rule", "del", "pref", "100")
+	
+	deleteRulesByPref("10", false)
+	deleteRulesByPref("50", false)
+	deleteRulesByPref("51", false)
+	deleteRulesByPref("100", false)
 	_ = run("sudo", "ip", "route", "flush", "table", "100")
-	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "10")
-	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "50")
-	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "51")
-	_ = run("sudo", "ip", "-6", "rule", "del", "pref", "100")
+
+	deleteRulesByPref("10", true)
+	deleteRulesByPref("50", true)
+	deleteRulesByPref("51", true)
+	deleteRulesByPref("100", true)
 	_ = run("sudo", "ip", "-6", "route", "flush", "table", "100")
 }
 
@@ -170,6 +188,9 @@ func SetupKernel(lanIface string) error {
 	}
 	if lanIface != "" {
 		if err := run("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.send_redirects=0", lanIface)); err != nil {
+			return err
+		}
+		if err := run("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.rp_filter=0", lanIface)); err != nil {
 			return err
 		}
 	}

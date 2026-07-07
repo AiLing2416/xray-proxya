@@ -2513,6 +2513,9 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 	}
 	defer exec.Command("ip", "link", "del", "veth-tg").Run()
 
+	_ = runCmdSlice([]string{"sudo", "sysctl", "-w", "net.ipv4.conf.veth-tg.rp_filter=0"})
+	_ = runCmdSlice([]string{"sudo", "sysctl", "-w", "net.ipv4.conf.veth-tg.send_redirects=0"})
+
 	if err := runCmdSlice([]string{"ip", "link", "set", "veth-tc", "netns", nsName}); err != nil {
 		return "", err
 	}
