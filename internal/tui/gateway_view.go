@@ -100,6 +100,9 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		stateInfo = "DISABLED"
 	}
 	stateStatus := "READY"
+	if stateInfo == "DISABLED" {
+		stateStatus = "NON READY"
+	}
 
 	// Bypass Countries (Non-Bool)
 	bypassInfo := strings.Join(staging.Gateway.BypassCountries, ", ")
