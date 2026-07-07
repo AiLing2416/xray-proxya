@@ -548,14 +548,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "+", "=":
 			if m.currentTab == tabGateway {
-				if m.cursor == 0 {
+				if m.cursor == 1 {
 					m.statusNote = "Applying 'gateway up' runtime rules..."
 					return m, runGatewayUp(m.active)
-				} else if m.cursor == 1 {
+				} else if m.cursor == 2 {
 					m.staging.Gateway.LocalEnabled = true
 					m.staging.SaveEx(true)
 					m.statusNote = "Local proxy enabled"
-				} else if m.cursor == 2 {
+				} else if m.cursor == 3 {
 					m.staging.Gateway.LANEnabled = true
 					m.staging.SaveEx(true)
 					m.statusNote = "LAN gateway enabled"
@@ -581,14 +581,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "-":
 			if m.currentTab == tabGateway {
-				if m.cursor == 0 {
+				if m.cursor == 1 {
 					m.statusNote = "Applying 'gateway down' runtime rules..."
 					return m, runGatewayDown()
-				} else if m.cursor == 1 {
+				} else if m.cursor == 2 {
 					m.staging.Gateway.LocalEnabled = false
 					m.staging.SaveEx(true)
 					m.statusNote = "Local proxy disabled"
-				} else if m.cursor == 2 {
+				} else if m.cursor == 3 {
 					m.staging.Gateway.LANEnabled = false
 					m.staging.SaveEx(true)
 					m.statusNote = "LAN gateway disabled"
@@ -636,12 +636,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "t", "T":
 			if m.currentTab == tabGateway {
-				if m.cursor == 1 {
+				if m.cursor == 2 {
 					m.gwLocalTestIP = "testing..."
 					m.statusNote = "Testing local proxy IP..."
 					return m, testLocalProxy(m.active)
 				}
-				if m.cursor == 2 {
+				if m.cursor == 3 {
 					m.gwLANTestIP = "testing..."
 					m.statusNote = "Testing simulated LAN IP (this takes a few seconds)..."
 					return m, testLANGateway(m.active)
