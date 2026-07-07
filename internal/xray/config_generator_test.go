@@ -633,4 +633,3 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 		t.Errorf("expected bypass ip routing rule not found or incorrect")
 	}
 }
-

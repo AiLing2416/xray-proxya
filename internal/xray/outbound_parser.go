@@ -121,7 +121,7 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 				map[string]interface{}{
 					"address": host,
 					"port":    port,
-					"users": []interface{}{userObj},
+					"users":   []interface{}{userObj},
 				},
 			},
 		},
@@ -327,7 +327,7 @@ func parseSocks(link string) (map[string]interface{}, error) {
 				decoded, err = base64.StdEncoding.DecodeString(auth + "==")
 			}
 		}
-		
+
 		if err == nil && strings.Contains(string(decoded), ":") {
 			authParts := strings.SplitN(string(decoded), ":", 2)
 			user, pass = authParts[0], authParts[1]

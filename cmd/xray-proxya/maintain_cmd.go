@@ -36,7 +36,9 @@ var purgeCmd = &cobra.Command{
 		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_gateway").Run()
 		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_tproxy").Run()
 		home, _ := os.UserHomeDir()
-		if os.Geteuid() == 0 { home = "/root" }
+		if os.Geteuid() == 0 {
+			home = "/root"
+		}
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		os.RemoveAll(confDir)
 		fmt.Printf("✨ Purge complete. Manually remove the binary to finish.\n")
@@ -50,10 +52,14 @@ var resetCmd = &cobra.Command{
 		fmt.Println("🧹 Resetting configuration files...")
 		xray.StopXray()
 		home, _ := os.UserHomeDir()
-		if os.Geteuid() == 0 { home = "/root" }
+		if os.Geteuid() == 0 {
+			home = "/root"
+		}
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		files, _ := filepath.Glob(filepath.Join(confDir, "*.json*"))
-		for _, f := range files { os.Remove(f) }
+		for _, f := range files {
+			os.Remove(f)
+		}
 		fmt.Println("✅ Reset successful. You can now run 'init' to reconfigure.")
 	},
 }

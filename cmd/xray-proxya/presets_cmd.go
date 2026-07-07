@@ -10,14 +10,14 @@ import (
 )
 
 var (
-	presetOff     bool
-	presetOn      bool
-	presetPort    int
-	presetRegen   bool
-	presetSkin    bool
-	presetUnskin  bool
-	presetSNI     string
-	presetDest    string
+	presetOff    bool
+	presetOn     bool
+	presetPort   int
+	presetRegen  bool
+	presetSkin   bool
+	presetUnskin bool
+	presetSNI    string
+	presetDest   string
 )
 
 var presetsCmd = &cobra.Command{
@@ -172,7 +172,7 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Disable web camouflage")
 	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set SNI (e.g., www.intel.com)")
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Manually set Destination (e.g., www.intel.com:443)")
-	
+
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}

@@ -153,7 +153,7 @@ func (m *Manager) fetchTarget(dest string, withHost bool) *CacheItem {
 		// it's possible the CDN behavior is only visible on the www subdomain.
 		isRedirectToWWW := (item.StatusCode == 301 || item.StatusCode == 302) &&
 			strings.Contains(item.Header.Get("Location"), "www.")
-		
+
 		isFailure := item.StatusCode >= 400 && item.StatusCode < 500
 
 		if (isRedirectToWWW || isFailure) && !strings.HasPrefix(dest, "www.") {

@@ -87,4 +87,3 @@ func truncateRunes(s string, width int) string {
 	}
 	return string(runes[:width-2]) + ".."
 }
-

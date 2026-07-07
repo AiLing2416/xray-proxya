@@ -10,9 +10,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
@@ -559,11 +560,15 @@ var infoOutboundCmd = &cobra.Command{
 			Timeout: 15 * time.Second,
 		}
 		profile := fetchProfile(httpClient)
-		nf := testMedia(httpClient, "https://www.netflix.com/title/80018499")
-		yt := testMedia(httpClient, "https://www.youtube.com/premium")
-		ds := testMedia(httpClient, "https://www.disneyplus.com")
-		fmt.Printf("\n✨ Landing Profile: %s\n   Exit IP: %s\n   Exit IPv4: %s\n   Exit IPv6: %s\n   ASN Type: %s (%s)\n   ASN: %s\n   Company: %s\n   Local: %s, %s, %s\n   Local Time: %s\n   Time Zone: %s\n\n   Media Unlock Tests:\n   Netflix: %s  YouTube: %s  Disney+: %s\n\n",
-			alias, choosePrimaryIP(profile.IPv4, profile.IPv6), valueOrNA(profile.IPv4), valueOrNA(profile.IPv6), profile.ASNType, profile.Privacy, profile.ASN, profile.Org, profile.City, profile.Region, profile.Country, profile.LocalTime, profile.Timezone, nf, yt, ds)
+		nf := testNetflix(httpClient)
+		ds := testDisneyPlus(httpClient)
+		tk := testTikTok(httpClient)
+		gg := testGoogle(httpClient)
+		oa := testOpenAI(httpClient)
+		cl := testClaude(httpClient)
+		fmt.Printf("\n✨ Landing Profile: %s\n   Exit IP: %s\n   Exit IPv4: %s\n   Exit IPv6: %s\n   ASN Type: %s (%s)\n   ASN: %s\n   Company: %s\n   Local: %s, %s, %s\n   Local Time: %s\n   Time Zone: %s\n\n   Media Unlock Tests (Streaming):\n   Netflix: %s  Disney+: %s  TikTok: %s\n\n   Media Unlock Tests (General):\n   Google: %s  OpenAI: %s  Claude: %s\n\n",
+			alias, choosePrimaryIP(profile.IPv4, profile.IPv6), valueOrNA(profile.IPv4), valueOrNA(profile.IPv6), profile.ASNType, profile.Privacy, profile.ASN, profile.Org, profile.City, profile.Region, profile.Country, profile.LocalTime, profile.Timezone,
+			nf, ds, tk, gg, oa, cl)
 	},
 }
 
@@ -743,17 +748,361 @@ func getLocalTime(tz string) string {
 	return time.Now().In(loc).Format("2006-01-02 15:04:05")
 }
 
-func testMedia(client *http.Client, url string) string {
-	resp, err := client.Get(url)
+func extractNetflixRegion(body []byte) string {
+	re1 := regexp.MustCompile(`"id"\s*:\s*"([A-Z]{2})"\s*,\s*"countryName"`)
+	if m := re1.FindSubmatch(body); len(m) > 1 {
+		return string(m[1])
+	}
+	re2 := regexp.MustCompile(`"requestCountryCode"\s*:\s*"([A-Z]{2})"`)
+	if m := re2.FindSubmatch(body); len(m) > 1 {
+		return string(m[1])
+	}
+	re3 := regexp.MustCompile(`"countryCode"\s*:\s*"([A-Z]{2})"`)
+	if m := re3.FindSubmatch(body); len(m) > 1 {
+		return string(m[1])
+	}
+	return ""
+}
+
+func parseGoogleRegion(finalURL string) string {
+	u, err := url.Parse(finalURL)
+	if err != nil {
+		return "US"
+	}
+	host := u.Host
+	host = strings.TrimPrefix(host, "www.")
+	if host == "google.com" {
+		return "US"
+	}
+	if !strings.HasPrefix(host, "google.") {
+		return "US"
+	}
+	tld := strings.TrimPrefix(host, "google.")
+
+	switch tld {
+	case "com.hk":
+		return "HK"
+	case "co.jp":
+		return "JP"
+	case "com.tw":
+		return "TW"
+	case "com.sg":
+		return "SG"
+	case "co.kr":
+		return "KR"
+	case "co.uk":
+		return "UK"
+	case "com.au":
+		return "AU"
+	case "co.th":
+		return "TH"
+	case "com.my":
+		return "MY"
+	case "co.id":
+		return "ID"
+	case "com.vn":
+		return "VN"
+	case "com.ph":
+		return "PH"
+	case "com.tr":
+		return "TR"
+	case "com.br":
+		return "BR"
+	case "ru":
+		return "RU"
+	case "nl":
+		return "NL"
+	case "it":
+		return "IT"
+	case "es":
+		return "ES"
+	case "ch":
+		return "CH"
+	case "se":
+		return "SE"
+	case "no":
+		return "NO"
+	case "dk":
+		return "DK"
+	case "fi":
+		return "FI"
+	case "pl":
+		return "PL"
+	case "cz":
+		return "CZ"
+	case "at":
+		return "AT"
+	case "be":
+		return "BE"
+	case "ie":
+		return "IE"
+	case "pt":
+		return "PT"
+	case "gr":
+		return "GR"
+	case "hu":
+		return "HU"
+	case "ro":
+		return "RO"
+	case "bg":
+		return "BG"
+	case "hr":
+		return "HR"
+	case "ua":
+		return "UA"
+	case "co.za":
+		return "ZA"
+	case "com.mx":
+		return "MX"
+	case "cl":
+		return "CL"
+	case "com.ar":
+		return "AR"
+	case "com.co":
+		return "CO"
+	case "pe":
+		return "PE"
+	case "com.ve":
+		return "VE"
+	case "com.ec":
+		return "EC"
+	case "com.uy":
+		return "UY"
+	case "co.nz":
+		return "NZ"
+	case "co.in":
+		return "IN"
+	case "com.pk":
+		return "PK"
+	case "com.bd":
+		return "BD"
+	case "lk":
+		return "LK"
+	case "com.np":
+		return "NP"
+	case "ae":
+		return "AE"
+	case "com.sa":
+		return "SA"
+	case "co.il":
+		return "IL"
+	case "com.eg":
+		return "EG"
+	case "co.ma":
+		return "MA"
+	case "dz":
+		return "DZ"
+	case "tn":
+		return "TN"
+	case "com.ng":
+		return "NG"
+	case "co.ke":
+		return "KE"
+	case "co.tz":
+		return "TZ"
+	case "co.ug":
+		return "UG"
+	case "com.gh":
+		return "GH"
+	}
+
+	parts := strings.Split(tld, ".")
+	lastPart := parts[len(parts)-1]
+	if len(lastPart) == 2 {
+		return strings.ToUpper(lastPart)
+	}
+	return "US"
+}
+
+func testNetflix(client *http.Client) string {
+	// 1. Test non-original title (Breaking Bad)
+	req, err := http.NewRequest("GET", "https://www.netflix.com/title/70143836", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept-Language", "en")
+	resp, err := client.Do(req)
 	if err != nil {
 		return "🔴"
 	}
 	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024*1024))
+	bodyStr := string(body)
+
+	hasOhNo := strings.Contains(bodyStr, "Oh no!") || strings.Contains(bodyStr, "netflix.com/browse") || resp.StatusCode == 404
+	region := extractNetflixRegion(body)
+
+	if resp.StatusCode == 200 && !hasOhNo {
+		if region != "" {
+			return region
+		}
+		return "🟢"
+	}
+
+	// 2. Test original title (Test Patterns) as fallback/originals check
+	req2, err := http.NewRequest("GET", "https://www.netflix.com/title/80018499", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req2.Header.Set("Accept-Language", "en")
+	resp2, err := client.Do(req2)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp2.Body.Close()
+
+	body2, _ := io.ReadAll(io.LimitReader(resp2.Body, 1024*1024))
+	body2Str := string(body2)
+	hasOhNo2 := strings.Contains(body2Str, "Oh no!") || strings.Contains(body2Str, "netflix.com/browse") || resp2.StatusCode == 404
+
+	if region == "" {
+		region = extractNetflixRegion(body2)
+	}
+
+	if resp2.StatusCode == 200 && !hasOhNo2 {
+		if region != "" {
+			return fmt.Sprintf("Originals (%s)", region)
+		}
+		return "Originals"
+	}
+
+	return "🚫"
+}
+
+func testDisneyPlus(client *http.Client) string {
+	// 1. Fast BAMGrid API block check
+	req, err := http.NewRequest("POST", "https://disney.api.edge.bamgrid.com/devices", strings.NewReader(`{"deviceFamily":"browser","applicationRuntime":"chrome","deviceProfile":"windows","attributes":{}}`))
+	if err != nil {
+		return "🔴"
+	}
+	req.Header.Set("Authorization", "Bearer ZGlzbmV5JmJyb3dzZXImMS4wLjA.Cu56AgSfBTDag5NiRA81oLHkDZfu5L3CKadnefEAY84")
+	req.Header.Set("Content-Type", "application/json; charset=UTF-8")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 403 {
+		return "🚫"
+	}
+
+	// 2. Page redirect check
+	req2, err := http.NewRequest("GET", "https://www.disneyplus.com", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req2.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp2, err := client.Do(req2)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp2.Body.Close()
+
+	finalURL := resp2.Request.URL.String()
+	if strings.Contains(finalURL, "preview") || strings.Contains(finalURL, "unavailable") {
+		return "🚫"
+	}
+
+	re := regexp.MustCompile(`/([a-z]{2})-([a-z]{2})/`)
+	if m := re.FindStringSubmatch(finalURL); len(m) > 2 {
+		return strings.ToUpper(m[2])
+	}
+
+	return "🟢"
+}
+
+func testTikTok(client *http.Client) string {
+	req, err := http.NewRequest("GET", "https://www.tiktok.com/", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 403 || strings.Contains(resp.Request.URL.String(), "notfound") {
+		return "🚫"
+	}
+
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512*1024))
+	re := regexp.MustCompile(`"region"\s*:\s*"([A-Z]{2})"`)
+	if m := re.FindSubmatch(body); len(m) > 1 {
+		return string(m[1])
+	}
+
 	if resp.StatusCode == 200 {
 		return "🟢"
 	}
-	if resp.StatusCode == 403 {
+	return fmt.Sprintf("⚠️%d", resp.StatusCode)
+}
+
+func testGoogle(client *http.Client) string {
+	req, err := http.NewRequest("GET", "https://www.google.com", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return fmt.Sprintf("⚠️%d", resp.StatusCode)
+	}
+
+	finalURL := resp.Request.URL.String()
+	return parseGoogleRegion(finalURL)
+}
+
+func testOpenAI(client *http.Client) string {
+	req, err := http.NewRequest("GET", "https://ios.chat.openai.com/public-api/mobile/server_status/v1", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		return "🟢"
+	}
+	if resp.StatusCode == 403 || resp.StatusCode == 400 {
 		return "🚫"
+	}
+	return fmt.Sprintf("⚠️%d", resp.StatusCode)
+}
+
+func testClaude(client *http.Client) string {
+	req, err := http.NewRequest("GET", "https://claude.ai/login", nil)
+	if err != nil {
+		return "🔴"
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	resp, err := client.Do(req)
+	if err != nil {
+		return "🔴"
+	}
+	defer resp.Body.Close()
+
+	finalURL := resp.Request.URL.String()
+	if strings.Contains(finalURL, "/unsupported") || resp.StatusCode == 403 || resp.StatusCode == 400 {
+		return "🚫"
+	}
+	if resp.StatusCode == 200 {
+		return "🟢"
 	}
 	return fmt.Sprintf("⚠️%d", resp.StatusCode)
 }

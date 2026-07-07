@@ -1655,6 +1655,18 @@ func parseRelayDetailOutput(alias string, raw string) relayDetailData {
 			}
 			continue
 		}
+		if strings.HasPrefix(line, "Google:") {
+			rest := strings.TrimSpace(strings.TrimPrefix(line, "Google:"))
+			parts := strings.Fields(rest)
+			if len(parts) >= 1 {
+				media["Google"] = parts[0]
+			}
+			for i := 1; i+1 < len(parts); i += 2 {
+				key := strings.TrimSuffix(parts[i], ":")
+				media[key] = parts[i+1]
+			}
+			continue
+		}
 		if idx := strings.Index(line, ":"); idx > 0 {
 			key := strings.TrimSpace(line[:idx])
 			val := strings.TrimSpace(line[idx+1:])
@@ -1678,8 +1690,11 @@ func parseRelayDetailOutput(alias string, raw string) relayDetailData {
 			{label: "Time", value: emptyFallback(joinNonEmpty(" ", fields["Local Time"], fields["Time Zone"]), "N/A")},
 			{label: "Privacy", value: emptyFallback(fields["ASN Type"], "N/A")},
 			{label: "Netflix", value: emptyFallback(media["Netflix"], "?")},
-			{label: "YouTube", value: emptyFallback(media["YouTube"], "?")},
 			{label: "Disney+", value: emptyFallback(media["Disney+"], "?")},
+			{label: "TikTok", value: emptyFallback(media["TikTok"], "?")},
+			{label: "Google", value: emptyFallback(media["Google"], "?")},
+			{label: "OpenAI", value: emptyFallback(media["OpenAI"], "?")},
+			{label: "Claude", value: emptyFallback(media["Claude"], "?")},
 		},
 	}
 }

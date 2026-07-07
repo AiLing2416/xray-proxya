@@ -11,7 +11,7 @@ func testApplyConfig() *config.UserConfig {
 		UUID:        "root-uuid",
 		APIInbound:  10001,
 		TestInbound: 10002,
-		Presets: []config.ModeInfo{{Mode: config.ModeVLESSVision, Enabled: true, Port: 443}},
+		Presets:     []config.ModeInfo{{Mode: config.ModeVLESSVision, Enabled: true, Port: 443}},
 		CustomOutbounds: []config.CustomOutbound{{
 			Alias:    "remote",
 			Enabled:  true,

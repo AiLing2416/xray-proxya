@@ -2,8 +2,8 @@ package tui
 
 import (
 	"fmt"
-	"strings"
 	"github.com/charmbracelet/lipgloss"
+	"strings"
 	"xray-proxya/internal/config"
 )
 
@@ -25,14 +25,24 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 	for i, m := range staging.Presets {
 		indicator := "   "
 		isMod := false
-		if m.RegenFlag { indicator = "[R]" } else if active != nil && i < len(active.Presets) {
+		if m.RegenFlag {
+			indicator = "[R]"
+		} else if active != nil && i < len(active.Presets) {
 			a := active.Presets[i]
-			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Enabled != a.Enabled { isMod = true }
-		} else if active == nil { isMod = true }
-		if isMod && !m.RegenFlag { indicator = "[*]" }
+			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Enabled != a.Enabled {
+				isMod = true
+			}
+		} else if active == nil {
+			isMod = true
+		}
+		if isMod && !m.RegenFlag {
+			indicator = "[*]"
+		}
 
 		status := "UP"
-		if !m.Enabled || isMod { status = "DOWN" } else if active == nil || i >= len(active.Presets) || !active.Presets[i].Enabled {
+		if !m.Enabled || isMod {
+			status = "DOWN"
+		} else if active == nil || i >= len(active.Presets) || !active.Presets[i].Enabled {
 			status = "DOWN"
 		}
 
@@ -49,8 +59,10 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 
 	for i, row := range rows {
 		s := renderRow(row, widths, false)
-		if disabled[i] { s = faintStyle.Render(s) }
-		
+		if disabled[i] {
+			s = faintStyle.Render(s)
+		}
+
 		if i == selectedIdx {
 			b.WriteString(activeStyle.Render(s))
 		} else {
@@ -65,20 +77,28 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 func getSecurityName(m config.ModeInfo) string {
 	switch m.Mode {
 	case config.ModeVLESSReality, config.ModeVLESSVision:
-		if m.Mode == config.ModeVLESSVision { return "Vision-Reality" }
+		if m.Mode == config.ModeVLESSVision {
+			return "Vision-Reality"
+		}
 		return "Reality"
-	case config.ModeVLESSXHTTP: return "ML-KEM768"
-	case config.ModeVMessWS: return "NONE"
-	case config.ModeShadowsocksTCP: return m.Settings.Cipher
+	case config.ModeVLESSXHTTP:
+		return "ML-KEM768"
+	case config.ModeVMessWS:
+		return "NONE"
+	case config.ModeShadowsocksTCP:
+		return m.Settings.Cipher
 	}
 	return "-"
 }
 
 func getNetworkName(m config.PresetMode) string {
 	switch m {
-	case config.ModeVLESSVision, config.ModeShadowsocksTCP: return "TCP"
-	case config.ModeVLESSReality, config.ModeVLESSXHTTP: return "XHTTP"
-	case config.ModeVMessWS: return "WS"
+	case config.ModeVLESSVision, config.ModeShadowsocksTCP:
+		return "TCP"
+	case config.ModeVLESSReality, config.ModeVLESSXHTTP:
+		return "XHTTP"
+	case config.ModeVMessWS:
+		return "WS"
 	}
 	return "TCP"
 }

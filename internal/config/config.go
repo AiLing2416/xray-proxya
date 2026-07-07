@@ -39,7 +39,7 @@ type UserConfig struct {
 	UUID            string           `json:"uuid"`
 	APIInbound      int              `json:"api_inbound"`
 	TestInbound     int              `json:"test_inbound"`
-	Presets     []ModeInfo       `json:"presets"`
+	Presets         []ModeInfo       `json:"presets"`
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
@@ -642,7 +642,6 @@ func CommitStaging() error {
 
 	return os.Remove(src)
 }
-
 
 func ClearStaging() error {
 	path := GetConfigPath() + ".staging"

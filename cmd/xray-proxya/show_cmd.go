@@ -34,10 +34,14 @@ var showCmd = &cobra.Command{
 			ips = []string{showAddr}
 		} else {
 			if showIPv4 {
-				if ip := utils.GetPublicIPv4(); ip != "" { ips = append(ips, ip) }
+				if ip := utils.GetPublicIPv4(); ip != "" {
+					ips = append(ips, ip)
+				}
 			}
 			if showIPv6 {
-				if ip := utils.GetPublicIPv6(); ip != "" { ips = append(ips, ip) }
+				if ip := utils.GetPublicIPv6(); ip != "" {
+					ips = append(ips, ip)
+				}
 			}
 			// Fallback to local if no public IP found
 			if len(ips) == 0 {
@@ -53,14 +57,14 @@ var showCmd = &cobra.Command{
 		ip := ips[0]
 		fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ip)
 		fmt.Println("============================================================")
-		
+
 		targetRelay := showRelay
 		if targetRelay == "" {
 			targetRelay = showOutbound
 		}
-		
+
 		showDirect := !showAll && targetRelay == "" && showGuest == ""
-		
+
 		if showAll || showDirect {
 			fmt.Println("# DIRECT (PRESET) LINKS")
 			links := xray.GenerateLinks(cfg, ip)
@@ -119,7 +123,9 @@ var showCmd = &cobra.Command{
 			} else if len(cfg.CustomOutbounds) > 0 {
 				fmt.Println("\n# ALL RELAY LINKS")
 				for _, co := range cfg.CustomOutbounds {
-					if !co.Enabled { continue }
+					if !co.Enabled {
+						continue
+					}
 					links := xray.GenerateRelayLinks(cfg, ip, co)
 					for _, link := range links {
 						fmt.Println(link)

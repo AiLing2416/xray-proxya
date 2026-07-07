@@ -166,7 +166,7 @@ func deleteRulesByPref(pref string, ipv6 bool) {
 func CleanupFirewall() {
 	_ = run("sudo", "nft", "delete", "table", "inet", tableName)
 	cleanupFilterForwardRules()
-	
+
 	deleteRulesByPref("10", false)
 	deleteRulesByPref("50", false)
 	deleteRulesByPref("51", false)

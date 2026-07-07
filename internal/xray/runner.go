@@ -517,7 +517,7 @@ func extractSHA256(content string) (string, error) {
 		} else if idx := strings.Index(normalized, "256="); idx >= 0 {
 			hashPart = line[idx+len("256="):]
 		}
-		
+
 		if hashPart != "" {
 			hashPart = strings.TrimSpace(hashPart)
 			if len(hashPart) == 64 {

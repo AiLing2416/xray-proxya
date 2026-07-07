@@ -125,9 +125,9 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 
 	// Combine headers and status tags on the same line (right-aligned)
 	res := renderRow(headers, widths, false)
-	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD", 
+	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD",
 		getStatusEmoji(nft), getStatusEmoji(tun), getStatusEmoji(fwd))
-	
+
 	spacing := width - lipgloss.Width(res) - lipgloss.Width(statusLine) - 2
 	if spacing < 2 {
 		spacing = 2
