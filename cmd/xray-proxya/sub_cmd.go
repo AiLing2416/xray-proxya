@@ -5,7 +5,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"os/user"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -398,14 +397,7 @@ var subEnableCmd = &cobra.Command{
 
 		if utils.IsRoot() {
 			binPath, _ := os.Executable()
-			home, _ := os.UserHomeDir()
-			if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
-				if u, err := user.Lookup(sudoUser); err == nil && u.HomeDir != "" {
-					home = u.HomeDir
-				}
-			} else if os.Geteuid() == 0 {
-				home = "/root"
-			}
+			home := "/root"
 			workDir := filepath.Join(home, ".local", "share", "xray-proxya")
 			os.MkdirAll(workDir, 0700)
 			configDir := config.GetConfigDir()

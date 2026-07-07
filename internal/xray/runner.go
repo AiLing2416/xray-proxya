@@ -427,7 +427,7 @@ func GetFreePort() (int, error) {
 
 func GetXrayBinaryPath() string {
 	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 && home == "" {
+	if os.Geteuid() == 0 {
 		home = "/root"
 	}
 	return filepath.Join(home, ".local", "share", "xray-proxya", "bin", "xray")

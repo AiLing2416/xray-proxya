@@ -485,7 +485,7 @@ func GetConfigDir() string {
 		return envDir
 	}
 	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 && (home == "" || home == "/root") {
+	if os.Geteuid() == 0 {
 		home = "/root"
 	}
 	dir := filepath.Join(home, ".config", "xray-proxya")
