@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -135,3 +137,78 @@ func TestProbeDNSViaTCPQueryFormat(t *testing.T) {
 		t.Fatalf("QDCOUNT = %d, want 1", qdcount)
 	}
 }
+
+func TestParseSize(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    int64
+		wantErr bool
+	}{
+		{"100", 100, false},
+		{"100B", 100, false},
+		{"100b", 100, false},
+		{"10K", 10_000, false},
+		{"10KB", 10_000, false},
+		{"10kb", 10_000, false},
+		{"10Ki", 10_240, false},
+		{"10KiB", 10_240, false},
+		{"1.5M", 1_500_000, false},
+		{"1.5MB", 1_500_000, false},
+		{"1.5mb", 1_500_000, false},
+		{"2Mi", 2_097_152, false},
+		{"2MiB", 2_097_152, false},
+		{"1G", 1_000_000_000, false},
+		{"1GB", 1_000_000_000, false},
+		{"1GiB", 1_073_741_824, false},
+		{"", 0, true},
+		{"   ", 0, true},
+		{"MB", 0, true},
+		{"-10M", 0, true},
+		{"abc", 0, true},
+		{"10Mabc", 0, true},
+	}
+
+	for _, tt := range tests {
+		got, err := parseSize(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("parseSize(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			continue
+		}
+		if !tt.wantErr && got != tt.want {
+			t.Errorf("parseSize(%q) = %d, want %d", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestRunSpeedPassTruncation(t *testing.T) {
+	// Start a local test server that serves a large stream of dummy data
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// Write 1MB of dummy data
+		dummy := make([]byte, 1024)
+		for i := 0; i < 1024; i++ {
+			if _, err := w.Write(dummy); err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	var totalBytes int64
+	var samples []float64
+	maxBytes := int64(50 * 1024) // 50KB
+
+	err := runSpeedPass(client, server.URL, time.Time{}, &totalBytes, &samples, maxBytes)
+	if err != nil {
+		t.Fatalf("runSpeedPass failed: %v", err)
+	}
+
+	if totalBytes != maxBytes {
+		t.Errorf("totalBytes = %d, want %d", totalBytes, maxBytes)
+	}
+}
+
+

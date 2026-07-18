@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -55,6 +56,7 @@ var (
 	outboundIPv6 bool
 	speedLink    string
 	speedTime    int
+	speedSize    string
 )
 
 const (
@@ -1311,6 +1313,30 @@ var speedOutboundCmd = &cobra.Command{
 			return
 		}
 
+		var sizeLimit int64
+		if speedSize != "" {
+			var err error
+			sizeLimit, err = parseSize(speedSize)
+			if err != nil {
+				fmt.Printf("❌ Invalid size: %v\n", err)
+				return
+			}
+			if sizeLimit <= 0 {
+				fmt.Println("❌ Size must be greater than 0.")
+				return
+			}
+
+			u, err := url.Parse(link)
+			if err == nil {
+				if strings.Contains(u.Host, "speed.cloudflare.com") || u.Query().Get("bytes") != "" {
+					q := u.Query()
+					q.Set("bytes", fmt.Sprintf("%d", sizeLimit))
+					u.RawQuery = q.Encode()
+					link = u.String()
+				}
+			}
+		}
+
 		duration := 0
 		if speedTime > 0 {
 			if speedTime > maxSpeedTestSeconds {
@@ -1322,13 +1348,16 @@ var speedOutboundCmd = &cobra.Command{
 
 		fmt.Printf("🚀 Running speed test for [%s]\n", alias)
 		fmt.Printf("   Link: %s\n", link)
+		if sizeLimit > 0 {
+			fmt.Printf("   Size Limit: %s\n", formatDecimalBytes(sizeLimit))
+		}
 		if duration > 0 {
 			fmt.Printf("   Duration: %ds\n", duration)
 		} else {
 			fmt.Printf("   Duration: single pass\n")
 		}
 
-		result, err := runIsolatedSpeedTest(cfg, *target, link, duration)
+		result, err := runIsolatedSpeedTest(cfg, *target, link, duration, sizeLimit)
 		if err != nil {
 			fmt.Printf("❌ Speed test failed: %v\n", err)
 			return
@@ -1464,7 +1493,73 @@ func startIsolatedOutboundInstance(cfg *config.UserConfig, alias string) (*http.
 	return client, socksAddr, cleanup, nil
 }
 
-func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link string, durationSeconds int) (SpeedResult, error) {
+func parseSize(s string) (int64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 0, fmt.Errorf("empty size")
+	}
+
+	var multiplier int64 = 1
+	var unitLen int
+
+	if strings.HasSuffix(s, "gib") || strings.HasSuffix(s, "gi") {
+		multiplier = 1024 * 1024 * 1024
+		unitLen = 3
+		if strings.HasSuffix(s, "gi") {
+			unitLen = 2
+		}
+	} else if strings.HasSuffix(s, "mib") || strings.HasSuffix(s, "mi") {
+		multiplier = 1024 * 1024
+		unitLen = 3
+		if strings.HasSuffix(s, "mi") {
+			unitLen = 2
+		}
+	} else if strings.HasSuffix(s, "kib") || strings.HasSuffix(s, "ki") {
+		multiplier = 1024
+		unitLen = 3
+		if strings.HasSuffix(s, "ki") {
+			unitLen = 2
+		}
+	} else if strings.HasSuffix(s, "gb") || strings.HasSuffix(s, "g") {
+		multiplier = 1000 * 1000 * 1000
+		unitLen = 2
+		if strings.HasSuffix(s, "g") {
+			unitLen = 1
+		}
+	} else if strings.HasSuffix(s, "mb") || strings.HasSuffix(s, "m") {
+		multiplier = 1000 * 1000
+		unitLen = 2
+		if strings.HasSuffix(s, "m") {
+			unitLen = 1
+		}
+	} else if strings.HasSuffix(s, "kb") || strings.HasSuffix(s, "k") {
+		multiplier = 1000
+		unitLen = 2
+		if strings.HasSuffix(s, "k") {
+			unitLen = 1
+		}
+	} else if strings.HasSuffix(s, "b") {
+		multiplier = 1
+		unitLen = 1
+	}
+
+	numStr := strings.TrimSpace(s[:len(s)-unitLen])
+	if numStr == "" {
+		return 0, fmt.Errorf("invalid size format: %q", s)
+	}
+
+	val, err := strconv.ParseFloat(numStr, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid size value: %w", err)
+	}
+	if val < 0 {
+		return 0, fmt.Errorf("size cannot be negative")
+	}
+
+	return int64(val * float64(multiplier)), nil
+}
+
+func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link string, durationSeconds int, maxBytes int64) (SpeedResult, error) {
 	result := SpeedResult{Link: link}
 
 	client, _, cleanup, err := startIsolatedOutboundInstance(cfg, co.Alias)
@@ -1516,7 +1611,7 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 		if !deadline.IsZero() && time.Now().After(deadline) {
 			break
 		}
-		if err := runSpeedPass(client, link, deadline, &result.BytesTransferred, &samples); err != nil {
+		if err := runSpeedPass(client, link, deadline, &result.BytesTransferred, &samples, maxBytes); err != nil {
 			if !probesClosed {
 				close(probeStop)
 				probesClosed = true
@@ -1564,7 +1659,22 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 	return result, nil
 }
 
-func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalBytes *int64, samples *[]float64) error {
+func setSpeedTestHeaders(req *http.Request) {
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	if req.URL != nil {
+		origin := fmt.Sprintf("%s://%s", req.URL.Scheme, req.URL.Host)
+		req.Header.Set("Origin", origin)
+		req.Header.Set("Referer", origin+"/")
+	} else {
+		req.Header.Set("Origin", "https://speed.cloudflare.com")
+		req.Header.Set("Referer", "https://speed.cloudflare.com/")
+	}
+	req.Header.Set("Accept-Encoding", "identity")
+}
+
+func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalBytes *int64, samples *[]float64, maxBytes int64) error {
 	ctx := context.Background()
 	if !deadline.IsZero() {
 		var cancel context.CancelFunc
@@ -1575,8 +1685,7 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "xray-proxya/"+Version)
-	req.Header.Set("Accept-Encoding", "identity")
+	setSpeedTestHeaders(req)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -1591,6 +1700,7 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 	buf := make([]byte, 128*1024)
 	lastSampleAt := time.Now()
 	var intervalBytes int64
+	var passBytes int64
 
 	for {
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -1598,11 +1708,24 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 			return nil
 		}
 
-		n, err := resp.Body.Read(buf)
+		readBuf := buf
+		if maxBytes > 0 {
+			remaining := maxBytes - passBytes
+			if remaining <= 0 {
+				flushSpeedSample(samples, intervalBytes, time.Since(lastSampleAt))
+				return nil
+			}
+			if remaining < int64(len(buf)) {
+				readBuf = buf[:remaining]
+			}
+		}
+
+		n, err := resp.Body.Read(readBuf)
 		now := time.Now()
 		if n > 0 {
 			*totalBytes += int64(n)
 			intervalBytes += int64(n)
+			passBytes += int64(n)
 		}
 		if elapsed := now.Sub(lastSampleAt); elapsed >= speedSampleInterval {
 			flushSpeedSample(samples, intervalBytes, elapsed)
@@ -1648,7 +1771,7 @@ func measureLatency(client *http.Client, rawURL string) (time.Duration, error) {
 	start := time.Now()
 	req, err := http.NewRequest("HEAD", rawURL, nil)
 	if err == nil {
-		req.Header.Set("User-Agent", "xray-proxya/"+Version)
+		setSpeedTestHeaders(req)
 		resp, err := client.Do(req)
 		if err == nil {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
@@ -1662,9 +1785,8 @@ func measureLatency(client *http.Client, rawURL string) (time.Duration, error) {
 	if err != nil {
 		return 0, err
 	}
-	req.Header.Set("User-Agent", "xray-proxya/"+Version)
+	setSpeedTestHeaders(req)
 	req.Header.Set("Range", "bytes=0-0")
-	req.Header.Set("Accept-Encoding", "identity")
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
@@ -2050,6 +2172,7 @@ func init() {
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	speedOutboundCmd.Flags().StringVarP(&speedLink, "link", "l", "", "Speed test download URL")
 	speedOutboundCmd.Flags().IntVarP(&speedTime, "time", "t", 0, "Continuous test duration in seconds (max 3600)")
+	speedOutboundCmd.Flags().StringVarP(&speedSize, "size", "s", "", "Download size limit (e.g. 50MB, 10MB, 500KB, 50000000)")
 	bindInterfaceCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:
