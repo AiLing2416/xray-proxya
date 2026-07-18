@@ -26,3 +26,6 @@ v0.2.0.txt
 
 # Local tool state
 .codex
+
+# Private build scripts
+build-fly.sh

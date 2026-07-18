@@ -5,6 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"syscall"
+	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/presets"
 	"xray-proxya/internal/xray"
@@ -67,10 +69,22 @@ func ApplyPending(opts Options) ([]string, error) {
 				overrides[string(m.Mode)] = p
 			}
 		}
+		for _, co := range cfg.CustomOutbounds {
+			if co.InternalProxyPort > 0 {
+				p, _ := xray.GetFreePort()
+				overrides["outbound-"+co.Alias] = p
+			}
+		}
 		testJSON, _ := xray.GenerateXrayJSON(cfg, overrides, "")
-		_, cleanup, err := xray.StartXrayTemp(testJSON)
+		cmd, cleanup, err := xray.StartXrayTemp(testJSON)
 		if err != nil {
 			return lines, fmt.Errorf("runtime isolation test failed: %w", err)
+		}
+		// Give it a tiny bit of time to start and check if it is still running
+		time.Sleep(100 * time.Millisecond)
+		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+			cleanup()
+			return lines, fmt.Errorf("runtime isolation test failed: temporary xray instance exited prematurely")
 		}
 		cleanup()
 		lines = append(lines, "✅ Runtime isolation test passed (using randomized ports).")

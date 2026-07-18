@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 	"xray-proxya/internal/config"
 )
 
@@ -83,10 +84,24 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	if err := SetupKernel(lanIface); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
-	if err := run("sudo", "ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
+
+	// Wait for tun interface to be created by Xray (which runs asynchronously)
+	var found bool
+	for i := 0; i < 40; i++ {
+		if _, err := net.InterfaceByName(tunName); err == nil {
+			found = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !found {
+		return fmt.Errorf("tun interface %s was not created in time by Xray core", tunName)
+	}
+
+	if err := run("ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
 		return err
 	}
-	if err := run("sudo", "ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
+	if err := run("ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
 		return err
 	}
 
@@ -95,55 +110,55 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		ipv6Supported = true
 	}
 
-	if err := run("sudo", "ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
+	if err := run("ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
 		return err
 	}
-	if err := run("sudo", "ip", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
+	if err := run("ip", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
 		return err
 	}
-	if err := run("sudo", "ip", "rule", "add", "to", lanCIDR, "table", "main", "pref", "50"); err != nil {
+	if err := run("ip", "rule", "add", "to", lanCIDR, "table", "main", "pref", "50"); err != nil {
 		return err
 	}
-	if err := run("sudo", "ip", "rule", "add", "to", "127.0.0.0/8", "table", "main", "pref", "51"); err != nil {
+	if err := run("ip", "rule", "add", "to", "127.0.0.0/8", "table", "main", "pref", "51"); err != nil {
 		return err
 	}
-	if err := run("sudo", "ip", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
+	if err := run("ip", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
 		return err
 	}
 
 	if ipv6Supported {
-		if err := run("sudo", "ip", "-6", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
+		if err := run("ip", "-6", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
 			return err
 		}
-		if err := run("sudo", "ip", "-6", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
+		if err := run("ip", "-6", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
 			return err
 		}
 		if lanIPv6CIDR != "" {
-			if err := run("sudo", "ip", "-6", "rule", "add", "to", lanIPv6CIDR, "table", "main", "pref", "50"); err != nil {
+			if err := run("ip", "-6", "rule", "add", "to", lanIPv6CIDR, "table", "main", "pref", "50"); err != nil {
 				return err
 			}
 		}
-		if err := run("sudo", "ip", "-6", "rule", "add", "to", "::1/128", "table", "main", "pref", "51"); err != nil {
+		if err := run("ip", "-6", "rule", "add", "to", "::1/128", "table", "main", "pref", "51"); err != nil {
 			return err
 		}
-		if err := run("sudo", "ip", "-6", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
+		if err := run("ip", "-6", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
 			return err
 		}
 	}
 
-	if err := run("sudo", "nft", "-f", tmpFile); err != nil {
+	if err := run("nft", "-f", tmpFile); err != nil {
 		return err
 	}
 
 	// Ensure system filter table and forward chain exist
-	_ = run("sudo", "nft", "add", "table", "inet", "filter")
-	_ = run("sudo", "nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
+	_ = run("nft", "add", "table", "inet", "filter")
+	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
 
 	// Add forward rules to allow traffic to/from proxya-tun and bypassed local interface traffic
-	_ = run("sudo", "nft", "add", "rule", "inet", "filter", "forward", "iifname", tunName, "accept", "comment", "\"xray-proxya\"")
-	_ = run("sudo", "nft", "add", "rule", "inet", "filter", "forward", "oifname", tunName, "accept", "comment", "\"xray-proxya\"")
+	_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", tunName, "accept", "comment", "\"xray-proxya\"")
+	_ = run("nft", "add", "rule", "inet", "filter", "forward", "oifname", tunName, "accept", "comment", "\"xray-proxya\"")
 	if lanIface != "" {
-		_ = run("sudo", "nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", lanIface, "accept", "comment", "\"xray-proxya\"")
+		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", lanIface, "accept", "comment", "\"xray-proxya\"")
 	}
 
 	return nil
@@ -153,9 +168,9 @@ func deleteRulesByPref(pref string, ipv6 bool) {
 	for i := 0; i < 10; i++ {
 		var err error
 		if ipv6 {
-			err = run("sudo", "ip", "-6", "rule", "del", "pref", pref)
+			err = run("ip", "-6", "rule", "del", "pref", pref)
 		} else {
-			err = run("sudo", "ip", "rule", "del", "pref", pref)
+			err = run("ip", "rule", "del", "pref", pref)
 		}
 		if err != nil {
 			break
@@ -164,46 +179,46 @@ func deleteRulesByPref(pref string, ipv6 bool) {
 }
 
 func CleanupFirewall() {
-	_ = run("sudo", "nft", "delete", "table", "inet", tableName)
+	_ = run("nft", "delete", "table", "inet", tableName)
 	cleanupFilterForwardRules()
 
 	deleteRulesByPref("10", false)
 	deleteRulesByPref("50", false)
 	deleteRulesByPref("51", false)
 	deleteRulesByPref("100", false)
-	_ = run("sudo", "ip", "route", "flush", "table", "100")
+	_ = run("ip", "route", "flush", "table", "100")
 
 	deleteRulesByPref("10", true)
 	deleteRulesByPref("50", true)
 	deleteRulesByPref("51", true)
 	deleteRulesByPref("100", true)
-	_ = run("sudo", "ip", "-6", "route", "flush", "table", "100")
+	_ = run("ip", "-6", "route", "flush", "table", "100")
 }
 
 func SetupKernel(lanIface string) error {
-	if err := run("sudo", "sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
+	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
-	if err := run("sudo", "sysctl", "-w", "net.ipv6.conf.all.forwarding=1"); err != nil {
+	if err := run("sysctl", "-w", "net.ipv6.conf.all.forwarding=1"); err != nil {
 		return err
 	}
-	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
+	if err := run("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
 		return err
 	}
-	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.default.rp_filter=0"); err != nil {
+	if err := run("sysctl", "-w", "net.ipv4.conf.default.rp_filter=0"); err != nil {
 		return err
 	}
-	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.all.send_redirects=0"); err != nil {
+	if err := run("sysctl", "-w", "net.ipv4.conf.all.send_redirects=0"); err != nil {
 		return err
 	}
-	if err := run("sudo", "sysctl", "-w", "net.ipv4.conf.default.send_redirects=0"); err != nil {
+	if err := run("sysctl", "-w", "net.ipv4.conf.default.send_redirects=0"); err != nil {
 		return err
 	}
 	if lanIface != "" {
-		if err := run("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.send_redirects=0", lanIface)); err != nil {
+		if err := run("sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.send_redirects=0", lanIface)); err != nil {
 			return err
 		}
-		if err := run("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.rp_filter=0", lanIface)); err != nil {
+		if err := run("sysctl", "-w", fmt.Sprintf("net.ipv4.conf.%s.rp_filter=0", lanIface)); err != nil {
 			return err
 		}
 	}
@@ -526,7 +541,7 @@ func run(name string, args ...string) error {
 }
 
 func cleanupFilterForwardRules() {
-	out, err := exec.Command("sudo", "nft", "-a", "list", "chain", "inet", "filter", "forward").Output()
+	out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").Output()
 	if err != nil {
 		return
 	}
@@ -545,7 +560,7 @@ func cleanupFilterForwardRules() {
 					}
 				}
 				if digits != "" {
-					_ = run("sudo", "nft", "delete", "rule", "inet", "filter", "forward", "handle", digits)
+					_ = run("nft", "delete", "rule", "inet", "filter", "forward", "handle", digits)
 				}
 			}
 		}
