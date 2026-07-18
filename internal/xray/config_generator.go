@@ -278,10 +278,18 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			continue
 		}
 		port := getPort("outbound-"+co.Alias, co.InternalProxyPort)
+		httpPort := co.InternalHttpPort
+		if httpPort <= 0 {
+			httpPort = port + 1
+		}
+		listenAddr := co.InternalListenAddr
+		if listenAddr == "" {
+			listenAddr = "127.0.0.1"
+		}
 		tags := relayInboundTags[co.Alias]
 		inbounds = append(inbounds,
-			map[string]interface{}{"tag": tags[0], "port": port, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)},
-			map[string]interface{}{"tag": tags[1], "port": port + 1, "listen": "127.0.0.1", "protocol": "http", "sniffing": buildSniffingConfig(userCfg)},
+			map[string]interface{}{"tag": tags[0], "port": port, "listen": listenAddr, "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)},
+			map[string]interface{}{"tag": tags[1], "port": httpPort, "listen": listenAddr, "protocol": "http", "sniffing": buildSniffingConfig(userCfg)},
 		)
 	}
 

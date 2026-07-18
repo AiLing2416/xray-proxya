@@ -633,3 +633,71 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 		t.Errorf("expected bypass ip routing rule not found or incorrect")
 	}
 }
+
+func TestGenerateXrayJSONInternalProxy(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "relay-p",
+				Enabled:            true,
+				InternalProxyPort:  1080,
+				InternalHttpPort:   8080,
+				InternalListenAddr: "192.168.1.100",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds, ok := parsed["inbounds"].([]interface{})
+	if !ok {
+		t.Fatalf("expected inbounds list")
+	}
+
+	foundSocks := false
+	foundHttp := false
+	for _, inbRaw := range inbounds {
+		inb, ok := inbRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		tag, _ := inb["tag"].(string)
+		portRaw, _ := inb["port"].(float64)
+		port := int(portRaw)
+		listen, _ := inb["listen"].(string)
+		protocol, _ := inb["protocol"].(string)
+
+		if tag == "relay-socks-relay-p" {
+			foundSocks = true
+			if port != 1080 {
+				t.Errorf("socks port = %d, want 1080", port)
+			}
+			if listen != "192.168.1.100" {
+				t.Errorf("socks listen = %q, want 192.168.1.100", listen)
+			}
+			if protocol != "socks" {
+				t.Errorf("socks protocol = %q, want socks", protocol)
+			}
+		}
+		if tag == "relay-http-relay-p" {
+			foundHttp = true
+			if port != 8080 {
+				t.Errorf("http port = %d, want 8080", port)
+			}
+			if listen != "192.168.1.100" {
+				t.Errorf("http listen = %q, want 192.168.1.100", listen)
+			}
+			if protocol != "http" {
+				t.Errorf("http protocol = %q, want http", protocol)
+			}
+		}
+	}
+
+	if !foundSocks {
+		t.Errorf("socks inbound not found")
+	}
+	if !foundHttp {
+		t.Errorf("http inbound not found")
+	}
+}

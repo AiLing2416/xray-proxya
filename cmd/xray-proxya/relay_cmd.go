@@ -1841,8 +1841,9 @@ back to the global default DNS behavior generated from the active config.
 }
 
 var setInternalProxyCmd = &cobra.Command{
-	Use:   "set-internal-proxy [alias]",
-	Short: "Provide local unauthenticated socks/http proxy for a relay (STAGING)",
+	Use:        "set-internal-proxy [alias]",
+	Deprecated: "Use 'xray-proxya proxy set [alias]' instead",
+	Short:      "Provide local unauthenticated socks/http proxy for a relay (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
