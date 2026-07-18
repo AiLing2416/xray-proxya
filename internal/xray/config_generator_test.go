@@ -632,6 +632,20 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 	if !foundIPRule {
 		t.Errorf("expected bypass ip routing rule not found or incorrect")
 	}
+
+	for _, ruleRaw := range rules {
+		rule, ok := ruleRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if domainsRaw, ok := rule["domain"].([]interface{}); ok {
+			for _, d := range domainsRaw {
+				if d.(string) == "geosite:us" {
+					t.Errorf("unexpected geosite:us domain rule found (only CN should have geosite bypass)")
+				}
+			}
+		}
+	}
 }
 
 func TestGenerateXrayJSONInternalProxy(t *testing.T) {

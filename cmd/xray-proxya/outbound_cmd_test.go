@@ -122,3 +122,16 @@ func TestFormatDecimalBytesUsesReadableUnits(t *testing.T) {
 		t.Fatalf("formatDecimalBytes() = %q, want %q", got, "2.00 MB")
 	}
 }
+
+func TestProbeDNSViaTCPQueryFormat(t *testing.T) {
+	// Verify the DNS query payload is well-formed
+	query := buildDNSProbeQuery()
+	if len(query) < 12 {
+		t.Fatalf("DNS query too short: %d bytes", len(query))
+	}
+	// Check QDCOUNT = 1
+	qdcount := int(query[4])<<8 | int(query[5])
+	if qdcount != 1 {
+		t.Fatalf("QDCOUNT = %d, want 1", qdcount)
+	}
+}

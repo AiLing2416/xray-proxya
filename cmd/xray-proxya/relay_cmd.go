@@ -474,12 +474,17 @@ var testOutboundCmd = &cobra.Command{
 		if cfg == nil {
 			return
 		}
+		found := false
 		for _, co := range cfg.CustomOutbounds {
 			if target != "" && co.Alias != target {
 				continue
 			}
+			found = true
 			results := runIsolatedTest(cfg, co)
 			printProbeResults(co.Alias, results)
+		}
+		if target != "" && !found {
+			fmt.Printf("❌ Relay '%s' not found.\n", target)
 		}
 	},
 }
@@ -518,8 +523,16 @@ var infoOutboundCmd = &cobra.Command{
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
-		testSocksPort, _ := xray.GetFreePort()
-		apiPort, _ := xray.GetFreePort()
+		testSocksPort, err := xray.GetFreePort()
+		if err != nil {
+			fmt.Printf("❌ Failed to allocate port: %v\n", err)
+			return
+		}
+		apiPort, err := xray.GetFreePort()
+		if err != nil {
+			fmt.Printf("❌ Failed to allocate port: %v\n", err)
+			return
+		}
 
 		testCfg := *cfg
 		testCfg.Role = config.RoleServer
@@ -529,7 +542,11 @@ var infoOutboundCmd = &cobra.Command{
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
 		for _, m := range testCfg.Presets {
 			if m.Enabled {
-				p, _ := xray.GetFreePort()
+				p, err := xray.GetFreePort()
+				if err != nil {
+					fmt.Printf("❌ Failed to allocate port: %v\n", err)
+					return
+				}
 				overrides[string(m.Mode)] = p
 			}
 		}
@@ -543,9 +560,13 @@ var infoOutboundCmd = &cobra.Command{
 		defer cleanup()
 
 		// Wait for Xray to bind
-		time.Sleep(1 * time.Second)
-
 		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
+		if err := waitForLocalTCPPort(socksAddr, 5*time.Second); err != nil {
+			fmt.Printf("❌ Test listener did not become ready: %v\n", err)
+			cleanup()
+			return
+		}
+
 		dialer, err := utils.NewSOCKS5Dialer(socksAddr)
 		if err != nil {
 			fmt.Printf("❌ Failed to build SOCKS5 dialer: %v\n", err)
@@ -1190,13 +1211,29 @@ without changing the running service.
 		testCfg.Role = config.RoleServer
 		testCfg.Gateway = config.GatewayConfig{}
 
-		testSocksPort, _ := xray.GetFreePort()
-		apiPort, _ := xray.GetFreePort()
-		dnsPort, _ := xray.GetFreePort()
+		testSocksPort, err := xray.GetFreePort()
+		if err != nil {
+			fmt.Printf("❌ Failed to allocate port: %v\n", err)
+			return
+		}
+		apiPort, err := xray.GetFreePort()
+		if err != nil {
+			fmt.Printf("❌ Failed to allocate port: %v\n", err)
+			return
+		}
+		dnsPort, err := xray.GetFreePort()
+		if err != nil {
+			fmt.Printf("❌ Failed to allocate port: %v\n", err)
+			return
+		}
 		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
 		for _, m := range testCfg.Presets {
 			if m.Enabled {
-				p, _ := xray.GetFreePort()
+				p, err := xray.GetFreePort()
+				if err != nil {
+					fmt.Printf("❌ Failed to allocate port: %v\n", err)
+					return
+				}
 				overrides[string(m.Mode)] = p
 			}
 		}
@@ -1371,8 +1408,14 @@ func valueOrNA(v string) string {
 }
 
 func startIsolatedOutboundInstance(cfg *config.UserConfig, alias string) (*http.Client, string, func(), error) {
-	testSocksPort, _ := xray.GetFreePort()
-	apiPort, _ := xray.GetFreePort()
+	testSocksPort, err := xray.GetFreePort()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to allocate port: %w", err)
+	}
+	apiPort, err := xray.GetFreePort()
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("failed to allocate port: %w", err)
+	}
 
 	testCfg := *cfg
 	testCfg.Role = config.RoleServer
@@ -1381,7 +1424,10 @@ func startIsolatedOutboundInstance(cfg *config.UserConfig, alias string) (*http.
 	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
 	for _, m := range testCfg.Presets {
 		if m.Enabled {
-			p, _ := xray.GetFreePort()
+			p, err := xray.GetFreePort()
+			if err != nil {
+				return nil, "", nil, fmt.Errorf("failed to allocate port: %w", err)
+			}
 			overrides[string(m.Mode)] = p
 		}
 	}
@@ -1881,6 +1927,56 @@ var setInternalProxyCmd = &cobra.Command{
 	},
 }
 
+func buildDNSProbeQuery() []byte {
+	return []byte{
+		0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+		0x06, 'g', 'o', 'o', 'g', 'l', 'e', 0x03, 'c', 'o', 'm', 0x00, 0x00, 0x01, 0x00, 0x01,
+	}
+}
+
+func probeDNSViaTCP(dialer *utils.SOCKS5Dialer) (time.Duration, error) {
+	conn, err := dialer.Dial("tcp", "8.8.8.8:53")
+	if err != nil {
+		return 0, fmt.Errorf("tcp connect: %w", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	query := buildDNSProbeQuery()
+	// TCP DNS: 2-byte length prefix + query
+	frame := make([]byte, 2+len(query))
+	frame[0] = byte(len(query) >> 8)
+	frame[1] = byte(len(query))
+	copy(frame[2:], query)
+
+	start := time.Now()
+	if _, err := conn.Write(frame); err != nil {
+		return 0, fmt.Errorf("write: %w", err)
+	}
+
+	// Read 2-byte response length
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return 0, fmt.Errorf("read length: %w", err)
+	}
+	respLen := int(header[0])<<8 | int(header[1])
+	if respLen < 12 {
+		return 0, fmt.Errorf("response too short: %d bytes", respLen)
+	}
+	resp := make([]byte, respLen)
+	if _, err := io.ReadFull(conn, resp); err != nil {
+		return 0, fmt.Errorf("read body: %w", err)
+	}
+	duration := time.Since(start)
+
+	// Check ANCOUNT > 0 (bytes 6-7 of DNS response)
+	ancount := int(resp[6])<<8 | int(resp[7])
+	if ancount == 0 {
+		return duration, fmt.Errorf("no answers in DNS response")
+	}
+	return duration, nil
+}
+
 func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResult {
 	results := ProbeResult{TCP: "FAIL", UDP: "FAIL", DNS: "FAIL", IPv4: "N/A", IPv6: "N/A"}
 	client, socksAddr, cleanup, err := startIsolatedOutboundInstance(cfg, co.Alias)
@@ -1923,17 +2019,18 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResu
 		}
 	}
 
-	// 3. DNS Test (via Outbound)
-	conn, err := dialer.Dial("tcp", "8.8.8.8:53")
-	if err == nil {
-		results.DNS = "OK"
-		conn.Close()
-	}
-	duration, err := xray.TestUDP(socksAddr, "user-"+co.Alias, "test")
-	if err == nil {
-		results.UDP = fmt.Sprintf("OK(%dms)", duration.Milliseconds())
+	// 3. DNS Test (actual resolution via TCP)
+	dnsDuration, dnsErr := probeDNSViaTCP(dialer)
+	if dnsErr == nil {
+		results.DNS = fmt.Sprintf("OK(%dms)", dnsDuration.Milliseconds())
 	} else {
-		results.UDP = fmt.Sprintf("FAIL(%v)", err)
+		results.DNS = fmt.Sprintf("FAIL(%v)", dnsErr)
+	}
+	udpDuration, udpErr := xray.TestUDP(socksAddr, "user-"+co.Alias, "test")
+	if udpErr == nil {
+		results.UDP = fmt.Sprintf("OK(%dms)", udpDuration.Milliseconds())
+	} else {
+		results.UDP = fmt.Sprintf("FAIL(%v)", udpErr)
 	}
 
 	return results
