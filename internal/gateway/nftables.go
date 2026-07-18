@@ -41,7 +41,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if state == "disabled" {
-		CleanupFirewall()
+		CleanupFirewallEx(true)
 		return nil
 	}
 
@@ -51,7 +51,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if state == "forward-only" {
-		CleanupFirewall()
+		CleanupFirewallEx(true)
 		if err := SetupKernel(lanIface); err != nil {
 			return fmt.Errorf("kernel setup failed: %w", err)
 		}
@@ -59,7 +59,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
-		CleanupFirewall()
+		CleanupFirewallEx(true)
 		if err := SetupKernel(lanIface); err != nil {
 			return fmt.Errorf("kernel setup failed: %w", err)
 		}
@@ -80,7 +80,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 	defer os.Remove(tmpFile)
 
-	CleanupFirewall()
+	CleanupFirewallEx(false)
 	if err := SetupKernel(lanIface); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
@@ -179,6 +179,10 @@ func deleteRulesByPref(pref string, ipv6 bool) {
 }
 
 func CleanupFirewall() {
+	CleanupFirewallEx(true)
+}
+
+func CleanupFirewallEx(deleteTun bool) {
 	_ = run("nft", "delete", "table", "inet", tableName)
 	cleanupFilterForwardRules()
 
@@ -193,6 +197,11 @@ func CleanupFirewall() {
 	deleteRulesByPref("51", true)
 	deleteRulesByPref("100", true)
 	_ = run("ip", "-6", "route", "flush", "table", "100")
+
+	if deleteTun {
+		// Delete tun interface if it exists
+		_ = run("ip", "link", "delete", tunName)
+	}
 }
 
 func SetupKernel(lanIface string) error {
