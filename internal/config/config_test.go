@@ -159,3 +159,23 @@ func TestGetConfigDir(t *testing.T) {
 		t.Fatalf("GetConfigDir() = %q, want /tmp/xray-proxya-test-dir", dir)
 	}
 }
+
+func TestBackfillDefaultsPreservesQuotaResetSentinel(t *testing.T) {
+	cfg := &UserConfig{
+		Guests: []GuestConfig{
+			{Alias: "guest-reset", UsedBytes: -1, QuotaGB: 10, ResetDay: 1},
+		},
+	}
+	cfg.BackfillDefaults()
+	if cfg.Guests[0].UsedBytes != -1 {
+		t.Fatalf("UsedBytes = %d, want -1 (quota reset sentinel should be preserved)", cfg.Guests[0].UsedBytes)
+	}
+}
+
+func TestGetHomeDir(t *testing.T) {
+	home := GetHomeDir()
+	if home == "" {
+		t.Fatalf("GetHomeDir() returned empty string")
+	}
+}
+

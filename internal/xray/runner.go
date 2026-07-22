@@ -123,11 +123,7 @@ func StopXray() {
 }
 
 func GetXrayAssetPath() string {
-	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 {
-		home = "/root"
-	}
-	return filepath.Join(home, ".local", "share", "xray-proxya", "bin")
+	return filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya", "bin")
 }
 
 func GetXrayLogPath() string {
@@ -426,11 +422,7 @@ func GetFreePort() (int, error) {
 }
 
 func GetXrayBinaryPath() string {
-	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 {
-		home = "/root"
-	}
-	return filepath.Join(home, ".local", "share", "xray-proxya", "bin", "xray")
+	return filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya", "bin", "xray")
 }
 
 func GetXrayProxyaPath() string {

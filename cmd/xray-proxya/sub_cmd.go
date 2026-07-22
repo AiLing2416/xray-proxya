@@ -397,7 +397,7 @@ var subEnableCmd = &cobra.Command{
 
 		if utils.IsRoot() {
 			binPath, _ := os.Executable()
-			home := "/root"
+			home := config.GetHomeDir()
 			workDir := filepath.Join(home, ".local", "share", "xray-proxya")
 			os.MkdirAll(workDir, 0700)
 			configDir := config.GetConfigDir()

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -35,10 +36,7 @@ var purgeCmd = &cobra.Command{
 		xray.StopXray()
 		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_gateway").Run()
 		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_tproxy").Run()
-		home, _ := os.UserHomeDir()
-		if os.Geteuid() == 0 {
-			home = "/root"
-		}
+		home := config.GetHomeDir()
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		os.RemoveAll(confDir)
 		fmt.Printf("✨ Purge complete. Manually remove the binary to finish.\n")
@@ -51,10 +49,7 @@ var resetCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("🧹 Resetting configuration files...")
 		xray.StopXray()
-		home, _ := os.UserHomeDir()
-		if os.Geteuid() == 0 {
-			home = "/root"
-		}
+		home := config.GetHomeDir()
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		files, _ := filepath.Glob(filepath.Join(confDir, "*.json*"))
 		for _, f := range files {

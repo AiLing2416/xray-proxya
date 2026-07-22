@@ -443,12 +443,12 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			guest.UUID = randomHexString(32)
 			changes = append(changes, "generated missing UUID for guest "+guest.Alias)
 		}
-		if guest.UsedBytes < 0 {
+		if guest.UsedBytes < 0 && guest.UsedBytes != -1 {
 			guest.UsedBytes = 0
 			changes = append(changes, "normalized negative used_bytes for guest "+guest.Alias)
 		}
 		switch guest.DisabledReason {
-		case GuestDisabledNone, GuestDisabledManual, GuestDisabledQuotaReached, GuestDisabledQuotaZero:
+		case GuestDisabledQuotaZero, GuestDisabledQuotaReached, GuestDisabledManual, GuestDisabledNone:
 		default:
 			guest.DisabledReason = GuestDisabledNone
 			changes = append(changes, "cleared invalid disabled_reason for guest "+guest.Alias)
@@ -468,7 +468,7 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		}
 		if guest.ResetDay < 1 || guest.ResetDay > 31 {
 			guest.ResetDay = 1
-			changes = append(changes, "reset invalid reset_day for guest "+guest.Alias+" to 1")
+			changes = append(changes, "normalized invalid reset_day for guest "+guest.Alias)
 		}
 	}
 
@@ -481,16 +481,23 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	return changes
 }
 
+func GetHomeDir() string {
+	if os.Geteuid() == 0 {
+		return "/root"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "/root"
+	}
+	return home
+}
+
 func GetConfigDir() string {
 	if envDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR"); envDir != "" {
 		os.MkdirAll(envDir, 0700)
 		return envDir
 	}
-	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 {
-		home = "/root"
-	}
-	dir := filepath.Join(home, ".config", "xray-proxya")
+	dir := filepath.Join(GetHomeDir(), ".config", "xray-proxya")
 	os.MkdirAll(dir, 0700)
 	return dir
 }

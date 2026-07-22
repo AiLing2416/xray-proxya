@@ -86,10 +86,7 @@ var serviceInstallCmd = &cobra.Command{
 			}
 		}
 
-		home, _ := os.UserHomeDir()
-		if os.Geteuid() == 0 {
-			home = "/root"
-		}
+		home := config.GetHomeDir()
 		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
 		assetDir := filepath.Join(workDir, "bin")
 		logPath := xray.GetXrayLogPath()
@@ -185,10 +182,7 @@ var serviceStatusCmd = &cobra.Command{
 
 func installOpenRC(isRoot bool) {
 	binPath := xray.GetXrayProxyaPath()
-	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 {
-		home = "/root"
-	}
+	home := config.GetHomeDir()
 	assetDir := filepath.Join(home, ".local", "share", "xray-proxya", "bin")
 	logPath := xray.GetXrayLogPath()
 	os.MkdirAll(filepath.Dir(logPath), 0700)

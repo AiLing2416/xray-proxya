@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"xray-proxya/internal/buildinfo"
+	"xray-proxya/internal/config"
 
 	"github.com/spf13/cobra"
 )
@@ -91,10 +92,7 @@ func handleCompletion(install bool, manageDeps bool) {
 		shell = filepath.Base(os.Getenv("SHELL"))
 	}
 
-	home, _ := os.UserHomeDir()
-	if os.Geteuid() == 0 {
-		home = "/root"
-	}
+	home := config.GetHomeDir()
 
 	baseDir := filepath.Join(home, ".local", "share", "bash-completion")
 	baseScript := filepath.Join(baseDir, "bash_completion.sh")
@@ -198,8 +196,7 @@ func cleanRC(rcPath, marker string) {
 		if strings.Contains(line, marker) ||
 			strings.Contains(line, "# Xray-Proxya Completion") ||
 			strings.Contains(line, "# Base Shell Completion Support") ||
-			strings.Contains(line, "bash_completion.sh") ||
-			strings.Contains(line, "compinit") {
+			strings.Contains(line, ".local/share/bash-completion/bash_completion.sh") {
 			continue
 		}
 		lines = append(lines, line)
