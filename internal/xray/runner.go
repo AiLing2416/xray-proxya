@@ -596,23 +596,28 @@ func DownloadXray() error {
 	for _, f := range r.File {
 		baseName := filepath.Base(f.Name)
 		if baseName == "xray" || strings.HasSuffix(baseName, ".dat") {
-			rc, err := f.Open()
+			err := func() error {
+				rc, err := f.Open()
+				if err != nil {
+					return err
+				}
+				defer rc.Close()
+
+				targetPath := filepath.Join(binDir, baseName)
+				outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+				if err != nil {
+					return err
+				}
+				defer outFile.Close()
+
+				if _, err := io.Copy(outFile, rc); err != nil {
+					return err
+				}
+				return nil
+			}()
 			if err != nil {
 				return err
 			}
-			defer rc.Close()
-
-			targetPath := filepath.Join(binDir, baseName)
-			outFile, err := os.OpenFile(targetPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
-			if err != nil {
-				return err
-			}
-
-			if _, err := io.Copy(outFile, rc); err != nil {
-				outFile.Close()
-				return err
-			}
-			outFile.Close()
 		}
 	}
 	return nil
