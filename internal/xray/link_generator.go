@@ -75,7 +75,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 		case config.ModeVLESSXHTTP:
 			ps := fmt.Sprintf("VLess-XHTTP-KEM768-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=none&encryption=%s&type=xhttp&path=%s#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.Password, url.QueryEscape(mode.Path), url.QueryEscape(ps))
+				userUUID, formattedIP, mode.Port, url.QueryEscape(mode.Settings.Password), url.QueryEscape(mode.Path), url.QueryEscape(ps))
 
 		case config.ModeVMessWS:
 			ps := fmt.Sprintf("VMess-WS%s", psSuffix)

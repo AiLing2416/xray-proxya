@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"xray-proxya/internal/config"
 )
 
 func TestWithPrimaryRemarkUpdatesVLESSFragment(t *testing.T) {
@@ -36,3 +37,30 @@ func TestWithPrimaryRemarkUpdatesVMessPS(t *testing.T) {
 		t.Fatalf("ps = %#v, want %q", got, "2GB/10GB/3d")
 	}
 }
+
+func TestGenerateAllLinksURLEscapesVLESSXHTTPPassword(t *testing.T) {
+	cfg := &config.UserConfig{
+		UUID: "12345678-1234-1234-1234-123456789012",
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSXHTTP,
+				Enabled: true,
+				Port:    443,
+				Path:    "/xhttp",
+				Settings: config.Settings{
+					Password: "ML-KEM-768:key+with/slash=and+plus",
+				},
+			},
+		},
+	}
+
+	links := GenerateLinks(cfg, "1.2.3.4")
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+	wantEnc := "encryption=ML-KEM-768%3Akey%2Bwith%2Fslash%3Dand%2Bplus"
+	if !strings.Contains(links[0], wantEnc) {
+		t.Fatalf("expected link to contain escaped encryption query parameter %q, got %q", wantEnc, links[0])
+	}
+}
+
