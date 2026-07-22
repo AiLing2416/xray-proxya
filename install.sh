@@ -32,7 +32,27 @@ mkdir -p "$INSTALL_DIR"
 SHARE_BIN_DIR="$HOME/.local/share/xray-proxya/bin"
 [ "$(id -u)" -eq 0 ] && SHARE_BIN_DIR="/root/.local/share/xray-proxya/bin"
 
-# 3. Migration Logic: Detect and move legacy Xray core
+# 3. Detect existing installation & confirm overwrite
+TARGET_BIN="$INSTALL_DIR/xray-proxya"
+if [ -f "$TARGET_BIN" ]; then
+    echo -e "${YELLOW}⚠️ Found existing installation at: $TARGET_BIN${NC}"
+    if [ -t 0 ] || [ -c /dev/tty ]; then
+        read -p "Overwrite / Update existing installation? [Y/n]: " CHOICE < /dev/tty || CHOICE=""
+        case "$CHOICE" in
+            [Nn]* )
+                echo -e "🚫 Installation cancelled."
+                exit 0
+                ;;
+            * )
+                echo -e "🔄 Overwriting existing installation..."
+                ;;
+        esac
+    else
+        echo -e "ℹ️ Non-interactive shell detected, defaulting to overwrite..."
+    fi
+fi
+
+# 4. Migration Logic: Detect and move legacy Xray core
 OLD_CORE="$INSTALL_DIR/xray"
 if [ -f "$OLD_CORE" ]; then
     echo -e "📦 Found legacy Xray core at $OLD_CORE. Moving to private bin..."

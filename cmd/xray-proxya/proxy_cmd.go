@@ -23,6 +23,19 @@ var proxyCmd = &cobra.Command{
 	Use:     "proxy",
 	Aliases: []string{"proxies", "localproxy"},
 	Short:   "Manage and run local SOCKS/HTTP proxy listeners",
+	Long:    "Manage and run local SOCKS5 and HTTP proxy listeners for relays. Supports both persistent configuration via STAGING and temporary standalone foreground execution.",
+	Example: `  # List all local proxy listeners
+  xray-proxya proxy list
+
+  # Configure local proxy for a relay in STAGING
+  xray-proxya proxy set node-us -p 10808 -l 127.0.0.1
+  xray-proxya apply
+
+  # Test connectivity of configured local proxy
+  xray-proxya proxy test node-us
+
+  # Run temporary standalone proxy in foreground
+  xray-proxya proxy run node-us -p 20808 -l 0.0.0.0`,
 }
 
 var proxyListCmd = &cobra.Command{
@@ -76,6 +89,11 @@ var proxyListCmd = &cobra.Command{
 var proxySetCmd = &cobra.Command{
 	Use:   "set [alias]",
 	Short: "Configure local SOCKS/HTTP proxy for a relay in STAGING",
+	Example: `  # Configure SOCKS (10808) and HTTP (10809) for localhost
+  xray-proxya proxy set node-us -p 10808
+
+  # Configure custom SOCKS and HTTP ports with LAN sharing
+  xray-proxya proxy set node-hk --socks-port 10810 --http-port 10811 --listen 0.0.0.0`,
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
@@ -150,6 +168,9 @@ var proxySetCmd = &cobra.Command{
 var proxyUnsetCmd = &cobra.Command{
 	Use:   "unset [alias]",
 	Short: "Disable local SOCKS/HTTP proxy for a relay in STAGING",
+	Example: `  # Disable local proxy for a relay in STAGING
+  xray-proxya proxy unset node-us
+  xray-proxya apply`,
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
@@ -183,6 +204,11 @@ var proxyUnsetCmd = &cobra.Command{
 var proxyRunCmd = &cobra.Command{
 	Use:   "run [alias]",
 	Short: "Run a temporary standalone local SOCKS/HTTP proxy for a relay",
+	Example: `  # Run temporary proxy in foreground
+  xray-proxya proxy run node-us -p 20808
+
+  # Run temporary proxy with LAN sharing
+  xray-proxya proxy run node-us -p 20808 -l 0.0.0.0`,
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
@@ -304,6 +330,8 @@ var proxyRunCmd = &cobra.Command{
 var proxyTestCmd = &cobra.Command{
 	Use:   "test [alias]",
 	Short: "Test connectivity of a configured local proxy",
+	Example: `  # Test connectivity of configured local proxy
+  xray-proxya proxy test node-us`,
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
