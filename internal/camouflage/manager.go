@@ -218,7 +218,7 @@ func (m *Manager) doRequest(dest string, withHost bool) *CacheItem {
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024))
 
 	// Clean headers to look like a direct CDN response
 	header := make(http.Header)

@@ -57,7 +57,7 @@ func GetPublicIPv4() string {
 		return ""
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	return strings.TrimSpace(string(body))
 }
 
@@ -68,7 +68,7 @@ func GetPublicIPv6() string {
 		return ""
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	ip := strings.TrimSpace(string(body))
 	if strings.Contains(ip, ":") {
 		return ip
