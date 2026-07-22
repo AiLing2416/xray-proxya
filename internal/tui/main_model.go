@@ -2601,7 +2601,15 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 
 func runCmdSlice(args []string) error {
 	cmd := exec.Command(args[0], args[1:]...)
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg != "" {
+			return fmt.Errorf("%w: %s", err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 type gatewayTestResultMsg struct {
