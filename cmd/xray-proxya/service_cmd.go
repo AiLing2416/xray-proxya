@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -35,6 +36,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
 ExecStart=%s run
 Restart=on-failure
 WorkingDirectory=%s
@@ -94,6 +96,10 @@ var serviceInstallCmd = &cobra.Command{
 		os.MkdirAll(workDir, 0700)
 		os.MkdirAll(filepath.Dir(logPath), 0700)
 		configDir := config.GetConfigDir()
+		if utils.IsRoot() && (!strings.HasPrefix(workDir, "/root") || !strings.HasPrefix(configDir, "/root")) {
+			fmt.Printf("❌ Security Violation: Root system service directory must reside in /root (workDir=%s, configDir=%s)\n", workDir, configDir)
+			return
+		}
 		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
 			f.Close()
 		} else {

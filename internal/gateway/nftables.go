@@ -74,11 +74,20 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	rules := buildNFT(cfg, lanIface, lanCIDR, lanIPv6CIDR)
 	configDir := filepath.Dir(config.GetConfigPathEx(false))
 	_ = os.MkdirAll(configDir, 0700)
-	tmpFile := filepath.Join(configDir, "xray-proxya.nft")
-	if err := os.WriteFile(tmpFile, []byte(rules), 0600); err != nil {
+	f, err := os.CreateTemp(configDir, "xray-proxya-*.nft")
+	if err != nil {
+		return fmt.Errorf("create temp nft file: %w", err)
+	}
+	tmpFile := f.Name()
+	defer os.Remove(tmpFile)
+
+	if _, err := f.WriteString(rules); err != nil {
+		f.Close()
 		return fmt.Errorf("write nft rules: %w", err)
 	}
-	defer os.Remove(tmpFile)
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close temp nft file: %w", err)
+	}
 
 	CleanupFirewallEx(false)
 	if err := SetupKernel(lanIface); err != nil {

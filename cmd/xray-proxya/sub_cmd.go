@@ -401,6 +401,10 @@ var subEnableCmd = &cobra.Command{
 			workDir := filepath.Join(home, ".local", "share", "xray-proxya")
 			os.MkdirAll(workDir, 0700)
 			configDir := config.GetConfigDir()
+			if !strings.HasPrefix(workDir, "/root") || !strings.HasPrefix(configDir, "/root") {
+				fmt.Printf("❌ Security Violation: Root subscription service directory must reside in /root (workDir=%s, configDir=%s)\n", workDir, configDir)
+				return
+			}
 
 			content := fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Subscription Server
@@ -409,6 +413,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=root
 ExecStart=%s sub run
 Restart=on-failure
 WorkingDirectory=%s
