@@ -108,23 +108,28 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 
 	userObj := map[string]interface{}{
 		"id":         uuid,
-		"encryption": encryptionStr,
+		"encryption": "none",
 	}
 	if flow := query.Get("flow"); flow != "" {
 		userObj["flow"] = flow
 	}
 
-	out := map[string]interface{}{
-		"protocol": "vless",
-		"settings": map[string]interface{}{
-			"vnext": []interface{}{
-				map[string]interface{}{
-					"address": host,
-					"port":    port,
-					"users":   []interface{}{userObj},
-				},
+	vlessSettings := map[string]interface{}{
+		"vnext": []interface{}{
+			map[string]interface{}{
+				"address": host,
+				"port":    port,
+				"users":   []interface{}{userObj},
 			},
 		},
+	}
+	if encryptionStr != "" && encryptionStr != "none" {
+		vlessSettings["decryption"] = encryptionStr
+	}
+
+	out := map[string]interface{}{
+		"protocol": "vless",
+		"settings": vlessSettings,
 		"streamSettings": map[string]interface{}{
 			"network": network,
 		},

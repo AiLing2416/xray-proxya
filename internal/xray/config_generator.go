@@ -335,7 +335,11 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSXHTTP:
 			in["protocol"] = "vless"
-			settings := map[string]interface{}{"clients": clients, "decryption": "none"}
+			decryption := "none"
+			if m.Settings.PrivateKey != "" {
+				decryption = m.Settings.PrivateKey
+			}
+			settings := map[string]interface{}{"clients": clients, "decryption": decryption}
 			if dest != "" {
 				settings["fallbacks"] = []interface{}{map[string]interface{}{"dest": dest}}
 			}
