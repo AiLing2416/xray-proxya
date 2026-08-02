@@ -1986,6 +1986,10 @@ back to the global default DNS behavior generated from the active config.
 			fmt.Printf("❌ Error: %v\n", err)
 			return
 		}
+		if normalizedStrategy == "" && len(normalizedServers) == 0 && !reset {
+			fmt.Println("❌ Error: You must specify --strategy, --servers, or --reset")
+			return
+		}
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
 			return
@@ -2056,8 +2060,28 @@ func buildDNSProbeQuery() []byte {
 	}
 }
 
-func probeDNSViaTCP(dialer *utils.SOCKS5Dialer) (time.Duration, error) {
-	conn, err := dialer.Dial("tcp", "8.8.8.8:53")
+func probeDNSViaTCP(dialer *utils.SOCKS5Dialer, servers []string) (time.Duration, error) {
+	target := "8.8.8.8:53"
+	for _, s := range servers {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		host := s
+		if strings.Contains(s, "://") {
+			if u, err := url.Parse(s); err == nil {
+				host = u.Hostname()
+			}
+		} else if h, _, err := net.SplitHostPort(s); err == nil {
+			host = h
+		}
+		if host != "" {
+			target = net.JoinHostPort(host, "53")
+			break
+		}
+	}
+
+	conn, err := dialer.Dial("tcp", target)
 	if err != nil {
 		return 0, fmt.Errorf("tcp connect: %w", err)
 	}
@@ -2142,7 +2166,7 @@ func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResu
 	}
 
 	// 3. DNS Test (actual resolution via TCP)
-	dnsDuration, dnsErr := probeDNSViaTCP(dialer)
+	dnsDuration, dnsErr := probeDNSViaTCP(dialer, co.DNSServers)
 	if dnsErr == nil {
 		results.DNS = fmt.Sprintf("OK(%dms)", dnsDuration.Milliseconds())
 	} else {
