@@ -21,7 +21,7 @@ func requireRoot() bool {
 
 var tuneCmd = &cobra.Command{
 	Use:   "tune",
-	Short: "Apply temporary root-only kernel tuning profiles",
+	Short: "Manage root-only kernel tuning profiles (runtime sysctl adjustments)",
 }
 
 var tuneShowCmd = &cobra.Command{

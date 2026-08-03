@@ -86,8 +86,8 @@ sudo xray-proxya tune profiles
 # Preview the relay profile before applying it
 sudo xray-proxya tune diff relay
 
-# Apply temporary runtime-only sysctl tuning
-sudo xray-proxya tune apply relay
+# Apply and persist sysctl tuning (auto-replayed on next 'run')
+sudo xray-proxya tune use relay
 
 # Verify or rollback the session later
 sudo xray-proxya tune verify relay
@@ -96,7 +96,7 @@ sudo xray-proxya tune rollback
 
 Notes:
 - `tune` is root-only by design.
-- Tuning is runtime-only and does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`.
+- Tuning does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`. `tune use` persists the chosen profile name so it is automatically re-applied on the next `xray-proxya run`; `tune rollback` removes the persisted state.
 - Unsupported keys are reported and skipped rather than forcing legacy compatibility behavior.
 
 ## Common Commands
