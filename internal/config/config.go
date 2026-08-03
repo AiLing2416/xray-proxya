@@ -49,6 +49,7 @@ type UserConfig struct {
 	GuestSubPort    int              `json:"guest_sub_port,omitempty"`
 	GuestSubBind    string           `json:"guest_sub_bind,omitempty"`
 	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
+	TunePolicy      string           `json:"tune_policy,omitempty"`
 }
 
 func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
@@ -253,6 +254,10 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if cfg.Role == "" {
 		cfg.Role = RoleServer
 		changes = append(changes, "set missing role=server")
+	}
+	if cfg.TunePolicy == "" {
+		cfg.TunePolicy = "throughput"
+		changes = append(changes, "set missing tune_policy=throughput")
 	}
 	if cfg.UUID == "" {
 		cfg.UUID = randomHexString(32)

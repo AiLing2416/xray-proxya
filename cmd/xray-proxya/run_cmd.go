@@ -186,6 +186,9 @@ var runCmd = &cobra.Command{
 		// Apply kernel tuning profile based on the role
 		if cfg.Role != "" {
 			profileName := string(cfg.Role)
+			if cfg.TunePolicy != "" && profileName != "gateway" {
+				profileName = profileName + "-" + cfg.TunePolicy
+			}
 			profile, ok := tune.GetProfile(profileName)
 			if ok {
 				fmt.Printf("⚙️  Applying kernel tuning profile: %s...\n", profile.Name)
