@@ -93,7 +93,7 @@ var selinuxSetupCmd = &cobra.Command{
 
 		fmt.Println("[4/5] Generating and installing SELinux policy module...")
 		// Generate policy from audit logs
-		grepCmd := exec.Command("grep", "xray-proxya", "/var/log/audit/audit.log")
+		grepCmd := exec.Command("grep", "-E", "xray|xray-proxya", "/var/log/audit/audit.log")
 		auditCmd := exec.Command("audit2allow", "-M", "xray_proxya")
 		
 		pipe, _ := grepCmd.StdoutPipe()

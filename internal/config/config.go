@@ -514,6 +514,29 @@ func GetConfigPathEx(staging bool) string {
 	return path
 }
 
+// GatewayTunDisabledPath is a runtime-only marker. It lets a gateway be
+// brought down without mutating the active, staged configuration; the next
+// gateway up removes it before restarting Xray with its TUN inbound enabled.
+func GatewayTunDisabledPath() string {
+	return filepath.Join(GetConfigDir(), "gateway.tun.disabled")
+}
+
+func GatewayTunDisabled() bool {
+	_, err := os.Stat(GatewayTunDisabledPath())
+	return err == nil
+}
+
+func SetGatewayTunDisabled(disabled bool) error {
+	path := GatewayTunDisabledPath()
+	if disabled {
+		return os.WriteFile(path, []byte("disabled\n"), 0600)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func StagingExists() bool {
 	_, err := os.Stat(GetConfigPathEx(true))
 	return err == nil

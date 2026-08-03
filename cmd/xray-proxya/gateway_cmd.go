@@ -16,6 +16,10 @@ import (
 var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
 	Short: "Manage transparent proxy gateway (STAGING)",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = cmd.Help()
+	},
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		utils.EnsureRoot()
 	},
@@ -191,17 +195,17 @@ var gatewaySetCmd = &cobra.Command{
 
 var gatewayUpCmd = &cobra.Command{
 	Use:   "up",
-	Short: "Bring gateway runtime rules up",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfig()
-		if cfg == nil {
-			return
+	Short: "Restart Xray with TUN and bring gateway runtime rules up",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("load active config: %w", err)
 		}
-		if err := gateway.ApplyFirewall(cfg); err != nil {
-			fmt.Printf("❌ Failed: %v\n", err)
-			return
+		if err := gateway.Up(cfg); err != nil {
+			return err
 		}
 		fmt.Println("✅ Gateway runtime rules are up.")
+		return nil
 	},
 }
 
@@ -209,14 +213,14 @@ var gatewayApplyCompatCmd = &cobra.Command{
 	Use:    "apply",
 	Short:  "Apply gateway runtime rules",
 	Hidden: true,
-	Run:    gatewayUpCmd.Run,
+	RunE:   gatewayUpCmd.RunE,
 }
 
 var gatewaySyncFirewallCompatCmd = &cobra.Command{
 	Use:    "sync-firewall",
 	Short:  "Regenerate and apply gateway runtime rules",
 	Hidden: true,
-	Run:    gatewayUpCmd.Run,
+	RunE:   gatewayUpCmd.RunE,
 }
 
 var gatewayDiffCmd = &cobra.Command{
@@ -272,10 +276,13 @@ var gatewayVerifyCompatCmd = &cobra.Command{
 
 var gatewayDownCmd = &cobra.Command{
 	Use:   "down",
-	Short: "Bring gateway runtime rules down",
-	Run: func(cmd *cobra.Command, args []string) {
-		gateway.CleanupFirewall()
-		fmt.Println("✅ Gateway runtime rules are down.")
+	Short: "Remove gateway rules and restart Xray without TUN",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := gateway.Down(); err != nil {
+			return err
+		}
+		fmt.Println("✅ Gateway runtime rules are down and Xray restarted without TUN.")
+		return nil
 	},
 }
 
@@ -289,20 +296,26 @@ var gatewayTestCmd = &cobra.Command{
 			return
 		}
 
-		fmt.Println("🔍 Running Local Proxy Route Test (fetching direct/proxy public IP)...")
+		if cfg.Gateway.State == "disabled" {
+			fmt.Println("❌ Gateway is currently disabled. Please set the state to 'proxy' or 'forward-only' to run tests.")
+			fmt.Println("   Hint: xray-proxya gateway set --state proxy && xray-proxya apply")
+			return
+		}
+
+		fmt.Println("🔍 Running Local Proxy Route Test (observing public IP through a non-bypassed endpoint)...")
 		localIP, err := tui.RunLocalProxyTest(cfg)
 		if err != nil {
 			fmt.Printf("❌ Local Proxy Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running?)\n", err)
 		} else {
-			fmt.Printf("✅ Local Proxy Test Passed! Public IP: %s\n", localIP)
+			fmt.Printf("ℹ️  Local Proxy Test observed public IP: %s\n", localIP)
 		}
 
-		fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (fetching simulated client public IP)...")
+		fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (observing public IP through a non-bypassed endpoint)...")
 		lanIP, err := tui.RunSimulatedLANTest(cfg)
 		if err != nil {
 			fmt.Printf("❌ Simulated LAN Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
 		} else {
-			fmt.Printf("✅ Simulated LAN Test Passed! Public IP: %s\n", lanIP)
+			fmt.Printf("ℹ️  Simulated LAN Gateway Test observed public IP: %s\n", lanIP)
 		}
 	},
 }
@@ -311,7 +324,7 @@ var gatewayRollbackCompatCmd = &cobra.Command{
 	Use:    "rollback",
 	Short:  "Remove xray-proxya gateway runtime rules",
 	Hidden: true,
-	Run:    gatewayDownCmd.Run,
+	RunE:   gatewayDownCmd.RunE,
 }
 
 func init() {

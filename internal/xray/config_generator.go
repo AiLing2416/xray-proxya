@@ -254,6 +254,11 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	dnsInPort := getPort("dns-in", 0)
 	camoPort := getPort("camouflage", 0) // Default 0 means no camo unless requested via override or dynamically in run
 	_, disableGatewayTun := overridePorts["gateway-tun-disabled"]
+	gatewayState := userCfg.Gateway.State
+	if gatewayState == "" {
+		gatewayState = "proxy"
+	}
+	gatewayTunEnabled := isGateway && !disableGatewayTun && gatewayState == "proxy" && (userCfg.Gateway.LocalEnabled || userCfg.Gateway.LANEnabled)
 	relayInboundTags := map[string][]string{}
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
@@ -356,7 +361,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		inbounds = append(inbounds, in)
 	}
 
-	if isGateway && !disableGatewayTun {
+	if gatewayTunEnabled {
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "tun-in", "protocol": "tun",
 			"settings": map[string]interface{}{
@@ -432,7 +437,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	)
 
-	if isGateway && len(userCfg.Gateway.BypassCountries) > 0 {
+	if gatewayTunEnabled && len(userCfg.Gateway.BypassCountries) > 0 {
 		var bypassGeoIPs []string
 		var bypassGeoSites []string
 		for _, country := range userCfg.Gateway.BypassCountries {
@@ -462,7 +467,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 	}
 
-	if relayAlias != "" {
+	if gatewayTunEnabled && relayAlias != "" {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"inboundTag":  []string{"tun-in"},

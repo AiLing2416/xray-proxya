@@ -114,6 +114,9 @@ var runCmd = &cobra.Command{
 		if camoPort > 0 {
 			overrides["camouflage"] = camoPort
 		}
+		if cfg.Role == config.RoleGateway && config.GatewayTunDisabled() {
+			overrides["gateway-tun-disabled"] = 1
+		}
 		quotaMonitor, err := quota.LoadMonitor()
 		if err != nil {
 			fmt.Printf("⚠️  Failed to load quota monitor state: %v\n", err)
@@ -175,13 +178,15 @@ var runCmd = &cobra.Command{
 		}
 
 		// Apply gateway firewall & routing rules on startup if role is gateway
-		if cfg.Role == config.RoleGateway {
+		if cfg.Role == config.RoleGateway && !config.GatewayTunDisabled() && gateway.WantsTunnel(cfg) {
 			fmt.Println("⚙️  Applying gateway firewall and routing rules...")
 			if err := gateway.ApplyFirewall(cfg); err != nil {
 				fmt.Printf("⚠️  Failed to apply gateway firewall rules: %v\n", err)
 			} else {
 				fmt.Println("✅ Gateway firewall and routing rules applied successfully.")
 			}
+		} else if cfg.Role == config.RoleGateway {
+			gateway.CleanupFirewall()
 		}
 
 		// Apply persistent kernel tuning profile if explicitly configured via tune command

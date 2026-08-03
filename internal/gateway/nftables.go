@@ -41,7 +41,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if state == "disabled" {
-		CleanupFirewallEx(true)
+		CleanupFirewall()
 		return nil
 	}
 
@@ -51,7 +51,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if state == "forward-only" {
-		CleanupFirewallEx(true)
+		CleanupFirewall()
 		if err := SetupKernel(lanIface); err != nil {
 			return fmt.Errorf("kernel setup failed: %w", err)
 		}
@@ -59,11 +59,14 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
-		CleanupFirewallEx(true)
+		CleanupFirewall()
 		if err := SetupKernel(lanIface); err != nil {
 			return fmt.Errorf("kernel setup failed: %w", err)
 		}
 		return nil
+	}
+	if config.GatewayTunDisabled() {
+		return fmt.Errorf("gateway runtime is down; run 'xray-proxya gateway up' first")
 	}
 
 	lanCIDR, err := getInterfaceCIDR(lanIface)
@@ -89,7 +92,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		return fmt.Errorf("close temp nft file: %w", err)
 	}
 
-	CleanupFirewallEx(false)
+	CleanupFirewall()
 	if err := SetupKernel(lanIface); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
@@ -188,10 +191,6 @@ func deleteRulesByPref(pref string, ipv6 bool) {
 }
 
 func CleanupFirewall() {
-	CleanupFirewallEx(true)
-}
-
-func CleanupFirewallEx(deleteTun bool) {
 	_ = run("nft", "delete", "table", "inet", tableName)
 	cleanupFilterForwardRules()
 
@@ -207,10 +206,6 @@ func CleanupFirewallEx(deleteTun bool) {
 	deleteRulesByPref("100", true)
 	_ = run("ip", "-6", "route", "flush", "table", "100")
 
-	if deleteTun {
-		// Delete tun interface if it exists
-		_ = run("ip", "link", "delete", tunName)
-	}
 }
 
 func SetupKernel(lanIface string) error {

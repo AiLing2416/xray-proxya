@@ -112,12 +112,6 @@ func StopXray() {
 		}
 	}
 
-	if os.Geteuid() == 0 {
-		// Only cleanup specific interfaces we manage
-		exec.Command("ip", "link", "delete", "proxya-tun").Run()
-		exec.Command("ip", "link", "delete", "lan-tun").Run()
-	}
-
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 	os.Remove(pidPath)
 }

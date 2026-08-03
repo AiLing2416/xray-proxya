@@ -82,6 +82,27 @@ func TestGenerateXrayJSONUsesGatewayRelayDNSConfig(t *testing.T) {
 	assertStringSliceEqual(t, servers, want)
 }
 
+func TestGenerateXrayJSONOmitsGatewayTunWhenDisabled(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{Mode: "tun", State: "disabled", LocalEnabled: true},
+	}
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds, ok := parsed["inbounds"].([]interface{})
+	if !ok {
+		t.Fatal("generated config has no inbounds")
+	}
+	for _, raw := range inbounds {
+		inbound, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if inbound["tag"] == "tun-in" {
+			t.Fatal("disabled gateway config must not include tun-in")
+		}
+	}
+}
+
 func TestGenerateXrayJSONSkipsLegacyDNSInboundRule(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
@@ -574,6 +595,8 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
 			Mode:            "tun",
+			State:           "proxy",
+			LocalEnabled:    true,
 			RelayAlias:      "us-relay",
 			BypassCountries: []string{"CN", "US"},
 		},

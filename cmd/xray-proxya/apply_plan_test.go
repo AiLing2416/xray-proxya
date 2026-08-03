@@ -126,8 +126,8 @@ func TestBuildApplyImpactGatewayRuntimeOnly(t *testing.T) {
 	staging.Gateway.LocalEnabled = true
 
 	impact := buildApplyImpact(active, staging)
-	if impact.XrayConfigChanged {
-		t.Fatalf("expected gateway runtime-only change to skip Xray restart")
+	if !impact.XrayConfigChanged {
+		t.Fatalf("expected gateway runtime-only change to restart Xray")
 	}
 	if !impact.GatewayRuntimeChanged {
 		t.Fatalf("expected gateway runtime-only change to be tracked")

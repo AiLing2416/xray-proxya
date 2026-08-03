@@ -2467,15 +2467,14 @@ type gatewayActionResultMsg struct {
 
 func runGatewayUp(cfg *config.UserConfig) tea.Cmd {
 	return func() tea.Msg {
-		err := gateway.ApplyFirewall(cfg)
+		err := gateway.Up(cfg)
 		return gatewayActionResultMsg{action: "up", err: err}
 	}
 }
 
 func runGatewayDown() tea.Cmd {
 	return func() tea.Msg {
-		gateway.CleanupFirewall()
-		return gatewayActionResultMsg{action: "down", err: nil}
+		return gatewayActionResultMsg{action: "down", err: gateway.Down()}
 	}
 }
 
@@ -2502,13 +2501,43 @@ func parseCloudflareTraceIP(body string) string {
 	return ""
 }
 
+var gatewayTraceEndpoints = []string{
+	"https://1.1.1.1/cdn-cgi/trace",
+	"https://1.0.0.1/cdn-cgi/trace",
+}
+
+// gatewayTestEndpoints excludes destinations configured to bypass transparent
+// proxying. Testing one of those addresses would always report the direct
+// egress IP, regardless of whether gateway interception is working.
+func gatewayTestEndpoints(cfg *config.UserConfig) []string {
+	bypassed := make(map[string]struct{}, len(cfg.Gateway.BypassDNS))
+	for _, addr := range cfg.Gateway.BypassDNS {
+		if ip := net.ParseIP(strings.TrimSpace(addr)); ip != nil {
+			bypassed[ip.String()] = struct{}{}
+		}
+	}
+
+	endpoints := make([]string, 0, len(gatewayTraceEndpoints))
+	for _, endpoint := range gatewayTraceEndpoints {
+		address := strings.TrimPrefix(endpoint, "https://")
+		host := strings.SplitN(address, "/", 2)[0]
+		if _, found := bypassed[host]; !found {
+			endpoints = append(endpoints, endpoint)
+		}
+	}
+	return endpoints
+}
+
 func RunLocalProxyTest(cfg *config.UserConfig) (string, error) {
 	// Ensure gateway rules are up and table 100 has the route
 	if err := gateway.ApplyFirewall(cfg); err != nil {
 		return "", fmt.Errorf("failed to apply firewall rules: %v", err)
 	}
 
-	endpoints := []string{"https://1.1.1.1/cdn-cgi/trace", "https://1.0.0.1/cdn-cgi/trace"}
+	endpoints := gatewayTestEndpoints(cfg)
+	if len(endpoints) == 0 {
+		return "", fmt.Errorf("all gateway test endpoints are configured in bypass_dns")
+	}
 	var lastErr error
 	for _, ep := range endpoints {
 		out, err := exec.Command("curl", "-sk", "-m", "5", ep).Output()
@@ -2582,7 +2611,10 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 
 	time.Sleep(500 * time.Millisecond)
 
-	endpoints := []string{"https://1.1.1.1/cdn-cgi/trace", "https://1.0.0.1/cdn-cgi/trace"}
+	endpoints := gatewayTestEndpoints(cfg)
+	if len(endpoints) == 0 {
+		return "", fmt.Errorf("all gateway test endpoints are configured in bypass_dns")
+	}
 	var lastErr error
 	for _, ep := range endpoints {
 		out, err := exec.Command("ip", "netns", "exec", nsName, "curl", "-sk", "-m", "5", ep).Output()

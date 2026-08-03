@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/presets"
 	"xray-proxya/internal/xray"
 )
@@ -47,6 +48,7 @@ func ApplyPending(opts Options) ([]string, error) {
 	}
 
 	impact := BuildImpact(activeCfg, cfg)
+	gatewaySyncRequired := cfg.Role == config.RoleGateway && impact.GatewayRuntimeChanged
 	validateXray := opts.Full || impact.XrayConfigChanged
 	lines := make([]string, 0, 16)
 
@@ -104,11 +106,15 @@ func ApplyPending(opts Options) ([]string, error) {
 
 	xrayRestarted := false
 	if opts.Full || impact.XrayConfigChanged {
-		lines = append(lines, "🔄 Restarting Xray service...")
-		if err := xray.RestartXrayService(); err != nil {
-			lines = append(lines, fmt.Sprintf("❌ Error restarting Xray service: %v", err))
+		if gatewaySyncRequired {
+			lines = append(lines, "🔄 Restarting Xray and synchronizing Gateway runtime...")
 		} else {
-			xrayRestarted = true
+			lines = append(lines, "🔄 Restarting Xray service...")
+			if err := xray.RestartXrayService(); err != nil {
+				lines = append(lines, fmt.Sprintf("❌ Error restarting Xray service: %v", err))
+			} else {
+				xrayRestarted = true
+			}
 		}
 	} else {
 		lines = append(lines, "ℹ️  Xray restart skipped: no Xray-facing changes detected.")
@@ -127,13 +133,18 @@ func ApplyPending(opts Options) ([]string, error) {
 		lines = append(lines, "ℹ️  Subscription content updated; no restart needed because the sub server reloads config on each request.")
 	}
 
+	if gatewaySyncRequired {
+		if err := gateway.SyncDesired(cfg); err != nil {
+			lines = append(lines, fmt.Sprintf("❌ Failed to synchronize gateway runtime: %v", err))
+		} else {
+			xrayRestarted = true
+			lines = append(lines, "✅ Gateway runtime synchronized with active configuration.")
+		}
+	}
 	if !xrayRestarted && !(opts.Full || impact.SubListenerChanged) {
 		lines = append(lines, "✅ Changes committed without service restart.")
 	} else {
 		lines = append(lines, "✅ All changes applied.")
-	}
-	if cfg.Role == config.RoleGateway && impact.GatewayRuntimeChanged {
-		lines = append(lines, "ℹ️  Gateway runtime rules are not changed by apply. Use 'xray-proxya gateway up' when gateway system rules need updating.")
 	}
 
 	return lines, nil
@@ -204,11 +215,13 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	}
 	if activeCfg.Gateway.RelayAlias != stagingCfg.Gateway.RelayAlias {
 		impact.XrayConfigChanged = true
+		impact.GatewayRuntimeChanged = true
 		impact.SubContentChanged = true
 		mark("gateway.relay_alias")
 	}
 	if !reflect.DeepEqual(activeCfg.Gateway.BypassCountries, stagingCfg.Gateway.BypassCountries) {
 		impact.XrayConfigChanged = true
+		impact.GatewayRuntimeChanged = true
 		mark("gateway.bypass_countries")
 	}
 	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
@@ -241,8 +254,11 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if activeCfg.Gateway.LocalEnabled != stagingCfg.Gateway.LocalEnabled ||
 		activeCfg.Gateway.LANEnabled != stagingCfg.Gateway.LANEnabled ||
 		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
-		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface {
+		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||
+		activeCfg.Gateway.State != stagingCfg.Gateway.State ||
+		!reflect.DeepEqual(activeCfg.Gateway.BypassDNS, stagingCfg.Gateway.BypassDNS) {
 		impact.GatewayRuntimeChanged = true
+		impact.XrayConfigChanged = true
 		mark("gateway.runtime")
 	}
 
