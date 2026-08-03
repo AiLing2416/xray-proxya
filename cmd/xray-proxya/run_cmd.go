@@ -13,6 +13,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/quota"
+	"xray-proxya/internal/tune"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -179,6 +180,20 @@ var runCmd = &cobra.Command{
 				fmt.Printf("⚠️  Failed to apply gateway firewall rules: %v\n", err)
 			} else {
 				fmt.Println("✅ Gateway firewall and routing rules applied successfully.")
+			}
+		}
+
+		// Apply kernel tuning profile based on the role
+		if cfg.Role != "" {
+			profileName := string(cfg.Role)
+			profile, ok := tune.GetProfile(profileName)
+			if ok {
+				fmt.Printf("⚙️  Applying kernel tuning profile: %s...\n", profile.Name)
+				if _, err := tune.ApplyProfile(profile); err != nil {
+					fmt.Printf("⚠️  Kernel tuning applied with warnings/errors: %v\n", err)
+				} else {
+					fmt.Println("✅ Kernel tuning applied successfully.")
+				}
 			}
 		}
 
