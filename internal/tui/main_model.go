@@ -2480,6 +2480,9 @@ func runGatewayDown() tea.Cmd {
 
 func testLocalProxy(cfg *config.UserConfig) tea.Cmd {
 	return func() tea.Msg {
+		if cfg == nil || cfg.Gateway.State != "proxy" || !cfg.Gateway.LocalEnabled {
+			return gatewayTestResultMsg{row: 0, err: fmt.Errorf("local transparent proxy is disabled")}
+		}
 		ip, err := RunLocalProxyTest(cfg)
 		return gatewayTestResultMsg{row: 0, ip: ip, err: err}
 	}
@@ -2487,6 +2490,9 @@ func testLocalProxy(cfg *config.UserConfig) tea.Cmd {
 
 func testLANGateway(cfg *config.UserConfig) tea.Cmd {
 	return func() tea.Msg {
+		if cfg == nil || cfg.Gateway.State != "proxy" || !cfg.Gateway.LANEnabled {
+			return gatewayTestResultMsg{row: 1, err: fmt.Errorf("LAN transparent gateway is disabled")}
+		}
 		ip, err := RunSimulatedLANTest(cfg)
 		return gatewayTestResultMsg{row: 1, ip: ip, err: err}
 	}

@@ -288,7 +288,7 @@ var gatewayDownCmd = &cobra.Command{
 
 var gatewayTestCmd = &cobra.Command{
 	Use:   "test",
-	Short: "Test gateway routing (both local proxy and simulated LAN)",
+	Short: "Observe enabled gateway paths through non-bypassed endpoints",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
 		if err != nil {
@@ -296,26 +296,34 @@ var gatewayTestCmd = &cobra.Command{
 			return
 		}
 
-		if cfg.Gateway.State == "disabled" {
-			fmt.Println("❌ Gateway is currently disabled. Please set the state to 'proxy' or 'forward-only' to run tests.")
+		if cfg.Gateway.State != "proxy" {
+			fmt.Printf("ℹ️  Gateway transparent tests skipped: active state is %q, not proxy.\n", cfg.Gateway.State)
 			fmt.Println("   Hint: xray-proxya gateway set --state proxy && xray-proxya apply")
 			return
 		}
 
-		fmt.Println("🔍 Running Local Proxy Route Test (observing public IP through a non-bypassed endpoint)...")
-		localIP, err := tui.RunLocalProxyTest(cfg)
-		if err != nil {
-			fmt.Printf("❌ Local Proxy Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running?)\n", err)
+		if cfg.Gateway.LocalEnabled {
+			fmt.Println("🔍 Running Local Proxy Route Test (observing public IP through a non-bypassed endpoint)...")
+			localIP, err := tui.RunLocalProxyTest(cfg)
+			if err != nil {
+				fmt.Printf("❌ Local Proxy Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
+			} else {
+				fmt.Printf("ℹ️  Local Proxy Test observed public IP: %s\n", localIP)
+			}
 		} else {
-			fmt.Printf("ℹ️  Local Proxy Test observed public IP: %s\n", localIP)
+			fmt.Println("ℹ️  Local Proxy Test skipped: Local Proxy is disabled.")
 		}
 
-		fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (observing public IP through a non-bypassed endpoint)...")
-		lanIP, err := tui.RunSimulatedLANTest(cfg)
-		if err != nil {
-			fmt.Printf("❌ Simulated LAN Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
+		if cfg.Gateway.LANEnabled {
+			fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (observing public IP through a non-bypassed endpoint)...")
+			lanIP, err := tui.RunSimulatedLANTest(cfg)
+			if err != nil {
+				fmt.Printf("❌ Simulated LAN Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
+			} else {
+				fmt.Printf("ℹ️  Simulated LAN Gateway Test observed public IP: %s\n", lanIP)
+			}
 		} else {
-			fmt.Printf("ℹ️  Simulated LAN Gateway Test observed public IP: %s\n", lanIP)
+			fmt.Println("ℹ️  Simulated LAN Gateway Test skipped: LAN Gateway is disabled; LAN clients are intentionally not served.")
 		}
 	},
 }
