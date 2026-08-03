@@ -104,7 +104,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if !found {
-		return fmt.Errorf("tun interface %s was not created in time by Xray core", tunName)
+		return fmt.Errorf("tun interface %s was not created in time by Xray core. (Hint: Is the 'xray-proxya' service running? Try 'xray-proxya service status' or 'service start')", tunName)
 	}
 
 	if err := run("ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
@@ -333,7 +333,7 @@ func Verify(cfg *config.UserConfig) []string {
 
 	// For proxy state, perform full verification
 	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
-		problems = append(problems, tunName+" interface is not present")
+		problems = append(problems, tunName+" interface is not present (Hint: Is the 'xray-proxya' service running?)")
 	} else {
 		if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
 			problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)

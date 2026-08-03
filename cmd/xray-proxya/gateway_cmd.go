@@ -292,7 +292,7 @@ var gatewayTestCmd = &cobra.Command{
 		fmt.Println("🔍 Running Local Proxy Route Test (fetching direct/proxy public IP)...")
 		localIP, err := tui.RunLocalProxyTest(cfg)
 		if err != nil {
-			fmt.Printf("❌ Local Proxy Test Failed: %v\n", err)
+			fmt.Printf("❌ Local Proxy Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running?)\n", err)
 		} else {
 			fmt.Printf("✅ Local Proxy Test Passed! Public IP: %s\n", localIP)
 		}
@@ -300,7 +300,7 @@ var gatewayTestCmd = &cobra.Command{
 		fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (fetching simulated client public IP)...")
 		lanIP, err := tui.RunSimulatedLANTest(cfg)
 		if err != nil {
-			fmt.Printf("❌ Simulated LAN Test Failed: %v\n", err)
+			fmt.Printf("❌ Simulated LAN Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
 		} else {
 			fmt.Printf("✅ Simulated LAN Test Passed! Public IP: %s\n", lanIP)
 		}
