@@ -101,7 +101,16 @@ xray-proxya gateway enable
 xray-proxya apply
 ```
 
-`apply` 只提交 Xray 配置并重启服务，不再修改系统路由、防火墙或 sysctl。
+`apply` 会提交暂存配置；当 Gateway 设置发生变化时，它还会同步 Gateway 运行态。对于 `proxy` 状态，它会重启带 TUN 入站的 Xray、等待 TUN 就绪，然后应用受管路由和防火墙规则。
+
+## 状态语义
+
+透明 Gateway 只支持 root 运行。持久配置描述期望状态；`gateway up` 和 `gateway down` 只控制当前运行态，不会改变该期望配置。
+
+- `proxy`：当“本机代理”或“LAN 网关”至少启用一个时，Xray 带 `proxya-tun` 运行。本机代理捕获当前主机流量；LAN 网关捕获从配置 LAN 接口进入的流量。
+- `disabled`：Xray 不创建 TUN 入站，Xray-Proxya 不安装透明 Gateway 规则。
+- `forward-only`：Xray 不创建 TUN 入站，仅开启内核转发；它不是 NAT 或 LAN 直连上网模式，LAN 连通性必须由 Xray-Proxya 外部的路由提供。
+- 关闭 LAN 网关：Xray-Proxya 不再转发或透明代理 LAN 客户端流量。默认路由仍指向本机的 LAN 客户端可能断网；这是预期行为。
 
 应用 gateway 运行态规则：
 
@@ -112,6 +121,7 @@ xray-proxya gateway check
 
 `gateway up` 会执行：
 
+- 重启单一 Xray 核心并启用 TUN 入站，等待 `proxya-tun` 出现
 - 给 `proxya-tun` 配置地址：`172.16.255.1/30`、`fd00:eea:ff::1/126`
 - 开启 IPv4/IPv6 转发
 - 关闭 IPv4 rp_filter
@@ -209,7 +219,7 @@ xray-proxya gateway down
 xray-proxya gateway check
 ```
 
-`gateway down` 只清理 Xray-Proxya 管理的 nftables、policy routing 和 table 100，不停止 Xray 服务。
+`gateway down` 会先清理 Xray-Proxya 管理的 nftables、policy routing 和 table 100，然后重启单一 Xray 核心为无 TUN 入站模式。服务会继续运行以支持非 Gateway 功能；持久的 `proxy` 配置保持不变，运行 `gateway up` 可再次启用它。
 
 如果要在配置层禁用 gateway：
 

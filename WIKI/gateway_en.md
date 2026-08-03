@@ -101,7 +101,16 @@ xray-proxya gateway enable
 xray-proxya apply
 ```
 
-`apply` only commits Xray configuration and restarts the service. It no longer modifies system routing, firewall rules, or sysctl values.
+`apply` commits the staged configuration and synchronizes Gateway runtime when a Gateway setting changed. For a `proxy` state it restarts Xray with the TUN inbound, waits for it, and then applies the managed routing and firewall rules.
+
+## State Semantics
+
+Gateway transparent operation is root-only. The persistent configuration describes the desired state; `gateway up` and `gateway down` control the currently running state without changing that desired configuration.
+
+- `proxy`: Xray runs with `proxya-tun` when either Local Proxy or LAN Gateway is enabled. Local Proxy captures this host's traffic; LAN Gateway captures traffic arriving from the configured LAN interface.
+- `disabled`: Xray runs without a TUN inbound and Xray-Proxya installs no transparent Gateway rules.
+- `forward-only`: Xray runs without a TUN inbound. It enables kernel forwarding only; it is not a NAT or direct-internet mode, so LAN reachability requires routing provided outside Xray-Proxya.
+- LAN Gateway disabled: Xray-Proxya does not forward or transparently proxy LAN client traffic. A LAN client whose default route still points at this host can lose connectivity; that is intentional.
 
 Bring runtime gateway rules up:
 
@@ -112,6 +121,7 @@ xray-proxya gateway check
 
 `gateway up` does the following:
 
+- Restarts the single Xray core with its TUN inbound enabled and waits for `proxya-tun`
 - Assigns addresses to `proxya-tun`: `172.16.255.1/30` and `fd00:eea:ff::1/126`
 - Enables IPv4/IPv6 forwarding
 - Disables IPv4 rp_filter
@@ -209,7 +219,7 @@ xray-proxya gateway down
 xray-proxya gateway check
 ```
 
-`gateway down` only removes nftables, policy routing, and table 100 entries managed by Xray-Proxya. It does not stop the Xray service.
+`gateway down` first removes Xray-Proxya-managed nftables, policy routing, and table 100 entries, then restarts the single Xray core without its TUN inbound. The service remains running for non-Gateway features. The persistent `proxy` configuration remains unchanged; run `gateway up` to reactivate it.
 
 To disable gateway mode at the configuration level:
 
