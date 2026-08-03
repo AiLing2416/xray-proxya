@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -19,7 +20,17 @@ const (
 	tunIPv6CIDR = "fd00:eea:ff::1/126"
 	xrayMark    = "255"
 	tunMark     = "1"
+	policyTable = "100"
+	prefXray    = "10000"
+	prefLAN     = "10010"
+	prefLoopback = "10011"
+	prefTun     = "10100"
 )
+
+type policyRuleSpec struct {
+	IPv6 bool     `json:"ipv6"`
+	Args []string `json:"args"`
+}
 
 func SyncFirewall(cfg *config.UserConfig) {
 	if err := ApplyFirewall(cfg); err != nil {
@@ -122,38 +133,23 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		ipv6Supported = true
 	}
 
-	if err := run("ip", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
+	rulesToAdd := policyRules(lanCIDR, lanIPv6CIDR, ipv6Supported)
+	if err := savePolicyRules(rulesToAdd); err != nil {
 		return err
 	}
-	if err := run("ip", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
+	for _, rule := range rulesToAdd {
+		if err := addPolicyRule(rule); err != nil {
+			CleanupFirewall()
+			return err
+		}
+	}
+	if err := run("ip", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
+		CleanupFirewall()
 		return err
 	}
-	if err := run("ip", "rule", "add", "to", lanCIDR, "table", "main", "pref", "50"); err != nil {
-		return err
-	}
-	if err := run("ip", "rule", "add", "to", "127.0.0.0/8", "table", "main", "pref", "51"); err != nil {
-		return err
-	}
-	if err := run("ip", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
-		return err
-	}
-
 	if ipv6Supported {
-		if err := run("ip", "-6", "rule", "add", "fwmark", tunMark, "table", "100", "pref", "100"); err != nil {
-			return err
-		}
-		if err := run("ip", "-6", "rule", "add", "fwmark", xrayMark, "table", "main", "pref", "10"); err != nil {
-			return err
-		}
-		if lanIPv6CIDR != "" {
-			if err := run("ip", "-6", "rule", "add", "to", lanIPv6CIDR, "table", "main", "pref", "50"); err != nil {
-				return err
-			}
-		}
-		if err := run("ip", "-6", "rule", "add", "to", "::1/128", "table", "main", "pref", "51"); err != nil {
-			return err
-		}
-		if err := run("ip", "-6", "route", "replace", "default", "dev", tunName, "table", "100"); err != nil {
+		if err := run("ip", "-6", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
+			CleanupFirewall()
 			return err
 		}
 	}
@@ -176,36 +172,81 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	return nil
 }
 
-func deleteRulesByPref(pref string, ipv6 bool) {
-	for i := 0; i < 10; i++ {
-		var err error
-		if ipv6 {
-			err = run("ip", "-6", "rule", "del", "pref", pref)
-		} else {
-			err = run("ip", "rule", "del", "pref", pref)
-		}
-		if err != nil {
-			break
-		}
-	}
-}
-
 func CleanupFirewall() {
 	_ = run("nft", "delete", "table", "inet", tableName)
 	cleanupFilterForwardRules()
 
-	deleteRulesByPref("10", false)
-	deleteRulesByPref("50", false)
-	deleteRulesByPref("51", false)
-	deleteRulesByPref("100", false)
-	_ = run("ip", "route", "flush", "table", "100")
+	for _, rule := range loadPolicyRules() {
+		_ = deletePolicyRule(rule)
+	}
+	_ = os.Remove(policyRulesPath())
+	_ = run("ip", "route", "del", "default", "dev", tunName, "table", policyTable)
+	_ = run("ip", "-6", "route", "del", "default", "dev", tunName, "table", policyTable)
+}
 
-	deleteRulesByPref("10", true)
-	deleteRulesByPref("50", true)
-	deleteRulesByPref("51", true)
-	deleteRulesByPref("100", true)
-	_ = run("ip", "-6", "route", "flush", "table", "100")
+func policyRules(lanCIDR, lanIPv6CIDR string, ipv6Supported bool) []policyRuleSpec {
+	rules := []policyRuleSpec{
+		{Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}},
+		{Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}},
+		{Args: []string{"to", lanCIDR, "table", "main", "pref", prefLAN}},
+		{Args: []string{"to", "127.0.0.0/8", "table", "main", "pref", prefLoopback}},
+	}
+	if !ipv6Supported {
+		return rules
+	}
+	rules = append(rules,
+		policyRuleSpec{IPv6: true, Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}},
+		policyRuleSpec{IPv6: true, Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}},
+	)
+	if lanIPv6CIDR != "" {
+		rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"to", lanIPv6CIDR, "table", "main", "pref", prefLAN}})
+	}
+	return append(rules, policyRuleSpec{IPv6: true, Args: []string{"to", "::1/128", "table", "main", "pref", prefLoopback}})
+}
 
+func policyRulesPath() string {
+	return filepath.Join(config.GetConfigDir(), "gateway.policy-rules.json")
+}
+
+func savePolicyRules(rules []policyRuleSpec) error {
+	data, err := json.Marshal(rules)
+	if err != nil {
+		return fmt.Errorf("encode gateway policy rules: %w", err)
+	}
+	if err := os.WriteFile(policyRulesPath(), data, 0600); err != nil {
+		return fmt.Errorf("save gateway policy rules: %w", err)
+	}
+	return nil
+}
+
+func loadPolicyRules() []policyRuleSpec {
+	data, err := os.ReadFile(policyRulesPath())
+	if err != nil {
+		return nil
+	}
+	var rules []policyRuleSpec
+	if err := json.Unmarshal(data, &rules); err != nil {
+		return nil
+	}
+	return rules
+}
+
+func addPolicyRule(rule policyRuleSpec) error {
+	args := append([]string{}, rule.Args...)
+	args = append([]string{"rule", "add"}, args...)
+	if rule.IPv6 {
+		args = append([]string{"-6"}, args...)
+	}
+	return run("ip", args...)
+}
+
+func deletePolicyRule(rule policyRuleSpec) error {
+	args := append([]string{}, rule.Args...)
+	args = append([]string{"rule", "del"}, args...)
+	if rule.IPv6 {
+		args = append([]string{"-6"}, args...)
+	}
+	return run("ip", args...)
 }
 
 func SetupKernel(lanIface string) error {

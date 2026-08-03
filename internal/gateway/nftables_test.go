@@ -84,3 +84,21 @@ func TestBuildNFTWithBypassDNS(t *testing.T) {
 		t.Fatalf("rules should bypass IPv6 DNS 2001:4860:4860::8888: %s", rules)
 	}
 }
+
+func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
+	rules := policyRules("192.168.50.0/24", "fd00::/64", true)
+	if len(rules) != 8 {
+		t.Fatalf("policyRules returned %d rules, want 8", len(rules))
+	}
+	for _, rule := range rules {
+		foundDedicatedPriority := false
+		for _, arg := range rule.Args {
+			if arg == prefXray || arg == prefLAN || arg == prefLoopback || arg == prefTun {
+				foundDedicatedPriority = true
+			}
+		}
+		if !foundDedicatedPriority {
+			t.Fatalf("rule %v has no dedicated priority", rule.Args)
+		}
+	}
+}

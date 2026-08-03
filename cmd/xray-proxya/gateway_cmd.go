@@ -243,8 +243,8 @@ var gatewayDiffCmd = &cobra.Command{
 			fmt.Print(rules)
 		}
 		fmt.Println("# policy routing")
-		fmt.Println("ip rule add fwmark 1 table 100 pref 100")
-		fmt.Println("ip rule add fwmark 255 table main pref 10")
+		fmt.Println("ip rule add fwmark 1 table 100 pref 10100")
+		fmt.Println("ip rule add fwmark 255 table main pref 10000")
 		fmt.Println("ip route replace default dev proxya-tun table 100")
 	},
 }
