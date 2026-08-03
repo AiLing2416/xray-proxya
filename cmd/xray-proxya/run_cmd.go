@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 	"xray-proxya/internal/camouflage"
@@ -183,15 +184,12 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		// Apply kernel tuning profile based on the role
-		if cfg.Role != "" {
-			profileName := string(cfg.Role)
-			if cfg.TunePolicy != "" && profileName != "gateway" {
-				profileName = profileName + "-" + cfg.TunePolicy
-			}
-			profile, ok := tune.GetProfile(profileName)
-			if ok {
-				fmt.Printf("⚙️  Applying kernel tuning profile: %s...\n", profile.Name)
+		// Apply persistent kernel tuning profile if explicitly configured via tune command
+		stateFile := filepath.Join(config.GetConfigDir(), ".tune_state")
+		if stateBytes, err := os.ReadFile(stateFile); err == nil {
+			profileName := strings.TrimSpace(string(stateBytes))
+			if profile, ok := tune.GetProfile(profileName); ok {
+				fmt.Printf("⚙️  Applying persistent kernel tuning profile: %s...\n", profile.Name)
 				if _, err := tune.ApplyProfile(profile); err != nil {
 					fmt.Printf("⚠️  Kernel tuning applied with warnings/errors: %v\n", err)
 				} else {
