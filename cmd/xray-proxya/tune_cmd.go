@@ -112,7 +112,9 @@ var tuneUseCmd = &cobra.Command{
 		
 		// Save state for persistence
 		stateFile := filepath.Join(config.GetConfigDir(), ".tune_state")
-		os.WriteFile(stateFile, []byte(profile.Name), 0644)
+		if writeErr := os.WriteFile(stateFile, []byte(profile.Name), 0600); writeErr != nil {
+			fmt.Printf("⚠️  Failed to persist tune state: %v (auto-apply on next startup will not work)\n", writeErr)
+		}
 
 		fmt.Printf("Applied profile: %s\n\n", profile.Name)
 		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "OLD", "NEW")
@@ -190,7 +192,9 @@ var tuneRollbackCmd = &cobra.Command{
 		
 		// Remove persistence state
 		stateFile := filepath.Join(config.GetConfigDir(), ".tune_state")
-		os.Remove(stateFile)
+		if removeErr := os.Remove(stateFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			fmt.Printf("⚠️  Failed to remove tune state file: %v (auto-apply may still trigger on next startup)\n", removeErr)
+		}
 
 		fmt.Printf("Rollback profile: %s\n\n", state.Profile)
 		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")

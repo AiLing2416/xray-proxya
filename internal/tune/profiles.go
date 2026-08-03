@@ -65,6 +65,9 @@ var profiles = []Profile{
 			{Key: "net.ipv4.tcp_fin_timeout", Value: "15"},
 			{Key: "net.ipv4.tcp_max_tw_buckets", Value: "2000000"},
 			{Key: "net.ipv4.tcp_slow_start_after_idle", Value: "1"},
+			// tcp_notsent_lowat = UINT32_MAX: intentionally disables the notsent limit so the
+			// kernel never throttles the send buffer fill level. This trades latency for raw
+			// throughput and is only appropriate for bulk-transfer / high-bandwidth scenarios.
 			{Key: "net.ipv4.tcp_notsent_lowat", Value: "4294967295"},
 			{Key: "net.ipv4.tcp_mtu_probing", Value: "0"},
 			{Key: "net.ipv4.tcp_keepalive_time", Value: "600"},
@@ -107,6 +110,9 @@ var profiles = []Profile{
 			{Key: "net.ipv4.tcp_fin_timeout", Value: "15"},
 			{Key: "net.ipv4.tcp_max_tw_buckets", Value: "2000000"},
 			{Key: "net.ipv4.tcp_slow_start_after_idle", Value: "1"},
+			// tcp_notsent_lowat = UINT32_MAX: intentionally disables the notsent limit so the
+			// kernel never throttles the send buffer fill level. This trades latency for raw
+			// throughput and is only appropriate for bulk-transfer / high-bandwidth scenarios.
 			{Key: "net.ipv4.tcp_notsent_lowat", Value: "4294967295"},
 			{Key: "net.ipv4.tcp_mtu_probing", Value: "0"},
 			{Key: "net.ipv4.tcp_keepalive_time", Value: "600"},
