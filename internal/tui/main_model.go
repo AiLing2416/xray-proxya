@@ -1869,7 +1869,7 @@ func parseRelaySpeedOutput(alias string, raw string) relayDetailData {
 		"Idle Latency Avg",
 		"Load Latency Avg",
 		"Load Worst 5%",
-		"Packet Loss",
+		"Latency Probe Failures",
 	}
 	for _, line := range lines {
 		line = strings.TrimSpace(line)

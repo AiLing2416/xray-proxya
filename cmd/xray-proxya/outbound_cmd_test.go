@@ -125,6 +125,19 @@ func TestFormatDecimalBytesUsesReadableUnits(t *testing.T) {
 	}
 }
 
+func TestIsSuccessfulSpeedStatus(t *testing.T) {
+	for _, statusCode := range []int{200, 206, 302} {
+		if !isSuccessfulSpeedStatus(statusCode) {
+			t.Fatalf("isSuccessfulSpeedStatus(%d) = false, want true", statusCode)
+		}
+	}
+	for _, statusCode := range []int{199, 400, 404, 500} {
+		if isSuccessfulSpeedStatus(statusCode) {
+			t.Fatalf("isSuccessfulSpeedStatus(%d) = true, want false", statusCode)
+		}
+	}
+}
+
 func TestProbeDNSViaTCPQueryFormat(t *testing.T) {
 	// Verify the DNS query payload is well-formed
 	query := buildDNSProbeQuery()
@@ -210,5 +223,4 @@ func TestRunSpeedPassTruncation(t *testing.T) {
 		t.Errorf("totalBytes = %d, want %d", totalBytes, maxBytes)
 	}
 }
-
 

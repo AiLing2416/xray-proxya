@@ -62,6 +62,8 @@ var (
 const (
 	defaultSpeedTestLink    = "https://speed.cloudflare.com/__down?bytes=50000000"
 	maxSpeedTestSeconds     = 3600
+	defaultSpeedTestTimeout = 2 * time.Minute
+	latencyProbeTimeout     = 20 * time.Second
 	speedSampleInterval     = time.Second
 	latencyProbeInterval    = time.Second
 	defaultLatencyProbeRuns = 5
@@ -1354,7 +1356,7 @@ var speedOutboundCmd = &cobra.Command{
 		if duration > 0 {
 			fmt.Printf("   Duration: %ds\n", duration)
 		} else {
-			fmt.Printf("   Duration: single pass\n")
+			fmt.Printf("   Duration: single pass (timeout %s)\n", defaultSpeedTestTimeout)
 		}
 
 		result, err := runIsolatedSpeedTest(cfg, *target, link, duration, sizeLimit)
@@ -1402,7 +1404,7 @@ func printSpeedResults(alias string, result SpeedResult) {
 	fmt.Printf("  Idle Latency Avg: %s\n", formatDurationMetric(result.IdleLatencyAvg))
 	fmt.Printf("  Load Latency Avg: %s\n", formatDurationMetric(result.LoadLatencyAvg))
 	fmt.Printf("  Load Worst 5%%: %s\n", formatDurationMetric(result.LoadLatencyWorst5))
-	fmt.Printf("  Packet Loss: %.1f%% (%d samples)\n\n", result.LoadLatencyLossRate*100, result.LoadLatencySamples)
+	fmt.Printf("  Latency Probe Failures: %.1f%% (%d samples)\n\n", result.LoadLatencyLossRate*100, result.LoadLatencySamples)
 }
 
 func choosePrimaryIP(v4, v6 string) string {
@@ -1571,9 +1573,11 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 	idleLatencies := measureLatencySeries(client, link, defaultLatencyProbeRuns)
 	result.IdleLatencyAvg = averageDuration(idleLatencies)
 
-	var deadline time.Time
+	deadline := time.Now().Add(defaultSpeedTestTimeout)
+	userDeadline := false
 	if durationSeconds > 0 {
 		deadline = time.Now().Add(time.Duration(durationSeconds) * time.Second)
+		userDeadline = true
 	}
 
 	probeStop := make(chan struct{})
@@ -1608,7 +1612,10 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 	probesClosed := false
 
 	for {
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
+			break
+		}
+		if maxBytes > 0 && result.BytesTransferred >= maxBytes {
 			break
 		}
 		if err := runSpeedPass(client, link, deadline, &result.BytesTransferred, &samples, maxBytes); err != nil {
@@ -1622,7 +1629,7 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 			}
 			break
 		}
-		if deadline.IsZero() {
+		if !userDeadline {
 			break
 		}
 	}
@@ -1637,7 +1644,7 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 	}
 
 	result.Duration = time.Since(startedAt)
-	if !deadline.IsZero() {
+	if userDeadline {
 		target := time.Duration(durationSeconds) * time.Second
 		if result.Duration > target {
 			result.Duration = target
@@ -1676,11 +1683,11 @@ func setSpeedTestHeaders(req *http.Request) {
 
 func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalBytes *int64, samples *[]float64, maxBytes int64) error {
 	ctx := context.Background()
+	cancel := func() {}
 	if !deadline.IsZero() {
-		var cancel context.CancelFunc
 		ctx, cancel = context.WithDeadline(ctx, deadline)
-		defer cancel()
 	}
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return err
@@ -1693,14 +1700,13 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 400 {
+	if !isSuccessfulSpeedStatus(resp.StatusCode) {
 		return fmt.Errorf("unexpected status %d", resp.StatusCode)
 	}
 
 	buf := make([]byte, 128*1024)
 	lastSampleAt := time.Now()
 	var intervalBytes int64
-	var passBytes int64
 
 	for {
 		if !deadline.IsZero() && time.Now().After(deadline) {
@@ -1710,7 +1716,7 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 
 		readBuf := buf
 		if maxBytes > 0 {
-			remaining := maxBytes - passBytes
+			remaining := maxBytes - *totalBytes
 			if remaining <= 0 {
 				flushSpeedSample(samples, intervalBytes, time.Since(lastSampleAt))
 				return nil
@@ -1725,7 +1731,6 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 		if n > 0 {
 			*totalBytes += int64(n)
 			intervalBytes += int64(n)
-			passBytes += int64(n)
 		}
 		if elapsed := now.Sub(lastSampleAt); elapsed >= speedSampleInterval {
 			flushSpeedSample(samples, intervalBytes, elapsed)
@@ -1740,6 +1745,10 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 			return err
 		}
 	}
+}
+
+func isSuccessfulSpeedStatus(statusCode int) bool {
+	return statusCode >= http.StatusOK && statusCode < http.StatusBadRequest
 }
 
 func flushSpeedSample(samples *[]float64, bytes int64, elapsed time.Duration) {
@@ -1769,19 +1778,23 @@ func measureLatencySeries(client *http.Client, rawURL string, runs int) []time.D
 
 func measureLatency(client *http.Client, rawURL string) (time.Duration, error) {
 	start := time.Now()
-	req, err := http.NewRequest("HEAD", rawURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), latencyProbeTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "HEAD", rawURL, nil)
 	if err == nil {
 		setSpeedTestHeaders(req)
 		resp, err := client.Do(req)
 		if err == nil {
 			io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
 			resp.Body.Close()
-			return time.Since(start), nil
+			if isSuccessfulSpeedStatus(resp.StatusCode) {
+				return time.Since(start), nil
+			}
 		}
 	}
 
 	start = time.Now()
-	req, err = http.NewRequest("GET", rawURL, nil)
+	req, err = http.NewRequestWithContext(ctx, "GET", rawURL, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -1793,6 +1806,9 @@ func measureLatency(client *http.Client, rawURL string) (time.Duration, error) {
 	}
 	io.Copy(io.Discard, io.LimitReader(resp.Body, 1))
 	resp.Body.Close()
+	if !isSuccessfulSpeedStatus(resp.StatusCode) {
+		return 0, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
 	return time.Since(start), nil
 }
 
@@ -2196,7 +2212,7 @@ func init() {
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	speedOutboundCmd.Flags().StringVarP(&speedLink, "link", "l", "", "Speed test download URL")
 	speedOutboundCmd.Flags().IntVarP(&speedTime, "time", "t", 0, "Continuous test duration in seconds (max 3600)")
-	speedOutboundCmd.Flags().StringVarP(&speedSize, "size", "s", "", "Download size limit (e.g. 50MB, 10MB, 500KB, 50000000)")
+	speedOutboundCmd.Flags().StringVarP(&speedSize, "size", "s", "", "Maximum total transfer for the test session (e.g. 50MB, 10MB, 500KB, 50000000)")
 	bindInterfaceCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:
