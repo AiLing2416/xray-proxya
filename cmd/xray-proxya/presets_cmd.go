@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"time"
 	"xray-proxya/internal/config"
 
 	"github.com/spf13/cobra"
@@ -55,6 +58,42 @@ func configureSkinTarget(m *config.ModeInfo, explicitDest bool) error {
 	return nil
 }
 
+var checkTargetAvailability = verifyTLSTarget
+
+// verifyTLSTarget verifies DNS resolution, TCP reachability, the TLS
+// handshake, and the certificate name for a manually selected target.
+func verifyTLSTarget(target string) error {
+	host, _, err := net.SplitHostPort(target)
+	if err != nil || host == "" || net.ParseIP(host) != nil {
+		return fmt.Errorf("target must use a domain host:port")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	rawConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", target)
+	if err != nil {
+		return fmt.Errorf("target is unreachable: %w", err)
+	}
+	defer rawConn.Close()
+
+	tlsConn := tls.Client(rawConn, &tls.Config{
+		ServerName: host,
+		MinVersion: tls.VersionTLS12,
+	})
+	if err := tlsConn.HandshakeContext(ctx); err != nil {
+		return fmt.Errorf("target TLS verification failed: %w", err)
+	}
+	return nil
+}
+
+func validateManualTarget(sni, target string) error {
+	if target == "" {
+		target = net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(sni)), "."), "443")
+	}
+	return checkTargetAvailability(target)
+}
+
 var presetsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show all available preset slots and their status",
@@ -102,6 +141,7 @@ TLS-preserving camouflage (Skin) highlights:
   - Sends unauthenticated Reality fallbacks directly to the advertised site.
   - Preserves the target site's certificate, TLS fingerprint, and live response.
   - Uses SNI:443 as the fallback unless --dest is explicitly supplied.
+  - Verifies every manually supplied SNI with a trusted TLS handshake before saving.
 `),
 	Example: strings.TrimSpace(`
   # Enable slot 1 and set port to 443
@@ -143,26 +183,43 @@ TLS-preserving camouflage (Skin) highlights:
 		if presetRegen {
 			m.RegenFlag = true
 		}
+		wasSkin := m.Skin
 		if presetSNI != "" {
 			m.SNI = presetSNI
 		}
 		if presetDest != "" {
 			m.Dest = presetDest
 		}
+
+		desiredSkin := m.Skin
 		if presetSkin {
-			if !supportsSkin(m.Mode) {
-				fmt.Printf("❌ Error: Mode [%s] does not support TLS-preserving camouflage (requires VLESS Reality or Vision).\n", m.Mode)
-				return
-			}
+			desiredSkin = true
+		}
+		if presetUnskin {
+			desiredSkin = false
+		}
+		if desiredSkin && !supportsSkin(m.Mode) {
+			fmt.Printf("❌ Error: Mode [%s] does not support TLS-preserving camouflage (requires VLESS Reality or Vision).\n", m.Mode)
+			return
+		}
+		if desiredSkin && (presetSkin || wasSkin && (presetSNI != "" || presetDest != "")) {
 			if err := configureSkinTarget(m, presetDest != ""); err != nil {
 				fmt.Printf("❌ Error: %v.\n", err)
 				return
 			}
-			m.Skin = true
 		}
-		if presetUnskin {
-			m.Skin = false
+
+		if presetSNI != "" || desiredSkin && (presetSkin || presetDest != "") {
+			target := net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), "."), "443")
+			if desiredSkin {
+				target = m.Dest
+			}
+			if err := validateManualTarget(m.SNI, target); err != nil {
+				fmt.Printf("❌ Error: target %s is not usable: %v.\n", target, err)
+				return
+			}
 		}
+		m.Skin = desiredSkin
 
 		cfg.SaveEx(true)
 		status := "OFF"
