@@ -116,6 +116,9 @@ kernel_rw_net_sysctls(xray_proxya_gateway_t)
 
 files_read_etc_files(xray_proxya_t)
 miscfiles_read_localization(xray_proxya_t)
+# Xray validates TLS for DoH and relay endpoints with the distribution CA
+# bundle; this grants read-only access to public system certificates.
+miscfiles_read_generic_certs(xray_proxya_t)
 dev_read_urand(xray_proxya_t)
 
 # systemd opens StandardOutput before transitioning the service into
