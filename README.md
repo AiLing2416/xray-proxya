@@ -96,7 +96,15 @@ sudo xray-proxya tune rollback
 
 Notes:
 - `tune` is root-only by design.
-- Tuning does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`. `tune use` persists the chosen profile name so it is automatically re-applied on the next `xray-proxya run`; `tune rollback` removes the persisted state.
+- Tuning does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`. `tune use` changes only the current runtime; restarting Xray-Proxya does not reapply a profile, and a reboot restores the system-managed sysctl state. `tune rollback` restores values recorded for the current runtime session.
+
+### Tune migration
+
+Older releases could leave a `.tune_state` marker that claimed a profile would
+be replayed when Xray-Proxya started. Current releases intentionally ignore
+that marker: tuning is no longer tied to proxy service lifecycle. Remove the
+legacy marker if it remains, and use a separate, explicit systemd unit or
+configuration-management policy if boot-time tuning is required.
 - Unsupported keys are reported and skipped rather than forcing legacy compatibility behavior.
 
 ## Common Commands

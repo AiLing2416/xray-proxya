@@ -3,9 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
-	"xray-proxya/internal/config"
 	"xray-proxya/internal/tune"
 
 	"github.com/spf13/cobra"
@@ -97,7 +95,7 @@ var tuneDiffCmd = &cobra.Command{
 
 var tuneUseCmd = &cobra.Command{
 	Use:   "use [profile]",
-	Short: "Apply a kernel tuning profile and persist it across reboots",
+	Short: "Apply a kernel tuning profile for the current runtime",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		if !requireRoot() {
@@ -109,12 +107,6 @@ var tuneUseCmd = &cobra.Command{
 			return
 		}
 		state, err := tune.ApplyProfile(profile)
-		
-		// Save state for persistence
-		stateFile := filepath.Join(config.GetConfigDir(), ".tune_state")
-		if writeErr := os.WriteFile(stateFile, []byte(profile.Name), 0600); writeErr != nil {
-			fmt.Printf("⚠️  Failed to persist tune state: %v (auto-apply on next startup will not work)\n", writeErr)
-		}
 
 		fmt.Printf("Applied profile: %s\n\n", profile.Name)
 		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "OLD", "NEW")
@@ -189,12 +181,6 @@ var tuneRollbackCmd = &cobra.Command{
 			return
 		}
 		results, rollbackErr := tune.RollbackRuntimeState(state)
-		
-		// Remove persistence state
-		stateFile := filepath.Join(config.GetConfigDir(), ".tune_state")
-		if removeErr := os.Remove(stateFile); removeErr != nil && !os.IsNotExist(removeErr) {
-			fmt.Printf("⚠️  Failed to remove tune state file: %v (auto-apply may still trigger on next startup)\n", removeErr)
-		}
 
 		fmt.Printf("Rollback profile: %s\n\n", state.Profile)
 		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")
