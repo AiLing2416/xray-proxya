@@ -178,6 +178,9 @@ var gatewaySetCmd = &cobra.Command{
 				return
 			}
 			cfg.Gateway.State = stateLower
+			if stateLower == "forward-only" {
+				fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
+			}
 		}
 		if cmd.Flags().Changed("bypass-dns") {
 			bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
@@ -340,7 +343,7 @@ func init() {
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
-	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, forward-only, proxy)")
+	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
 
 	gatewaySetCmd.RegisterFlagCompletionFunc("state", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"disabled", "forward-only", "proxy"}, cobra.ShellCompDirectiveNoFileComp

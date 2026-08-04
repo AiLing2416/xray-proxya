@@ -109,7 +109,7 @@ xray-proxya apply
 
 - `proxy`：当“本机代理”或“LAN 网关”至少启用一个时，Xray 带 `proxya-tun` 运行。本机代理捕获当前主机流量；LAN 网关捕获从配置 LAN 接口进入的流量。
 - `disabled`：Xray 不创建 TUN 入站，Xray-Proxya 不安装透明 Gateway 规则。
-- `forward-only`：Xray 不创建 TUN 入站，仅开启内核转发；它不是 NAT 或 LAN 直连上网模式，LAN 连通性必须由 Xray-Proxya 外部的路由提供。
+- `forward-only`：**实验性高级模式**。Xray 不创建 TUN 入站，仅开启内核转发；它不是 NAT、LAN 直连上网或透明代理模式。本机/LAN 开关不会建立代理路径，LAN 连通性必须由 Xray-Proxya 外部的路由与防火墙提供。
 - 关闭 LAN 网关：Xray-Proxya 不再转发或透明代理 LAN 客户端流量。默认路由仍指向本机的 LAN 客户端可能断网；这是预期行为。
 
 应用 gateway 运行态规则：
