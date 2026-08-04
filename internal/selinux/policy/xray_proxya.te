@@ -50,6 +50,7 @@ allow xray_proxya_t xray_proxya_data_t:file { execute execute_no_trans getattr m
 
 corenet_tcp_connect_all_ports(xray_proxya_t)
 corenet_tcp_bind_all_nodes(xray_proxya_t)
+corenet_tcp_bind_all_ports(xray_proxya_t)
 corenet_tcp_sendrecv_all_nodes(xray_proxya_t)
 corenet_udp_bind_all_nodes(xray_proxya_t)
 corenet_udp_sendrecv_all_nodes(xray_proxya_t)
