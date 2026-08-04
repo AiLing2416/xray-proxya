@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
@@ -27,6 +28,7 @@ var initCmd = &cobra.Command{
 			fmt.Println("🚀 Use '--force' to overwrite (this will reset ALL settings, keys, and UUIDs).")
 			return
 		}
+		prepareFreshInit()
 
 		role := config.RoleServer
 		if roleStr == "gateway" {
@@ -122,6 +124,25 @@ var initCmd = &cobra.Command{
 		fmt.Println("✨ Initialization complete. Service is ready but NOT started.")
 		fmt.Println("🚀 Use 'service start' to run manually when ready.")
 	},
+}
+
+func prepareFreshInit() {
+	if os.Geteuid() == 0 {
+		gateway.CleanupFirewall()
+		xray.StopManagedRuntime()
+	} else {
+		xray.StopXray()
+	}
+	for _, name := range []string{
+		"config.active.json",
+		"gateway.policy-rules.json",
+		"gateway.tun.disabled",
+		"tune.runtime.json",
+		".tune_state",
+		"xray.pid",
+	} {
+		_ = os.Remove(filepath.Join(config.GetConfigDir(), name))
+	}
 }
 
 func init() {

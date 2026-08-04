@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -114,6 +115,42 @@ func StopXray() {
 
 	pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 	os.Remove(pidPath)
+}
+
+// StopManagedRuntime stops the managed service and any remaining Xray core
+// launched from this application's asset directory. It is used before a fresh
+// initialization so a replaced config cannot leave an untracked core running.
+func StopManagedRuntime() {
+	StopService()
+	StopXray()
+
+	binary := filepath.Clean(GetXrayBinaryPath())
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return
+	}
+	var pids []int
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 0 {
+			continue
+		}
+		exe, err := os.Readlink(filepath.Join("/proc", entry.Name(), "exe"))
+		if err != nil || filepath.Clean(exe) != binary {
+			continue
+		}
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		pids = append(pids, pid)
+	}
+	if len(pids) == 0 {
+		return
+	}
+	time.Sleep(500 * time.Millisecond)
+	for _, pid := range pids {
+		if exe, err := os.Readlink(filepath.Join("/proc", strconv.Itoa(pid), "exe")); err == nil && filepath.Clean(exe) == binary {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
 }
 
 func GetXrayAssetPath() string {
