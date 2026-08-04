@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
@@ -27,6 +28,31 @@ var presetsCmd = &cobra.Command{
 
 func supportsSkin(m config.PresetMode) bool {
 	return m == config.ModeVLESSVision || m == config.ModeVLESSReality
+}
+
+// configureSkinTarget keeps Reality's fallback indistinguishable from a direct
+// connection to the advertised SNI.  TLS must stay end-to-end with that site;
+// terminating it locally would expose a substitute certificate and fingerprint.
+func configureSkinTarget(m *config.ModeInfo, explicitDest bool) error {
+	sni := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), ".")
+	if sni == "" || net.ParseIP(sni) != nil {
+		return fmt.Errorf("skin requires a domain SNI")
+	}
+
+	if !explicitDest {
+		m.Dest = net.JoinHostPort(sni, "443")
+		return nil
+	}
+
+	host, _, err := net.SplitHostPort(m.Dest)
+	if err != nil || host == "" {
+		return fmt.Errorf("skin destination must use host:port format")
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host != sni {
+		return fmt.Errorf("skin requires --dest host (%s) to match --sni (%s)", host, sni)
+	}
+	return nil
 }
 
 var presetsListCmd = &cobra.Command{
@@ -68,14 +94,14 @@ var presetsSetCmd = &cobra.Command{
 	Long: strings.TrimSpace(`
 Configure or toggle features for a specific preset slot in the STAGING config.
 
-You can enable/disable modes, change ports, and toggle the Smart Mirroring 
+You can enable/disable modes, change ports, and toggle TLS-preserving
 camouflage (Skin) for supported Reality/Vision protocols.
 
-Smart Mirroring (Skin) highlights:
-  - Proxies requests normally for authenticated users.
-  - Redirects probes (access via IP) to a local camouflage server.
-  - Returns target site's real error page for IP probes (e.g. 403/Invalid URL).
-  - Returns target site's home page for SNI probes (Mirroring).
+TLS-preserving camouflage (Skin) highlights:
+  - Proxies authenticated users normally.
+  - Sends unauthenticated Reality fallbacks directly to the advertised site.
+  - Preserves the target site's certificate, TLS fingerprint, and live response.
+  - Uses SNI:443 as the fallback unless --dest is explicitly supplied.
 `),
 	Example: strings.TrimSpace(`
   # Enable slot 1 and set port to 443
@@ -117,21 +143,25 @@ Smart Mirroring (Skin) highlights:
 		if presetRegen {
 			m.RegenFlag = true
 		}
+		if presetSNI != "" {
+			m.SNI = presetSNI
+		}
+		if presetDest != "" {
+			m.Dest = presetDest
+		}
 		if presetSkin {
 			if !supportsSkin(m.Mode) {
-				fmt.Printf("❌ Error: Mode [%s] does not support web camouflage (requires VLESS Reality or Vision).\n", m.Mode)
+				fmt.Printf("❌ Error: Mode [%s] does not support TLS-preserving camouflage (requires VLESS Reality or Vision).\n", m.Mode)
+				return
+			}
+			if err := configureSkinTarget(m, presetDest != ""); err != nil {
+				fmt.Printf("❌ Error: %v.\n", err)
 				return
 			}
 			m.Skin = true
 		}
 		if presetUnskin {
 			m.Skin = false
-		}
-		if presetSNI != "" {
-			m.SNI = presetSNI
-		}
-		if presetDest != "" {
-			m.Dest = presetDest
 		}
 
 		cfg.SaveEx(true)
@@ -168,8 +198,8 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetOn, "on", false, "Enable this mode")
 	presetsSetCmd.Flags().IntVarP(&presetPort, "port", "p", 0, "Set specific port")
 	presetsSetCmd.Flags().BoolVarP(&presetRegen, "regen", "r", false, "Regenerate secrets/paths for this mode on apply")
-	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Enable web camouflage (mirroring)")
-	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Disable web camouflage")
+	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Enable TLS-preserving camouflage")
+	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Disable TLS-preserving camouflage")
 	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set SNI (e.g., www.intel.com)")
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Manually set Destination (e.g., www.intel.com:443)")
 

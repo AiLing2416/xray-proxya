@@ -418,7 +418,7 @@ func TestGenerateXrayJSONOutboundSetDNSOverrides(t *testing.T) {
 	}
 }
 
-func TestGenerateXrayJSONCamouflageSkinning(t *testing.T) {
+func TestGenerateXrayJSONSkinPreservesRealityDestination(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
 		Presets: []config.ModeInfo{
@@ -433,8 +433,7 @@ func TestGenerateXrayJSONCamouflageSkinning(t *testing.T) {
 		},
 	}
 
-	// 1. Verify dest is redirected to camouflage port
-	parsed := generateAndDecodeXrayConfigWithOverrides(t, cfg, map[string]int{"camouflage": 49152}, "")
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
 	inbounds := parsed["inbounds"].([]interface{})
 
 	found := false
@@ -444,8 +443,8 @@ func TestGenerateXrayJSONCamouflageSkinning(t *testing.T) {
 			found = true
 			ss := in["streamSettings"].(map[string]interface{})
 			rs := ss["realitySettings"].(map[string]interface{})
-			if got := rs["dest"].(string); got != "127.0.0.1:49152" {
-				t.Fatalf("Vision dest = %q, want %q (camouflage)", got, "127.0.0.1:49152")
+			if got := rs["dest"].(string); got != "www.intel.com:443" {
+				t.Fatalf("Vision dest = %q, want original Reality destination", got)
 			}
 		}
 	}

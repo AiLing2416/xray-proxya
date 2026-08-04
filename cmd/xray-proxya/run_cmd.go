@@ -2,14 +2,12 @@ package main
 
 import (
 	"fmt"
-	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
 	"time"
-	"xray-proxya/internal/camouflage"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/xray"
@@ -77,40 +75,9 @@ var runCmd = &cobra.Command{
 			cfg.Save()
 		}
 
-		// Camouflage Setup
-		camoPort := 0
-		hasSkin := false
-		for _, m := range cfg.Presets {
-			if m.Enabled && m.Skin {
-				hasSkin = true
-				break
-			}
-		}
-		if hasSkin {
-			camoPort, _ = xray.GetFreePort()
-			fmt.Printf("🎭 Starting Camouflage server (TLS) on 127.0.0.1:%d...\n", camoPort)
-
-			// Generate temporary self-signed certs for camouflage
-			certPath := filepath.Join(config.GetConfigDir(), "camo.crt")
-			keyPath := filepath.Join(config.GetConfigDir(), "camo.key")
-			if err := utils.GenerateSelfSignedCert(certPath, keyPath); err != nil {
-				fmt.Printf("⚠️  Failed to generate camouflage certs: %v\n", err)
-			}
-
-			camoMgr := camouflage.NewManager(cfg.Presets)
-			go func() {
-				if err := http.ListenAndServeTLS(fmt.Sprintf("127.0.0.1:%d", camoPort), certPath, keyPath, camoMgr); err != nil {
-					fmt.Printf("⚠️  Camouflage server error: %v\n", err)
-				}
-			}()
-		}
-
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		overrides := make(map[string]int)
-		if camoPort > 0 {
-			overrides["camouflage"] = camoPort
-		}
 		if cfg.Role == config.RoleGateway && config.GatewayTunDisabled() {
 			overrides["gateway-tun-disabled"] = 1
 		}
