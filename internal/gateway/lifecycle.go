@@ -82,8 +82,12 @@ func Up(cfg *config.UserConfig) error {
 		CleanupFirewall()
 		return err
 	}
-	// The restarted run command owns initial firewall setup. Waiting for the
-	// complete observed state prevents a second concurrent ApplyFirewall call.
+	// Firewall and policy routing are owned by this explicit root operation,
+	// rather than the long-running Xray service domain.
+	if err := ApplyFirewall(cfg); err != nil {
+		_ = Down()
+		return fmt.Errorf("apply gateway firewall: %w", err)
+	}
 	if err := waitForReady(cfg); err != nil {
 		_ = Down()
 		return err

@@ -1,0 +1,78 @@
+policy_module(xray_proxya, 2.0.0)
+
+########################################
+# Dedicated domain for the root-managed Xray-Proxya service.  This policy is
+# intentionally static: it must never be generated from the machine-wide AVC
+# history.
+
+type xray_proxya_t;
+type xray_proxya_exec_t;
+init_daemon_domain(xray_proxya_t, xray_proxya_exec_t)
+domain_use_interactive_fds(xray_proxya_t)
+
+type xray_proxya_config_t;
+files_type(xray_proxya_config_t)
+
+type xray_proxya_data_t;
+files_type(xray_proxya_data_t)
+
+type xray_proxya_log_t;
+logging_log_file(xray_proxya_log_t)
+
+########################################
+# Own configuration, logs, generated Xray JSON, PID and gateway state.
+
+files_search_home(xray_proxya_t)
+gen_require(`
+	type config_home_t, data_home_t, gconf_home_t;
+')
+allow xray_proxya_t config_home_t:dir search;
+allow xray_proxya_t data_home_t:dir search;
+allow xray_proxya_t gconf_home_t:dir search;
+manage_dirs_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
+manage_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
+manage_lnk_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
+
+manage_dirs_pattern(xray_proxya_t, xray_proxya_log_t, xray_proxya_log_t)
+manage_files_pattern(xray_proxya_t, xray_proxya_log_t, xray_proxya_log_t)
+
+manage_dirs_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
+manage_files_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
+manage_lnk_files_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
+
+# The bundled Xray core is data owned by the manager, not a second systemd
+# entrypoint.  It executes without a domain transition inside xray_proxya_t.
+allow xray_proxya_t xray_proxya_data_t:file { execute execute_no_trans getattr map open read };
+
+########################################
+# Xray acts as an outbound client.  Relay and subscription endpoints are user
+# configurable, so their TCP port cannot safely be enumerated in policy.
+
+corenet_tcp_connect_all_ports(xray_proxya_t)
+corenet_tcp_bind_all_nodes(xray_proxya_t)
+corenet_tcp_sendrecv_all_nodes(xray_proxya_t)
+corenet_udp_bind_all_nodes(xray_proxya_t)
+corenet_udp_sendrecv_all_nodes(xray_proxya_t)
+allow xray_proxya_t self:tcp_socket create_stream_socket_perms;
+allow xray_proxya_t self:udp_socket create_socket_perms;
+allow xray_proxya_t self:unix_stream_socket create_stream_socket_perms;
+
+########################################
+# Gateway mode.  This domain is only assigned to the root system service;
+# rootless operation never receives these privileges.
+
+corenet_rw_tun_tap_dev(xray_proxya_t)
+allow xray_proxya_t self:capability net_admin;
+allow xray_proxya_t self:netlink_route_socket { create bind read write getattr setopt nlmsg_read nlmsg_write };
+allow xray_proxya_t self:tun_socket create_socket_perms;
+kernel_read_network_state(xray_proxya_t)
+
+files_read_etc_files(xray_proxya_t)
+miscfiles_read_localization(xray_proxya_t)
+dev_read_urand(xray_proxya_t)
+
+# systemd opens StandardOutput before transitioning the service into
+# xray_proxya_t.  It may append only the dedicated log file, not application
+# configuration or runtime state.
+allow init_t xray_proxya_config_t:dir search;
+allow init_t xray_proxya_log_t:file { append getattr open write };

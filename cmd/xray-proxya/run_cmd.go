@@ -7,14 +7,11 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 	"xray-proxya/internal/camouflage"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/quota"
-	"xray-proxya/internal/tune"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -166,41 +163,12 @@ var runCmd = &cobra.Command{
 
 		cleanup := func() {
 			os.Remove(pidPath)
-			if cfg.Role == config.RoleGateway {
-				gateway.CleanupFirewall()
-			}
 		}
 
 		process, waitCh, err := startProcess(cfg)
 		if err != nil {
 			fmt.Printf("❌ Failed to start Xray: %v\n", err)
 			return
-		}
-
-		// Apply gateway firewall & routing rules on startup if role is gateway
-		if cfg.Role == config.RoleGateway && !config.GatewayTunDisabled() && gateway.WantsTunnel(cfg) {
-			fmt.Println("⚙️  Applying gateway firewall and routing rules...")
-			if err := gateway.ApplyFirewall(cfg); err != nil {
-				fmt.Printf("⚠️  Failed to apply gateway firewall rules: %v\n", err)
-			} else {
-				fmt.Println("✅ Gateway firewall and routing rules applied successfully.")
-			}
-		} else if cfg.Role == config.RoleGateway {
-			gateway.CleanupFirewall()
-		}
-
-		// Apply persistent kernel tuning profile if explicitly configured via tune command
-		stateFile := filepath.Join(config.GetConfigDir(), ".tune_state")
-		if stateBytes, err := os.ReadFile(stateFile); err == nil {
-			profileName := strings.TrimSpace(string(stateBytes))
-			if profile, ok := tune.GetProfile(profileName); ok {
-				fmt.Printf("⚙️  Applying persistent kernel tuning profile: %s...\n", profile.Name)
-				if _, err := tune.ApplyProfile(profile); err != nil {
-					fmt.Printf("⚠️  Kernel tuning applied with warnings/errors: %v\n", err)
-				} else {
-					fmt.Println("✅ Kernel tuning applied successfully.")
-				}
-			}
 		}
 
 		sigChan := make(chan os.Signal, 1)
