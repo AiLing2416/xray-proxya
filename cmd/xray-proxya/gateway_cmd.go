@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	proxyaSELinux "xray-proxya/internal/selinux"
 	"xray-proxya/internal/tui"
 	"xray-proxya/pkg/utils"
 
@@ -29,8 +31,9 @@ var gatewayStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show current gateway configuration and system state",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			fmt.Printf("❌ Failed to load gateway configuration: %v\n", err)
 			return
 		}
 		fmt.Println("\n🛰️ GATEWAY CONFIGURATION (STAGING)")
@@ -200,12 +203,21 @@ var gatewayUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Restart Xray with TUN and bring gateway runtime rules up",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		return runGatewayManagement("system-up")
+	},
+}
+
+var gatewaySystemUpCmd = &cobra.Command{
+	Use:    "system-up",
+	Short:  "Apply Gateway runtime from the SELinux management domain",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("load active config: %w", err)
 		}
 		if err := gateway.Up(cfg); err != nil {
-			return err
+			return fmt.Errorf("apply gateway runtime: %w", err)
 		}
 		fmt.Println("✅ Gateway runtime rules are up.")
 		return nil
@@ -281,12 +293,62 @@ var gatewayDownCmd = &cobra.Command{
 	Use:   "down",
 	Short: "Remove gateway rules and restart Xray without TUN",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		return runGatewayManagement("system-down")
+	},
+}
+
+var gatewaySystemDownCmd = &cobra.Command{
+	Use:    "system-down",
+	Short:  "Remove Gateway runtime from the SELinux management domain",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := gateway.Down(); err != nil {
-			return err
+			return fmt.Errorf("remove gateway runtime: %w", err)
 		}
 		fmt.Println("✅ Gateway runtime rules are down and Xray restarted without TUN.")
 		return nil
 	},
+}
+
+var gatewaySystemSyncCmd = &cobra.Command{
+	Use:    "system-sync",
+	Short:  "Synchronize Gateway runtime from the SELinux management domain",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("load active config: %w", err)
+		}
+		if err := gateway.SyncDesired(cfg); err != nil {
+			return fmt.Errorf("synchronize gateway runtime: %w", err)
+		}
+		return nil
+	},
+}
+
+func runGatewayManagement(operation string) error {
+	if !proxyaSELinux.IsEnforcing() || proxyaSELinux.InGatewayDomain() {
+		if operation == "system-up" {
+			return gatewaySystemUpCmd.RunE(gatewaySystemUpCmd, nil)
+		}
+		return gatewaySystemDownCmd.RunE(gatewaySystemDownCmd, nil)
+	}
+	if _, err := exec.LookPath("runcon"); err != nil {
+		return fmt.Errorf("SELinux is enforcing but runcon is unavailable: %w", err)
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate xray-proxya binary: %w", err)
+	}
+	cmd := exec.Command("runcon", "-r", "system_r", "-t", "xray_proxya_gateway_t", bin, "gateway", operation)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = append(os.Environ(), proxyaSELinux.GatewayManagementEnv()+"=1")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run Gateway SELinux management domain: %w", err)
+	}
+	return nil
 }
 
 var gatewayTestCmd = &cobra.Command{
@@ -389,9 +451,12 @@ func init() {
 		gatewayLANDisableCmd,
 		gatewaySetCmd,
 		gatewayUpCmd,
+		gatewaySystemUpCmd,
 		gatewayApplyCompatCmd,
 		gatewaySyncFirewallCompatCmd,
 		gatewayDownCmd,
+		gatewaySystemDownCmd,
+		gatewaySystemSyncCmd,
 		gatewayRollbackCompatCmd,
 		gatewayCheckCmd,
 		gatewayVerifyCompatCmd,

@@ -18,9 +18,12 @@ su -
 - 监听 Server 入站端口、连接出站节点；
 - 在 Gateway 模式下创建和使用 TUN。
 
-Gateway 的 `nft`、`ip`、`sysctl` 等系统网络改动不由长期服务执行。它们仅在
-root 显式运行 `gateway up` 或 `gateway down` 时执行。这样处理外部流量的
-长期服务不会长期持有防火墙和策略路由修改权限。
+Gateway 的 `nft`、`ip`、`sysctl` 等系统网络改动不由长期服务执行。root 显式
+运行 `gateway up`、`gateway down` 或由 `apply` 同步 Gateway 时，程序会短暂
+重执行到 `xray_proxya_gateway_t` 管理域；完成后进程立刻退出。这个域仅能读取
+项目自身状态、重启固定的 `xray-proxya` systemd 服务，并执行固定的网络工具。
+它不能成为长期代理服务，也不能修改 systemd unit。这样处理外部流量的长期服务
+不会长期持有防火墙和策略路由修改权限。
 
 ## 安装策略
 
@@ -101,9 +104,9 @@ xray-proxya apply
 xray-proxya gateway up
 ```
 
-`gateway up` 会重启服务以创建 `proxya-tun`，确认设备就绪后再由当前 root
-管理命令安装 nftables、策略路由和临时内核网络设置。服务域本身不执行这些
-系统工具。
+`gateway up` 会在短生命周期的 `xray_proxya_gateway_t` 管理域中重启服务以创建
+`proxya-tun`，确认设备就绪后再安装 nftables、策略路由和临时内核网络设置。
+服务域本身不执行这些系统工具；无需手动运行 `runcon`。
 
 验证透明出口：
 

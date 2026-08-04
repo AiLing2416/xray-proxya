@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"time"
 
 	"xray-proxya/internal/config"
+	proxyaSELinux "xray-proxya/internal/selinux"
 	"xray-proxya/internal/xray"
 )
 
@@ -71,6 +73,13 @@ func waitForReady(cfg *config.UserConfig) error {
 // Up makes the active gateway configuration operational. Xray owns the TUN
 // device; firewall and policy rules are installed only after that device exists.
 func Up(cfg *config.UserConfig) error {
+	delegated, err := ensureManagementDomain("system-up")
+	if err != nil {
+		return err
+	}
+	if delegated {
+		return nil
+	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("gateway up requires root")
 	}
@@ -98,6 +107,13 @@ func Up(cfg *config.UserConfig) error {
 // Down first removes the traffic interception rules, then restarts the single
 // Xray core with no TUN inbound. It intentionally leaves active config intact.
 func Down() error {
+	delegated, err := ensureManagementDomain("system-down")
+	if err != nil {
+		return err
+	}
+	if delegated {
+		return nil
+	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("gateway down requires root")
 	}
@@ -107,6 +123,13 @@ func Down() error {
 
 // SyncDesired is used by apply after committing a gateway configuration change.
 func SyncDesired(cfg *config.UserConfig) error {
+	delegated, err := ensureManagementDomain("system-sync")
+	if err != nil {
+		return err
+	}
+	if delegated {
+		return nil
+	}
 	if cfg == nil || cfg.Role != config.RoleGateway {
 		return nil
 	}
@@ -121,4 +144,28 @@ func SyncDesired(cfg *config.UserConfig) error {
 		return ApplyFirewall(cfg)
 	}
 	return nil
+}
+
+// ensureManagementDomain re-executes Gateway mutations in the short-lived
+// SELinux domain. On non-SELinux hosts and from the child process it is a no-op.
+func ensureManagementDomain(operation string) (bool, error) {
+	if !proxyaSELinux.IsEnforcing() || proxyaSELinux.InGatewayDomain() {
+		return false, nil
+	}
+	if _, err := exec.LookPath("runcon"); err != nil {
+		return false, fmt.Errorf("SELinux is enforcing but runcon is unavailable: %w", err)
+	}
+	bin, err := os.Executable()
+	if err != nil {
+		return false, fmt.Errorf("locate xray-proxya binary: %w", err)
+	}
+	cmd := exec.Command("runcon", "-r", "system_r", "-t", "xray_proxya_gateway_t", bin, "gateway", operation)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = append(os.Environ(), proxyaSELinux.GatewayManagementEnv()+"=1")
+	if err := cmd.Run(); err != nil {
+		return false, fmt.Errorf("run Gateway SELinux management domain: %w", err)
+	}
+	return true, nil
 }

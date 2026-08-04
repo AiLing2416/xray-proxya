@@ -19,6 +19,13 @@ files_type(xray_proxya_data_t)
 type xray_proxya_log_t;
 logging_log_file(xray_proxya_log_t)
 
+# Short-lived domain entered only by explicit `gateway up` / `gateway down`.
+# The long-running proxy service never receives these system-management rights.
+type xray_proxya_gateway_t;
+domain_type(xray_proxya_gateway_t)
+role system_r types xray_proxya_gateway_t;
+domain_use_interactive_fds(xray_proxya_gateway_t)
+
 ########################################
 # Own configuration, logs, generated Xray JSON, PID and gateway state.
 
@@ -39,6 +46,23 @@ manage_files_pattern(xray_proxya_t, xray_proxya_log_t, xray_proxya_log_t)
 manage_dirs_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
 manage_files_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
 manage_lnk_files_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
+
+# Gateway management needs the same private state paths, but no access to
+# Xray's network listener or proxy traffic.
+files_search_home(xray_proxya_gateway_t)
+allow xray_proxya_gateway_t config_home_t:dir { getattr open search };
+allow xray_proxya_gateway_t data_home_t:dir { getattr open search };
+allow xray_proxya_gateway_t gconf_home_t:dir { getattr open search };
+manage_dirs_pattern(xray_proxya_gateway_t, xray_proxya_config_t, xray_proxya_config_t)
+manage_files_pattern(xray_proxya_gateway_t, xray_proxya_config_t, xray_proxya_config_t)
+manage_lnk_files_pattern(xray_proxya_gateway_t, xray_proxya_config_t, xray_proxya_config_t)
+can_exec(xray_proxya_gateway_t, xray_proxya_exec_t)
+domain_entry_file(xray_proxya_gateway_t, xray_proxya_exec_t)
+corecmd_exec_bin(xray_proxya_gateway_t)
+# Read only this process's SELinux context so the re-executed manager can
+# detect that it is already confined and never recursively invoke runcon.
+allow xray_proxya_gateway_t self:process getattr;
+allow xray_proxya_gateway_t proc_t:file { getattr open read };
 
 # The bundled Xray core is data owned by the manager, not a second systemd
 # entrypoint.  It executes without a domain transition inside xray_proxya_t.
@@ -67,6 +91,28 @@ allow xray_proxya_t self:capability net_admin;
 allow xray_proxya_t self:netlink_route_socket { create bind read write getattr setopt nlmsg_read nlmsg_write };
 allow xray_proxya_t self:tun_socket create_socket_perms;
 kernel_read_network_state(xray_proxya_t)
+
+########################################
+# Gateway system-management domain: fixed helpers invoked by xray-proxya's
+# Go code, not shell input.  It restarts only the managed service and owns
+# policy routing, nftables and temporary network sysctls.
+
+systemd_exec_systemctl(xray_proxya_gateway_t)
+systemd_start_systemd_services(xray_proxya_gateway_t)
+systemd_stop_systemd_services(xray_proxya_gateway_t)
+systemd_status_systemd_services(xray_proxya_gateway_t)
+# RestartXrayService first verifies that its fixed unit exists; it needs only
+# metadata/read access to unit files, never permission to modify them.
+systemd_search_unit_dirs(xray_proxya_gateway_t)
+systemd_read_unit_files(xray_proxya_gateway_t)
+
+iptables_exec(xray_proxya_gateway_t)
+sysnet_exec_ifconfig(xray_proxya_gateway_t)
+systemd_exec_sysctl(xray_proxya_gateway_t)
+allow xray_proxya_gateway_t self:capability net_admin;
+allow xray_proxya_gateway_t self:netlink_route_socket { create bind read write getattr setopt nlmsg_read nlmsg_write };
+allow xray_proxya_gateway_t self:netlink_netfilter_socket { create bind read write getattr setopt };
+kernel_rw_net_sysctls(xray_proxya_gateway_t)
 
 files_read_etc_files(xray_proxya_t)
 miscfiles_read_localization(xray_proxya_t)
