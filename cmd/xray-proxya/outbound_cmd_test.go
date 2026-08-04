@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -224,3 +225,55 @@ func TestRunSpeedPassTruncation(t *testing.T) {
 	}
 }
 
+func TestRunUploadPassStreamsConfiguredLimit(t *testing.T) {
+	var received int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		var err error
+		received, err = io.Copy(io.Discard, r.Body)
+		if err != nil {
+			t.Errorf("copy request body: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	var totalBytes int64
+	var samples []float64
+	const maxBytes = int64(64 * 1024)
+	err := runUploadPass(server.Client(), server.URL, time.Now().Add(time.Second), &totalBytes, &samples, maxBytes)
+	if err != nil {
+		t.Fatalf("runUploadPass() error = %v", err)
+	}
+	if totalBytes != maxBytes || received != maxBytes {
+		t.Fatalf("uploaded=%d received=%d, want %d", totalBytes, received, maxBytes)
+	}
+}
+
+func TestResolveSpeedTestLinkUsesDirectionSpecificOverride(t *testing.T) {
+	originalLink, originalUpload, originalDownload := speedLink, speedUploadLink, speedDownloadLink
+	t.Cleanup(func() {
+		speedLink, speedUploadLink, speedDownloadLink = originalLink, originalUpload, originalDownload
+	})
+	speedLink = "https://shared.example.test/test"
+	speedUploadLink = "https://upload.example.test/ingest"
+	speedDownloadLink = "https://download.example.test/data"
+
+	uploadLink, err := resolveSpeedTestLink(speedTestUpload, defaultSpeedTestSize)
+	if err != nil || uploadLink != speedUploadLink {
+		t.Fatalf("upload link = %q, %v", uploadLink, err)
+	}
+	downloadLink, err := resolveSpeedTestLink(speedTestDownload, defaultSpeedTestSize)
+	if err != nil || downloadLink != speedDownloadLink {
+		t.Fatalf("download link = %q, %v", downloadLink, err)
+	}
+}
+
+func TestSpeedLatencyLinkUsesCloudflareDownloadForUpload(t *testing.T) {
+	got := speedLatencyLink(speedTestUpload, defaultUploadTestLink)
+	if got != "https://speed.cloudflare.com/__down?bytes=1" {
+		t.Fatalf("speedLatencyLink() = %q", got)
+	}
+}

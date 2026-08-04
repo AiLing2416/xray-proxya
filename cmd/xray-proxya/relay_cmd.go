@@ -38,6 +38,7 @@ type ProbeResult struct {
 }
 
 type SpeedResult struct {
+	Direction           string
 	Link                string
 	Duration            time.Duration
 	BytesTransferred    int64
@@ -51,16 +52,30 @@ type SpeedResult struct {
 	LoadLatencyLossRate float64
 }
 
+type speedTestDirection string
+
+const (
+	speedTestDownload speedTestDirection = "Download"
+	speedTestUpload   speedTestDirection = "Upload"
+	defaultSpeedTestSize                 = int64(50_000_000)
+)
+
 var (
 	outboundIPv4 bool
 	outboundIPv6 bool
 	speedLink    string
+	speedUploadLink string
+	speedDownloadLink string
 	speedTime    int
 	speedSize    string
+	speedUpload  bool
+	speedDownload bool
+	speedBoth    bool
 )
 
 const (
 	defaultSpeedTestLink    = "https://speed.cloudflare.com/__down?bytes=50000000"
+	defaultUploadTestLink   = "https://speed.cloudflare.com/__up"
 	maxSpeedTestSeconds     = 3600
 	defaultSpeedTestTimeout = 2 * time.Minute
 	latencyProbeTimeout     = 20 * time.Second
@@ -1306,16 +1321,7 @@ var speedOutboundCmd = &cobra.Command{
 			return
 		}
 
-		link := strings.TrimSpace(speedLink)
-		if link == "" {
-			link = defaultSpeedTestLink
-		}
-		if _, err := url.ParseRequestURI(link); err != nil {
-			fmt.Printf("❌ Invalid speed test link: %v\n", err)
-			return
-		}
-
-		var sizeLimit int64
+		sizeLimit := defaultSpeedTestSize
 		if speedSize != "" {
 			var err error
 			sizeLimit, err = parseSize(speedSize)
@@ -1328,15 +1334,6 @@ var speedOutboundCmd = &cobra.Command{
 				return
 			}
 
-			u, err := url.Parse(link)
-			if err == nil {
-				if strings.Contains(u.Host, "speed.cloudflare.com") || u.Query().Get("bytes") != "" {
-					q := u.Query()
-					q.Set("bytes", fmt.Sprintf("%d", sizeLimit))
-					u.RawQuery = q.Encode()
-					link = u.String()
-				}
-			}
 		}
 
 		duration := 0
@@ -1348,24 +1345,89 @@ var speedOutboundCmd = &cobra.Command{
 			duration = speedTime
 		}
 
-		fmt.Printf("🚀 Running speed test for [%s]\n", alias)
-		fmt.Printf("   Link: %s\n", link)
-		if sizeLimit > 0 {
-			fmt.Printf("   Size Limit: %s\n", formatDecimalBytes(sizeLimit))
-		}
-		if duration > 0 {
-			fmt.Printf("   Duration: %ds\n", duration)
-		} else {
-			fmt.Printf("   Duration: single pass (timeout %s)\n", defaultSpeedTestTimeout)
+		runDownload := speedDownload || speedBoth
+		runUpload := speedUpload || speedBoth
+		if !runDownload && !runUpload {
+			runDownload = true // Preserve the existing default behavior.
 		}
 
-		result, err := runIsolatedSpeedTest(cfg, *target, link, duration, sizeLimit)
-		if err != nil {
-			fmt.Printf("❌ Speed test failed: %v\n", err)
-			return
+		if runDownload {
+			link, err := resolveSpeedTestLink(speedTestDownload, sizeLimit)
+			if err != nil {
+				fmt.Printf("❌ Invalid download test link: %v\n", err)
+				return
+			}
+			if err := runRelaySpeedTest(cfg, *target, alias, speedTestDownload, link, duration, sizeLimit); err != nil {
+				fmt.Printf("❌ Download speed test failed: %v\n", err)
+				return
+			}
 		}
-		printSpeedResults(alias, result)
+		if runUpload {
+			link, err := resolveSpeedTestLink(speedTestUpload, sizeLimit)
+			if err != nil {
+				fmt.Printf("❌ Invalid upload test link: %v\n", err)
+				return
+			}
+			if err := runRelaySpeedTest(cfg, *target, alias, speedTestUpload, link, duration, sizeLimit); err != nil {
+				fmt.Printf("❌ Upload speed test failed: %v\n", err)
+			}
+		}
 	},
+}
+
+func resolveSpeedTestLink(direction speedTestDirection, sizeLimit int64) (string, error) {
+	link := strings.TrimSpace(speedLink)
+	if direction == speedTestDownload && strings.TrimSpace(speedDownloadLink) != "" {
+		link = strings.TrimSpace(speedDownloadLink)
+	}
+	if direction == speedTestUpload && strings.TrimSpace(speedUploadLink) != "" {
+		link = strings.TrimSpace(speedUploadLink)
+	}
+	if link == "" {
+		if direction == speedTestUpload {
+			link = defaultUploadTestLink
+		} else {
+			link = defaultSpeedTestLink
+		}
+	}
+
+	u, err := url.ParseRequestURI(link)
+	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
+		return "", fmt.Errorf("must be an absolute HTTP(S) URL")
+	}
+	if direction == speedTestDownload && (strings.EqualFold(u.Hostname(), "speed.cloudflare.com") || u.Query().Get("bytes") != "") {
+		q := u.Query()
+		q.Set("bytes", fmt.Sprintf("%d", sizeLimit))
+		u.RawQuery = q.Encode()
+		link = u.String()
+	}
+	return link, nil
+}
+
+func runRelaySpeedTest(cfg *config.UserConfig, co config.CustomOutbound, alias string, direction speedTestDirection, link string, duration int, sizeLimit int64) error {
+	fmt.Printf("🚀 Running %s speed test for [%s]\n", strings.ToLower(string(direction)), alias)
+	fmt.Printf("   Link: %s\n", link)
+	fmt.Printf("   Size Limit: %s\n", formatDecimalBytes(sizeLimit))
+	if duration > 0 {
+		fmt.Printf("   Duration: %ds\n", duration)
+	} else {
+		fmt.Printf("   Duration: single pass (timeout %s)\n", defaultSpeedTestTimeout)
+	}
+
+	result, err := runIsolatedSpeedTest(cfg, co, link, speedLatencyLink(direction, link), duration, sizeLimit, direction)
+	if err != nil {
+		return err
+	}
+	printSpeedResults(alias, result)
+	return nil
+}
+
+func speedLatencyLink(direction speedTestDirection, speedLink string) string {
+	u, err := url.Parse(speedLink)
+	if err == nil && direction == speedTestUpload && strings.EqualFold(u.Hostname(), "speed.cloudflare.com") && u.Path == "/__up" {
+		return "https://speed.cloudflare.com/__down?bytes=1"
+	}
+	return speedLink
 }
 
 func probeBoundProxy(proxyURL string) map[string]string {
@@ -1394,7 +1456,7 @@ func printProbeResults(alias string, results ProbeResult) {
 }
 
 func printSpeedResults(alias string, result SpeedResult) {
-	fmt.Printf("\n[%s] Speed Test\n", alias)
+	fmt.Printf("\n[%s] %s Speed Test\n", alias, result.Direction)
 	fmt.Printf("  Link: %s\n", result.Link)
 	fmt.Printf("  Duration: %s\n", result.Duration.Round(time.Millisecond))
 	fmt.Printf("  Data: %s\n", formatDecimalBytes(result.BytesTransferred))
@@ -1561,8 +1623,8 @@ func parseSize(s string) (int64, error) {
 	return int64(val * float64(multiplier)), nil
 }
 
-func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link string, durationSeconds int, maxBytes int64) (SpeedResult, error) {
-	result := SpeedResult{Link: link}
+func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link, latencyLink string, durationSeconds int, maxBytes int64, direction speedTestDirection) (SpeedResult, error) {
+	result := SpeedResult{Direction: string(direction), Link: link}
 
 	client, _, cleanup, err := startIsolatedOutboundInstance(cfg, co.Alias)
 	if err != nil {
@@ -1570,7 +1632,7 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 	}
 	defer cleanup()
 
-	idleLatencies := measureLatencySeries(client, link, defaultLatencyProbeRuns)
+	idleLatencies := measureLatencySeries(client, latencyLink, defaultLatencyProbeRuns)
 	result.IdleLatencyAvg = averageDuration(idleLatencies)
 
 	deadline := time.Now().Add(defaultSpeedTestTimeout)
@@ -1597,7 +1659,7 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 				return
 			case <-ticker.C:
 				loadProbeTotal++
-				latency, err := measureLatency(client, link)
+				latency, err := measureLatency(client, latencyLink)
 				if err != nil {
 					loadProbeFailed++
 					continue
@@ -1618,14 +1680,20 @@ func runIsolatedSpeedTest(cfg *config.UserConfig, co config.CustomOutbound, link
 		if maxBytes > 0 && result.BytesTransferred >= maxBytes {
 			break
 		}
-		if err := runSpeedPass(client, link, deadline, &result.BytesTransferred, &samples, maxBytes); err != nil {
+		var passErr error
+		if direction == speedTestUpload {
+			passErr = runUploadPass(client, link, deadline, &result.BytesTransferred, &samples, maxBytes)
+		} else {
+			passErr = runSpeedPass(client, link, deadline, &result.BytesTransferred, &samples, maxBytes)
+		}
+		if passErr != nil {
 			if !probesClosed {
 				close(probeStop)
 				probesClosed = true
 			}
 			wg.Wait()
 			if result.BytesTransferred == 0 {
-				return result, err
+				return result, passErr
 			}
 			break
 		}
@@ -1745,6 +1813,88 @@ func runSpeedPass(client *http.Client, rawURL string, deadline time.Time, totalB
 			return err
 		}
 	}
+}
+
+type uploadPayloadReader struct {
+	remaining      int64
+	totalBytes     *int64
+	samples        *[]float64
+	intervalBytes  int64
+	lastSampleAt   time.Time
+}
+
+func newUploadPayloadReader(size int64, totalBytes *int64, samples *[]float64) *uploadPayloadReader {
+	return &uploadPayloadReader{
+		remaining:    size,
+		totalBytes:   totalBytes,
+		samples:      samples,
+		lastSampleAt: time.Now(),
+	}
+}
+
+func (r *uploadPayloadReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	for i := range p {
+		p[i] = 0
+	}
+	n := len(p)
+	r.remaining -= int64(n)
+	r.intervalBytes += int64(n)
+	if r.totalBytes != nil {
+		*r.totalBytes += int64(n)
+	}
+	if elapsed := time.Since(r.lastSampleAt); elapsed >= speedSampleInterval {
+		flushSpeedSample(r.samples, r.intervalBytes, elapsed)
+		r.intervalBytes = 0
+		r.lastSampleAt = time.Now()
+	}
+	return n, nil
+}
+
+func (r *uploadPayloadReader) flush() {
+	flushSpeedSample(r.samples, r.intervalBytes, time.Since(r.lastSampleAt))
+	r.intervalBytes = 0
+}
+
+func runUploadPass(client *http.Client, rawURL string, deadline time.Time, totalBytes *int64, samples *[]float64, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return fmt.Errorf("upload test requires a positive size limit")
+	}
+	remaining := maxBytes
+	if totalBytes != nil {
+		remaining -= *totalBytes
+	}
+	if remaining <= 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	payload := newUploadPayloadReader(remaining, totalBytes, samples)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, payload)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = remaining
+	req.Header.Set("Content-Type", "application/octet-stream")
+	setSpeedTestHeaders(req)
+
+	resp, err := client.Do(req)
+	payload.flush()
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if !isSuccessfulSpeedStatus(resp.StatusCode) {
+		return fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+	return nil
 }
 
 func isSuccessfulSpeedStatus(statusCode int) bool {
@@ -2210,9 +2360,14 @@ func init() {
 	infoOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
-	speedOutboundCmd.Flags().StringVarP(&speedLink, "link", "l", "", "Speed test download URL")
+	speedOutboundCmd.Flags().StringVarP(&speedLink, "link", "l", "", "Speed test URL (applies to the selected direction, or both)")
+	speedOutboundCmd.Flags().StringVar(&speedUploadLink, "link-upload", "", "Upload speed test URL (overrides --link for uploads)")
+	speedOutboundCmd.Flags().StringVar(&speedDownloadLink, "link-download", "", "Download speed test URL (overrides --link for downloads)")
 	speedOutboundCmd.Flags().IntVarP(&speedTime, "time", "t", 0, "Continuous test duration in seconds (max 3600)")
 	speedOutboundCmd.Flags().StringVarP(&speedSize, "size", "s", "", "Maximum total transfer for the test session (e.g. 50MB, 10MB, 500KB, 50000000)")
+	speedOutboundCmd.Flags().BoolVarP(&speedUpload, "upload", "u", false, "Run an upload speed test")
+	speedOutboundCmd.Flags().BoolVarP(&speedDownload, "download", "d", false, "Run a download speed test")
+	speedOutboundCmd.Flags().BoolVar(&speedBoth, "both", false, "Run download first, then upload, with separate reports")
 	bindInterfaceCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:
