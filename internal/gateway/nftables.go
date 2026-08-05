@@ -439,6 +439,9 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 				}
 			}
 		}
+		if cfg.Gateway.SyntheticPing {
+			b.WriteString("        icmp type echo-request drop comment \"xray-proxya synthetic-ping\"\n")
+		}
 		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
 		b.WriteString("    }\n")
 	}

@@ -134,6 +134,7 @@ type GatewayConfig struct {
 	BypassDNS       []string `json:"bypass_dns,omitempty"`
 	State           string   `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
 	BypassCountries []string `json:"bypass_countries,omitempty"`
+	SyntheticPing   bool     `json:"synthetic_ping,omitempty"`
 }
 
 type CustomOutbound struct {

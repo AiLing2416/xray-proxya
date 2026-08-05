@@ -10,6 +10,7 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/quota"
+	"xray-proxya/internal/syntheticping"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -78,6 +79,26 @@ var runCmd = &cobra.Command{
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		overrides := make(map[string]int)
+		syntheticPingPort := 0
+		gatewayState := cfg.Gateway.State
+		if gatewayState == "" {
+			gatewayState = "proxy"
+		}
+		syntheticPingEnabled := cfg.Role == config.RoleGateway &&
+			cfg.Gateway.SyntheticPing &&
+			gatewayState == "proxy" &&
+			cfg.Gateway.LocalEnabled && cfg.Gateway.LANEnabled &&
+			cfg.Gateway.RelayAlias != "" && !config.GatewayTunDisabled()
+		if syntheticPingEnabled {
+			port, err := xray.GetFreePort()
+			if err != nil {
+				fmt.Printf("⚠️  Synthetic ping disabled: allocate SOCKS port: %v\n", err)
+				syntheticPingEnabled = false
+			} else {
+				syntheticPingPort = port
+				overrides["synthetic-ping-socks"] = port
+			}
+		}
 		if cfg.Role == config.RoleGateway && config.GatewayTunDisabled() {
 			overrides["gateway-tun-disabled"] = 1
 		}
@@ -128,7 +149,12 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		var syntheticPingManager *syntheticping.Manager
 		cleanup := func() {
+			if syntheticPingManager != nil {
+				_ = syntheticPingManager.Close()
+				syntheticPingManager = nil
+			}
 			os.Remove(pidPath)
 		}
 
@@ -136,6 +162,15 @@ var runCmd = &cobra.Command{
 		if err != nil {
 			fmt.Printf("❌ Failed to start Xray: %v\n", err)
 			return
+		}
+		if syntheticPingEnabled {
+			manager, err := syntheticping.Start(cfg.Gateway.LANInterface, fmt.Sprintf("127.0.0.1:%d", syntheticPingPort))
+			if err != nil {
+				fmt.Printf("⚠️  Synthetic ping disabled: %v\n", err)
+			} else {
+				syntheticPingManager = manager
+				fmt.Printf("📡 Synthetic ping enabled on %s through relay %s\n", cfg.Gateway.LANInterface, cfg.Gateway.RelayAlias)
+			}
 		}
 
 		sigChan := make(chan os.Signal, 1)

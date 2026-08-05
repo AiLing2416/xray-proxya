@@ -15,10 +15,19 @@ type SOCKS5Dialer struct {
 }
 
 func NewSOCKS5Dialer(address string) (*SOCKS5Dialer, error) {
+	return NewSOCKS5DialerWithTimeout(address, 10*time.Second)
+}
+
+// NewSOCKS5DialerWithTimeout creates a SOCKS5 dialer with one deadline for
+// the proxy handshake and the requested TCP connection.
+func NewSOCKS5DialerWithTimeout(address string, timeout time.Duration) (*SOCKS5Dialer, error) {
 	if address == "" {
 		return nil, fmt.Errorf("empty SOCKS5 address")
 	}
-	return &SOCKS5Dialer{address: address, timeout: 10 * time.Second}, nil
+	if timeout <= 0 {
+		return nil, fmt.Errorf("SOCKS5 timeout must be positive")
+	}
+	return &SOCKS5Dialer{address: address, timeout: timeout}, nil
 }
 
 func (d *SOCKS5Dialer) Dial(network, address string) (net.Conn, error) {

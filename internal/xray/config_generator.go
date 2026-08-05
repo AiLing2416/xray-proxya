@@ -250,6 +250,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 	apiPort := getPort("api", userCfg.APIInbound)
 	testPort := getPort("test-socks", userCfg.TestInbound)
+	syntheticPingPort := getPort("synthetic-ping-socks", 0)
 	dnsInPort := getPort("dns-in", 0)
 	_, disableGatewayTun := overridePorts["gateway-tun-disabled"]
 	gatewayState := userCfg.Gateway.State
@@ -276,6 +277,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		inbounds = append(inbounds, buildDNSInbound(dnsInPort))
 	}
 	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)})
+	if syntheticPingPort > 0 {
+		inbounds = append(inbounds, map[string]interface{}{"tag": "synthetic-ping-socks", "port": syntheticPingPort, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth"}})
+	}
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
 			continue
@@ -421,6 +425,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 	if testTarget != "" {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "outbound-" + testTarget})
+	}
+	if syntheticPingPort > 0 && relayAlias != "" {
+		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"synthetic-ping-socks"}, "outboundTag": "outbound-" + relayAlias})
 	}
 	if dnsInPort > 0 {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"})

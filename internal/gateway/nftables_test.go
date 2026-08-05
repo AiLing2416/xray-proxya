@@ -85,6 +85,15 @@ func TestBuildNFTWithBypassDNS(t *testing.T) {
 	}
 }
 
+func TestBuildNFTAddsSyntheticPingDropForLAN(t *testing.T) {
+	cfg := testGatewayConfig(true, true)
+	cfg.Gateway.SyntheticPing = true
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
+	if !strings.Contains(rules, `icmp type echo-request drop comment "xray-proxya synthetic-ping"`) {
+		t.Fatalf("rules should drop LAN echo requests for synthetic replies: %s", rules)
+	}
+}
+
 func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
 	rules := policyRules("192.168.50.0/24", "fd00::/64", true)
 	if len(rules) != 8 {
