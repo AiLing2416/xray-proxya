@@ -3,8 +3,10 @@
 package syntheticping
 
 import (
+	"crypto/tls"
 	"encoding/binary"
 	"fmt"
+	"io"
 	"net"
 	"time"
 
@@ -96,12 +98,48 @@ func (m *Manager) handle(request echoRequest) {
 func tcpReachable(dialer *utils.SOCKS5Dialer, destination net.IP) bool {
 	for _, port := range defaultPorts {
 		conn, err := dialer.Dial("tcp", net.JoinHostPort(destination.String(), fmt.Sprintf("%d", port)))
-		if err == nil {
-			conn.Close()
+		if err != nil {
+			continue
+		}
+		if verifyEndpoint(conn, port) {
 			return true
 		}
 	}
 	return false
+}
+
+// verifyEndpoint requires traffic from the target, not merely a successful
+// SOCKS CONNECT response. Some proxy transports acknowledge CONNECT after the
+// upstream relay accepts it, before that relay has opened the destination.
+func verifyEndpoint(conn net.Conn, port int) bool {
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(4 * time.Second)); err != nil {
+		return false
+	}
+
+	switch port {
+	case 443, 8443:
+		tlsConn := tls.Client(conn, &tls.Config{InsecureSkipVerify: true}) // The IP is the probe target, not an identity check.
+		return tlsConn.Handshake() == nil
+	case 80, 8080:
+		if _, err := io.WriteString(conn, "HEAD / HTTP/1.0\r\nConnection: close\r\n\r\n"); err != nil {
+			return false
+		}
+	case 22:
+		// SSH servers send their identification string immediately.
+	case 25565:
+		// Legacy Minecraft server-list ping; modern servers still answer it.
+		if _, err := conn.Write([]byte{0xfe, 0x01}); err != nil {
+			return false
+		}
+	default:
+		// A TCP probe cannot establish reachability of a UDP service such as
+		// WireGuard. Keep it as a TCP fallback only when it sends a banner.
+	}
+
+	buf := make([]byte, 1)
+	_, err := conn.Read(buf)
+	return err == nil
 }
 
 type echoRequest struct {

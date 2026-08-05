@@ -54,3 +54,15 @@ func TestIsPublicIPv4(t *testing.T) {
 		}
 	}
 }
+
+func TestVerifyEndpointSSHBanner(t *testing.T) {
+	probe, endpoint := net.Pipe()
+	defer probe.Close()
+	go func() {
+		_, _ = endpoint.Write([]byte("SSH-2.0-test\r\n"))
+		_ = endpoint.Close()
+	}()
+	if !verifyEndpoint(probe, 22) {
+		t.Fatal("SSH banner endpoint verification failed")
+	}
+}
