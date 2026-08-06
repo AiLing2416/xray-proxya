@@ -113,7 +113,7 @@ func TestGenerateXrayJSONRoutesSyntheticPingThroughGatewayRelay(t *testing.T) {
 
 func TestGenerateXrayJSONOmitsGatewayTunWhenDisabled(t *testing.T) {
 	cfg := &config.UserConfig{
-		Role: config.RoleGateway,
+		Role:    config.RoleGateway,
 		Gateway: config.GatewayConfig{Mode: "tun", State: "disabled", LocalEnabled: true},
 	}
 	parsed := generateAndDecodeXrayConfig(t, cfg, "")
@@ -337,6 +337,27 @@ func TestGenerateXrayJSONUsesConfiguredTestInboundPort(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("test-socks inbound not found")
+	}
+}
+
+func TestGenerateXrayJSONRoutesPathdThroughGatewayRelay(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway, Gateway: config.GatewayConfig{RelayAlias: "relay-a"}}
+	cfg.CustomOutbounds = []config.CustomOutbound{{Alias: "relay-a", Enabled: true, UserUUID: "test", Config: map[string]interface{}{"protocol": "freedom"}}}
+	parsed := generateAndDecodeXrayConfigWithOverrides(t, cfg, map[string]int{"pathd-socks": 19192}, "")
+	inbounds, _ := parsed["inbounds"].([]interface{})
+	found := false
+	for _, raw := range inbounds {
+		inbound := raw.(map[string]interface{})
+		if inbound["tag"] == "pathd-socks" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("missing pathd SOCKS inbound")
+	}
+	rules := parsed["routing"].(map[string]interface{})["rules"].([]interface{})
+	if !containsInboundRule(rules, "pathd-socks", "outbound-relay-a") {
+		t.Fatal("pathd SOCKS inbound is not pinned to gateway relay")
 	}
 }
 

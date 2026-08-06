@@ -17,13 +17,23 @@ import (
 var defaultPorts = []int{443, 80, 22, 8443, 8080, 51820, 25565}
 
 type Manager struct {
-	fd     int
-	iface  *net.Interface
-	dialer *utils.SOCKS5Dialer
-	stop   chan struct{}
+	fd    int
+	iface *net.Interface
+	probe func(net.IP) bool
+	stop  chan struct{}
 }
 
 func Start(interfaceName, socksAddress string) (*Manager, error) {
+	dialer, err := utils.NewSOCKS5DialerWithTimeout(socksAddress, 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return StartWithProbe(interfaceName, func(destination net.IP) bool { return tcpReachable(dialer, destination) })
+}
+
+// StartWithProbe lets PathLink provide a real remote ICMP result while keeping
+// all Ethernet interception and echo-reply construction in this package.
+func StartWithProbe(interfaceName string, probe func(net.IP) bool) (*Manager, error) {
 	iface, err := net.InterfaceByName(interfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("find LAN interface: %w", err)
@@ -31,13 +41,6 @@ func Start(interfaceName, socksAddress string) (*Manager, error) {
 	if len(iface.HardwareAddr) != 6 {
 		return nil, fmt.Errorf("LAN interface %s has no ethernet address", interfaceName)
 	}
-	// A failed port must not hold a ping request for the normal SOCKS timeout.
-	// The common ports are tried in order, with HTTPS and HTTP first.
-	dialer, err := utils.NewSOCKS5DialerWithTimeout(socksAddress, 2*time.Second)
-	if err != nil {
-		return nil, err
-	}
-
 	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_IP)))
 	if err != nil {
 		return nil, fmt.Errorf("open packet socket: %w", err)
@@ -47,7 +50,7 @@ func Start(interfaceName, socksAddress string) (*Manager, error) {
 		return nil, fmt.Errorf("bind packet socket: %w", err)
 	}
 
-	m := &Manager{fd: fd, iface: iface, dialer: dialer, stop: make(chan struct{})}
+	m := &Manager{fd: fd, iface: iface, probe: probe, stop: make(chan struct{})}
 	go m.serve()
 	return m, nil
 }
@@ -83,7 +86,7 @@ func (m *Manager) serve() {
 }
 
 func (m *Manager) handle(request echoRequest) {
-	if !tcpReachable(m.dialer, request.destination) {
+	if !m.probe(request.destination) {
 		return
 	}
 	reply := buildEchoReply(request, m.iface.HardwareAddr)

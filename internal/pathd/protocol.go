@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 )
 
 const (
@@ -69,7 +70,10 @@ func readFrame(r io.Reader) (frame, error) {
 
 // Client is one PathLink stream. It deliberately has no reconnect loop; callers
 // create it lazily and discard it after their own idle timeout.
-type Client struct{ conn net.Conn }
+type Client struct {
+	conn net.Conn
+	mu   sync.Mutex
+}
 
 func NewClient(conn net.Conn, token string) (*Client, error) {
 	if token == "" {
@@ -95,6 +99,8 @@ func NewClient(conn net.Conn, token string) (*Client, error) {
 func (c *Client) Close() error { return c.conn.Close() }
 
 func (c *Client) Ping(target string, timeoutMS int) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if net.ParseIP(target) == nil {
 		return 0, fmt.Errorf("pathd accepts literal IP targets only")
 	}

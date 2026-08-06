@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -9,6 +10,7 @@ import (
 	"syscall"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/syntheticping"
 	"xray-proxya/internal/xray"
@@ -80,6 +82,7 @@ var runCmd = &cobra.Command{
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		overrides := make(map[string]int)
 		syntheticPingPort := 0
+		pathdPort := 0
 		gatewayState := cfg.Gateway.State
 		if gatewayState == "" {
 			gatewayState = "proxy"
@@ -97,6 +100,17 @@ var runCmd = &cobra.Command{
 			} else {
 				syntheticPingPort = port
 				overrides["synthetic-ping-socks"] = port
+			}
+		}
+		pathdEnabled := syntheticPingEnabled && cfg.Path.Enabled && cfg.Path.Token != ""
+		if pathdEnabled {
+			port, err := xray.GetFreePort()
+			if err != nil {
+				fmt.Printf("⚠️  PathLink disabled: allocate SOCKS port: %v\n", err)
+				pathdEnabled = false
+			} else {
+				pathdPort = port
+				overrides["pathd-socks"] = port
 			}
 		}
 		if cfg.Role == config.RoleGateway && config.GatewayTunDisabled() {
@@ -150,10 +164,15 @@ var runCmd = &cobra.Command{
 		}
 
 		var syntheticPingManager *syntheticping.Manager
+		var pathClient *pathd.IdleClient
 		cleanup := func() {
 			if syntheticPingManager != nil {
 				_ = syntheticPingManager.Close()
 				syntheticPingManager = nil
+			}
+			if pathClient != nil {
+				_ = pathClient.Close()
+				pathClient = nil
 			}
 			os.Remove(pidPath)
 		}
@@ -164,7 +183,17 @@ var runCmd = &cobra.Command{
 			return
 		}
 		if syntheticPingEnabled {
-			manager, err := syntheticping.Start(cfg.Gateway.LANInterface, fmt.Sprintf("127.0.0.1:%d", syntheticPingPort))
+			var manager *syntheticping.Manager
+			if pathdEnabled {
+				idle := time.Duration(cfg.Path.IdleSeconds) * time.Second
+				if idle <= 0 {
+					idle = 15 * time.Second
+				}
+				pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), cfg.Path.Listen, cfg.Path.Token, idle)
+				manager, err = syntheticping.StartWithProbe(cfg.Gateway.LANInterface, func(destination net.IP) bool { _, err := pathClient.Ping(destination); return err == nil })
+			} else {
+				manager, err = syntheticping.Start(cfg.Gateway.LANInterface, fmt.Sprintf("127.0.0.1:%d", syntheticPingPort))
+			}
 			if err != nil {
 				fmt.Printf("⚠️  Synthetic ping disabled: %v\n", err)
 			} else {
