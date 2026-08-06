@@ -29,6 +29,9 @@ func Listen(address, token string, idle time.Duration) (*Server, error) {
 	if token == "" {
 		return nil, fmt.Errorf("pathd token is empty")
 	}
+	if err := ValidateListenAddress(address); err != nil {
+		return nil, err
+	}
 	if idle <= 0 {
 		idle = 20 * time.Second
 	}
@@ -42,6 +45,20 @@ func Listen(address, token string, idle time.Duration) (*Server, error) {
 		return nil, err
 	}
 	return &Server{listener: listener, token: token, idle: idle, pinger: p, closed: make(chan struct{})}, nil
+}
+
+// ValidateListenAddress guarantees that pathd cannot accidentally become a
+// public service. PathLink is reached only after the proxy relay terminates.
+func ValidateListenAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid pathd listen address: %w", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("pathd must listen on a numeric loopback address, got %q", host)
+	}
+	return nil
 }
 
 func (s *Server) Serve() error {

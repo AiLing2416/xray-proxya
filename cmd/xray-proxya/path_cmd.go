@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -31,6 +32,9 @@ func pathdUnitPath() string { return "/etc/systemd/system/" + pathdUnit + ".serv
 func writePathdConfig(cfg *config.UserConfig) error {
 	if cfg.Path.Listen == "" {
 		cfg.Path.Listen = "127.0.0.1:39091"
+	}
+	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
+		return err
 	}
 	if cfg.Path.IdleSeconds <= 0 {
 		cfg.Path.IdleSeconds = 20
@@ -70,6 +74,10 @@ var pathEnableCmd = &cobra.Command{Use: "enable", Short: "Enable PathLink in sta
 	}
 	if cfg.Path.Listen == "" {
 		cfg.Path.Listen = "127.0.0.1:39091"
+	}
+	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
+		fmt.Println("❌", err)
+		return
 	}
 	if cfg.Path.Token == "" {
 		b := make([]byte, 32)
