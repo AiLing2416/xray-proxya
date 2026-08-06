@@ -43,12 +43,22 @@ type UserConfig struct {
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
+	Path            PathConfig       `json:"path,omitempty"`
 	AdminSub        AdminSubConfig   `json:"admin_sub,omitempty"`
 	Subscriptions   []Subscription   `json:"subscriptions"`
 	SubPort         int              `json:"sub_port"`
 	GuestSubPort    int              `json:"guest_sub_port,omitempty"`
 	GuestSubBind    string           `json:"guest_sub_bind,omitempty"`
 	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
+}
+
+// PathConfig configures the loopback-only pathd ICMP agent. The same token is
+// stored on the paired gateway; it is never exposed by a subscription link.
+type PathConfig struct {
+	Enabled     bool   `json:"enabled,omitempty"`
+	Listen      string `json:"listen,omitempty"`
+	Token       string `json:"token,omitempty"`
+	IdleSeconds int    `json:"idle_seconds,omitempty"`
 }
 
 func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
