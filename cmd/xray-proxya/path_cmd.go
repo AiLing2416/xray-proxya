@@ -68,6 +68,9 @@ var pathEnableCmd = &cobra.Command{Use: "enable", Short: "Enable PathLink in sta
 	if pathToken != "" {
 		cfg.Path.Token = pathToken
 	}
+	if cfg.Path.Listen == "" {
+		cfg.Path.Listen = "127.0.0.1:39091"
+	}
 	if cfg.Path.Token == "" {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err != nil {
