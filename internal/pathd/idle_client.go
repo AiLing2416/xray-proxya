@@ -16,6 +16,18 @@ type IdleClient struct {
 	client               *Client
 	last                 time.Time
 	timer                *time.Timer
+	inFlight             int
+	lastRTT              time.Duration
+	lastError            string
+}
+
+// RuntimeSnapshot is safe to persist or display without exposing the token.
+type RuntimeSnapshot struct {
+	Connected    bool
+	InFlight     int
+	LastActivity time.Time
+	LastRTT      time.Duration
+	LastError    string
 }
 
 func NewIdleClient(socks, target, token string, idle time.Duration) *IdleClient {
@@ -48,18 +60,29 @@ func (c *IdleClient) Ping(ip net.IP) (time.Duration, error) {
 	}
 	client := c.client
 	c.last = time.Now()
+	c.inFlight++
 	c.resetIdleTimerLocked()
 	c.mu.Unlock()
 	rtt, err := client.Ping(ip.String(), 8000)
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.inFlight--
 	c.last = time.Now()
+	c.lastRTT = time.Duration(rtt)
+	c.lastError = ""
 	c.resetIdleTimerLocked()
 	if err != nil && c.client == client {
+		c.lastError = err.Error()
 		_ = client.Close()
 		c.client = nil
 	}
 	return time.Duration(rtt), err
+}
+
+func (c *IdleClient) Snapshot() RuntimeSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return RuntimeSnapshot{Connected: c.client != nil, InFlight: c.inFlight, LastActivity: c.last, LastRTT: c.lastRTT, LastError: c.lastError}
 }
 
 func (c *IdleClient) Close() error {

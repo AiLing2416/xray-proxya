@@ -165,15 +165,18 @@ var runCmd = &cobra.Command{
 
 		var syntheticPingManager *syntheticping.Manager
 		var pathClient *pathd.IdleClient
+		var pathRuntimeStop chan struct{}
 		cleanup := func() {
 			if syntheticPingManager != nil {
 				_ = syntheticPingManager.Close()
 				syntheticPingManager = nil
 			}
 			if pathClient != nil {
+				if pathRuntimeStop != nil { close(pathRuntimeStop); pathRuntimeStop = nil }
 				_ = pathClient.Close()
 				pathClient = nil
 			}
+			_ = os.Remove(pathRuntimePath())
 			os.Remove(pidPath)
 		}
 
@@ -203,6 +206,14 @@ var runCmd = &cobra.Command{
 			} else {
 				syntheticPingManager = manager
 				fmt.Printf("📡 Synthetic ping enabled on %s through relay %s\n", cfg.Gateway.LANInterface, cfg.Gateway.RelayAlias)
+			}
+			if pathClient != nil {
+				pathRuntimeStop = make(chan struct{})
+				writePathRuntime(pathClient)
+				go func(client *pathd.IdleClient, stop <-chan struct{}) {
+					ticker := time.NewTicker(time.Second); defer ticker.Stop()
+					for { select { case <-ticker.C: writePathRuntime(client); case <-stop: return } }
+				}(pathClient, pathRuntimeStop)
 			}
 		}
 
