@@ -9,11 +9,13 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 const (
 	maxFrameSize    = 16 << 10
 	protocolVersion = 1
+	maxInFlight     = 32
 )
 
 type frame struct {
@@ -44,7 +46,6 @@ func writeFrame(w io.Writer, f frame) error {
 	_, err = w.Write(b)
 	return err
 }
-
 func readFrame(r io.Reader) (frame, error) {
 	var size [4]byte
 	if _, err := io.ReadFull(r, size[:]); err != nil {
@@ -68,11 +69,19 @@ func readFrame(r io.Reader) (frame, error) {
 	return f, nil
 }
 
-// Client is one PathLink stream. It deliberately has no reconnect loop; callers
-// create it lazily and discard it after their own idle timeout.
+// Client multiplexes bounded probe requests over one PathLink stream.
 type Client struct {
-	conn net.Conn
-	mu   sync.Mutex
+	conn      net.Conn
+	writeMu   sync.Mutex
+	mu        sync.Mutex
+	nextID    uint64
+	pending   map[uint64]chan clientResult
+	done      chan struct{}
+	closeOnce sync.Once
+}
+type clientResult struct {
+	rtt int64
+	err error
 }
 
 func NewClient(conn net.Conn, token string) (*Client, error) {
@@ -93,39 +102,84 @@ func NewClient(conn net.Conn, token string) (*Client, error) {
 		conn.Close()
 		return nil, fmt.Errorf("pathd authentication failed: %s", response.Error)
 	}
-	return &Client{conn: conn}, nil
+	client := &Client{conn: conn, pending: make(map[uint64]chan clientResult), done: make(chan struct{})}
+	go client.readLoop()
+	return client, nil
 }
-
-func (c *Client) Close() error { return c.conn.Close() }
-
+func (c *Client) Close() error {
+	c.closeOnce.Do(func() { close(c.done); _ = c.conn.Close(); c.failPending(fmt.Errorf("PathLink closed")) })
+	return nil
+}
 func (c *Client) Ping(target string, timeoutMS int) (int64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if net.ParseIP(target) == nil {
 		return 0, fmt.Errorf("pathd accepts literal IP targets only")
 	}
 	if timeoutMS < 100 || timeoutMS > 15000 {
 		return 0, fmt.Errorf("invalid pathd timeout")
 	}
-	if err := writeFrame(c.conn, frame{Type: "icmp_echo", ID: 1, Target: target, Timeout: timeoutMS}); err != nil {
-		return 0, err
+	c.mu.Lock()
+	if len(c.pending) >= maxInFlight {
+		c.mu.Unlock()
+		return 0, fmt.Errorf("PathLink is busy")
 	}
-	response, err := readFrame(c.conn)
+	c.nextID++
+	id := c.nextID
+	resultCh := make(chan clientResult, 1)
+	c.pending[id] = resultCh
+	c.mu.Unlock()
+	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
+	c.writeMu.Lock()
+	err := writeFrame(c.conn, frame{Type: "icmp_echo", ID: id, Target: target, Timeout: timeoutMS})
+	c.writeMu.Unlock()
 	if err != nil {
+		c.failPending(err)
 		return 0, err
 	}
-	if response.Type != "result" {
-		return 0, fmt.Errorf("unexpected pathd response %q", response.Type)
+	select {
+	case result := <-resultCh:
+		return result.rtt, result.err
+	case <-time.After(time.Duration(timeoutMS+2000) * time.Millisecond):
+		return 0, fmt.Errorf("PathLink request timed out")
+	case <-c.done:
+		return 0, fmt.Errorf("PathLink closed")
 	}
-	if response.Error != "" {
-		return 0, fmt.Errorf("pathd probe: %s", response.Error)
-	}
-	return response.RTT, nil
 }
-
-func tokenEqual(expected, got string) bool {
-	if expected == "" || len(expected) != len(got) {
-		return false
+func (c *Client) readLoop() {
+	for {
+		response, err := readFrame(c.conn)
+		if err != nil {
+			c.failPending(err)
+			return
+		}
+		if response.Type != "result" {
+			continue
+		}
+		c.mu.Lock()
+		waiter := c.pending[response.ID]
+		c.mu.Unlock()
+		if waiter == nil {
+			continue
+		}
+		result := clientResult{rtt: response.RTT}
+		if response.Error != "" {
+			result.err = fmt.Errorf("pathd probe: %s", response.Error)
+		}
+		select {
+		case waiter <- result:
+		default:
+		}
 	}
-	return subtle.ConstantTimeCompare([]byte(expected), []byte(got)) == 1
+}
+func (c *Client) failPending(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, waiter := range c.pending {
+		select {
+		case waiter <- clientResult{err: err}:
+		default:
+		}
+	}
+}
+func tokenEqual(expected, got string) bool {
+	return expected != "" && len(expected) == len(got) && subtle.ConstantTimeCompare([]byte(expected), []byte(got)) == 1
 }

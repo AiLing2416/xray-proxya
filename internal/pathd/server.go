@@ -93,6 +93,8 @@ func (s *Server) Close() error {
 
 func (s *Server) serveConn(conn net.Conn) {
 	defer conn.Close()
+	var writeMu sync.Mutex
+	sem := make(chan struct{}, maxInFlight)
 	_ = conn.SetDeadline(time.Now().Add(s.idle))
 	hello, err := readFrame(conn)
 	if err != nil || hello.Type != "hello" || !tokenEqual(s.token, hello.Token) {
@@ -111,27 +113,42 @@ func (s *Server) serveConn(conn net.Conn) {
 			}
 			return
 		}
-		if request.Type != "icmp_echo" || net.ParseIP(request.Target) == nil {
-			_ = writeFrame(conn, frame{Type: "result", ID: request.ID, Error: "invalid request"})
+		select {
+		case sem <- struct{}{}:
+		default:
+			writeMu.Lock()
+			_ = writeFrame(conn, frame{Type: "result", ID: request.ID, Error: "PathLink is busy"})
+			writeMu.Unlock()
 			continue
 		}
-		if request.Timeout < 100 || request.Timeout > 15000 {
-			request.Timeout = 3000
-		}
-		ip := net.ParseIP(request.Target)
-		pinger := s.pinger6
-		if ip.To4() != nil {
-			pinger = s.pinger4
-		}
-		rtt, err := pinger.Ping(ip, time.Duration(request.Timeout)*time.Millisecond)
-		result := frame{Type: "result", ID: request.ID, RTT: rtt.Nanoseconds()}
-		if err != nil {
-			result.Error = err.Error()
-		}
-		if err := writeFrame(conn, result); err != nil {
-			return
-		}
+		go func(request frame) {
+			defer func() { <-sem }()
+			result := s.handleProbe(request)
+			writeMu.Lock()
+			_ = writeFrame(conn, result)
+			writeMu.Unlock()
+		}(request)
 	}
+}
+
+func (s *Server) handleProbe(request frame) frame {
+	if request.Type != "icmp_echo" || net.ParseIP(request.Target) == nil {
+		return frame{Type: "result", ID: request.ID, Error: "invalid request"}
+	}
+	if request.Timeout < 100 || request.Timeout > 15000 {
+		request.Timeout = 3000
+	}
+	ip := net.ParseIP(request.Target)
+	pinger := s.pinger6
+	if ip.To4() != nil {
+		pinger = s.pinger4
+	}
+	rtt, err := pinger.Ping(ip, time.Duration(request.Timeout)*time.Millisecond)
+	result := frame{Type: "result", ID: request.ID, RTT: rtt.Nanoseconds()}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	return result
 }
 
 type pingKey struct {
