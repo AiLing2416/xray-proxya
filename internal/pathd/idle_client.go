@@ -35,6 +35,14 @@ func NewIdleClient(socks, target, token string, idle time.Duration) *IdleClient 
 }
 
 func (c *IdleClient) Ping(ip net.IP) (time.Duration, error) {
+	result, err := c.Probe(ip)
+	if err != nil {
+		return 0, err
+	}
+	return result.RTT, result.Error()
+}
+
+func (c *IdleClient) Probe(ip net.IP) (ProbeResult, error) {
 	c.mu.Lock()
 	if c.client != nil && time.Since(c.last) > c.idle {
 		_ = c.client.Close()
@@ -44,17 +52,17 @@ func (c *IdleClient) Ping(ip net.IP) (time.Duration, error) {
 		dialer, err := utils.NewSOCKS5DialerWithTimeout(c.socks, 10*time.Second)
 		if err != nil {
 			c.mu.Unlock()
-			return 0, err
+			return ProbeResult{}, err
 		}
 		conn, err := dialer.Dial("tcp", c.target)
 		if err != nil {
 			c.mu.Unlock()
-			return 0, err
+			return ProbeResult{}, err
 		}
 		client, err := NewClient(conn, c.token)
 		if err != nil {
 			c.mu.Unlock()
-			return 0, err
+			return ProbeResult{}, err
 		}
 		c.client = client
 	}
@@ -63,12 +71,12 @@ func (c *IdleClient) Ping(ip net.IP) (time.Duration, error) {
 	c.inFlight++
 	c.resetIdleTimerLocked()
 	c.mu.Unlock()
-	rtt, err := client.Ping(ip.String(), 8000)
+	result, err := client.Probe(ip.String(), 8000)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.inFlight--
 	c.last = time.Now()
-	c.lastRTT = time.Duration(rtt)
+	c.lastRTT = result.RTT
 	c.lastError = ""
 	c.resetIdleTimerLocked()
 	if err != nil && c.client == client {
@@ -76,7 +84,7 @@ func (c *IdleClient) Ping(ip net.IP) (time.Duration, error) {
 		_ = client.Close()
 		c.client = nil
 	}
-	return time.Duration(rtt), err
+	return result, err
 }
 
 func (c *IdleClient) Snapshot() RuntimeSnapshot {

@@ -172,7 +172,10 @@ var runCmd = &cobra.Command{
 				syntheticPingManager = nil
 			}
 			if pathClient != nil {
-				if pathRuntimeStop != nil { close(pathRuntimeStop); pathRuntimeStop = nil }
+				if pathRuntimeStop != nil {
+					close(pathRuntimeStop)
+					pathRuntimeStop = nil
+				}
 				_ = pathClient.Close()
 				pathClient = nil
 			}
@@ -197,7 +200,13 @@ var runCmd = &cobra.Command{
 					pathTarget = "127.0.0.1:39091"
 				}
 				pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
-				manager, err = syntheticping.StartWithProbe(cfg.Gateway.LANInterface, func(destination net.IP) bool { _, err := pathClient.Ping(destination); return err == nil })
+				manager, err = syntheticping.StartWithProbe(cfg.Gateway.LANInterface, func(destination net.IP) pathd.ProbeResult {
+					result, err := pathClient.Probe(destination)
+					if err != nil {
+						return pathd.ProbeResult{}
+					}
+					return result
+				})
 			} else {
 				manager, err = syntheticping.Start(cfg.Gateway.LANInterface, fmt.Sprintf("127.0.0.1:%d", syntheticPingPort))
 			}
@@ -211,8 +220,16 @@ var runCmd = &cobra.Command{
 				pathRuntimeStop = make(chan struct{})
 				writePathRuntime(pathClient)
 				go func(client *pathd.IdleClient, stop <-chan struct{}) {
-					ticker := time.NewTicker(time.Second); defer ticker.Stop()
-					for { select { case <-ticker.C: writePathRuntime(client); case <-stop: return } }
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ticker.C:
+							writePathRuntime(client)
+						case <-stop:
+							return
+						}
+					}
 				}(pathClient, pathRuntimeStop)
 			}
 		}

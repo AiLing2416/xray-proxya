@@ -19,14 +19,19 @@ const (
 )
 
 type frame struct {
-	Version uint8  `json:"v"`
-	Type    string `json:"type"`
-	Token   string `json:"token,omitempty"`
-	ID      uint64 `json:"id,omitempty"`
-	Target  string `json:"target,omitempty"`
-	Timeout int    `json:"timeout_ms,omitempty"`
-	RTT     int64  `json:"rtt_ns,omitempty"`
-	Error   string `json:"error,omitempty"`
+	Version   uint8  `json:"v"`
+	Type      string `json:"type"`
+	Token     string `json:"token,omitempty"`
+	ID        uint64 `json:"id,omitempty"`
+	Target    string `json:"target,omitempty"`
+	Timeout   int    `json:"timeout_ms,omitempty"`
+	RTT       int64  `json:"rtt_ns,omitempty"`
+	Echo      bool   `json:"echo,omitempty"`
+	ICMPType  uint8  `json:"icmp_type,omitempty"`
+	ICMPCode  uint8  `json:"icmp_code,omitempty"`
+	Responder string `json:"responder,omitempty"`
+	MTU       int    `json:"mtu,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func writeFrame(w io.Writer, f frame) error {
@@ -80,8 +85,8 @@ type Client struct {
 	closeOnce sync.Once
 }
 type clientResult struct {
-	rtt int64
-	err error
+	probe ProbeResult
+	err   error
 }
 
 func NewClient(conn net.Conn, token string) (*Client, error) {
@@ -111,16 +116,21 @@ func (c *Client) Close() error {
 	return nil
 }
 func (c *Client) Ping(target string, timeoutMS int) (int64, error) {
+	result, err := c.Probe(target, timeoutMS)
+	return result.RTT.Nanoseconds(), err
+}
+
+func (c *Client) Probe(target string, timeoutMS int) (ProbeResult, error) {
 	if err := ValidateProbeTarget(net.ParseIP(target)); err != nil {
-		return 0, err
+		return ProbeResult{}, err
 	}
 	if timeoutMS < 100 || timeoutMS > 15000 {
-		return 0, fmt.Errorf("invalid pathd timeout")
+		return ProbeResult{}, fmt.Errorf("invalid pathd timeout")
 	}
 	c.mu.Lock()
 	if len(c.pending) >= maxInFlight {
 		c.mu.Unlock()
-		return 0, fmt.Errorf("PathLink is busy")
+		return ProbeResult{}, fmt.Errorf("PathLink is busy")
 	}
 	c.nextID++
 	id := c.nextID
@@ -133,15 +143,15 @@ func (c *Client) Ping(target string, timeoutMS int) (int64, error) {
 	c.writeMu.Unlock()
 	if err != nil {
 		c.failPending(err)
-		return 0, err
+		return ProbeResult{}, err
 	}
 	select {
 	case result := <-resultCh:
-		return result.rtt, result.err
+		return result.probe, result.err
 	case <-time.After(time.Duration(timeoutMS+2000) * time.Millisecond):
-		return 0, fmt.Errorf("PathLink request timed out")
+		return ProbeResult{}, fmt.Errorf("PathLink request timed out")
 	case <-c.done:
-		return 0, fmt.Errorf("PathLink closed")
+		return ProbeResult{}, fmt.Errorf("PathLink closed")
 	}
 }
 func (c *Client) readLoop() {
@@ -160,7 +170,7 @@ func (c *Client) readLoop() {
 		if waiter == nil {
 			continue
 		}
-		result := clientResult{rtt: response.RTT}
+		result := clientResult{probe: ProbeResult{RTT: time.Duration(response.RTT), Echo: response.Echo, ICMPType: response.ICMPType, ICMPCode: response.ICMPCode, MTU: response.MTU, Responder: net.ParseIP(response.Responder)}}
 		if response.Error != "" {
 			result.err = fmt.Errorf("pathd probe: %s", response.Error)
 		}

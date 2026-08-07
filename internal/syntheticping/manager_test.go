@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"net"
 	"testing"
+	"xray-proxya/internal/pathd"
 )
 
 func TestParseAndReplyEchoRequest(t *testing.T) {
@@ -89,6 +90,27 @@ func TestParseAndReplyIPv6EchoRequest(t *testing.T) {
 	}
 	if checksumIPv6(reply[22:38], reply[38:54], reply[54:]) != 0 {
 		t.Fatal("IPv6 ICMP checksum is invalid")
+	}
+}
+
+func TestBuildICMPErrorReplies(t *testing.T) {
+	gatewayMAC := net.HardwareAddr{0, 1, 2, 3, 4, 5}
+	request := echoRequest{sourceMAC: net.HardwareAddr{6, 7, 8, 9, 10, 11}, source: net.ParseIP("10.49.0.203"), destination: net.ParseIP("13.193.197.192"), ttl: 64, icmp: []byte{8, 0, 0, 0, 0x12, 0x34, 0, 1}}
+	reply := buildICMPError(request, gatewayMAC, pathd.ProbeResult{ICMPType: 11, ICMPCode: 0, Responder: net.ParseIP("203.0.113.9")})
+	if len(reply) == 0 || reply[34] != 11 || reply[35] != 0 {
+		t.Fatalf("invalid IPv4 ICMP error: %x", reply)
+	}
+	if checksum(reply[14:34]) != 0 || checksum(reply[34:]) != 0 {
+		t.Fatal("invalid IPv4 ICMP error checksum")
+	}
+
+	request.source, request.destination = net.ParseIP("2001:db8:49::203"), net.ParseIP("2606:4700:4700::1111")
+	reply = buildICMPError(request, gatewayMAC, pathd.ProbeResult{ICMPType: 2, ICMPCode: 0, MTU: 1280, Responder: net.ParseIP("2606:4700::1")})
+	if len(reply) == 0 || reply[54] != 2 || binary.BigEndian.Uint32(reply[58:62]) != 1280 {
+		t.Fatalf("invalid IPv6 packet-too-big: %x", reply)
+	}
+	if checksumIPv6(reply[22:38], reply[38:54], reply[54:]) != 0 {
+		t.Fatal("invalid IPv6 ICMP error checksum")
 	}
 }
 

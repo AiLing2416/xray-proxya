@@ -143,8 +143,11 @@ func (s *Server) handleProbe(request frame) frame {
 	if ip.To4() != nil {
 		pinger = s.pinger4
 	}
-	rtt, err := pinger.Ping(ip, time.Duration(request.Timeout)*time.Millisecond)
-	result := frame{Type: "result", ID: request.ID, RTT: rtt.Nanoseconds()}
+	probe, err := pinger.Probe(ip, time.Duration(request.Timeout)*time.Millisecond)
+	result := frame{Type: "result", ID: request.ID, RTT: probe.RTT.Nanoseconds(), Echo: probe.Echo, ICMPType: probe.ICMPType, ICMPCode: probe.ICMPCode, MTU: probe.MTU}
+	if probe.Responder != nil {
+		result.Responder = probe.Responder.String()
+	}
 	if err != nil {
 		result.Error = err.Error()
 	}
@@ -156,8 +159,8 @@ type pingKey struct {
 	cookie  uint64
 }
 type pingResult struct {
-	rtt time.Duration
-	err error
+	probe ProbeResult
+	err   error
 }
 type pendingPing struct {
 	result  chan pingResult
@@ -190,18 +193,18 @@ func (p *pinger) Close() error {
 	return nil
 }
 
-func (p *pinger) Ping(ip net.IP, timeout time.Duration) (time.Duration, error) {
+func (p *pinger) Probe(ip net.IP, timeout time.Duration) (ProbeResult, error) {
 	if p.proto == 1 {
 		ip = ip.To4()
 		if ip == nil {
-			return 0, fmt.Errorf("invalid IPv4 target")
+			return ProbeResult{}, fmt.Errorf("invalid IPv4 target")
 		}
 	} else if ip = ip.To16(); ip == nil {
-		return 0, fmt.Errorf("invalid IPv6 target")
+		return ProbeResult{}, fmt.Errorf("invalid IPv6 target")
 	}
 	var random [8]byte
 	if _, err := rand.Read(random[:]); err != nil {
-		return 0, err
+		return ProbeResult{}, err
 	}
 	cookie := binary.BigEndian.Uint64(random[:])
 	p.mu.Lock()
@@ -214,50 +217,129 @@ func (p *pinger) Ping(ip net.IP, timeout time.Duration) (time.Duration, error) {
 	message := icmp.Message{Type: p.echo, Code: 0, Body: &icmp.Echo{ID: int(key.id), Seq: int(key.seq), Data: random[:]}}
 	b, err := message.Marshal(nil)
 	if err != nil {
-		return 0, err
+		return ProbeResult{}, err
 	}
 	if _, err := p.conn.WriteTo(b, &net.IPAddr{IP: ip}); err != nil {
-		return 0, err
+		return ProbeResult{}, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	select {
 	case reply := <-result:
 		if reply.err != nil {
-			return 0, reply.err
+			return ProbeResult{}, reply.err
 		}
-		return reply.rtt, nil
+		return reply.probe, nil
 	case <-ctx.Done():
-		return 0, fmt.Errorf("ICMP timeout after %s", timeout)
+		return ProbeResult{}, fmt.Errorf("ICMP timeout after %s", timeout)
 	case <-p.done:
-		return 0, fmt.Errorf("pathd is stopping")
+		return ProbeResult{}, fmt.Errorf("pathd is stopping")
 	}
 }
 
 func (p *pinger) readLoop() {
 	buf := make([]byte, 1500)
 	for {
-		n, _, err := p.conn.ReadFrom(buf)
+		n, source, err := p.conn.ReadFrom(buf)
 		if err != nil {
 			return
 		}
 		message, err := icmp.ParseMessage(p.proto, buf[:n])
-		if err != nil || message.Type != p.reply {
+		if err != nil {
 			continue
 		}
-		echo, ok := message.Body.(*icmp.Echo)
-		if !ok || len(echo.Data) != 8 {
+		key, cookieMatch, diagnostic, ok := p.matchMessage(message)
+		if !ok {
 			continue
 		}
-		key := pingKey{id: uint16(echo.ID), seq: uint16(echo.Seq), cookie: binary.BigEndian.Uint64(echo.Data)}
 		p.mu.Lock()
 		pending, ok := p.pending[key]
+		if diagnostic && !ok {
+			for candidate, value := range p.pending {
+				if candidate.id == key.id && candidate.seq == key.seq {
+					key, pending, ok = candidate, value, true
+					break
+				}
+			}
+		}
 		p.mu.Unlock()
-		if ok {
+		if ok && (cookieMatch || diagnostic) {
 			select {
-			case pending.result <- pingResult{rtt: time.Since(pending.started)}:
+			case pending.result <- pingResult{probe: p.probeFromMessage(message, source, pending.started, diagnostic, buf[:n])}:
 			default:
 			}
 		}
 	}
+}
+
+func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool) {
+	if message.Type == p.reply {
+		echo, ok := message.Body.(*icmp.Echo)
+		if !ok || len(echo.Data) != 8 {
+			return pingKey{}, false, false, false
+		}
+		return pingKey{id: uint16(echo.ID), seq: uint16(echo.Seq), cookie: binary.BigEndian.Uint64(echo.Data)}, true, false, true
+	}
+	if !p.isDiagnostic(message.Type) {
+		return pingKey{}, false, false, false
+	}
+	data := quotedData(message.Body)
+	if len(data) == 0 {
+		return pingKey{}, false, false, false
+	}
+	if p.proto == 1 {
+		if len(data) < 28 || data[0]>>4 != 4 {
+			return pingKey{}, false, false, false
+		}
+		offset := int(data[0]&0x0f) * 4
+		if offset < 20 || len(data) < offset+8 {
+			return pingKey{}, false, false, false
+		}
+		return pingKey{id: binary.BigEndian.Uint16(data[offset+4:]), seq: binary.BigEndian.Uint16(data[offset+6:])}, false, true, true
+	}
+	if len(data) < 48 || data[0]>>4 != 6 {
+		return pingKey{}, false, false, false
+	}
+	return pingKey{id: binary.BigEndian.Uint16(data[44:]), seq: binary.BigEndian.Uint16(data[46:])}, false, true, true
+}
+
+func (p *pinger) isDiagnostic(typ icmp.Type) bool {
+	if p.proto == 1 {
+		return typ == ipv4.ICMPTypeDestinationUnreachable || typ == ipv4.ICMPTypeTimeExceeded || typ == ipv4.ICMPTypeParameterProblem
+	}
+	return typ == ipv6.ICMPTypeDestinationUnreachable || typ == ipv6.ICMPTypeTimeExceeded || typ == ipv6.ICMPTypePacketTooBig || typ == ipv6.ICMPTypeParameterProblem
+}
+
+func quotedData(body icmp.MessageBody) []byte {
+	switch value := body.(type) {
+	case *icmp.DstUnreach:
+		return value.Data
+	case *icmp.TimeExceeded:
+		return value.Data
+	case *icmp.PacketTooBig:
+		return value.Data
+	default:
+		return nil
+	}
+}
+
+func (p *pinger) probeFromMessage(message *icmp.Message, source net.Addr, started time.Time, diagnostic bool, raw []byte) ProbeResult {
+	result := ProbeResult{RTT: time.Since(started), Echo: !diagnostic, ICMPType: p.typeNumber(message.Type), ICMPCode: uint8(message.Code)}
+	if address, ok := source.(*net.IPAddr); ok {
+		result.Responder = address.IP
+	}
+	if tooBig, ok := message.Body.(*icmp.PacketTooBig); ok {
+		result.MTU = tooBig.MTU
+	}
+	if p.proto == 1 && result.ICMPType == uint8(ipv4.ICMPTypeDestinationUnreachable) && result.ICMPCode == 4 && len(raw) >= 8 {
+		result.MTU = int(binary.BigEndian.Uint16(raw[6:8]))
+	}
+	return result
+}
+
+func (p *pinger) typeNumber(typ icmp.Type) uint8 {
+	if p.proto == 1 {
+		return uint8(typ.(ipv4.ICMPType))
+	}
+	return uint8(typ.(ipv6.ICMPType))
 }

@@ -20,7 +20,7 @@ var defaultPorts = []int{443, 80, 22, 8443, 8080, 51820, 25565}
 type Manager struct {
 	fd    int
 	iface *net.Interface
-	probe func(net.IP) bool
+	probe func(net.IP) pathd.ProbeResult
 	stop  chan struct{}
 }
 
@@ -29,12 +29,14 @@ func Start(interfaceName, socksAddress string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return StartWithProbe(interfaceName, func(destination net.IP) bool { return tcpReachable(dialer, destination) })
+	return StartWithProbe(interfaceName, func(destination net.IP) pathd.ProbeResult {
+		return pathd.ProbeResult{Echo: tcpReachable(dialer, destination)}
+	})
 }
 
 // StartWithProbe lets PathLink provide a real remote ICMP result while keeping
 // all Ethernet interception and echo-reply construction in this package.
-func StartWithProbe(interfaceName string, probe func(net.IP) bool) (*Manager, error) {
+func StartWithProbe(interfaceName string, probe func(net.IP) pathd.ProbeResult) (*Manager, error) {
 	iface, err := net.InterfaceByName(interfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("find LAN interface: %w", err)
@@ -87,16 +89,90 @@ func (m *Manager) serve() {
 }
 
 func (m *Manager) handle(request echoRequest) {
-	if !m.probe(request.destination) {
-		return
+	result := m.probe(request.destination)
+	var reply []byte
+	if result.Echo {
+		reply = buildEchoReply(request, m.iface.HardwareAddr)
+	} else if result.ICMPType != 0 {
+		reply = buildICMPError(request, m.iface.HardwareAddr, result)
 	}
-	reply := buildEchoReply(request, m.iface.HardwareAddr)
 	if len(reply) == 0 {
 		return
 	}
 	addr := &unix.SockaddrLinklayer{Ifindex: m.iface.Index, Halen: 6}
 	copy(addr.Addr[:], request.sourceMAC)
 	_ = unix.Sendto(m.fd, reply, 0, addr)
+}
+
+func buildICMPError(request echoRequest, gatewayMAC net.HardwareAddr, result pathd.ProbeResult) []byte {
+	if request.destination.To4() == nil {
+		return buildIPv6ICMPError(request, gatewayMAC, result)
+	}
+	if result.ICMPType != 3 && result.ICMPType != 11 && result.ICMPType != 12 {
+		return nil
+	}
+	responder := result.Responder.To4()
+	if responder == nil {
+		responder = request.destination.To4()
+	}
+	inner := make([]byte, 20+8)
+	inner[0], inner[8], inner[9] = 0x45, request.ttl, unix.IPPROTO_ICMP
+	binary.BigEndian.PutUint16(inner[2:4], uint16(len(inner)))
+	copy(inner[12:16], request.source.To4())
+	copy(inner[16:20], request.destination.To4())
+	binary.BigEndian.PutUint16(inner[10:12], checksum(inner))
+	copy(inner[20:], request.icmp[:8])
+	frame := make([]byte, 14+20+8+len(inner))
+	copy(frame[0:6], request.sourceMAC)
+	copy(frame[6:12], gatewayMAC)
+	binary.BigEndian.PutUint16(frame[12:14], unix.ETH_P_IP)
+	ip := frame[14:34]
+	ip[0], ip[8], ip[9] = 0x45, request.ttl, unix.IPPROTO_ICMP
+	binary.BigEndian.PutUint16(ip[2:4], uint16(20+8+len(inner)))
+	copy(ip[12:16], responder)
+	copy(ip[16:20], request.source.To4())
+	binary.BigEndian.PutUint16(ip[10:12], checksum(ip))
+	icmp := frame[34:]
+	icmp[0], icmp[1] = result.ICMPType, result.ICMPCode
+	if result.ICMPType == 3 && result.ICMPCode == 4 && result.MTU > 0 {
+		binary.BigEndian.PutUint16(icmp[6:8], uint16(result.MTU))
+	}
+	copy(icmp[8:], inner)
+	binary.BigEndian.PutUint16(icmp[2:4], checksum(icmp))
+	return frame
+}
+
+func buildIPv6ICMPError(request echoRequest, gatewayMAC net.HardwareAddr, result pathd.ProbeResult) []byte {
+	if result.ICMPType < 1 || result.ICMPType > 4 {
+		return nil
+	}
+	responder := result.Responder.To16()
+	if responder == nil {
+		responder = request.destination.To16()
+	}
+	inner := make([]byte, 40+8)
+	inner[0], inner[6], inner[7] = 0x60, unix.IPPROTO_ICMPV6, request.ttl
+	binary.BigEndian.PutUint16(inner[4:6], 8)
+	copy(inner[8:24], request.source.To16())
+	copy(inner[24:40], request.destination.To16())
+	copy(inner[40:], request.icmp[:8])
+	frame := make([]byte, 14+40+8+len(inner))
+	copy(frame[0:6], request.sourceMAC)
+	copy(frame[6:12], gatewayMAC)
+	binary.BigEndian.PutUint16(frame[12:14], unix.ETH_P_IPV6)
+	ip := frame[14:54]
+	ip[0], ip[6], ip[7] = 0x60, unix.IPPROTO_ICMPV6, request.ttl
+	binary.BigEndian.PutUint16(ip[4:6], uint16(8+len(inner)))
+	copy(ip[8:24], responder)
+	copy(ip[24:40], request.source.To16())
+	icmp := frame[54:]
+	icmp[0], icmp[1] = result.ICMPType, result.ICMPCode
+	if result.ICMPType == 2 && result.MTU > 0 {
+		binary.BigEndian.PutUint32(icmp[4:8], uint32(result.MTU))
+	}
+	copy(icmp[8:], inner)
+	binary.BigEndian.PutUint16(icmp[2:4], checksumIPv6(ip[8:24], ip[24:40], icmp))
+	return frame
 }
 
 func tcpReachable(dialer *utils.SOCKS5Dialer, destination net.IP) bool {

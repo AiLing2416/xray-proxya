@@ -275,12 +275,16 @@ var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one 
 	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
 	defer client.Close()
 	started := time.Now()
-	remoteRTT, err := client.Ping(ip)
+	probe, err := client.Probe(ip)
 	if err != nil {
 		fmt.Printf("❌ %s through %s: %v\n", ip, cfg.Gateway.RelayAlias, err)
 		return
 	}
-	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, cfg.Gateway.RelayAlias, time.Since(started).Round(time.Millisecond), remoteRTT.Round(time.Millisecond))
+	if !probe.Echo {
+		fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, cfg.Gateway.RelayAlias, time.Since(started).Round(time.Millisecond), probe.Error())
+		return
+	}
+	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, cfg.Gateway.RelayAlias, time.Since(started).Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
 }}
 
 func resolvePublicTarget(value string) (net.IP, error) {
