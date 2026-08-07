@@ -29,6 +29,41 @@ func pathdBinaryPath() string {
 }
 func pathdUnitPath() string { return "/etc/systemd/system/" + pathdUnit + ".service" }
 
+func buildPathdSystemdServiceContent(binaryPath, configPath string) string {
+	return fmt.Sprintf(`[Unit]
+Description=Xray-Proxya PathLink Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# pathd needs only raw ICMP; it never changes routing, firewall, or files.
+User=root
+ExecStart=%s serve --config %s
+Restart=on-failure
+RestartSec=2
+UMask=0077
+CapabilityBoundingSet=CAP_NET_RAW
+AmbientCapabilities=CAP_NET_RAW
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+`, binaryPath, configPath)
+}
+
 func writePathdConfig(cfg *config.UserConfig) error {
 	if cfg.Path.Listen == "" {
 		cfg.Path.Listen = "127.0.0.1:39091"
@@ -141,7 +176,7 @@ var pathInstallCmd = &cobra.Command{Use: "install", Short: "Install pathd as a r
 		fmt.Println("❌", err)
 		return
 	}
-	content := fmt.Sprintf("[Unit]\nDescription=Xray-Proxya PathLink Agent\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nUser=root\nExecStart=%s serve --config %s\nRestart=on-failure\nRestartSec=2\n\n[Install]\nWantedBy=multi-user.target\n", pathdBinaryPath(), pathdConfigPath())
+	content := buildPathdSystemdServiceContent(pathdBinaryPath(), pathdConfigPath())
 	if err := os.WriteFile(pathdUnitPath(), []byte(content), 0644); err != nil {
 		fmt.Println("❌", err)
 		return
