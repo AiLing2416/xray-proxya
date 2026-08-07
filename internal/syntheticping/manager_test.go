@@ -55,6 +55,43 @@ func TestIsPublicIPv4(t *testing.T) {
 	}
 }
 
+func TestParseAndReplyIPv6EchoRequest(t *testing.T) {
+	gatewayMAC := net.HardwareAddr{0, 1, 2, 3, 4, 5}
+	clientMAC := net.HardwareAddr{6, 7, 8, 9, 10, 11}
+	frame := make([]byte, 14+40+8)
+	copy(frame[0:6], gatewayMAC)
+	copy(frame[6:12], clientMAC)
+	binary.BigEndian.PutUint16(frame[12:14], 0x86dd)
+	ip := frame[14:54]
+	ip[0], ip[6], ip[7] = 0x60, 58, 64
+	binary.BigEndian.PutUint16(ip[4:6], 8)
+	copy(ip[8:24], net.ParseIP("2001:db8:1::203").To16())
+	copy(ip[24:40], net.ParseIP("2606:4700:4700::1111").To16())
+	icmp := frame[54:]
+	icmp[0] = 128
+	binary.BigEndian.PutUint16(icmp[4:6], 0x1234)
+	binary.BigEndian.PutUint16(icmp[6:8], 0x0042)
+	binary.BigEndian.PutUint16(icmp[2:4], checksumIPv6(ip[8:24], ip[24:40], icmp))
+
+	request, ok := parseEchoRequest(frame, gatewayMAC)
+	if !ok {
+		t.Fatal("parse IPv6 echo request = false")
+	}
+	reply := buildEchoReply(request, gatewayMAC)
+	if len(reply) != len(frame) || reply[54] != 129 {
+		t.Fatalf("invalid IPv6 reply: %x", reply)
+	}
+	if got := net.IP(reply[22:38]).String(); got != "2606:4700:4700::1111" {
+		t.Fatalf("reply source = %s", got)
+	}
+	if got := net.IP(reply[38:54]).String(); got != "2001:db8:1::203" {
+		t.Fatalf("reply destination = %s", got)
+	}
+	if checksumIPv6(reply[22:38], reply[38:54], reply[54:]) != 0 {
+		t.Fatal("IPv6 ICMP checksum is invalid")
+	}
+}
+
 func TestVerifyEndpointSSHBanner(t *testing.T) {
 	probe, endpoint := net.Pipe()
 	defer probe.Close()

@@ -13,6 +13,7 @@ import (
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 // Server listens only on a local address. It has no HTTP or public listener.
@@ -20,7 +21,8 @@ type Server struct {
 	listener  net.Listener
 	token     string
 	idle      time.Duration
-	pinger    *pinger
+	pinger4   *pinger
+	pinger6   *pinger
 	closed    chan struct{}
 	closeOnce sync.Once
 }
@@ -39,12 +41,18 @@ func Listen(address, token string, idle time.Duration) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	p, err := newPinger()
+	p4, err := newPinger("ip4:icmp", "0.0.0.0", 1, ipv4.ICMPTypeEcho, ipv4.ICMPTypeEchoReply)
 	if err != nil {
 		listener.Close()
 		return nil, err
 	}
-	return &Server{listener: listener, token: token, idle: idle, pinger: p, closed: make(chan struct{})}, nil
+	p6, err := newPinger("ip6:ipv6-icmp", "::", 58, ipv6.ICMPTypeEchoRequest, ipv6.ICMPTypeEchoReply)
+	if err != nil {
+		listener.Close()
+		_ = p4.Close()
+		return nil, fmt.Errorf("open raw IPv6 ICMP socket: %w", err)
+	}
+	return &Server{listener: listener, token: token, idle: idle, pinger4: p4, pinger6: p6, closed: make(chan struct{})}, nil
 }
 
 // ValidateListenAddress guarantees that pathd cannot accidentally become a
@@ -79,7 +87,7 @@ func (s *Server) Serve() error {
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
 func (s *Server) Close() error {
-	s.closeOnce.Do(func() { close(s.closed); _ = s.listener.Close(); _ = s.pinger.Close() })
+	s.closeOnce.Do(func() { close(s.closed); _ = s.listener.Close(); _ = s.pinger4.Close(); _ = s.pinger6.Close() })
 	return nil
 }
 
@@ -110,7 +118,12 @@ func (s *Server) serveConn(conn net.Conn) {
 		if request.Timeout < 100 || request.Timeout > 15000 {
 			request.Timeout = 3000
 		}
-		rtt, err := s.pinger.Ping(request.Target, time.Duration(request.Timeout)*time.Millisecond)
+		ip := net.ParseIP(request.Target)
+		pinger := s.pinger6
+		if ip.To4() != nil {
+			pinger = s.pinger4
+		}
+		rtt, err := pinger.Ping(ip, time.Duration(request.Timeout)*time.Millisecond)
 		result := frame{Type: "result", ID: request.ID, RTT: rtt.Nanoseconds()}
 		if err != nil {
 			result.Error = err.Error()
@@ -135,6 +148,9 @@ type pendingPing struct {
 }
 type pinger struct {
 	conn      *icmp.PacketConn
+	proto     int
+	echo      icmp.Type
+	reply     icmp.Type
 	mu        sync.Mutex
 	next      uint16
 	pending   map[pingKey]pendingPing
@@ -142,12 +158,12 @@ type pinger struct {
 	closeOnce sync.Once
 }
 
-func newPinger() (*pinger, error) {
-	conn, err := icmp.ListenPacket("ip4:icmp", "0.0.0.0")
+func newPinger(network, listen string, proto int, echo, reply icmp.Type) (*pinger, error) {
+	conn, err := icmp.ListenPacket(network, listen)
 	if err != nil {
 		return nil, fmt.Errorf("open raw ICMP socket (need root or CAP_NET_RAW): %w", err)
 	}
-	p := &pinger{conn: conn, pending: make(map[pingKey]pendingPing), done: make(chan struct{})}
+	p := &pinger{conn: conn, proto: proto, echo: echo, reply: reply, pending: make(map[pingKey]pendingPing), done: make(chan struct{})}
 	go p.readLoop()
 	return p, nil
 }
@@ -157,10 +173,14 @@ func (p *pinger) Close() error {
 	return nil
 }
 
-func (p *pinger) Ping(target string, timeout time.Duration) (time.Duration, error) {
-	ip := net.ParseIP(target).To4()
-	if ip == nil {
-		return 0, fmt.Errorf("only IPv4 ICMP is currently supported")
+func (p *pinger) Ping(ip net.IP, timeout time.Duration) (time.Duration, error) {
+	if p.proto == 1 {
+		ip = ip.To4()
+		if ip == nil {
+			return 0, fmt.Errorf("invalid IPv4 target")
+		}
+	} else if ip = ip.To16(); ip == nil {
+		return 0, fmt.Errorf("invalid IPv6 target")
 	}
 	var random [8]byte
 	if _, err := rand.Read(random[:]); err != nil {
@@ -174,7 +194,7 @@ func (p *pinger) Ping(target string, timeout time.Duration) (time.Duration, erro
 	p.pending[key] = pendingPing{result: result, started: time.Now()}
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.pending, key); p.mu.Unlock() }()
-	message := icmp.Message{Type: ipv4.ICMPTypeEcho, Code: 0, Body: &icmp.Echo{ID: int(key.id), Seq: int(key.seq), Data: random[:]}}
+	message := icmp.Message{Type: p.echo, Code: 0, Body: &icmp.Echo{ID: int(key.id), Seq: int(key.seq), Data: random[:]}}
 	b, err := message.Marshal(nil)
 	if err != nil {
 		return 0, err
@@ -204,8 +224,8 @@ func (p *pinger) readLoop() {
 		if err != nil {
 			return
 		}
-		message, err := icmp.ParseMessage(1, buf[:n])
-		if err != nil || message.Type != ipv4.ICMPTypeEchoReply {
+		message, err := icmp.ParseMessage(p.proto, buf[:n])
+		if err != nil || message.Type != p.reply {
 			continue
 		}
 		echo, ok := message.Body.(*icmp.Echo)

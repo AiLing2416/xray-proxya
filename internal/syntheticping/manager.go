@@ -41,11 +41,11 @@ func StartWithProbe(interfaceName string, probe func(net.IP) bool) (*Manager, er
 	if len(iface.HardwareAddr) != 6 {
 		return nil, fmt.Errorf("LAN interface %s has no ethernet address", interfaceName)
 	}
-	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_IP)))
+	fd, err := unix.Socket(unix.AF_PACKET, unix.SOCK_RAW, int(htons(unix.ETH_P_ALL)))
 	if err != nil {
 		return nil, fmt.Errorf("open packet socket: %w", err)
 	}
-	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_IP), Ifindex: iface.Index}); err != nil {
+	if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ALL), Ifindex: iface.Index}); err != nil {
 		unix.Close(fd)
 		return nil, fmt.Errorf("bind packet socket: %w", err)
 	}
@@ -154,10 +154,13 @@ type echoRequest struct {
 }
 
 func parseEchoRequest(frame []byte, gatewayMAC net.HardwareAddr) (echoRequest, bool) {
-	if len(frame) < 14+20+8 || binary.BigEndian.Uint16(frame[12:14]) != unix.ETH_P_IP {
+	if len(frame) < 14+8 || !equalMAC(frame[0:6], gatewayMAC) {
 		return echoRequest{}, false
 	}
-	if !equalMAC(frame[0:6], gatewayMAC) {
+	if binary.BigEndian.Uint16(frame[12:14]) == unix.ETH_P_IPV6 {
+		return parseIPv6EchoRequest(frame, gatewayMAC)
+	}
+	if binary.BigEndian.Uint16(frame[12:14]) != unix.ETH_P_IP || len(frame) < 14+20+8 {
 		return echoRequest{}, false
 	}
 	ip := frame[14:]
@@ -186,9 +189,32 @@ func parseEchoRequest(frame []byte, gatewayMAC net.HardwareAddr) (echoRequest, b
 	}, true
 }
 
+func parseIPv6EchoRequest(frame []byte, gatewayMAC net.HardwareAddr) (echoRequest, bool) {
+	ip := frame[14:]
+	if len(ip) < 48 || ip[0]>>4 != 6 || ip[6] != unix.IPPROTO_ICMPV6 {
+		return echoRequest{}, false
+	}
+	payloadLen := int(binary.BigEndian.Uint16(ip[4:6]))
+	if payloadLen < 8 || len(ip) < 40+payloadLen {
+		return echoRequest{}, false
+	}
+	icmp := append([]byte(nil), ip[40:40+payloadLen]...)
+	if icmp[0] != 128 || icmp[1] != 0 {
+		return echoRequest{}, false
+	}
+	destination := append(net.IP(nil), ip[24:40]...)
+	if !isPublicIPv6(destination) {
+		return echoRequest{}, false
+	}
+	return echoRequest{sourceMAC: append(net.HardwareAddr(nil), frame[6:12]...), destination: destination, source: append(net.IP(nil), ip[8:24]...), ttl: ip[7], icmp: icmp}, true
+}
+
 func buildEchoReply(request echoRequest, gatewayMAC net.HardwareAddr) []byte {
 	if len(request.sourceMAC) != 6 || len(gatewayMAC) != 6 || len(request.icmp) < 8 {
 		return nil
+	}
+	if request.destination.To4() == nil {
+		return buildIPv6EchoReply(request, gatewayMAC)
 	}
 	frame := make([]byte, 14+20+len(request.icmp))
 	copy(frame[0:6], request.sourceMAC)
@@ -207,6 +233,28 @@ func buildEchoReply(request echoRequest, gatewayMAC net.HardwareAddr) []byte {
 	return frame
 }
 
+func buildIPv6EchoReply(request echoRequest, gatewayMAC net.HardwareAddr) []byte {
+	if request.source.To16() == nil || request.destination.To16() == nil {
+		return nil
+	}
+	frame := make([]byte, 14+40+len(request.icmp))
+	copy(frame[0:6], request.sourceMAC)
+	copy(frame[6:12], gatewayMAC)
+	binary.BigEndian.PutUint16(frame[12:14], unix.ETH_P_IPV6)
+	ip := frame[14:54]
+	ip[0] = 0x60
+	binary.BigEndian.PutUint16(ip[4:6], uint16(len(request.icmp)))
+	ip[6] = unix.IPPROTO_ICMPV6
+	ip[7] = request.ttl
+	copy(ip[8:24], request.destination.To16())
+	copy(ip[24:40], request.source.To16())
+	icmp := frame[54:]
+	copy(icmp, request.icmp)
+	icmp[0], icmp[1], icmp[2], icmp[3] = 129, 0, 0, 0
+	binary.BigEndian.PutUint16(icmp[2:4], checksumIPv6(ip[8:24], ip[24:40], icmp))
+	return frame
+}
+
 func isPublicIPv4(ip net.IP) bool {
 	v4 := ip.To4()
 	if v4 == nil || v4[0] == 0 || v4[0] >= 224 || v4[0] == 10 || v4[0] == 127 {
@@ -222,6 +270,21 @@ func isPublicIPv4(ip net.IP) bool {
 		return false
 	}
 	return !(v4[0] == 192 && v4[1] == 168)
+}
+
+func isPublicIPv6(ip net.IP) bool {
+	v6 := ip.To16()
+	return v6 != nil && ip.To4() == nil && v6[0]&0xe0 == 0x20
+}
+
+func checksumIPv6(source, destination, data []byte) uint16 {
+	pseudo := make([]byte, 40+len(data))
+	copy(pseudo, source)
+	copy(pseudo[16:], destination)
+	binary.BigEndian.PutUint32(pseudo[32:36], uint32(len(data)))
+	pseudo[39] = unix.IPPROTO_ICMPV6
+	copy(pseudo[40:], data)
+	return checksum(pseudo)
 }
 
 func checksum(data []byte) uint16 {
