@@ -143,7 +143,13 @@ func (s *Server) handleProbe(request frame) frame {
 	if ip.To4() != nil {
 		pinger = s.pinger4
 	}
-	probe, err := pinger.Probe(ip, time.Duration(request.Timeout)*time.Millisecond)
+	if request.TTL == 0 {
+		request.TTL = 64
+	}
+	if request.TTL < 1 || request.TTL > 255 {
+		return frame{Type: "result", ID: request.ID, Error: "invalid ICMP TTL"}
+	}
+	probe, err := pinger.Probe(ip, time.Duration(request.Timeout)*time.Millisecond, request.TTL)
 	result := frame{Type: "result", ID: request.ID, RTT: probe.RTT.Nanoseconds(), Echo: probe.Echo, ICMPType: probe.ICMPType, ICMPCode: probe.ICMPCode, MTU: probe.MTU}
 	if probe.Responder != nil {
 		result.Responder = probe.Responder.String()
@@ -172,6 +178,7 @@ type pinger struct {
 	echo      icmp.Type
 	reply     icmp.Type
 	mu        sync.Mutex
+	sendMu    sync.Mutex
 	next      uint16
 	pending   map[pingKey]pendingPing
 	done      chan struct{}
@@ -193,7 +200,7 @@ func (p *pinger) Close() error {
 	return nil
 }
 
-func (p *pinger) Probe(ip net.IP, timeout time.Duration) (ProbeResult, error) {
+func (p *pinger) Probe(ip net.IP, timeout time.Duration, ttl int) (ProbeResult, error) {
 	if p.proto == 1 {
 		ip = ip.To4()
 		if ip == nil {
@@ -219,8 +226,24 @@ func (p *pinger) Probe(ip net.IP, timeout time.Duration) (ProbeResult, error) {
 	if err != nil {
 		return ProbeResult{}, err
 	}
-	if _, err := p.conn.WriteTo(b, &net.IPAddr{IP: ip}); err != nil {
-		return ProbeResult{}, err
+	p.sendMu.Lock()
+	var sendErr error
+	if p.proto == 1 {
+		sendErr = p.conn.IPv4PacketConn().SetTTL(ttl)
+	} else {
+		sendErr = p.conn.IPv6PacketConn().SetHopLimit(ttl)
+	}
+	if sendErr == nil {
+		_, sendErr = p.conn.WriteTo(b, &net.IPAddr{IP: ip})
+	}
+	if p.proto == 1 {
+		_ = p.conn.IPv4PacketConn().SetTTL(64)
+	} else {
+		_ = p.conn.IPv6PacketConn().SetHopLimit(64)
+	}
+	p.sendMu.Unlock()
+	if sendErr != nil {
+		return ProbeResult{}, sendErr
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

@@ -20,9 +20,10 @@ import (
 const pathdUnit = "xray-proxya-pathd"
 
 var (
-	pathListen string
-	pathToken  string
-	pathIdle   int
+	pathListen  string
+	pathToken   string
+	pathIdle    int
+	pathPingTTL int
 )
 
 func pathdConfigPath() string { return filepath.Join(config.GetConfigDir(), "pathd.json") }
@@ -275,7 +276,7 @@ var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one 
 	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
 	defer client.Close()
 	started := time.Now()
-	probe, err := client.Probe(ip)
+	probe, err := client.ProbeTTL(ip, pathPingTTL)
 	if err != nil {
 		fmt.Printf("❌ %s through %s: %v\n", ip, cfg.Gateway.RelayAlias, err)
 		return
@@ -337,6 +338,7 @@ func init() {
 	pathEnableCmd.Flags().StringVar(&pathListen, "listen", "", "loopback pathd listen address")
 	pathEnableCmd.Flags().StringVar(&pathToken, "token", "", "shared 32-byte PathLink token")
 	pathEnableCmd.Flags().IntVar(&pathIdle, "idle", 20, "pathd connection idle timeout in seconds")
+	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
 	pathCmd.AddCommand(pathEnableCmd, pathDisableCmd, pathInstallCmd, pathStartCmd, pathStopCmd, pathRestartCmd, pathStatusCmd, pathPingCmd)
 	rootCmd.AddCommand(pathCmd)
 }
