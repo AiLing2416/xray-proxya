@@ -200,8 +200,8 @@ var runCmd = &cobra.Command{
 					pathTarget = "127.0.0.1:39091"
 				}
 				pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
-				manager, err = syntheticping.StartWithProbe(cfg.Gateway.LANInterface, func(destination net.IP) pathd.ProbeResult {
-					result, err := pathClient.Probe(destination)
+				manager, err = syntheticping.StartWithProbe(cfg.Gateway.LANInterface, func(destination net.IP, ttl int) pathd.ProbeResult {
+					result, err := pathClient.ProbeTTL(destination, ttl)
 					if err != nil {
 						return pathd.ProbeResult{}
 					}

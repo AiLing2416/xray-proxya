@@ -20,7 +20,7 @@ var defaultPorts = []int{443, 80, 22, 8443, 8080, 51820, 25565}
 type Manager struct {
 	fd    int
 	iface *net.Interface
-	probe func(net.IP) pathd.ProbeResult
+	probe func(net.IP, int) pathd.ProbeResult
 	stop  chan struct{}
 }
 
@@ -29,14 +29,14 @@ func Start(interfaceName, socksAddress string) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	return StartWithProbe(interfaceName, func(destination net.IP) pathd.ProbeResult {
+	return StartWithProbe(interfaceName, func(destination net.IP, _ int) pathd.ProbeResult {
 		return pathd.ProbeResult{Echo: tcpReachable(dialer, destination)}
 	})
 }
 
 // StartWithProbe lets PathLink provide a real remote ICMP result while keeping
 // all Ethernet interception and echo-reply construction in this package.
-func StartWithProbe(interfaceName string, probe func(net.IP) pathd.ProbeResult) (*Manager, error) {
+func StartWithProbe(interfaceName string, probe func(net.IP, int) pathd.ProbeResult) (*Manager, error) {
 	iface, err := net.InterfaceByName(interfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("find LAN interface: %w", err)
@@ -89,7 +89,7 @@ func (m *Manager) serve() {
 }
 
 func (m *Manager) handle(request echoRequest) {
-	result := m.probe(request.destination)
+	result := m.probe(request.destination, int(request.ttl))
 	var reply []byte
 	if result.Echo {
 		reply = buildEchoReply(request, m.iface.HardwareAddr)
