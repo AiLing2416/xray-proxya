@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+	"xray-proxya/internal/pathd"
 	"xray-proxya/pkg/utils"
 )
 
@@ -177,7 +178,7 @@ func parseEchoRequest(frame []byte, gatewayMAC net.HardwareAddr) (echoRequest, b
 		return echoRequest{}, false
 	}
 	destination := net.IPv4(ip[16], ip[17], ip[18], ip[19])
-	if !isPublicIPv4(destination) {
+	if !pathd.IsPublicTarget(destination) {
 		return echoRequest{}, false
 	}
 	return echoRequest{
@@ -203,7 +204,7 @@ func parseIPv6EchoRequest(frame []byte, gatewayMAC net.HardwareAddr) (echoReques
 		return echoRequest{}, false
 	}
 	destination := append(net.IP(nil), ip[24:40]...)
-	if !isPublicIPv6(destination) {
+	if !pathd.IsPublicTarget(destination) {
 		return echoRequest{}, false
 	}
 	return echoRequest{sourceMAC: append(net.HardwareAddr(nil), frame[6:12]...), destination: destination, source: append(net.IP(nil), ip[8:24]...), ttl: ip[7], icmp: icmp}, true
@@ -256,25 +257,11 @@ func buildIPv6EchoReply(request echoRequest, gatewayMAC net.HardwareAddr) []byte
 }
 
 func isPublicIPv4(ip net.IP) bool {
-	v4 := ip.To4()
-	if v4 == nil || v4[0] == 0 || v4[0] >= 224 || v4[0] == 10 || v4[0] == 127 {
-		return false
-	}
-	if v4[0] == 100 && v4[1]&0xc0 == 0x40 {
-		return false
-	}
-	if v4[0] == 169 && v4[1] == 254 {
-		return false
-	}
-	if v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31 {
-		return false
-	}
-	return !(v4[0] == 192 && v4[1] == 168)
+	return pathd.IsPublicTarget(ip)
 }
 
 func isPublicIPv6(ip net.IP) bool {
-	v6 := ip.To16()
-	return v6 != nil && ip.To4() == nil && v6[0]&0xe0 == 0x20
+	return pathd.IsPublicTarget(ip)
 }
 
 func checksumIPv6(source, destination, data []byte) uint16 {

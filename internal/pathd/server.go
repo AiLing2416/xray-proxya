@@ -132,13 +132,13 @@ func (s *Server) serveConn(conn net.Conn) {
 }
 
 func (s *Server) handleProbe(request frame) frame {
-	if request.Type != "icmp_echo" || net.ParseIP(request.Target) == nil {
+	ip := net.ParseIP(request.Target)
+	if request.Type != "icmp_echo" || ValidateProbeTarget(ip) != nil {
 		return frame{Type: "result", ID: request.ID, Error: "invalid request"}
 	}
 	if request.Timeout < 100 || request.Timeout > 15000 {
 		request.Timeout = 3000
 	}
-	ip := net.ParseIP(request.Target)
 	pinger := s.pinger6
 	if ip.To4() != nil {
 		pinger = s.pinger4

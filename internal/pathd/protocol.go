@@ -111,8 +111,8 @@ func (c *Client) Close() error {
 	return nil
 }
 func (c *Client) Ping(target string, timeoutMS int) (int64, error) {
-	if net.ParseIP(target) == nil {
-		return 0, fmt.Errorf("pathd accepts literal IP targets only")
+	if err := ValidateProbeTarget(net.ParseIP(target)); err != nil {
+		return 0, err
 	}
 	if timeoutMS < 100 || timeoutMS > 15000 {
 		return 0, fmt.Errorf("invalid pathd timeout")
