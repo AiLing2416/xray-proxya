@@ -346,12 +346,17 @@ func runGatewayManagement(operation string) error {
 		return fmt.Errorf("locate xray-proxya binary: %w", err)
 	}
 	cmd := exec.Command("runcon", "-r", "system_r", "-t", "xray_proxya_gateway_t", bin, "gateway", operation)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	// The restricted manager is non-interactive.  Keeping SSH/terminal file
+	// descriptors out of that domain avoids granting it access to a caller's
+	// labelled pipes merely to print diagnostics.
 	cmd.Env = append(os.Environ(), proxyaSELinux.GatewayManagementEnv()+"=1")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("run Gateway SELinux management domain: %w", err)
+	}
+	if operation == "system-up" {
+		fmt.Println("✅ Gateway runtime rules are up.")
+	} else {
+		fmt.Println("✅ Gateway runtime rules are down and Xray restarted without TUN.")
 	}
 	return nil
 }

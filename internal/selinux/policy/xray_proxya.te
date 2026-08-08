@@ -87,7 +87,9 @@ allow xray_proxya_t self:unix_stream_socket create_stream_socket_perms;
 # rootless operation never receives these privileges.
 
 corenet_rw_tun_tap_dev(xray_proxya_t)
-allow xray_proxya_t self:capability net_admin;
+# Path owns the dedicated ICMP TUN and emits relay ICMP packets from the
+# service domain, requiring administrative and raw-socket capabilities.
+allow xray_proxya_t self:capability { net_admin net_raw };
 allow xray_proxya_t self:netlink_route_socket { create bind read write getattr setopt nlmsg_read nlmsg_write };
 allow xray_proxya_t self:tun_socket create_socket_perms;
 kernel_read_network_state(xray_proxya_t)
@@ -107,11 +109,26 @@ systemd_search_unit_dirs(xray_proxya_gateway_t)
 systemd_read_unit_files(xray_proxya_gateway_t)
 
 iptables_exec(xray_proxya_gateway_t)
+iptables_read_var_run(xray_proxya_gateway_t)
+# ip6tables may invoke kmod for its fixed netfilter match/target extensions.
+# Use the distribution's dedicated kmod domain rather than giving the Gateway
+# manager access to module configuration or module files itself.
+modutils_run_kmod(xray_proxya_gateway_t, system_r)
 sysnet_exec_ifconfig(xray_proxya_gateway_t)
 systemd_exec_sysctl(xray_proxya_gateway_t)
-allow xray_proxya_gateway_t self:capability net_admin;
+allow xray_proxya_gateway_t self:capability { net_admin net_raw };
 allow xray_proxya_gateway_t self:netlink_route_socket { create bind read write getattr setopt nlmsg_read nlmsg_write };
-allow xray_proxya_gateway_t self:netlink_netfilter_socket { create bind read write getattr setopt };
+# nft uses getsockopt after opening its netfilter socket.  `ip` additionally
+# opens local control sockets while constructing route netlink requests.
+allow xray_proxya_gateway_t self:netlink_netfilter_socket { create bind read write getattr getopt setopt };
+allow xray_proxya_gateway_t self:unix_dgram_socket create_socket_perms;
+allow xray_proxya_gateway_t self:udp_socket create_socket_perms;
+# Fedora's legacy iptables backend uses a raw control socket for the fixed
+# mangle rules that preserve ICMP TTL across path-tun.
+allow xray_proxya_gateway_t self:rawip_socket create_socket_perms;
+# IPv6 availability is detected from this kernel-owned namespace link only.
+allow xray_proxya_gateway_t proc_net_t:lnk_file { getattr open read };
+allow xray_proxya_gateway_t proc_net_t:file getattr;
 kernel_rw_net_sysctls(xray_proxya_gateway_t)
 
 files_read_etc_files(xray_proxya_t)
@@ -120,6 +137,12 @@ miscfiles_read_localization(xray_proxya_t)
 # bundle; this grants read-only access to public system certificates.
 miscfiles_read_generic_certs(xray_proxya_t)
 dev_read_urand(xray_proxya_t)
+# Go's resolver and Xray inspect the system resolver and network state.  These
+# are read-only grants; the service cannot change host network configuration.
+sysnet_read_config(xray_proxya_t)
+kernel_search_network_sysctl(xray_proxya_t)
+allow xray_proxya_t sysctl_net_t:file { getattr open read };
+fs_read_cgroup_files(xray_proxya_t)
 
 # systemd opens StandardOutput before transitioning the service into
 # xray_proxya_t.  It may append only the dedicated log file, not application

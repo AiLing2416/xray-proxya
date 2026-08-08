@@ -136,6 +136,9 @@ func (c *IdleClient) resetIdleTimerLocked() {
 		c.timer.Stop()
 	}
 	client := c.client
+	if client == nil {
+		return
+	}
 	c.timer = time.AfterFunc(c.idle, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()

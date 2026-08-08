@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
@@ -715,28 +716,16 @@ func outboundIPs(cfg *config.UserConfig) []string {
 
 func getSSHPorts() []string {
 	ports := []string{"22"}
-	out, err := exec.Command("sh", "-c", "ss -tlnp | grep sshd").Output()
-	if err != nil {
-		return ports
-	}
+	// The conventional SSH port is always excluded.  For a remote invocation,
+	// SSH_CONNECTION additionally tells us the active server-side port; this
+	// protects a custom listener without enumerating other processes through
+	// `ss -p` (which would be inappropriate for the confined management domain).
 	found := map[string]bool{}
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
-			continue
+	found["22"] = true
+	if fields := strings.Fields(os.Getenv("SSH_CONNECTION")); len(fields) == 4 {
+		if _, err := strconv.ParseUint(fields[3], 10, 16); err == nil {
+			found[fields[3]] = true
 		}
-		hostPort := fields[3]
-		idx := strings.LastIndex(hostPort, ":")
-		if idx < 0 || idx+1 >= len(hostPort) {
-			continue
-		}
-		port := hostPort[idx+1:]
-		if port != "" {
-			found[port] = true
-		}
-	}
-	if len(found) == 0 {
-		return ports
 	}
 	ports = ports[:0]
 	for port := range found {

@@ -160,9 +160,10 @@ func ensureManagementDomain(operation string) (bool, error) {
 		return false, fmt.Errorf("locate xray-proxya binary: %w", err)
 	}
 	cmd := exec.Command("runcon", "-r", "system_r", "-t", "xray_proxya_gateway_t", bin, "gateway", operation)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	cmd.Stdin = os.Stdin
+	// Gateway management does not accept interactive input.  Do not inherit the
+	// caller's terminal or SSH pipes into the confined child: their labels are
+	// deliberately outside xray_proxya_gateway_t and would otherwise make a
+	// successful network operation fail on its diagnostic output path.
 	cmd.Env = append(os.Environ(), proxyaSELinux.GatewayManagementEnv()+"=1")
 	if err := cmd.Run(); err != nil {
 		return false, fmt.Errorf("run Gateway SELinux management domain: %w", err)
