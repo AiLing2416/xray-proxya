@@ -51,6 +51,14 @@ func (c *IdleClient) ProbeTTL(ip net.IP, ttl int) (ProbeResult, error) {
 }
 
 func (c *IdleClient) ProbeWithOptions(ip net.IP, options ProbeOptions) (ProbeResult, error) {
+	return c.probe(ip, options, false, nil)
+}
+
+func (c *IdleClient) RelayEcho(ip net.IP, ttl int, data []byte) (ProbeResult, error) {
+	return c.probe(ip, ProbeOptions{TTL: ttl, PayloadSize: 8}, true, data)
+}
+
+func (c *IdleClient) probe(ip net.IP, options ProbeOptions, relay bool, echoData []byte) (ProbeResult, error) {
 	c.mu.Lock()
 	if c.client != nil && time.Since(c.last) > c.idle {
 		_ = c.client.Close()
@@ -79,7 +87,13 @@ func (c *IdleClient) ProbeWithOptions(ip net.IP, options ProbeOptions) (ProbeRes
 	c.inFlight++
 	c.resetIdleTimerLocked()
 	c.mu.Unlock()
-	result, err := client.ProbeWithOptions(ip.String(), 8000, options)
+	var result ProbeResult
+	var err error
+	if relay {
+		result, err = client.RelayEcho(ip.String(), 8000, options.TTL, echoData)
+	} else {
+		result, err = client.ProbeWithOptions(ip.String(), 8000, options)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.inFlight--

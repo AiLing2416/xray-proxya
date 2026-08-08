@@ -11,6 +11,7 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
+	"xray-proxya/internal/pathtun"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/syntheticping"
 	"xray-proxya/internal/xray"
@@ -164,12 +165,17 @@ var runCmd = &cobra.Command{
 		}
 
 		var syntheticPingManager *syntheticping.Manager
+		var pathTunManager *pathtun.Manager
 		var pathClient *pathd.IdleClient
 		var pathRuntimeStop chan struct{}
 		cleanup := func() {
 			if syntheticPingManager != nil {
 				_ = syntheticPingManager.Close()
 				syntheticPingManager = nil
+			}
+			if pathTunManager != nil {
+				_ = pathTunManager.Close()
+				pathTunManager = nil
 			}
 			if pathClient != nil {
 				if pathRuntimeStop != nil {
@@ -200,8 +206,8 @@ var runCmd = &cobra.Command{
 					pathTarget = "127.0.0.1:39091"
 				}
 				pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
-				manager, err = syntheticping.StartWithProbe(cfg.Gateway.LANInterface, func(destination net.IP, ttl int) pathd.ProbeResult {
-					result, err := pathClient.ProbeTTL(destination, ttl)
+				pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte) pathd.ProbeResult {
+					result, err := pathClient.RelayEcho(destination, ttl, echoData)
 					if err != nil {
 						return pathd.ProbeResult{}
 					}
@@ -213,8 +219,12 @@ var runCmd = &cobra.Command{
 			if err != nil {
 				fmt.Printf("⚠️  Synthetic ping disabled: %v\n", err)
 			} else {
-				syntheticPingManager = manager
-				fmt.Printf("📡 Synthetic ping enabled on %s through relay %s\n", cfg.Gateway.LANInterface, cfg.Gateway.RelayAlias)
+				if pathTunManager != nil {
+					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", cfg.Gateway.RelayAlias)
+				} else {
+					syntheticPingManager = manager
+					fmt.Printf("📡 Synthetic ping enabled on %s through relay %s\n", cfg.Gateway.LANInterface, cfg.Gateway.RelayAlias)
+				}
 			}
 			if pathClient != nil {
 				pathRuntimeStop = make(chan struct{})

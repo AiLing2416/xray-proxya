@@ -28,6 +28,8 @@ type frame struct {
 	TTL          int    `json:"ttl,omitempty"`
 	PayloadSize  int    `json:"payload_size,omitempty"`
 	DontFragment bool   `json:"dont_fragment,omitempty"`
+	Relay        bool   `json:"relay,omitempty"`
+	EchoData     []byte `json:"echo_data,omitempty"`
 	RTT          int64  `json:"rtt_ns,omitempty"`
 	Echo         bool   `json:"echo,omitempty"`
 	ICMPType     uint8  `json:"icmp_type,omitempty"`
@@ -132,6 +134,17 @@ func (c *Client) ProbeTTL(target string, timeoutMS, ttl int) (ProbeResult, error
 }
 
 func (c *Client) ProbeWithOptions(target string, timeoutMS int, options ProbeOptions) (ProbeResult, error) {
+	return c.probe(target, timeoutMS, options, false, nil)
+}
+
+// RelayEcho asks pathd to transmit the caller's ICMP echo payload from the
+// remote node. The outer IP headers are intentionally not carried: remote
+// source NAT is required for public replies to return to the proxy node.
+func (c *Client) RelayEcho(target string, timeoutMS, ttl int, data []byte) (ProbeResult, error) {
+	return c.probe(target, timeoutMS, ProbeOptions{TTL: ttl, PayloadSize: 8}, true, data)
+}
+
+func (c *Client) probe(target string, timeoutMS int, options ProbeOptions, relay bool, echoData []byte) (ProbeResult, error) {
 	if err := ValidateProbeTarget(net.ParseIP(target)); err != nil {
 		return ProbeResult{}, err
 	}
@@ -141,8 +154,11 @@ func (c *Client) ProbeWithOptions(target string, timeoutMS int, options ProbeOpt
 	if options.TTL < 1 || options.TTL > 255 {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP TTL")
 	}
-	if options.PayloadSize < 8 || options.PayloadSize > 65507 {
+	if !relay && (options.PayloadSize < 8 || options.PayloadSize > 65507) {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP payload size")
+	}
+	if relay && len(echoData) > 8192 {
+		return ProbeResult{}, fmt.Errorf("ICMP echo payload is too large")
 	}
 	c.mu.Lock()
 	if len(c.pending) >= maxInFlight {
@@ -156,7 +172,7 @@ func (c *Client) ProbeWithOptions(target string, timeoutMS int, options ProbeOpt
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
 	c.writeMu.Lock()
-	err := writeFrame(c.conn, frame{Type: "icmp_echo", ID: id, Target: target, Timeout: timeoutMS, TTL: options.TTL, PayloadSize: options.PayloadSize, DontFragment: options.DontFragment})
+	err := writeFrame(c.conn, frame{Type: "icmp_echo", ID: id, Target: target, Timeout: timeoutMS, TTL: options.TTL, PayloadSize: options.PayloadSize, DontFragment: options.DontFragment, Relay: relay, EchoData: echoData})
 	c.writeMu.Unlock()
 	if err != nil {
 		c.failPending(err)

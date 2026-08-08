@@ -157,7 +157,20 @@ func (s *Server) handleProbe(request frame) frame {
 	if payloadSize < 8 || payloadSize > 65507 {
 		return frame{Type: "result", ID: request.ID, Error: "invalid ICMP payload size"}
 	}
-	probe, err := pinger.ProbeWithOptions(ip, time.Duration(request.Timeout)*time.Millisecond, ProbeOptions{TTL: request.TTL, PayloadSize: payloadSize, DontFragment: request.DontFragment})
+	var probe ProbeResult
+	var err error
+	if request.Relay {
+		if len(request.EchoData) > 8192 {
+			return frame{Type: "result", ID: request.ID, Error: "ICMP echo payload is too large"}
+		}
+		echoData := request.EchoData
+		if echoData == nil {
+			echoData = []byte{}
+		}
+		probe, err = pinger.RelayEcho(ip, time.Duration(request.Timeout)*time.Millisecond, request.TTL, echoData)
+	} else {
+		probe, err = pinger.ProbeWithOptions(ip, time.Duration(request.Timeout)*time.Millisecond, ProbeOptions{TTL: request.TTL, PayloadSize: payloadSize, DontFragment: request.DontFragment})
+	}
 	result := frame{Type: "result", ID: request.ID, RTT: probe.RTT.Nanoseconds(), Echo: probe.Echo, ICMPType: probe.ICMPType, ICMPCode: probe.ICMPCode, MTU: probe.MTU}
 	if probe.Responder != nil {
 		result.Responder = probe.Responder.String()
@@ -177,8 +190,9 @@ type pingResult struct {
 	err   error
 }
 type pendingPing struct {
-	result  chan pingResult
-	started time.Time
+	result      chan pingResult
+	started     time.Time
+	matchCookie bool
 }
 type pinger struct {
 	conn      *icmp.PacketConn
@@ -228,8 +242,18 @@ func (p *pinger) Probe(ip net.IP, timeout time.Duration, ttl int) (ProbeResult, 
 }
 
 func (p *pinger) ProbeWithOptions(ip net.IP, timeout time.Duration, options ProbeOptions) (ProbeResult, error) {
+	return p.probe(ip, timeout, options, nil)
+}
+
+// RelayEcho preserves a caller's echo data while using a pathd-owned ID/Seq
+// pair, which makes independent LAN clients safe to multiplex at remote NAT.
+func (p *pinger) RelayEcho(ip net.IP, timeout time.Duration, ttl int, data []byte) (ProbeResult, error) {
+	return p.probe(ip, timeout, ProbeOptions{TTL: ttl}, data)
+}
+
+func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, relayData []byte) (ProbeResult, error) {
 	ttl := options.TTL
-	if options.PayloadSize < 8 || options.PayloadSize > 65507 {
+	if relayData == nil && (options.PayloadSize < 8 || options.PayloadSize > 65507) {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP payload size")
 	}
 	if p.proto == 1 {
@@ -249,11 +273,14 @@ func (p *pinger) ProbeWithOptions(ip net.IP, timeout time.Duration, options Prob
 	p.next++
 	key := pingKey{id: 0x5054, seq: p.next, cookie: cookie}
 	result := make(chan pingResult, 1)
-	p.pending[key] = pendingPing{result: result, started: time.Now()}
+	p.pending[key] = pendingPing{result: result, started: time.Now(), matchCookie: relayData == nil}
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.pending, key); p.mu.Unlock() }()
-	payload := make([]byte, options.PayloadSize)
-	copy(payload, random[:])
+	payload := relayData
+	if payload == nil {
+		payload = make([]byte, options.PayloadSize)
+		copy(payload, random[:])
+	}
 	message := icmp.Message{Type: p.echo, Code: 0, Body: &icmp.Echo{ID: int(key.id), Seq: int(key.seq), Data: payload}}
 	b, err := message.Marshal(nil)
 	if err != nil {
@@ -312,7 +339,7 @@ func (p *pinger) readLoop() {
 		}
 		p.mu.Lock()
 		pending, ok := p.pending[key]
-		if diagnostic && !ok {
+		if !ok {
 			for candidate, value := range p.pending {
 				if candidate.id == key.id && candidate.seq == key.seq {
 					key, pending, ok = candidate, value, true
@@ -321,7 +348,7 @@ func (p *pinger) readLoop() {
 			}
 		}
 		p.mu.Unlock()
-		if ok && (cookieMatch || diagnostic) {
+		if ok && (diagnostic || cookieMatch || !pending.matchCookie) {
 			select {
 			case pending.result <- pingResult{probe: p.probeFromMessage(message, source, pending.started, diagnostic, buf[:n])}:
 			default:
@@ -333,10 +360,15 @@ func (p *pinger) readLoop() {
 func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool) {
 	if message.Type == p.reply {
 		echo, ok := message.Body.(*icmp.Echo)
-		if !ok || len(echo.Data) < 8 {
+		if !ok {
 			return pingKey{}, false, false, false
 		}
-		return pingKey{id: uint16(echo.ID), seq: uint16(echo.Seq), cookie: binary.BigEndian.Uint64(echo.Data)}, true, false, true
+		key := pingKey{id: uint16(echo.ID), seq: uint16(echo.Seq)}
+		if len(echo.Data) >= 8 {
+			key.cookie = binary.BigEndian.Uint64(echo.Data)
+			return key, true, false, true
+		}
+		return key, false, false, true
 	}
 	if !p.isDiagnostic(message.Type) {
 		return pingKey{}, false, false, false

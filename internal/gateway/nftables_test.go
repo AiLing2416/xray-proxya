@@ -94,15 +94,30 @@ func TestBuildNFTAddsSyntheticPingDropForLAN(t *testing.T) {
 	}
 }
 
+func TestBuildNFTRoutesPathLinkICMPToDedicatedMark(t *testing.T) {
+	cfg := testGatewayConfig(true, true)
+	cfg.Gateway.SyntheticPing = true
+	cfg.Path.Enabled, cfg.Path.Token = true, "token"
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "fd00::/64")
+	if strings.Contains(rules, `icmp type echo-request drop comment "xray-proxya synthetic-ping"`) {
+		t.Fatal("PathLink must route ICMP to path-tun rather than drop it")
+	}
+	for _, expected := range []string{"icmp type echo-request meta mark set " + pathTunMark, "icmpv6 type echo-request meta mark set " + pathTunMark} {
+		if !strings.Contains(rules, expected) {
+			t.Fatalf("missing %q in %s", expected, rules)
+		}
+	}
+}
+
 func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
 	rules := policyRules("192.168.50.0/24", "fd00::/64", true)
-	if len(rules) != 8 {
-		t.Fatalf("policyRules returned %d rules, want 8", len(rules))
+	if len(rules) != 10 {
+		t.Fatalf("policyRules returned %d rules, want 10", len(rules))
 	}
 	for _, rule := range rules {
 		foundDedicatedPriority := false
 		for _, arg := range rule.Args {
-			if arg == prefXray || arg == prefLAN || arg == prefLoopback || arg == prefTun {
+			if arg == prefXray || arg == prefLAN || arg == prefLoopback || arg == prefTun || arg == prefPathTun {
 				foundDedicatedPriority = true
 			}
 		}
