@@ -16,6 +16,21 @@ type ProbeResult struct {
 	MTU       int
 }
 
+// ProbeOptions controls one real ICMP probe. PayloadSize is the size of ICMP
+// echo data, excluding the ICMP and IP headers.
+type ProbeOptions struct {
+	TTL          int
+	PayloadSize  int
+	DontFragment bool
+}
+
+func (r ProbeResult) IsPacketTooBig(ip net.IP) bool {
+	if ip.To4() != nil {
+		return r.ICMPType == 3 && r.ICMPCode == 4
+	}
+	return r.ICMPType == 2
+}
+
 func (r ProbeResult) Error() error {
 	if r.Echo {
 		return nil

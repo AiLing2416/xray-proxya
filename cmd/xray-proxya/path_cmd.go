@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
@@ -25,6 +26,8 @@ var (
 	pathIdle      int
 	pathPingTTL   int
 	pathTraceHops int
+	pathMTUMin    int
+	pathMTUMax    int
 )
 
 func pathdConfigPath() string { return filepath.Join(config.GetConfigDir(), "pathd.json") }
@@ -353,6 +356,106 @@ func pathDiagnosticLabel(probe pathd.ProbeResult) string {
 	return probe.Error().Error()
 }
 
+var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively discover path MTU through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
+	if os.Geteuid() != 0 {
+		fmt.Println("❌ path mtu requires root on the Gateway.")
+		return
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || !cfg.Gateway.SyntheticPing || cfg.Gateway.RelayAlias == "" {
+		fmt.Println("❌ path mtu requires an enabled Gateway PathLink, synthetic ping, and selected proxy relay.")
+		return
+	}
+	ip, err := resolvePublicTarget(args[0])
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	minimum := pathMTUMin
+	if minimum == 0 {
+		minimum = 1280
+		if ip.To4() != nil {
+			minimum = 576
+		}
+	}
+	if pathMTUMax < minimum || minimum < 28 || pathMTUMax > 65535 {
+		fmt.Println("❌ invalid --min/--max MTU range.")
+		return
+	}
+	socks, err := activePathdSOCKSAddress()
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	target := cfg.Path.Listen
+	if target == "" {
+		target = "127.0.0.1:39091"
+	}
+	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
+	defer client.Close()
+	ipHeader := 40
+	if ip.To4() != nil {
+		ipHeader = 20
+	}
+	const icmpHeader = 8
+	if minimum < ipHeader+icmpHeader {
+		minimum = ipHeader + icmpHeader
+	}
+	fmt.Printf("Active PMTU to %s through %s (%d–%d bytes)\n", ip, cfg.Gateway.RelayAlias, minimum, pathMTUMax)
+	low, high, best := minimum, pathMTUMax, 0
+	for low <= high {
+		candidate := low + (high-low)/2
+		probe, probeErr := client.ProbeWithOptions(ip, pathd.ProbeOptions{TTL: 64, PayloadSize: candidate - ipHeader - icmpHeader, DontFragment: ip.To4() != nil})
+		if probeErr != nil {
+			if strings.Contains(strings.ToLower(probeErr.Error()), "message too long") {
+				fmt.Printf("  %d bytes: too large\n", candidate)
+				high = candidate - 1
+				continue
+			}
+			fmt.Printf("❌ probe at %d bytes failed: %v\n", candidate, probeErr)
+			return
+		}
+		if probe.Echo {
+			fmt.Printf("  %d bytes: reply (%s)\n", candidate, probe.RTT.Round(time.Millisecond))
+			best = candidate
+			low = candidate + 1
+			continue
+		}
+		if probe.IsPacketTooBig(ip) {
+			fmt.Printf("  %d bytes: packet too big%s\n", candidate, pathReportedMTU(probe))
+			if probe.MTU > 0 && probe.MTU < candidate {
+				high = probe.MTU
+			} else {
+				high = candidate - 1
+			}
+			continue
+		}
+		fmt.Printf("❌ probe at %d bytes returned %s\n", candidate, pathDiagnosticLabel(probe))
+		return
+	}
+	if best == 0 {
+		fmt.Printf("❌ no successful probe in %d–%d bytes.\n", minimum, pathMTUMax)
+		return
+	}
+	probeKind := map[bool]string{true: "IPv4 DF", false: "IPv6"}[ip.To4() != nil]
+	if best == pathMTUMax {
+		fmt.Printf("✅ Path MTU: at least %d bytes (no limit found in the requested range; active %s probe)\n", best, probeKind)
+		return
+	}
+	fmt.Printf("✅ Path MTU: %d bytes (active %s probe)\n", best, probeKind)
+}}
+
+func pathReportedMTU(probe pathd.ProbeResult) string {
+	if probe.MTU > 0 {
+		return fmt.Sprintf(" (reported MTU %d)", probe.MTU)
+	}
+	return ""
+}
+
 func resolvePublicTarget(value string) (net.IP, error) {
 	if ip := net.ParseIP(value); ip != nil {
 		if err := pathd.ValidateProbeTarget(ip); err != nil {
@@ -405,6 +508,8 @@ func init() {
 	pathEnableCmd.Flags().IntVar(&pathIdle, "idle", 20, "pathd connection idle timeout in seconds")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
 	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
-	pathCmd.AddCommand(pathEnableCmd, pathDisableCmd, pathInstallCmd, pathStartCmd, pathStopCmd, pathRestartCmd, pathStatusCmd, pathPingCmd, pathTraceCmd)
+	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
+	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "largest IP packet MTU to probe")
+	pathCmd.AddCommand(pathEnableCmd, pathDisableCmd, pathInstallCmd, pathStartCmd, pathStopCmd, pathRestartCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
 	rootCmd.AddCommand(pathCmd)
 }

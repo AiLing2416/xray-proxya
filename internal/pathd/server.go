@@ -14,6 +14,7 @@ import (
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
 // Server listens only on a local address. It has no HTTP or public listener.
@@ -149,7 +150,14 @@ func (s *Server) handleProbe(request frame) frame {
 	if request.TTL < 1 || request.TTL > 255 {
 		return frame{Type: "result", ID: request.ID, Error: "invalid ICMP TTL"}
 	}
-	probe, err := pinger.Probe(ip, time.Duration(request.Timeout)*time.Millisecond, request.TTL)
+	payloadSize := request.PayloadSize
+	if payloadSize == 0 {
+		payloadSize = 8
+	}
+	if payloadSize < 8 || payloadSize > 65507 {
+		return frame{Type: "result", ID: request.ID, Error: "invalid ICMP payload size"}
+	}
+	probe, err := pinger.ProbeWithOptions(ip, time.Duration(request.Timeout)*time.Millisecond, ProbeOptions{TTL: request.TTL, PayloadSize: payloadSize, DontFragment: request.DontFragment})
 	result := frame{Type: "result", ID: request.ID, RTT: probe.RTT.Nanoseconds(), Echo: probe.Echo, ICMPType: probe.ICMPType, ICMPCode: probe.ICMPCode, MTU: probe.MTU}
 	if probe.Responder != nil {
 		result.Responder = probe.Responder.String()
@@ -183,6 +191,7 @@ type pinger struct {
 	pending   map[pingKey]pendingPing
 	done      chan struct{}
 	closeOnce sync.Once
+	dfFD      int
 }
 
 func newPinger(network, listen string, proto int, echo, reply icmp.Type) (*pinger, error) {
@@ -190,17 +199,39 @@ func newPinger(network, listen string, proto int, echo, reply icmp.Type) (*pinge
 	if err != nil {
 		return nil, fmt.Errorf("open raw ICMP socket (need root or CAP_NET_RAW): %w", err)
 	}
-	p := &pinger{conn: conn, proto: proto, echo: echo, reply: reply, pending: make(map[pingKey]pendingPing), done: make(chan struct{})}
+	p := &pinger{conn: conn, proto: proto, echo: echo, reply: reply, pending: make(map[pingKey]pendingPing), done: make(chan struct{}), dfFD: -1}
+	if proto == 1 {
+		fd, fdErr := unix.Socket(unix.AF_INET, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.IPPROTO_ICMP)
+		if fdErr != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("open IPv4 DF ICMP socket: %w", fdErr)
+		}
+		p.dfFD = fd
+	}
 	go p.readLoop()
 	return p, nil
 }
 
 func (p *pinger) Close() error {
-	p.closeOnce.Do(func() { close(p.done); _ = p.conn.Close() })
+	p.closeOnce.Do(func() {
+		close(p.done)
+		_ = p.conn.Close()
+		if p.dfFD >= 0 {
+			_ = unix.Close(p.dfFD)
+		}
+	})
 	return nil
 }
 
 func (p *pinger) Probe(ip net.IP, timeout time.Duration, ttl int) (ProbeResult, error) {
+	return p.ProbeWithOptions(ip, timeout, ProbeOptions{TTL: ttl, PayloadSize: 8})
+}
+
+func (p *pinger) ProbeWithOptions(ip net.IP, timeout time.Duration, options ProbeOptions) (ProbeResult, error) {
+	ttl := options.TTL
+	if options.PayloadSize < 8 || options.PayloadSize > 65507 {
+		return ProbeResult{}, fmt.Errorf("invalid ICMP payload size")
+	}
 	if p.proto == 1 {
 		ip = ip.To4()
 		if ip == nil {
@@ -221,19 +252,23 @@ func (p *pinger) Probe(ip net.IP, timeout time.Duration, ttl int) (ProbeResult, 
 	p.pending[key] = pendingPing{result: result, started: time.Now()}
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.pending, key); p.mu.Unlock() }()
-	message := icmp.Message{Type: p.echo, Code: 0, Body: &icmp.Echo{ID: int(key.id), Seq: int(key.seq), Data: random[:]}}
+	payload := make([]byte, options.PayloadSize)
+	copy(payload, random[:])
+	message := icmp.Message{Type: p.echo, Code: 0, Body: &icmp.Echo{ID: int(key.id), Seq: int(key.seq), Data: payload}}
 	b, err := message.Marshal(nil)
 	if err != nil {
 		return ProbeResult{}, err
 	}
 	p.sendMu.Lock()
 	var sendErr error
-	if p.proto == 1 {
+	if p.proto == 1 && options.DontFragment {
+		sendErr = p.sendIPv4DontFragment(b, ip, ttl)
+	} else if p.proto == 1 {
 		sendErr = p.conn.IPv4PacketConn().SetTTL(ttl)
 	} else {
 		sendErr = p.conn.IPv6PacketConn().SetHopLimit(ttl)
 	}
-	if sendErr == nil {
+	if sendErr == nil && !(p.proto == 1 && options.DontFragment) {
 		_, sendErr = p.conn.WriteTo(b, &net.IPAddr{IP: ip})
 	}
 	if p.proto == 1 {
@@ -261,7 +296,7 @@ func (p *pinger) Probe(ip net.IP, timeout time.Duration, ttl int) (ProbeResult, 
 }
 
 func (p *pinger) readLoop() {
-	buf := make([]byte, 1500)
+	buf := make([]byte, 65535)
 	for {
 		n, source, err := p.conn.ReadFrom(buf)
 		if err != nil {
@@ -298,7 +333,7 @@ func (p *pinger) readLoop() {
 func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool) {
 	if message.Type == p.reply {
 		echo, ok := message.Body.(*icmp.Echo)
-		if !ok || len(echo.Data) != 8 {
+		if !ok || len(echo.Data) < 8 {
 			return pingKey{}, false, false, false
 		}
 		return pingKey{id: uint16(echo.ID), seq: uint16(echo.Seq), cookie: binary.BigEndian.Uint64(echo.Data)}, true, false, true
@@ -324,6 +359,21 @@ func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool)
 		return pingKey{}, false, false, false
 	}
 	return pingKey{id: binary.BigEndian.Uint16(data[44:]), seq: binary.BigEndian.Uint16(data[46:])}, false, true, true
+}
+
+func (p *pinger) sendIPv4DontFragment(packet []byte, ip net.IP, ttl int) error {
+	if p.dfFD < 0 {
+		return fmt.Errorf("IPv4 DF probes are unavailable")
+	}
+	if err := unix.SetsockoptInt(p.dfFD, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO); err != nil {
+		return err
+	}
+	if err := unix.SetsockoptInt(p.dfFD, unix.IPPROTO_IP, unix.IP_TTL, ttl); err != nil {
+		return err
+	}
+	var address [4]byte
+	copy(address[:], ip.To4())
+	return unix.Sendto(p.dfFD, packet, 0, &unix.SockaddrInet4{Addr: address})
 }
 
 func (p *pinger) isDiagnostic(typ icmp.Type) bool {

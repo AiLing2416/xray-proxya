@@ -47,6 +47,10 @@ func (c *IdleClient) Probe(ip net.IP) (ProbeResult, error) {
 }
 
 func (c *IdleClient) ProbeTTL(ip net.IP, ttl int) (ProbeResult, error) {
+	return c.ProbeWithOptions(ip, ProbeOptions{TTL: ttl, PayloadSize: 8})
+}
+
+func (c *IdleClient) ProbeWithOptions(ip net.IP, options ProbeOptions) (ProbeResult, error) {
 	c.mu.Lock()
 	if c.client != nil && time.Since(c.last) > c.idle {
 		_ = c.client.Close()
@@ -75,7 +79,7 @@ func (c *IdleClient) ProbeTTL(ip net.IP, ttl int) (ProbeResult, error) {
 	c.inFlight++
 	c.resetIdleTimerLocked()
 	c.mu.Unlock()
-	result, err := client.ProbeTTL(ip.String(), 8000, ttl)
+	result, err := client.ProbeWithOptions(ip.String(), 8000, options)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.inFlight--

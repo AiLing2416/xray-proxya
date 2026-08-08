@@ -19,20 +19,22 @@ const (
 )
 
 type frame struct {
-	Version   uint8  `json:"v"`
-	Type      string `json:"type"`
-	Token     string `json:"token,omitempty"`
-	ID        uint64 `json:"id,omitempty"`
-	Target    string `json:"target,omitempty"`
-	Timeout   int    `json:"timeout_ms,omitempty"`
-	TTL       int    `json:"ttl,omitempty"`
-	RTT       int64  `json:"rtt_ns,omitempty"`
-	Echo      bool   `json:"echo,omitempty"`
-	ICMPType  uint8  `json:"icmp_type,omitempty"`
-	ICMPCode  uint8  `json:"icmp_code,omitempty"`
-	Responder string `json:"responder,omitempty"`
-	MTU       int    `json:"mtu,omitempty"`
-	Error     string `json:"error,omitempty"`
+	Version      uint8  `json:"v"`
+	Type         string `json:"type"`
+	Token        string `json:"token,omitempty"`
+	ID           uint64 `json:"id,omitempty"`
+	Target       string `json:"target,omitempty"`
+	Timeout      int    `json:"timeout_ms,omitempty"`
+	TTL          int    `json:"ttl,omitempty"`
+	PayloadSize  int    `json:"payload_size,omitempty"`
+	DontFragment bool   `json:"dont_fragment,omitempty"`
+	RTT          int64  `json:"rtt_ns,omitempty"`
+	Echo         bool   `json:"echo,omitempty"`
+	ICMPType     uint8  `json:"icmp_type,omitempty"`
+	ICMPCode     uint8  `json:"icmp_code,omitempty"`
+	Responder    string `json:"responder,omitempty"`
+	MTU          int    `json:"mtu,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 func writeFrame(w io.Writer, f frame) error {
@@ -122,18 +124,25 @@ func (c *Client) Ping(target string, timeoutMS int) (int64, error) {
 }
 
 func (c *Client) Probe(target string, timeoutMS int) (ProbeResult, error) {
-	return c.ProbeTTL(target, timeoutMS, 64)
+	return c.ProbeWithOptions(target, timeoutMS, ProbeOptions{TTL: 64, PayloadSize: 8})
 }
 
 func (c *Client) ProbeTTL(target string, timeoutMS, ttl int) (ProbeResult, error) {
+	return c.ProbeWithOptions(target, timeoutMS, ProbeOptions{TTL: ttl, PayloadSize: 8})
+}
+
+func (c *Client) ProbeWithOptions(target string, timeoutMS int, options ProbeOptions) (ProbeResult, error) {
 	if err := ValidateProbeTarget(net.ParseIP(target)); err != nil {
 		return ProbeResult{}, err
 	}
 	if timeoutMS < 100 || timeoutMS > 15000 {
 		return ProbeResult{}, fmt.Errorf("invalid pathd timeout")
 	}
-	if ttl < 1 || ttl > 255 {
+	if options.TTL < 1 || options.TTL > 255 {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP TTL")
+	}
+	if options.PayloadSize < 8 || options.PayloadSize > 65507 {
+		return ProbeResult{}, fmt.Errorf("invalid ICMP payload size")
 	}
 	c.mu.Lock()
 	if len(c.pending) >= maxInFlight {
@@ -147,7 +156,7 @@ func (c *Client) ProbeTTL(target string, timeoutMS, ttl int) (ProbeResult, error
 	c.mu.Unlock()
 	defer func() { c.mu.Lock(); delete(c.pending, id); c.mu.Unlock() }()
 	c.writeMu.Lock()
-	err := writeFrame(c.conn, frame{Type: "icmp_echo", ID: id, Target: target, Timeout: timeoutMS, TTL: ttl})
+	err := writeFrame(c.conn, frame{Type: "icmp_echo", ID: id, Target: target, Timeout: timeoutMS, TTL: options.TTL, PayloadSize: options.PayloadSize, DontFragment: options.DontFragment})
 	c.writeMu.Unlock()
 	if err != nil {
 		c.failPending(err)
