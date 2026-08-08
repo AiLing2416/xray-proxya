@@ -25,11 +25,18 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
           go build -ldflags "-s -w" -o xray-proxya-linux-amd64 ./cmd/xray-proxya/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          go build -ldflags "-s -w" -o pathd-linux-amd64 ./cmd/xray-proxya-pathd/
 
       - name: Build arm64
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
           go build -ldflags "-s -w" -o xray-proxya-linux-arm64 ./cmd/xray-proxya/
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+          go build -ldflags "-s -w" -o pathd-linux-arm64 ./cmd/xray-proxya-pathd/
+
+      - name: Generate checksums
+        run: sha256sum xray-proxya-linux-* pathd-linux-* > SHA256SUMS
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -37,6 +44,9 @@ jobs:
           files: |
             xray-proxya-linux-amd64
             xray-proxya-linux-arm64
+            pathd-linux-amd64
+            pathd-linux-arm64
+            SHA256SUMS
           generate_release_notes: true
           draft: false
           prerelease: false

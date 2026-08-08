@@ -37,6 +37,9 @@ Xray-Proxya is a Go-based Xray manager for two main jobs: running a role-based p
 curl -Ls https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.sh | bash
 ```
 
+The installer verifies and installs the public `xray-proxya` CLI plus its
+private Xray core / `pathd` components. Only the CLI is added to `PATH`.
+
 ### Manual Build
 Requires Go 1.25+
 ```bash

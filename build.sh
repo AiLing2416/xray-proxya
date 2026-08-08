@@ -23,10 +23,11 @@ echo -e "📦 Detected Go version: $GO_VERSION"
 echo -e "🚀 Building statically linked binary..."
 mkdir -p build
 CGO_ENABLED=0 go build -ldflags "-s -w" -o build/xray-proxya ./cmd/xray-proxya/
+CGO_ENABLED=0 go build -ldflags "-s -w" -o build/pathd ./cmd/xray-proxya-pathd/
 
 # 3. Verify
-if [ -f "build/xray-proxya" ]; then
-    echo -e "${GREEN}✅ Build successful: build/xray-proxya${NC}"
+if [ -f "build/xray-proxya" ] && [ -f "build/pathd" ]; then
+	echo -e "${GREEN}✅ Build successful: build/xray-proxya and build/pathd${NC}"
     build/xray-proxya version
 else
     echo -e "${RED}❌ Build failed.${NC}"
