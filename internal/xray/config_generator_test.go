@@ -82,35 +82,6 @@ func TestGenerateXrayJSONUsesGatewayRelayDNSConfig(t *testing.T) {
 	assertStringSliceEqual(t, servers, want)
 }
 
-func TestGenerateXrayJSONRoutesSyntheticPingThroughGatewayRelay(t *testing.T) {
-	cfg := &config.UserConfig{
-		Role: config.RoleGateway,
-		Gateway: config.GatewayConfig{
-			RelayAlias: "relay-a",
-		},
-		CustomOutbounds: []config.CustomOutbound{
-			{Alias: "relay-a", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
-		},
-	}
-
-	parsed := generateAndDecodeXrayConfigWithOverrides(t, cfg, map[string]int{"synthetic-ping-socks": 19191}, "")
-	inbounds := parsed["inbounds"].([]interface{})
-	foundInbound := false
-	for _, rawInbound := range inbounds {
-		inbound := rawInbound.(map[string]interface{})
-		if inbound["tag"] == "synthetic-ping-socks" {
-			foundInbound = inbound["listen"] == "127.0.0.1" && inbound["port"] == float64(19191)
-		}
-	}
-	if !foundInbound {
-		t.Fatal("synthetic ping SOCKS inbound was not generated")
-	}
-	rules := getMap(t, parsed, "routing")["rules"].([]interface{})
-	if !containsInboundRule(rules, "synthetic-ping-socks", "outbound-relay-a") {
-		t.Fatal("synthetic ping must use the selected gateway relay")
-	}
-}
-
 func TestGenerateXrayJSONOmitsGatewayTunWhenDisabled(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role:    config.RoleGateway,

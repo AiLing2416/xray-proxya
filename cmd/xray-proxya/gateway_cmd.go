@@ -51,7 +51,6 @@ var gatewayStatusCmd = &cobra.Command{
 		fmt.Printf("Relay:       %s\n", cfg.Gateway.RelayAlias)
 		fmt.Printf("LAN Iface:   %s\n", cfg.Gateway.LANInterface)
 		fmt.Printf("State:       %s\n", cfg.Gateway.State)
-		fmt.Printf("Synthetic Ping: %t\n", cfg.Gateway.SyntheticPing)
 		fmt.Printf("Bypass DNS:  %s\n", strings.Join(cfg.Gateway.BypassDNS, ", "))
 		fmt.Printf("Bypass Geo:  %s\n\n", strings.Join(cfg.Gateway.BypassCountries, ", "))
 	},
@@ -193,10 +192,6 @@ var gatewaySetCmd = &cobra.Command{
 		if cmd.Flags().Changed("bypass-countries") {
 			bypassCountries, _ := cmd.Flags().GetStringSlice("bypass-countries")
 			cfg.Gateway.BypassCountries = bypassCountries
-		}
-		if cmd.Flags().Changed("synthetic-ping") {
-			enabled, _ := cmd.Flags().GetBool("synthetic-ping")
-			cfg.Gateway.SyntheticPing = enabled
 		}
 
 		cfg.SaveEx(true)
@@ -415,7 +410,6 @@ func init() {
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
-	gatewaySetCmd.Flags().Bool("synthetic-ping", false, "Reply to LAN ICMP ping using TCP reachability through the selected relay")
 	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
 
 	gatewaySetCmd.RegisterFlagCompletionFunc("state", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

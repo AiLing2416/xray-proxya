@@ -13,7 +13,6 @@ import (
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/pathtun"
 	"xray-proxya/internal/quota"
-	"xray-proxya/internal/syntheticping"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -82,28 +81,16 @@ var runCmd = &cobra.Command{
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
 		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		overrides := make(map[string]int)
-		syntheticPingPort := 0
 		pathdPort := 0
 		gatewayState := cfg.Gateway.State
 		if gatewayState == "" {
 			gatewayState = "proxy"
 		}
-		syntheticPingEnabled := cfg.Role == config.RoleGateway &&
-			cfg.Gateway.SyntheticPing &&
+		pathdEnabled := cfg.Role == config.RoleGateway &&
 			gatewayState == "proxy" &&
 			cfg.Gateway.LocalEnabled && cfg.Gateway.LANEnabled &&
-			cfg.Gateway.RelayAlias != "" && !config.GatewayTunDisabled()
-		if syntheticPingEnabled {
-			port, err := xray.GetFreePort()
-			if err != nil {
-				fmt.Printf("⚠️  Synthetic ping disabled: allocate SOCKS port: %v\n", err)
-				syntheticPingEnabled = false
-			} else {
-				syntheticPingPort = port
-				overrides["synthetic-ping-socks"] = port
-			}
-		}
-		pathdEnabled := syntheticPingEnabled && cfg.Path.Enabled && cfg.Path.Token != ""
+			cfg.Gateway.RelayAlias != "" && !config.GatewayTunDisabled() &&
+			cfg.Path.Enabled && cfg.Path.Token != ""
 		if pathdEnabled {
 			port, err := xray.GetFreePort()
 			if err != nil {
@@ -164,15 +151,10 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		var syntheticPingManager *syntheticping.Manager
 		var pathTunManager *pathtun.Manager
 		var pathClient *pathd.IdleClient
 		var pathRuntimeStop chan struct{}
 		cleanup := func() {
-			if syntheticPingManager != nil {
-				_ = syntheticPingManager.Close()
-				syntheticPingManager = nil
-			}
 			if pathTunManager != nil {
 				_ = pathTunManager.Close()
 				pathTunManager = nil
@@ -194,36 +176,28 @@ var runCmd = &cobra.Command{
 			fmt.Printf("❌ Failed to start Xray: %v\n", err)
 			return
 		}
-		if syntheticPingEnabled {
-			var manager *syntheticping.Manager
-			if pathdEnabled {
-				idle := time.Duration(cfg.Path.IdleSeconds) * time.Second
-				if idle <= 0 {
-					idle = 15 * time.Second
-				}
-				pathTarget := cfg.Path.Listen
-				if pathTarget == "" {
-					pathTarget = "127.0.0.1:39091"
-				}
-				pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
-				pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte, dontFragment bool) pathd.ProbeResult {
-					result, err := pathClient.RelayEcho(destination, ttl, echoData, dontFragment)
-					if err != nil {
-						return pathd.ProbeResult{}
-					}
-					return result
-				})
-			} else {
-				manager, err = syntheticping.Start(cfg.Gateway.LANInterface, fmt.Sprintf("127.0.0.1:%d", syntheticPingPort))
+		if pathdEnabled {
+			idle := time.Duration(cfg.Path.IdleSeconds) * time.Second
+			if idle <= 0 {
+				idle = 15 * time.Second
 			}
+			pathTarget := cfg.Path.Listen
+			if pathTarget == "" {
+				pathTarget = "127.0.0.1:39091"
+			}
+			pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
+			pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte, dontFragment bool) pathd.ProbeResult {
+				result, err := pathClient.RelayEcho(destination, ttl, echoData, dontFragment)
+				if err != nil {
+					return pathd.ProbeResult{}
+				}
+				return result
+			})
 			if err != nil {
-				fmt.Printf("⚠️  Synthetic ping disabled: %v\n", err)
+				fmt.Printf("⚠️  PathLink disabled: %v\n", err)
 			} else {
 				if pathTunManager != nil {
 					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", cfg.Gateway.RelayAlias)
-				} else {
-					syntheticPingManager = manager
-					fmt.Printf("📡 Synthetic ping enabled on %s through relay %s\n", cfg.Gateway.LANInterface, cfg.Gateway.RelayAlias)
 				}
 			}
 			if pathClient != nil {

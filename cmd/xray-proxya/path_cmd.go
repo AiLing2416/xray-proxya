@@ -261,7 +261,7 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 		}
 		return
 	}
-	fmt.Println("PathLink runtime: unavailable (run gateway up with --synthetic-ping and path enabled)")
+	fmt.Println("PathLink runtime: unavailable (run gateway up with PathLink enabled)")
 }}
 
 var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one real ICMP echo through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
@@ -274,8 +274,8 @@ var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one 
 		fmt.Println("❌", err)
 		return
 	}
-	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || !cfg.Gateway.SyntheticPing || cfg.Gateway.RelayAlias == "" {
-		fmt.Println("❌ path ping requires an enabled Gateway PathLink, synthetic ping, and selected proxy relay.")
+	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || cfg.Gateway.RelayAlias == "" {
+		fmt.Println("❌ path ping requires an enabled Gateway PathLink and selected proxy relay.")
 		return
 	}
 	ip, err := resolvePublicTarget(args[0])
@@ -321,8 +321,8 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 		fmt.Println("❌", err)
 		return
 	}
-	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || !cfg.Gateway.SyntheticPing || cfg.Gateway.RelayAlias == "" {
-		fmt.Println("❌ path trace requires an enabled Gateway PathLink, synthetic ping, and selected proxy relay.")
+	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || cfg.Gateway.RelayAlias == "" {
+		fmt.Println("❌ path trace requires an enabled Gateway PathLink and selected proxy relay.")
 		return
 	}
 	ip, err := resolvePublicTarget(args[0])
@@ -381,8 +381,8 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 		fmt.Println("❌", err)
 		return
 	}
-	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || !cfg.Gateway.SyntheticPing || cfg.Gateway.RelayAlias == "" {
-		fmt.Println("❌ path mtu requires an enabled Gateway PathLink, synthetic ping, and selected proxy relay.")
+	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || cfg.Gateway.RelayAlias == "" {
+		fmt.Println("❌ path mtu requires an enabled Gateway PathLink and selected proxy relay.")
 		return
 	}
 	ip, err := resolvePublicTarget(args[0])

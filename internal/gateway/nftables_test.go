@@ -85,23 +85,10 @@ func TestBuildNFTWithBypassDNS(t *testing.T) {
 	}
 }
 
-func TestBuildNFTAddsSyntheticPingDropForLAN(t *testing.T) {
-	cfg := testGatewayConfig(true, true)
-	cfg.Gateway.SyntheticPing = true
-	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
-	if !strings.Contains(rules, `icmp type echo-request drop comment "xray-proxya synthetic-ping"`) {
-		t.Fatalf("rules should drop LAN echo requests for synthetic replies: %s", rules)
-	}
-}
-
 func TestBuildNFTRoutesPathLinkICMPToDedicatedMark(t *testing.T) {
 	cfg := testGatewayConfig(true, true)
-	cfg.Gateway.SyntheticPing = true
 	cfg.Path.Enabled, cfg.Path.Token = true, "token"
 	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "fd00::/64")
-	if strings.Contains(rules, `icmp type echo-request drop comment "xray-proxya synthetic-ping"`) {
-		t.Fatal("PathLink must route ICMP to path-tun rather than drop it")
-	}
 	for _, expected := range []string{"icmp type echo-request meta mark set " + pathTunMark, "icmpv6 type echo-request meta mark set " + pathTunMark} {
 		if !strings.Contains(rules, expected) {
 			t.Fatalf("missing %q in %s", expected, rules)

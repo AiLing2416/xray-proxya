@@ -345,7 +345,7 @@ func pathTunnelEnabled(cfg *config.UserConfig) bool {
 	}
 	return cfg.Role == config.RoleGateway && state == "proxy" &&
 		cfg.Gateway.LocalEnabled && cfg.Gateway.LANEnabled &&
-		cfg.Path.Enabled && cfg.Path.Token != "" && cfg.Gateway.SyntheticPing
+		cfg.Path.Enabled && cfg.Path.Token != ""
 }
 
 func policyRulesPath() string {
@@ -588,13 +588,9 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 				}
 			}
 		}
-		if cfg.Gateway.SyntheticPing {
-			if pathTunnelEnabled(cfg) {
-				b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
-				b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
-			} else {
-				b.WriteString("        icmp type echo-request drop comment \"xray-proxya synthetic-ping\"\n")
-			}
+		if pathTunnelEnabled(cfg) {
+			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
+			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
 		}
 		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
 		b.WriteString("    }\n")
