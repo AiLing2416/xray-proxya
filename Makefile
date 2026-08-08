@@ -1,5 +1,5 @@
 BINARY_NAME=xray-proxya
-PATHD_BINARY_NAME=xray-proxya-pathd
+PATHD_BINARY_NAME=pathd
 BUILD_DIR=build
 GO_ENV=CGO_ENABLED=0
 

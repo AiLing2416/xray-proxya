@@ -6,7 +6,7 @@ import (
 )
 
 func TestPathdSystemdUnitIsCapabilityBounded(t *testing.T) {
-	unit := buildPathdSystemdServiceContent("/root/.local/bin/xray-proxya-pathd", "/root/.config/xray-proxya/pathd.json")
+	unit := buildPathdSystemdServiceContent("/root/.local/share/xray-proxya/bin/pathd", "/root/.config/xray-proxya/pathd.json")
 	for _, required := range []string{
 		"User=root", "CapabilityBoundingSet=CAP_NET_RAW", "AmbientCapabilities=CAP_NET_RAW",
 		"NoNewPrivileges=true", "ProtectSystem=strict", "ProtectHome=read-only",

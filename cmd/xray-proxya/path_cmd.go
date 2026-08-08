@@ -13,7 +13,6 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
-	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
 )
@@ -32,7 +31,7 @@ var (
 
 func pathdConfigPath() string { return filepath.Join(config.GetConfigDir(), "pathd.json") }
 func pathdBinaryPath() string {
-	return filepath.Join(filepath.Dir(xray.GetXrayProxyaPath()), "xray-proxya-pathd")
+	return filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya", "bin", "pathd")
 }
 func pathdUnitPath() string { return "/etc/systemd/system/" + pathdUnit + ".service" }
 
