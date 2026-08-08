@@ -1,4 +1,4 @@
-policy_module(xray_proxya, 2.0.0)
+policy_module(xray_proxya, 2.1.0)
 
 ########################################
 # Dedicated domain for the root-managed Xray-Proxya service.  This policy is
@@ -15,6 +15,16 @@ files_type(xray_proxya_config_t)
 
 type xray_proxya_data_t;
 files_type(xray_proxya_data_t)
+
+# pathd is a separate, loopback-only service.  It must never inherit the
+# manager's TUN, routing, firewall, or service-management privileges.
+type xray_proxya_pathd_t;
+type xray_proxya_pathd_exec_t;
+init_daemon_domain(xray_proxya_pathd_t, xray_proxya_pathd_exec_t)
+domain_use_interactive_fds(xray_proxya_pathd_t)
+# The hardened unit uses NoNewPrivileges=true.  This explicit transition is
+# still required for systemd to enter the dedicated pathd domain.
+allow init_t xray_proxya_pathd_t:process2 nnp_transition;
 
 type xray_proxya_log_t;
 logging_log_file(xray_proxya_log_t)
@@ -67,6 +77,27 @@ allow xray_proxya_gateway_t proc_t:file { getattr open read };
 # The bundled Xray core is data owned by the manager, not a second systemd
 # entrypoint.  It executes without a domain transition inside xray_proxya_t.
 allow xray_proxya_t xray_proxya_data_t:file { execute execute_no_trans getattr map open read };
+
+# pathd reads only its root-owned private config.  It accepts its authenticated
+# PathLink stream on loopback and sends raw ICMP to caller-selected public
+# targets; it cannot modify host networking or application state.
+files_search_home(xray_proxya_pathd_t)
+allow xray_proxya_pathd_t config_home_t:dir search;
+allow xray_proxya_pathd_t data_home_t:dir search;
+allow xray_proxya_pathd_t gconf_home_t:dir search;
+read_files_pattern(xray_proxya_pathd_t, xray_proxya_config_t, xray_proxya_config_t)
+corenet_tcp_bind_all_unreserved_ports(xray_proxya_pathd_t)
+corenet_tcp_bind_generic_node(xray_proxya_pathd_t)
+corenet_tcp_sendrecv_all_nodes(xray_proxya_pathd_t)
+allow xray_proxya_pathd_t self:tcp_socket create_stream_socket_perms;
+allow xray_proxya_pathd_t self:capability net_raw;
+allow xray_proxya_pathd_t self:rawip_socket create_socket_perms;
+corenet_raw_bind_generic_node(xray_proxya_pathd_t)
+corenet_raw_sendrecv_all_nodes(xray_proxya_pathd_t)
+kernel_search_network_sysctl(xray_proxya_pathd_t)
+allow xray_proxya_pathd_t sysctl_net_t:file { getattr open read };
+fs_read_cgroup_files(xray_proxya_pathd_t)
+allow xray_proxya_pathd_t cgroup_t:dir search;
 
 ########################################
 # Xray acts as an outbound client.  Relay and subscription endpoints are user

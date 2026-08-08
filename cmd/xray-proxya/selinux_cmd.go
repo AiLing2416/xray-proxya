@@ -43,9 +43,13 @@ func installSELinuxPolicy() error {
 	}
 
 	dir, err := os.MkdirTemp("", "xray-proxya-selinux-")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer os.RemoveAll(dir)
-	if err := os.WriteFile(filepath.Join(dir, "xray_proxya.te"), []byte(proxyaSELinux.PolicySource), 0600); err != nil { return err }
+	if err := os.WriteFile(filepath.Join(dir, "xray_proxya.te"), []byte(proxyaSELinux.PolicySource), 0600); err != nil {
+		return err
+	}
 	if out, err := exec.Command("make", "-C", dir, "-f", "/usr/share/selinux/devel/Makefile", "xray_proxya.pp").CombinedOutput(); err != nil {
 		return fmt.Errorf("compile policy: %w (%s)", err, out)
 	}
@@ -67,8 +71,14 @@ func installSELinuxPolicy() error {
 	// Older development builds labelled the bundled core as an entrypoint.  The
 	// core must instead stay a same-domain child executable.
 	_ = exec.Command("semanage", "fcontext", "-d", `/root/.local/share/xray-proxya/bin/xray`).Run()
+	// Recreate this exact rule after the broad private-data rule below so it
+	// takes precedence even if an older policy installation added it earlier.
+	_ = exec.Command("semanage", "fcontext", "-d", `/root/.local/share/xray-proxya/bin/pathd`).Run()
 	for _, entry := range []struct{ pattern, label string }{
 		{`/root/.local/share/xray-proxya(/.*)?`, "xray_proxya_data_t"},
+		// semanage evaluates later local entries first, so the dedicated pathd
+		// executable rule must follow the broad private-data rule.
+		{`/root/.local/share/xray-proxya/bin/pathd`, "xray_proxya_pathd_exec_t"},
 		{`/root/.local/bin/xray-proxya`, "xray_proxya_exec_t"},
 		{`/root/.config/xray-proxya(/.*)?`, "xray_proxya_config_t"},
 		{`/root/.config/xray-proxya/xray\.log`, "xray_proxya_log_t"},
@@ -80,12 +90,16 @@ func installSELinuxPolicy() error {
 		}
 	}
 	for _, path := range []string{"/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.config/xray-proxya"} {
-		if out, err := exec.Command("restorecon", "-RF", path).CombinedOutput(); err != nil { return fmt.Errorf("restore context on %s: %w (%s)", path, err, out) }
+		if out, err := exec.Command("restorecon", "-RF", path).CombinedOutput(); err != nil {
+			return fmt.Errorf("restore context on %s: %w (%s)", path, err, out)
+		}
 	}
 	return nil
 }
 
-func containsSELinuxEnabled(status string) bool { return strings.Contains(status, "SELinux status:") && strings.Contains(status, "enabled") }
+func containsSELinuxEnabled(status string) bool {
+	return strings.Contains(status, "SELinux status:") && strings.Contains(status, "enabled")
+}
 
 func init() {
 	selinuxCmd.AddCommand(selinuxInstallCmd)
