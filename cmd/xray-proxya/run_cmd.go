@@ -206,8 +206,8 @@ var runCmd = &cobra.Command{
 					pathTarget = "127.0.0.1:39091"
 				}
 				pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
-				pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte) pathd.ProbeResult {
-					result, err := pathClient.RelayEcho(destination, ttl, echoData)
+				pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte, dontFragment bool) pathd.ProbeResult {
+					result, err := pathClient.RelayEcho(destination, ttl, echoData, dontFragment)
 					if err != nil {
 						return pathd.ProbeResult{}
 					}

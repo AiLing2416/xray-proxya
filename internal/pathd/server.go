@@ -167,7 +167,7 @@ func (s *Server) handleProbe(request frame) frame {
 		if echoData == nil {
 			echoData = []byte{}
 		}
-		probe, err = pinger.RelayEcho(ip, time.Duration(request.Timeout)*time.Millisecond, request.TTL, echoData)
+		probe, err = pinger.RelayEcho(ip, time.Duration(request.Timeout)*time.Millisecond, request.TTL, echoData, request.DontFragment)
 	} else {
 		probe, err = pinger.ProbeWithOptions(ip, time.Duration(request.Timeout)*time.Millisecond, ProbeOptions{TTL: request.TTL, PayloadSize: payloadSize, DontFragment: request.DontFragment})
 	}
@@ -247,8 +247,8 @@ func (p *pinger) ProbeWithOptions(ip net.IP, timeout time.Duration, options Prob
 
 // RelayEcho preserves a caller's echo data while using a pathd-owned ID/Seq
 // pair, which makes independent LAN clients safe to multiplex at remote NAT.
-func (p *pinger) RelayEcho(ip net.IP, timeout time.Duration, ttl int, data []byte) (ProbeResult, error) {
-	return p.probe(ip, timeout, ProbeOptions{TTL: ttl}, data)
+func (p *pinger) RelayEcho(ip net.IP, timeout time.Duration, ttl int, data []byte, dontFragment bool) (ProbeResult, error) {
+	return p.probe(ip, timeout, ProbeOptions{TTL: ttl, DontFragment: dontFragment}, data)
 }
 
 func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, relayData []byte) (ProbeResult, error) {
@@ -289,7 +289,11 @@ func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, r
 	p.sendMu.Lock()
 	var sendErr error
 	if p.proto == 1 && options.DontFragment {
-		sendErr = p.sendIPv4DontFragment(b, ip, ttl)
+		var mtu int
+		mtu, sendErr = p.sendIPv4DontFragment(b, ip, ttl)
+		if errors.Is(sendErr, unix.EMSGSIZE) {
+			return ProbeResult{ICMPType: 3, ICMPCode: 4, MTU: mtu}, nil
+		}
 	} else if p.proto == 1 {
 		sendErr = p.conn.IPv4PacketConn().SetTTL(ttl)
 	} else {
@@ -393,19 +397,24 @@ func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool)
 	return pingKey{id: binary.BigEndian.Uint16(data[44:]), seq: binary.BigEndian.Uint16(data[46:])}, false, true, true
 }
 
-func (p *pinger) sendIPv4DontFragment(packet []byte, ip net.IP, ttl int) error {
+func (p *pinger) sendIPv4DontFragment(packet []byte, ip net.IP, ttl int) (int, error) {
 	if p.dfFD < 0 {
-		return fmt.Errorf("IPv4 DF probes are unavailable")
+		return 0, fmt.Errorf("IPv4 DF probes are unavailable")
 	}
 	if err := unix.SetsockoptInt(p.dfFD, unix.IPPROTO_IP, unix.IP_MTU_DISCOVER, unix.IP_PMTUDISC_DO); err != nil {
-		return err
+		return 0, err
 	}
 	if err := unix.SetsockoptInt(p.dfFD, unix.IPPROTO_IP, unix.IP_TTL, ttl); err != nil {
-		return err
+		return 0, err
 	}
 	var address [4]byte
 	copy(address[:], ip.To4())
-	return unix.Sendto(p.dfFD, packet, 0, &unix.SockaddrInet4{Addr: address})
+	if err := unix.Connect(p.dfFD, &unix.SockaddrInet4{Addr: address}); err != nil {
+		return 0, err
+	}
+	err := unix.Send(p.dfFD, packet, 0)
+	mtu, _ := unix.GetsockoptInt(p.dfFD, unix.IPPROTO_IP, unix.IP_MTU)
+	return mtu, err
 }
 
 func (p *pinger) isDiagnostic(typ icmp.Type) bool {

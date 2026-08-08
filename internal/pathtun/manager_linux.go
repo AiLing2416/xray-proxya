@@ -21,7 +21,7 @@ const Name = "path-tun"
 
 type Manager struct {
 	file  *os.File
-	relay func(net.IP, int, []byte) pathd.ProbeResult
+	relay func(net.IP, int, []byte, bool) pathd.ProbeResult
 	close sync.Once
 }
 
@@ -31,7 +31,7 @@ type ifreq struct {
 	Pad   [22]byte
 }
 
-func Start(relay func(net.IP, int, []byte) pathd.ProbeResult) (*Manager, error) {
+func Start(relay func(net.IP, int, []byte, bool) pathd.ProbeResult) (*Manager, error) {
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("open path TUN: %w", err)
@@ -66,7 +66,7 @@ func (m *Manager) serve() {
 			continue
 		}
 		go func(request request) {
-			result := m.relay(request.destination, int(request.ttl), request.echoData)
+			result := m.relay(request.destination, int(request.ttl), request.echoData, request.dontFragment)
 			var response []byte
 			if result.Echo {
 				response = request.echoReply()
@@ -87,6 +87,7 @@ type request struct {
 	icmp                []byte
 	original            []byte
 	echoData            []byte
+	dontFragment        bool
 }
 
 func parseRequest(packet []byte) (request, bool) {
@@ -107,7 +108,8 @@ func parseRequest(packet []byte) (request, bool) {
 			return request{}, false
 		}
 		icmp := append([]byte(nil), packet[ihl:total]...)
-		return request{source: net.IPv4(packet[12], packet[13], packet[14], packet[15]), destination: destination, ttl: packet[8], icmp: icmp, original: append([]byte(nil), packet[:total]...), echoData: append([]byte(nil), icmp[8:]...)}, true
+		df := binary.BigEndian.Uint16(packet[6:8])&0x4000 != 0
+		return request{source: net.IPv4(packet[12], packet[13], packet[14], packet[15]), destination: destination, ttl: packet[8], icmp: icmp, original: append([]byte(nil), packet[:total]...), echoData: append([]byte(nil), icmp[8:]...), dontFragment: df}, true
 	}
 	if packet[0]>>4 != 6 || len(packet) < 48 || packet[6] != unix.IPPROTO_ICMPV6 || packet[40] != 128 || packet[41] != 0 {
 		return request{}, false

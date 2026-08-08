@@ -140,8 +140,8 @@ func (c *Client) ProbeWithOptions(target string, timeoutMS int, options ProbeOpt
 // RelayEcho asks pathd to transmit the caller's ICMP echo payload from the
 // remote node. The outer IP headers are intentionally not carried: remote
 // source NAT is required for public replies to return to the proxy node.
-func (c *Client) RelayEcho(target string, timeoutMS, ttl int, data []byte) (ProbeResult, error) {
-	return c.probe(target, timeoutMS, ProbeOptions{TTL: ttl, PayloadSize: 8}, true, data)
+func (c *Client) RelayEcho(target string, timeoutMS, ttl int, data []byte, dontFragment bool) (ProbeResult, error) {
+	return c.probe(target, timeoutMS, ProbeOptions{TTL: ttl, PayloadSize: 8, DontFragment: dontFragment}, true, data)
 }
 
 func (c *Client) probe(target string, timeoutMS int, options ProbeOptions, relay bool, echoData []byte) (ProbeResult, error) {

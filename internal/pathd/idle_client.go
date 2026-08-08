@@ -54,8 +54,8 @@ func (c *IdleClient) ProbeWithOptions(ip net.IP, options ProbeOptions) (ProbeRes
 	return c.probe(ip, options, false, nil)
 }
 
-func (c *IdleClient) RelayEcho(ip net.IP, ttl int, data []byte) (ProbeResult, error) {
-	return c.probe(ip, ProbeOptions{TTL: ttl, PayloadSize: 8}, true, data)
+func (c *IdleClient) RelayEcho(ip net.IP, ttl int, data []byte, dontFragment bool) (ProbeResult, error) {
+	return c.probe(ip, ProbeOptions{TTL: ttl, PayloadSize: 8, DontFragment: dontFragment}, true, data)
 }
 
 func (c *IdleClient) probe(ip net.IP, options ProbeOptions, relay bool, echoData []byte) (ProbeResult, error) {
@@ -90,7 +90,7 @@ func (c *IdleClient) probe(ip net.IP, options ProbeOptions, relay bool, echoData
 	var result ProbeResult
 	var err error
 	if relay {
-		result, err = client.RelayEcho(ip.String(), 8000, options.TTL, echoData)
+		result, err = client.RelayEcho(ip.String(), 8000, options.TTL, echoData, options.DontFragment)
 	} else {
 		result, err = client.ProbeWithOptions(ip.String(), 8000, options)
 	}

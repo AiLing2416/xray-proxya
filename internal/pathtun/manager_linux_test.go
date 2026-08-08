@@ -64,3 +64,16 @@ func TestIPv4TimeExceededQuotesOriginalRequest(t *testing.T) {
 		t.Fatal("diagnostic does not quote original IPv4 header")
 	}
 }
+
+func TestIPv4RequestPreservesDontFragment(t *testing.T) {
+	packet := make([]byte, 28)
+	packet[0], packet[8], packet[9], packet[20] = 0x45, 64, unix.IPPROTO_ICMP, 8
+	binary.BigEndian.PutUint16(packet[2:4], uint16(len(packet)))
+	binary.BigEndian.PutUint16(packet[6:8], 0x4000)
+	copy(packet[12:16], net.ParseIP("192.0.2.10").To4())
+	copy(packet[16:20], net.ParseIP("8.8.8.8").To4())
+	req, ok := parseRequest(packet)
+	if !ok || !req.dontFragment {
+		t.Fatalf("DF request parsed as ok=%t df=%t", ok, req.dontFragment)
+	}
+}
