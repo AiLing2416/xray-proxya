@@ -91,12 +91,28 @@ func writePathdConfig(cfg *config.UserConfig) error {
 	return os.WriteFile(pathdConfigPath(), data, 0600)
 }
 
-var pathCmd = &cobra.Command{Use: "path", Short: "Manage the loopback-only PathLink ICMP agent", PersistentPreRun: func(cmd *cobra.Command, args []string) {
-	if _, err := os.Stat(config.GetConfigPath()); err != nil {
-		fmt.Println("❌ Initialize xray-proxya first.")
-		os.Exit(1)
+var pathCmd = &cobra.Command{Use: "path", Short: "Manage the root-only loopback PathLink ICMP agent", PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+	if err := pathRootOnlyError(os.Geteuid(), os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID")); err != nil {
+		return err
 	}
+	if _, err := os.Stat(config.GetConfigPath()); err != nil {
+		return fmt.Errorf("initialize xray-proxya first")
+	}
+	return nil
 }}
+
+// PathLink has one root-owned configuration and service lifecycle. Rejecting
+// sudo prevents a caller from accidentally mixing an unprivileged shell's
+// configuration expectations with root's system service.
+func pathRootOnlyError(euid int, sudoUser, sudoUID string) error {
+	if sudoUser != "" || sudoUID != "" {
+		return fmt.Errorf("path commands must run from a direct root shell; sudo is not supported (use 'su -' or log in as root)")
+	}
+	if euid != 0 {
+		return fmt.Errorf("path commands require a direct root shell (use 'su -' or log in as root)")
+	}
+	return nil
+}
 
 var pathEnableCmd = &cobra.Command{Use: "enable", Short: "Enable PathLink in staging and create its private configuration", Run: func(cmd *cobra.Command, args []string) {
 	cfg, err := config.LoadConfigEx(true)

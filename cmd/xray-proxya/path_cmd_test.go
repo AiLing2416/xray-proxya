@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestPathRequiresDirectRootShell(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		euid              int
+		sudoUser, sudoUID string
+		wantError         bool
+	}{
+		{name: "direct root", euid: 0},
+		{name: "ordinary user", euid: 1000, wantError: true},
+		{name: "sudo user marker", euid: 0, sudoUser: "ailing", wantError: true},
+		{name: "sudo uid marker", euid: 0, sudoUID: "1000", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := pathRootOnlyError(test.euid, test.sudoUser, test.sudoUID)
+			if (err != nil) != test.wantError {
+				t.Fatalf("pathRootOnlyError() error = %v, want error %t", err, test.wantError)
+			}
+		})
+	}
+}
+
 func TestPathdSystemdUnitIsCapabilityBounded(t *testing.T) {
 	unit := buildPathdSystemdServiceContent("/root/.local/share/xray-proxya/bin/pathd", "/root/.config/xray-proxya/pathd.json")
 	for _, required := range []string{

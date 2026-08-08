@@ -40,6 +40,10 @@ curl -Ls https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.s
 The installer verifies and installs the public `xray-proxya` CLI plus its
 private Xray core / `pathd` components. Only the CLI is added to `PATH`.
 
+PathLink commands are root-shell only. Use a direct root login or `su -`; do
+not invoke `path` through `sudo`, because its configuration and system service
+are intentionally owned by root.
+
 ### Manual Build
 Requires Go 1.25+
 ```bash
