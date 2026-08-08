@@ -20,10 +20,11 @@ import (
 const pathdUnit = "xray-proxya-pathd"
 
 var (
-	pathListen  string
-	pathToken   string
-	pathIdle    int
-	pathPingTTL int
+	pathListen    string
+	pathToken     string
+	pathIdle      int
+	pathPingTTL   int
+	pathTraceHops int
 )
 
 func pathdConfigPath() string { return filepath.Join(config.GetConfigDir(), "pathd.json") }
@@ -288,6 +289,70 @@ var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one 
 	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, cfg.Gateway.RelayAlias, time.Since(started).Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
 }}
 
+var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace remote ICMP hops through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
+	if os.Geteuid() != 0 {
+		fmt.Println("❌ path trace requires root on the Gateway.")
+		return
+	}
+	if pathTraceHops < 1 || pathTraceHops > 255 {
+		fmt.Println("❌ --max-hops must be between 1 and 255.")
+		return
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || !cfg.Gateway.SyntheticPing || cfg.Gateway.RelayAlias == "" {
+		fmt.Println("❌ path trace requires an enabled Gateway PathLink, synthetic ping, and selected proxy relay.")
+		return
+	}
+	ip, err := resolvePublicTarget(args[0])
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	socks, err := activePathdSOCKSAddress()
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	target := cfg.Path.Listen
+	if target == "" {
+		target = "127.0.0.1:39091"
+	}
+	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
+	defer client.Close()
+	fmt.Printf("Path trace to %s through %s (max %d hops)\n", ip, cfg.Gateway.RelayAlias, pathTraceHops)
+	for ttl := 1; ttl <= pathTraceHops; ttl++ {
+		probe, err := client.ProbeTTL(ip, ttl)
+		if err != nil {
+			fmt.Printf("%2d  *  %v\n", ttl, err)
+			continue
+		}
+		responder := "unknown"
+		if probe.Responder != nil {
+			responder = probe.Responder.String()
+		}
+		if probe.Echo {
+			fmt.Printf("%2d  %-39s  %s  echo reply\n", ttl, responder, probe.RTT.Round(time.Millisecond))
+			return
+		}
+		fmt.Printf("%2d  %-39s  %s  %s\n", ttl, responder, probe.RTT.Round(time.Millisecond), pathDiagnosticLabel(probe))
+	}
+	fmt.Printf("Trace stopped after %d hops without an echo reply.\n", pathTraceHops)
+}}
+
+func pathDiagnosticLabel(probe pathd.ProbeResult) string {
+	if probe.ICMPType == 11 && probe.ICMPCode == 0 {
+		return "TTL exceeded"
+	}
+	if probe.ICMPType == 3 && probe.ICMPCode == 0 {
+		return "hop limit exceeded"
+	}
+	return probe.Error().Error()
+}
+
 func resolvePublicTarget(value string) (net.IP, error) {
 	if ip := net.ParseIP(value); ip != nil {
 		if err := pathd.ValidateProbeTarget(ip); err != nil {
@@ -339,6 +404,7 @@ func init() {
 	pathEnableCmd.Flags().StringVar(&pathToken, "token", "", "shared 32-byte PathLink token")
 	pathEnableCmd.Flags().IntVar(&pathIdle, "idle", 20, "pathd connection idle timeout in seconds")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
-	pathCmd.AddCommand(pathEnableCmd, pathDisableCmd, pathInstallCmd, pathStartCmd, pathStopCmd, pathRestartCmd, pathStatusCmd, pathPingCmd)
+	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
+	pathCmd.AddCommand(pathEnableCmd, pathDisableCmd, pathInstallCmd, pathStartCmd, pathStopCmd, pathRestartCmd, pathStatusCmd, pathPingCmd, pathTraceCmd)
 	rootCmd.AddCommand(pathCmd)
 }
