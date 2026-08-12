@@ -9,7 +9,7 @@ import (
 )
 
 func TestBuildSystemdServiceContentUsesJournaldAndSandbox(t *testing.T) {
-	content := buildSystemdServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya", "CAP_NET_BIND_SERVICE", true)
+	content := buildSystemdServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya", "CAP_NET_BIND_SERVICE", true, true)
 	for _, required := range []string{
 		"User=root", "ExecStart=/root/.local/bin/xray-proxya run",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
@@ -39,9 +39,16 @@ func TestBuildSubTemplateUsesInstanceConfiguration(t *testing.T) {
 }
 
 func TestUserUnitDoesNotRequestCapabilities(t *testing.T) {
-	content := buildSystemdServiceContent("/home/ailing/.local/bin/xray-proxya", "/home/ailing/.local/share/xray-proxya", "/home/ailing/.local/share/xray-proxya/bin", "/home/ailing/.config/xray-proxya", "", false)
+	content := buildSystemdServiceContent("/home/ailing/.local/bin/xray-proxya", "/home/ailing/.local/share/xray-proxya", "/home/ailing/.local/share/xray-proxya/bin", "/home/ailing/.config/xray-proxya", "", false, true)
 	if strings.Contains(content, "CapabilityBoundingSet=") || strings.Contains(content, "AmbientCapabilities=") || strings.Contains(content, "User=root") {
 		t.Fatalf("user service must not request root capabilities:\n%s", content)
+	}
+}
+
+func TestGatewayUnitExposesTUNDeviceOnlyForGateway(t *testing.T) {
+	content := buildSystemdServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya", "CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW", true, false)
+	if !strings.Contains(content, "PrivateDevices=no") {
+		t.Fatalf("gateway unit must expose /dev/net/tun:\n%s", content)
 	}
 }
 

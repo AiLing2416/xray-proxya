@@ -102,10 +102,14 @@ func mainUnitCapabilities(cfg *config.UserConfig) string {
 	return "CAP_NET_BIND_SERVICE"
 }
 
-func buildSystemdServiceContent(binPath, workDir, assetDir, configDir, capabilities string, system bool) string {
+func buildSystemdServiceContent(binPath, workDir, assetDir, configDir, capabilities string, system, privateDevices bool) string {
 	userLine := ""
 	wantedBy := "default.target"
 	capabilityLines := ""
+	privateDevicesValue := "yes"
+	if !privateDevices {
+		privateDevicesValue = "no"
+	}
 	if system {
 		userLine = "User=root\n"
 		wantedBy = "multi-user.target"
@@ -127,13 +131,13 @@ UMask=0077
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateTmp=yes
-PrivateDevices=yes
+PrivateDevices=%s
 ReadWritePaths=%s %s
 %s
 
 [Install]
 WantedBy=%s
-`, userLine, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
+`, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, assetDir, capabilityLines, wantedBy)
 }
 
 func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string, system bool) string {
@@ -223,7 +227,8 @@ func serviceInstall() error {
 	if err := os.MkdirAll(unitDirectory(), 0700); err != nil {
 		return fmt.Errorf("create systemd unit directory: %w", err)
 	}
-	if err := os.WriteFile(managedUnitPath(xray.MainServiceUnit), []byte(buildSystemdServiceContent(binPath, workDir, assetDir, configDir, mainUnitCapabilities(cfg), system)), 0644); err != nil {
+	privateDevices := cfg.Role != config.RoleGateway
+	if err := os.WriteFile(managedUnitPath(xray.MainServiceUnit), []byte(buildSystemdServiceContent(binPath, workDir, assetDir, configDir, mainUnitCapabilities(cfg), system, privateDevices)), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", xray.MainServiceUnit, err)
 	}
 	if err := os.WriteFile(managedUnitPath(subTemplateUnit), []byte(buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
