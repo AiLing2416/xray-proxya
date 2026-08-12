@@ -29,6 +29,15 @@ func init() {
 			}
 			return err
 		}
+		if proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain() {
+			delegated, err := ensureManagementDomainWithLock("system-restore", true)
+			if err != nil {
+				return err
+			}
+			if delegated {
+				return nil
+			}
+		}
 		return RestoreTunStateLocked(cfg)
 	})
 }
@@ -83,6 +92,13 @@ func restartWithTunDisabled(disabled bool) error {
 // Xray's config: interface addresses, forwarding/rp_filter sysctls, policy
 // routing, and nftables. It is a no-op when the active gateway is down.
 func RestoreTunState(cfg *config.UserConfig) error {
+	delegated, err := ensureManagementDomain("system-restore")
+	if err != nil {
+		return err
+	}
+	if delegated {
+		return nil
+	}
 	return config.WithLifecycleLock(func() error {
 		return RestoreTunStateLocked(cfg)
 	})
@@ -91,6 +107,19 @@ func RestoreTunState(cfg *config.UserConfig) error {
 // RestoreTunStateLocked is the lock-aware implementation used by the Xray
 // restart hook and other callers that already hold the lifecycle lock.
 func RestoreTunStateLocked(cfg *config.UserConfig) error {
+	if proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain() {
+		delegated, err := ensureManagementDomainWithLock("system-restore", true)
+		if err != nil {
+			return err
+		}
+		if delegated {
+			return nil
+		}
+	}
+	return restoreTunStateLocked(cfg)
+}
+
+func restoreTunStateLocked(cfg *config.UserConfig) error {
 	if cfg == nil || !WantsTunnel(cfg) || config.GatewayTunDisabled() {
 		return nil
 	}
@@ -207,6 +236,15 @@ func SyncDesired(cfg *config.UserConfig) error {
 // SyncDesiredLocked synchronizes an already committed gateway config while
 // the caller owns the lifecycle lock.
 func SyncDesiredLocked(cfg *config.UserConfig) error {
+	if proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain() {
+		delegated, err := ensureManagementDomainWithLock("system-sync", true)
+		if err != nil {
+			return err
+		}
+		if delegated {
+			return nil
+		}
+	}
 	return syncDesiredLocked(cfg)
 }
 
@@ -232,6 +270,10 @@ func syncDesiredLocked(cfg *config.UserConfig) error {
 // ensureManagementDomain re-executes Gateway mutations in the short-lived
 // SELinux domain. On non-SELinux hosts and from the child process it is a no-op.
 func ensureManagementDomain(operation string) (bool, error) {
+	return ensureManagementDomainWithLock(operation, false)
+}
+
+func ensureManagementDomainWithLock(operation string, lockHeld bool) (bool, error) {
 	if !proxyaSELinux.IsEnforcing() || proxyaSELinux.InGatewayDomain() {
 		return false, nil
 	}
@@ -248,6 +290,9 @@ func ensureManagementDomain(operation string) (bool, error) {
 	// deliberately outside xray_proxya_gateway_t and would otherwise make a
 	// successful network operation fail on its diagnostic output path.
 	cmd.Env = append(os.Environ(), proxyaSELinux.GatewayManagementEnv()+"=1")
+	if lockHeld {
+		cmd.Env = append(cmd.Env, proxyaSELinux.GatewayLifecycleLockHeldEnv()+"=1")
+	}
 	if err := cmd.Run(); err != nil {
 		return false, fmt.Errorf("run Gateway SELinux management domain: %w", err)
 	}

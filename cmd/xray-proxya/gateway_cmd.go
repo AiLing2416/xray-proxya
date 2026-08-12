@@ -319,8 +319,35 @@ var gatewaySystemSyncCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("load active config: %w", err)
 		}
-		if err := gateway.SyncDesired(cfg); err != nil {
-			return fmt.Errorf("synchronize gateway runtime: %w", err)
+		var syncErr error
+		if os.Getenv(proxyaSELinux.GatewayLifecycleLockHeldEnv()) == "1" {
+			syncErr = gateway.SyncDesiredLocked(cfg)
+		} else {
+			syncErr = gateway.SyncDesired(cfg)
+		}
+		if syncErr != nil {
+			return fmt.Errorf("synchronize gateway runtime: %w", syncErr)
+		}
+		return nil
+	},
+}
+
+var gatewaySystemRestoreCmd = &cobra.Command{
+	Use:    "system-restore",
+	Short:  "Restore Gateway runtime from the SELinux management domain",
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("load active config: %w", err)
+		}
+		if os.Getenv(proxyaSELinux.GatewayLifecycleLockHeldEnv()) == "1" {
+			err = gateway.RestoreTunStateLocked(cfg)
+		} else {
+			err = gateway.RestoreTunState(cfg)
+		}
+		if err != nil {
+			return fmt.Errorf("restore gateway runtime: %w", err)
 		}
 		return nil
 	},
@@ -462,6 +489,7 @@ func init() {
 		gatewayDownCmd,
 		gatewaySystemDownCmd,
 		gatewaySystemSyncCmd,
+		gatewaySystemRestoreCmd,
 		gatewayRollbackCompatCmd,
 		gatewayCheckCmd,
 		gatewayVerifyCompatCmd,

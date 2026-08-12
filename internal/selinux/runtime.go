@@ -7,6 +7,7 @@ import (
 )
 
 const gatewayManagementEnv = "XRAY_PROXYA_GATEWAY_SELINUX_DOMAIN"
+const gatewayLifecycleLockHeldEnv = "XRAY_PROXYA_GATEWAY_LIFECYCLE_LOCK_HELD"
 
 // IsEnforcing reports whether SELinux is enabled and currently enforcing.
 // Missing SELinux tooling is treated as a non-SELinux host.
@@ -31,3 +32,8 @@ func InGatewayDomain() bool {
 // GatewayManagementEnv returns the internal re-execution marker for the
 // short-lived Gateway SELinux management domain.
 func GatewayManagementEnv() string { return gatewayManagementEnv }
+
+// GatewayLifecycleLockHeldEnv marks a management child whose parent already
+// owns the cross-process lifecycle lock. Such a child must not try to acquire
+// the same lock while the parent waits for it to finish.
+func GatewayLifecycleLockHeldEnv() string { return gatewayLifecycleLockHeldEnv }
