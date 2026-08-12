@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -57,8 +58,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if state == "disabled" {
-		CleanupFirewall()
-		return nil
+		return CleanupFirewall()
 	}
 
 	lanIface := cfg.Gateway.LANInterface
@@ -67,7 +67,9 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if state == "forward-only" {
-		CleanupFirewall()
+		if err := CleanupFirewall(); err != nil {
+			return err
+		}
 		if err := SetupKernel(lanIface); err != nil {
 			return fmt.Errorf("kernel setup failed: %w", err)
 		}
@@ -75,7 +77,9 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
-		CleanupFirewall()
+		if err := CleanupFirewall(); err != nil {
+			return err
+		}
 		if err := SetupKernel(lanIface); err != nil {
 			return fmt.Errorf("kernel setup failed: %w", err)
 		}
@@ -108,7 +112,9 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		return fmt.Errorf("close temp nft file: %w", err)
 	}
 
-	CleanupFirewall()
+	if err := CleanupFirewall(); err != nil {
+		return fmt.Errorf("clean up existing gateway state: %w", err)
+	}
 	if err := SetupKernel(lanIface); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
@@ -167,29 +173,24 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 	for _, rule := range rulesToAdd {
 		if err := addPolicyRule(rule); err != nil {
-			CleanupFirewall()
-			return err
+			return errors.Join(err, CleanupFirewall())
 		}
 	}
 	if err := run("ip", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
-		CleanupFirewall()
-		return err
+		return errors.Join(err, CleanupFirewall())
 	}
 	if ipv6Supported {
 		if err := run("ip", "-6", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
-			CleanupFirewall()
-			return err
+			return errors.Join(err, CleanupFirewall())
 		}
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := run("ip", "route", "replace", "default", "dev", pathTunName, "table", pathPolicyTable); err != nil {
-			CleanupFirewall()
-			return err
+			return errors.Join(err, CleanupFirewall())
 		}
 		if ipv6Supported {
 			if err := run("ip", "-6", "route", "replace", "default", "dev", pathTunName, "table", pathPolicyTable); err != nil {
-				CleanupFirewall()
-				return err
+				return errors.Join(err, CleanupFirewall())
 			}
 		}
 	}
@@ -199,8 +200,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := installPathTTLRules(lanIface, ipv6Supported); err != nil {
-			CleanupFirewall()
-			return fmt.Errorf("preserve ICMP TTL through path-tun: %w", err)
+			return errors.Join(fmt.Errorf("preserve ICMP TTL through path-tun: %w", err), CleanupFirewall())
 		}
 	}
 
@@ -222,19 +222,31 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	return nil
 }
 
-func CleanupFirewall() {
-	cleanupPathTTLRules()
-	_ = run("nft", "delete", "table", "inet", tableName)
-	cleanupFilterForwardRules()
+func CleanupFirewall() error {
+	var cleanupErrs []error
+	record := func(step string, err error) {
+		if err == nil {
+			return
+		}
+		wrapped := fmt.Errorf("gateway cleanup %s: %w", step, err)
+		fmt.Printf("⚠️ %v\n", wrapped)
+		cleanupErrs = append(cleanupErrs, wrapped)
+	}
+
+	record("PathLink TTL rules", cleanupPathTTLRules())
+	record("nft table", runDelete("nft", "delete", "table", "inet", tableName))
+	record("filter forward rules", cleanupFilterForwardRules())
 
 	for _, rule := range loadPolicyRules() {
-		_ = deletePolicyRule(rule)
+		record("policy rule", deletePolicyRule(rule))
 	}
-	_ = os.Remove(policyRulesPath())
-	_ = run("ip", "route", "del", "default", "dev", tunName, "table", policyTable)
-	_ = run("ip", "-6", "route", "del", "default", "dev", tunName, "table", policyTable)
-	_ = run("ip", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable)
-	_ = run("ip", "-6", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable)
+	record("policy rule state", removeIfExists(policyRulesPath()))
+	record("IPv4 Xray route", runDelete("ip", "route", "del", "default", "dev", tunName, "table", policyTable))
+	record("IPv6 Xray route", runDelete("ip", "-6", "route", "del", "default", "dev", tunName, "table", policyTable))
+	record("IPv4 PathLink route", runDelete("ip", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable))
+	record("IPv6 PathLink route", runDelete("ip", "-6", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable))
+	record("sysctl state", restoreSysctlState())
+	return errors.Join(cleanupErrs...)
 }
 
 type pathTTLRule struct {
@@ -286,16 +298,19 @@ func installPathTTLRules(lanIface string, ipv6Supported bool) error {
 	return nil
 }
 
-func cleanupPathTTLRules() {
+func cleanupPathTTLRules() error {
 	data, err := os.ReadFile(pathTTLRulesPath())
 	if err != nil {
-		return
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
 	}
 	var rules []pathTTLRule
 	if json.Unmarshal(data, &rules) != nil {
-		_ = os.Remove(pathTTLRulesPath())
-		return
+		return removeIfExists(pathTTLRulesPath())
 	}
+	var cleanupErrs []error
 	for i := len(rules) - 1; i >= 0; i-- {
 		args := append([]string{}, rules[i].Args...)
 		for j := range args {
@@ -308,9 +323,14 @@ func cleanupPathTTLRules() {
 		if rules[i].IPv6 {
 			binary = "ip6tables"
 		}
-		_ = run(binary, args...)
+		if err := run(binary, args...); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
 	}
-	_ = os.Remove(pathTTLRulesPath())
+	if err := removeIfExists(pathTTLRulesPath()); err != nil {
+		cleanupErrs = append(cleanupErrs, err)
+	}
+	return errors.Join(cleanupErrs...)
 }
 
 func policyRules(lanCIDR, lanIPv6CIDR string, ipv6Supported bool) []policyRuleSpec {
@@ -394,6 +414,9 @@ func deletePolicyRule(rule policyRuleSpec) error {
 }
 
 func SetupKernel(lanIface string) error {
+	if err := saveSysctlState(lanIface); err != nil {
+		return err
+	}
 	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
@@ -744,14 +767,18 @@ func run(name string, args ...string) error {
 	return nil
 }
 
-func cleanupFilterForwardRules() {
+func cleanupFilterForwardRules() error {
 	out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").Output()
 	if err != nil {
-		return
+		if strings.Contains(err.Error(), "No such file") || strings.Contains(err.Error(), "No such chain") {
+			return nil
+		}
+		return err
 	}
+	var cleanupErrs []error
 	lines := strings.Split(string(out), "\n")
 	for _, line := range lines {
-		if strings.Contains(line, "xray-proxya") || strings.Contains(line, "proxya-tun") {
+		if strings.Contains(line, `comment "xray-proxya"`) {
 			idx := strings.Index(line, "handle ")
 			if idx != -1 {
 				handleStr := strings.TrimSpace(line[idx+7:])
@@ -764,9 +791,101 @@ func cleanupFilterForwardRules() {
 					}
 				}
 				if digits != "" {
-					_ = run("nft", "delete", "rule", "inet", "filter", "forward", "handle", digits)
+					if err := run("nft", "delete", "rule", "inet", "filter", "forward", "handle", digits); err != nil {
+						cleanupErrs = append(cleanupErrs, err)
+					}
 				}
 			}
 		}
 	}
+	return errors.Join(cleanupErrs...)
+}
+
+func runDelete(name string, args ...string) error {
+	err := run(name, args...)
+	if err == nil || strings.Contains(err.Error(), "No such file") || strings.Contains(err.Error(), "Cannot find") || strings.Contains(err.Error(), "No such process") {
+		return nil
+	}
+	return err
+}
+
+func removeIfExists(path string) error {
+	err := os.Remove(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+type sysctlState struct {
+	Values map[string]string `json:"values"`
+}
+
+func sysctlStatePath() string {
+	return filepath.Join(config.GetConfigDir(), "gateway.sysctl.json")
+}
+
+func readSysctl(key string) (string, error) {
+	out, err := exec.Command("sysctl", "-n", key).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func saveSysctlState(lanIface string) error {
+	keys := []string{
+		"net.ipv4.ip_forward",
+		"net.ipv6.conf.all.forwarding",
+		"net.ipv4.conf.all.rp_filter",
+		"net.ipv4.conf.default.rp_filter",
+		"net.ipv4.conf.all.send_redirects",
+		"net.ipv4.conf.default.send_redirects",
+	}
+	if lanIface != "" {
+		keys = append(keys,
+			"net.ipv4.conf."+lanIface+".send_redirects",
+			"net.ipv4.conf."+lanIface+".rp_filter",
+		)
+	}
+	values := make(map[string]string, len(keys))
+	for _, key := range keys {
+		value, err := readSysctl(key)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", key, err)
+		}
+		values[key] = value
+	}
+	data, err := json.Marshal(sysctlState{Values: values})
+	if err != nil {
+		return fmt.Errorf("encode gateway sysctl state: %w", err)
+	}
+	if err := os.WriteFile(sysctlStatePath(), data, 0600); err != nil {
+		return fmt.Errorf("save gateway sysctl state: %w", err)
+	}
+	return nil
+}
+
+func restoreSysctlState() error {
+	data, err := os.ReadFile(sysctlStatePath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var state sysctlState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("decode gateway sysctl state: %w", err)
+	}
+	var restoreErrs []error
+	for key, value := range state.Values {
+		if err := run("sysctl", "-w", key+"="+value); err != nil {
+			restoreErrs = append(restoreErrs, err)
+		}
+	}
+	if err := removeIfExists(sysctlStatePath()); err != nil {
+		restoreErrs = append(restoreErrs, err)
+	}
+	return errors.Join(restoreErrs...)
 }

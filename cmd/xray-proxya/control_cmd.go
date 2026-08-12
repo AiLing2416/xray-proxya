@@ -26,7 +26,9 @@ var stopCmd = &cobra.Command{
 		xray.StopService()
 		cfg, _ := config.LoadConfig()
 		if cfg != nil && (cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) {
-			gateway.CleanupFirewall()
+			if err := gateway.CleanupFirewall(); err != nil {
+				fmt.Printf("❌ Failed to clean gateway firewall: %v\n", err)
+			}
 		}
 		fmt.Println("✅ Stop command executed.")
 	},

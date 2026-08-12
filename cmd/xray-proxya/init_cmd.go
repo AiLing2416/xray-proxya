@@ -128,7 +128,9 @@ var initCmd = &cobra.Command{
 
 func prepareFreshInit() {
 	if os.Geteuid() == 0 {
-		gateway.CleanupFirewall()
+		if err := gateway.CleanupFirewall(); err != nil {
+			fmt.Printf("⚠️ Failed to clean gateway firewall: %v\n", err)
+		}
 		xray.StopManagedRuntime()
 	} else {
 		xray.StopXray()

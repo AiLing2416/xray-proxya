@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -88,8 +89,7 @@ func Up(cfg *config.UserConfig) error {
 	}
 	if err := restartWithTunDisabled(false); err != nil {
 		_ = config.SetGatewayTunDisabled(true)
-		CleanupFirewall()
-		return err
+		return errors.Join(err, CleanupFirewall())
 	}
 	// Firewall and policy routing are owned by this explicit root operation,
 	// rather than the long-running Xray service domain.
@@ -117,8 +117,8 @@ func Down() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("gateway down requires root")
 	}
-	CleanupFirewall()
-	return restartWithTunDisabled(true)
+	cleanupErr := CleanupFirewall()
+	return errors.Join(cleanupErr, restartWithTunDisabled(true))
 }
 
 // SyncDesired is used by apply after committing a gateway configuration change.
@@ -136,7 +136,9 @@ func SyncDesired(cfg *config.UserConfig) error {
 	if WantsTunnel(cfg) {
 		return Up(cfg)
 	}
-	CleanupFirewall()
+	if err := CleanupFirewall(); err != nil {
+		return err
+	}
 	if err := restartWithTunDisabled(true); err != nil {
 		return err
 	}
