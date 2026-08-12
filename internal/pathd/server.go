@@ -192,6 +192,7 @@ type pingResult struct {
 type pendingPing struct {
 	result      chan pingResult
 	started     time.Time
+	target      net.IP
 	matchCookie bool
 }
 type pinger struct {
@@ -273,7 +274,7 @@ func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, r
 	p.next++
 	key := pingKey{id: 0x5054, seq: p.next, cookie: cookie}
 	result := make(chan pingResult, 1)
-	p.pending[key] = pendingPing{result: result, started: time.Now(), matchCookie: relayData == nil}
+	p.pending[key] = pendingPing{result: result, started: time.Now(), target: append(net.IP(nil), ip...), matchCookie: relayData == nil}
 	p.mu.Unlock()
 	defer func() { p.mu.Lock(); delete(p.pending, key); p.mu.Unlock() }()
 	payload := relayData
@@ -341,17 +342,7 @@ func (p *pinger) readLoop() {
 		if !ok {
 			continue
 		}
-		p.mu.Lock()
-		pending, ok := p.pending[key]
-		if !ok {
-			for candidate, value := range p.pending {
-				if candidate.id == key.id && candidate.seq == key.seq {
-					key, pending, ok = candidate, value, true
-					break
-				}
-			}
-		}
-		p.mu.Unlock()
+		key, pending, ok := p.findPending(key, cookieMatch, diagnostic, source, message)
 		if ok && (diagnostic || cookieMatch || !pending.matchCookie) {
 			select {
 			case pending.result <- pingResult{probe: p.probeFromMessage(message, source, pending.started, diagnostic, buf[:n])}:
@@ -359,6 +350,62 @@ func (p *pinger) readLoop() {
 			}
 		}
 	}
+}
+
+func (p *pinger) findPending(key pingKey, cookieMatch, diagnostic bool, source net.Addr, message *icmp.Message) (pingKey, pendingPing, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for candidate, pending := range p.pending {
+		if candidate.id != key.id || candidate.seq != key.seq {
+			continue
+		}
+		if !diagnostic && pending.matchCookie {
+			if !cookieMatch || candidate.cookie != key.cookie {
+				continue
+			}
+		}
+		if !p.pendingMatches(pending, source, diagnostic, message) {
+			continue
+		}
+		return candidate, pending, true
+	}
+	return pingKey{}, pendingPing{}, false
+}
+
+func (p *pinger) pendingMatches(pending pendingPing, source net.Addr, diagnostic bool, message *icmp.Message) bool {
+	if diagnostic {
+		return sameIP(pending.target, p.diagnosticTarget(message))
+	}
+	return sameIP(pending.target, sourceIP(source))
+}
+
+func sameIP(left, right net.IP) bool {
+	return left != nil && right != nil && left.Equal(right)
+}
+
+func sourceIP(source net.Addr) net.IP {
+	switch address := source.(type) {
+	case *net.IPAddr:
+		return address.IP
+	case *net.UDPAddr:
+		return address.IP
+	default:
+		return nil
+	}
+}
+
+func (p *pinger) diagnosticTarget(message *icmp.Message) net.IP {
+	data := quotedData(message.Body)
+	if p.proto == 1 {
+		if len(data) < 20 || data[0]>>4 != 4 {
+			return nil
+		}
+		return net.IPv4(data[16], data[17], data[18], data[19])
+	}
+	if len(data) < 40 || data[0]>>4 != 6 {
+		return nil
+	}
+	return append(net.IP(nil), data[24:40]...)
 }
 
 func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool) {
