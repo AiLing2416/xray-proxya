@@ -2,7 +2,6 @@ package selinux
 
 import (
 	"os"
-	"os/exec"
 	"strings"
 )
 
@@ -10,11 +9,20 @@ const gatewayManagementEnv = "XRAY_PROXYA_GATEWAY_SELINUX_DOMAIN"
 const gatewayLifecycleLockHeldEnv = "XRAY_PROXYA_GATEWAY_LIFECYCLE_LOCK_HELD"
 
 // IsEnforcing reports whether SELinux is enabled and currently enforcing.
-// Missing SELinux tooling is treated as a non-SELinux host.
+// It reads selinuxfs directly so confined service domains do not need to
+// execute the getenforce helper. Missing selinuxfs is treated as a non-SELinux
+// host.
 func IsEnforcing() bool {
-	out, err := exec.Command("getenforce").Output()
-	return err == nil && strings.TrimSpace(string(out)) == "Enforcing"
+	for _, path := range []string{"/sys/fs/selinux/enforce", "/selinux/enforce"} {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			return isEnforcingValue(data)
+		}
+	}
+	return false
 }
+
+func isEnforcingValue(value []byte) bool { return strings.TrimSpace(string(value)) == "1" }
 
 // InGatewayDomain reports whether this process already runs in the short-lived
 // Gateway management domain.

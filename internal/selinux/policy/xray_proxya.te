@@ -12,6 +12,9 @@ domain_use_interactive_fds(xray_proxya_t)
 # The hardened root unit uses NoNewPrivileges=true. Fedora requires this
 # explicit permission for systemd to transition into the dedicated domain.
 allow init_t xray_proxya_t:process2 nnp_transition;
+# Read selinuxfs directly to decide whether a gateway operation must be
+# delegated. This avoids executing getenforce from the long-running service.
+selinux_get_enforce_mode(xray_proxya_t)
 
 type xray_proxya_config_t;
 files_type(xray_proxya_config_t)
@@ -67,6 +70,7 @@ manage_lnk_files_pattern(xray_proxya_gateway_t, xray_proxya_config_t, xray_proxy
 can_exec(xray_proxya_gateway_t, xray_proxya_exec_t)
 domain_entry_file(xray_proxya_gateway_t, xray_proxya_exec_t)
 corecmd_exec_bin(xray_proxya_gateway_t)
+selinux_get_enforce_mode(xray_proxya_gateway_t)
 # Read only this process's SELinux context so the re-executed manager can
 # detect that it is already confined and never recursively invoke runcon.
 allow xray_proxya_gateway_t self:process getattr;
@@ -132,6 +136,10 @@ systemd_exec_systemctl(xray_proxya_gateway_t)
 systemd_start_systemd_services(xray_proxya_gateway_t)
 systemd_stop_systemd_services(xray_proxya_gateway_t)
 systemd_status_systemd_services(xray_proxya_gateway_t)
+# On current Fedora, systemctl's D-Bus request is also checked against init_t
+# through the system class. The manager only invokes validated operations for
+# its fixed xray-proxya unit names.
+allow xray_proxya_gateway_t init_t:system { start stop status };
 # RestartXrayService first verifies that its fixed unit exists; it needs only
 # metadata/read access to unit files, never permission to modify them.
 systemd_search_unit_dirs(xray_proxya_gateway_t)

@@ -14,6 +14,7 @@ import (
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/pathtun"
 	"xray-proxya/internal/quota"
+	proxyaSELinux "xray-proxya/internal/selinux"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -205,11 +206,19 @@ var runCmd = &cobra.Command{
 				}(pathClient, pathRuntimeStop)
 			}
 		}
-		if err := gateway.RestoreTunState(cfg); err != nil {
-			fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
-			_ = stopProcess(process, waitCh)
-			cleanup()
-			return
+		// The long-running service must not acquire MAC-transition privileges
+		// merely to repair gateway state. Under enforcing SELinux, gateway up,
+		// down, and root-initiated restarts delegate those mutations to the
+		// short-lived xray_proxya_gateway_t domain. A direct service start is
+		// intentionally limited to starting Xray/TUN; the operator then runs
+		// `gateway up` to install interception rules.
+		if !(cfg.Role == config.RoleGateway && proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain()) {
+			if err := gateway.RestoreTunState(cfg); err != nil {
+				fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
+				_ = stopProcess(process, waitCh)
+				cleanup()
+				return
+			}
 		}
 
 		sigChan := make(chan os.Signal, 1)

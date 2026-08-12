@@ -48,3 +48,18 @@ func TestSELinuxPolicyAllowsHardenedServiceTransitions(t *testing.T) {
 		t.Fatal("root service needs an nnp_transition permission under NoNewPrivileges")
 	}
 }
+
+func TestSELinuxPolicyReadsEnforcementModeWithoutGetenforce(t *testing.T) {
+	for _, domain := range []string{"xray_proxya_t", "xray_proxya_gateway_t"} {
+		if !strings.Contains(proxyaSELinux.PolicySource, "selinux_get_enforce_mode("+domain+")") {
+			t.Fatalf("%s cannot read SELinux enforcement mode", domain)
+		}
+	}
+}
+
+func TestSELinuxPolicyAllowsOnlyGatewayLifecycleSystemActions(t *testing.T) {
+	want := "allow xray_proxya_gateway_t init_t:system { start stop status };"
+	if !strings.Contains(proxyaSELinux.PolicySource, want) {
+		t.Fatalf("gateway lifecycle system permission is missing: %q", want)
+	}
+}
