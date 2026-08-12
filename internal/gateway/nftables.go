@@ -537,6 +537,7 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 
 	// For proxy state, perform full verification
+	ipv6Configured := false
 	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
 		problems = append(problems, tunName+" interface is not present (Hint: Is the 'xray-proxya' service running?)")
 	} else {
@@ -546,6 +547,7 @@ func Verify(cfg *config.UserConfig) []string {
 		if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
 			problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
 		}
+		ipv6Configured = interfaceHasCIDR(tunName, tunIPv6CIDR)
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := exec.Command("ip", "link", "show", pathTunName).Run(); err != nil {
@@ -570,11 +572,25 @@ func Verify(cfg *config.UserConfig) []string {
 	} else if !ok {
 		problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via "+tunName)
 	}
+	if ipv6Configured {
+		if ok, err := hasDefaultRoute(policyTable, tunName, true); err != nil {
+			problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
+		} else if !ok {
+			problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via "+tunName)
+		}
+	}
 	if pathTunnelEnabled(cfg) {
 		if ok, err := hasDefaultRoute(pathPolicyTable, pathTunName, false); err != nil {
 			problems = append(problems, "cannot inspect IPv4 policy table "+pathPolicyTable+": "+err.Error())
 		} else if !ok {
 			problems = append(problems, "IPv4 policy table "+pathPolicyTable+" has no default route via "+pathTunName)
+		}
+		if ipv6Configured {
+			if ok, err := hasDefaultRoute(pathPolicyTable, pathTunName, true); err != nil {
+				problems = append(problems, "cannot inspect IPv6 policy table "+pathPolicyTable+": "+err.Error())
+			} else if !ok {
+				problems = append(problems, "IPv6 policy table "+pathPolicyTable+" has no default route via "+pathTunName)
+			}
 		}
 	}
 
@@ -585,8 +601,8 @@ func Verify(cfg *config.UserConfig) []string {
 		// IPv6 is optional. Only require IPv6 policy state when the TUN
 		// actually received its IPv6 address; a host with IPv6 disabled or an
 		// Xray core that rejected the optional address remains IPv4-healthy.
-		ipv6Configured := interfaceHasCIDR(tunName, tunIPv6CIDR)
-		expected := policyRules(cfg, lanCIDR, "", ipv6Configured)
+		lanIPv6CIDR, _ := getInterfaceIPv6CIDR(cfg.Gateway.LANInterface)
+		expected := policyRules(cfg, lanCIDR, lanIPv6CIDR, ipv6Configured)
 		problems = append(problems, verifyPolicyRules(expected)...)
 	}
 	return problems
