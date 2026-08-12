@@ -225,15 +225,17 @@ func StartXrayBackground() error {
 }
 
 func RestartXrayService() error {
-	if err := restartXrayService(); err != nil {
-		return err
-	}
-	if restartHook != nil {
-		if err := restartHook(); err != nil {
-			return fmt.Errorf("restore runtime state after Xray restart: %w", err)
+	return config.WithLifecycleLock(func() error {
+		if err := restartXrayService(); err != nil {
+			return err
 		}
-	}
-	return nil
+		if restartHook != nil {
+			if err := restartHook(); err != nil {
+				return fmt.Errorf("restore runtime state after Xray restart: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // RestartXrayServiceWithoutHook is used by gateway transitions that are

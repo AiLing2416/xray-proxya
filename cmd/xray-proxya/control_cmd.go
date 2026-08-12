@@ -23,12 +23,18 @@ var stopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the running Xray service (Auto-detects Root/Rootless)",
 	Run: func(cmd *cobra.Command, args []string) {
-		xray.StopService()
-		cfg, _ := config.LoadConfig()
-		if cfg != nil && (cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) {
-			if err := gateway.CleanupFirewall(); err != nil {
-				fmt.Printf("❌ Failed to clean gateway firewall: %v\n", err)
+	err := config.WithLifecycleLock(func() error {
+			cfg, _ := config.LoadConfig()
+			if cfg != nil && (cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) {
+				if err := gateway.CleanupFirewall(); err != nil {
+					fmt.Printf("❌ Failed to clean gateway firewall: %v\n", err)
+				}
 			}
+			xray.StopService()
+			return nil
+		})
+		if err != nil {
+			fmt.Printf("❌ Failed to serialize stop: %v\n", err)
 		}
 		fmt.Println("✅ Stop command executed.")
 	},

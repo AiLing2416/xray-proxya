@@ -29,7 +29,7 @@ func init() {
 			}
 			return err
 		}
-		return RestoreTunState(cfg)
+		return RestoreTunStateLocked(cfg)
 	})
 }
 
@@ -83,6 +83,14 @@ func restartWithTunDisabled(disabled bool) error {
 // Xray's config: interface addresses, forwarding/rp_filter sysctls, policy
 // routing, and nftables. It is a no-op when the active gateway is down.
 func RestoreTunState(cfg *config.UserConfig) error {
+	return config.WithLifecycleLock(func() error {
+		return RestoreTunStateLocked(cfg)
+	})
+}
+
+// RestoreTunStateLocked is the lock-aware implementation used by the Xray
+// restart hook and other callers that already hold the lifecycle lock.
+func RestoreTunStateLocked(cfg *config.UserConfig) error {
 	if cfg == nil || !WantsTunnel(cfg) || config.GatewayTunDisabled() {
 		return nil
 	}
@@ -123,6 +131,12 @@ func Up(cfg *config.UserConfig) error {
 	if delegated {
 		return nil
 	}
+	return config.WithLifecycleLock(func() error {
+		return upLocked(cfg)
+	})
+}
+
+func upLocked(cfg *config.UserConfig) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("gateway up requires root")
 	}
@@ -136,11 +150,11 @@ func Up(cfg *config.UserConfig) error {
 	// Firewall and policy routing are owned by this explicit root operation,
 	// rather than the long-running Xray service domain.
 	if err := ApplyFirewall(cfg); err != nil {
-		_ = Down()
+		_ = downLocked()
 		return fmt.Errorf("apply gateway firewall: %w", err)
 	}
 	if err := waitForReady(cfg); err != nil {
-		_ = Down()
+		_ = downLocked()
 		return err
 	}
 	return nil
@@ -156,6 +170,12 @@ func Down() error {
 	if delegated {
 		return nil
 	}
+	return config.WithLifecycleLock(func() error {
+		return downLocked()
+	})
+}
+
+func downLocked() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("gateway down requires root")
 	}
@@ -172,11 +192,23 @@ func SyncDesired(cfg *config.UserConfig) error {
 	if delegated {
 		return nil
 	}
+	return config.WithLifecycleLock(func() error {
+		return syncDesiredLocked(cfg)
+	})
+}
+
+// SyncDesiredLocked synchronizes an already committed gateway config while
+// the caller owns the lifecycle lock.
+func SyncDesiredLocked(cfg *config.UserConfig) error {
+	return syncDesiredLocked(cfg)
+}
+
+func syncDesiredLocked(cfg *config.UserConfig) error {
 	if cfg == nil || cfg.Role != config.RoleGateway {
 		return nil
 	}
 	if WantsTunnel(cfg) {
-		return Up(cfg)
+		return upLocked(cfg)
 	}
 	if err := CleanupFirewall(); err != nil {
 		return err

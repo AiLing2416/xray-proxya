@@ -130,7 +130,7 @@ var serviceUninstallCmd = &cobra.Command{
 			fmt.Println("❌ This command is for system service removal and requires root.")
 			return
 		}
-		if err := gateway.CleanupFirewall(); err != nil {
+		if err := config.WithLifecycleLock(func() error { return gateway.CleanupFirewall() }); err != nil {
 			fmt.Printf("⚠️ Failed to clean gateway runtime before uninstall: %v\n", err)
 		}
 		if _, err := exec.LookPath("systemctl"); err == nil {
@@ -160,12 +160,18 @@ var serviceStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the service",
 	Run: func(cmd *cobra.Command, args []string) {
-		if utils.IsRoot() {
-			if err := gateway.CleanupFirewall(); err != nil {
-				fmt.Printf("⚠️ Failed to clean gateway runtime before stop: %v\n", err)
+		err := config.WithLifecycleLock(func() error {
+			if utils.IsRoot() {
+				if err := gateway.CleanupFirewall(); err != nil {
+					fmt.Printf("⚠️ Failed to clean gateway runtime before stop: %v\n", err)
+				}
 			}
+			xray.StopService()
+			return nil
+		})
+		if err != nil {
+			fmt.Printf("⚠️ Failed to serialize service stop: %v\n", err)
 		}
-		xray.StopService()
 		fmt.Println("✅ Stop command executed.")
 	},
 }

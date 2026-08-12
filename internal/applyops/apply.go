@@ -27,6 +27,18 @@ type Options struct {
 }
 
 func ApplyPending(opts Options) ([]string, error) {
+	var result []string
+	var applyErr error
+	if err := config.WithLifecycleLock(func() error {
+		result, applyErr = applyPendingLocked(opts)
+		return applyErr
+	}); err != nil {
+		return result, err
+	}
+	return result, applyErr
+}
+
+func applyPendingLocked(opts Options) ([]string, error) {
 	if !config.StagingExists() {
 		return []string{"❌ No pending changes in STAGING."}, nil
 	}
@@ -110,9 +122,13 @@ func ApplyPending(opts Options) ([]string, error) {
 			lines = append(lines, "🔄 Restarting Xray and synchronizing Gateway runtime...")
 		} else {
 			lines = append(lines, "🔄 Restarting Xray service...")
-			if err := xray.RestartXrayService(); err != nil {
+			if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 				lines = append(lines, fmt.Sprintf("❌ Error restarting Xray service: %v", err))
 			} else {
+				if err := gateway.RestoreTunStateLocked(cfg); err != nil {
+					lines = append(lines, fmt.Sprintf("❌ Error restoring Gateway runtime: %v", err))
+					return lines, fmt.Errorf("failed to restore gateway runtime: %w", err)
+				}
 				xrayRestarted = true
 			}
 		}
@@ -134,7 +150,7 @@ func ApplyPending(opts Options) ([]string, error) {
 	}
 
 	if gatewaySyncRequired {
-		if err := gateway.SyncDesired(cfg); err != nil {
+		if err := gateway.SyncDesiredLocked(cfg); err != nil {
 			lines = append(lines, fmt.Sprintf("❌ Failed to synchronize gateway runtime: %v", err))
 			return lines, fmt.Errorf("failed to synchronize gateway runtime: %w", err)
 		} else {

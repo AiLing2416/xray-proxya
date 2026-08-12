@@ -272,7 +272,7 @@ var runCmd = &cobra.Command{
 						fmt.Printf("ℹ️  Guest quota: %s\n", msg)
 					}
 					fmt.Println("🔄 Reloading Xray to apply guest quota changes...")
-					restartErr := func() error {
+					restartErr := config.WithLifecycleLock(func() error {
 						_ = stopProcess(process, waitCh)
 						quotaMonitor.Reset()
 						if err := quotaMonitor.Save(); err != nil {
@@ -282,8 +282,8 @@ var runCmd = &cobra.Command{
 						if err != nil {
 							return fmt.Errorf("restart Xray after quota update: %w", err)
 						}
-						return gateway.RestoreTunState(cfg)
-					}()
+						return gateway.RestoreTunStateLocked(cfg)
+					})
 					if restartErr != nil {
 						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", restartErr)
 						_ = stopProcess(process, waitCh)
