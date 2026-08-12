@@ -21,22 +21,17 @@ var statusCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		active, pid := xray.GetXrayStatus()
-		subActive, subPid := getSubStatus()
+		service := xray.GetServiceState()
+		active, pid := service.Active, service.PID
 
 		if active {
-			uptime := xray.GetXrayUptime(pid)
 			fmt.Printf("🟢 Xray Core: Active (PID %d)\n", pid)
-			fmt.Printf("⏱️  UpTime: %s\n", uptime)
+			fmt.Printf("⏱️  UpTime: %s\n", service.Uptime)
 		} else {
 			fmt.Println("❌ Xray Core: Inactive")
 		}
 
-		if subActive {
-			fmt.Printf("🟢 Subscription Server: Active (PID %d)\n", subPid)
-		} else {
-			fmt.Println("❌ Subscription Server: Inactive")
-		}
+		fmt.Println("ℹ️  Subscription instances are managed as xray-proxya-sub@<instance> units.")
 
 		if !active {
 			return

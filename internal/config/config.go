@@ -96,6 +96,18 @@ type AdminSubConfig struct {
 	IPv6Rotate  IPv6Config   `json:"ipv6_rotate,omitempty"`
 }
 
+// SubscriptionServiceConfig is the private, per-instance runtime
+// configuration consumed by xray-proxya-sub@<instance>.service. Link content
+// is still generated from the active application configuration, while every
+// listener, token and target selection has an independently owned file.
+type SubscriptionServiceConfig struct {
+	Listen    string         `json:"listen"`
+	Port      int            `json:"port"`
+	GuestBind string         `json:"guest_bind,omitempty"`
+	GuestPort int            `json:"guest_port,omitempty"`
+	AdminSub  AdminSubConfig `json:"admin_sub"`
+}
+
 type IPv6Config struct {
 	Enabled      bool   `json:"enabled"`
 	Subnet       string `json:"subnet"`        // e.g., 2001:db8::/64
@@ -503,6 +515,14 @@ func GetHomeDir() string {
 }
 
 func GetConfigDir() string {
+	// System services must never inherit a caller-controlled configuration
+	// directory. In particular, sudo preserves enough environment state on some
+	// systems to otherwise make a root service consume an unprivileged tree.
+	if os.Geteuid() == 0 {
+		const rootConfigDir = "/root/.config/xray-proxya"
+		_ = os.MkdirAll(rootConfigDir, 0700)
+		return rootConfigDir
+	}
 	if envDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR"); envDir != "" {
 		os.MkdirAll(envDir, 0700)
 		return envDir

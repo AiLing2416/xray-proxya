@@ -5,31 +5,112 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"syscall"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
-	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
 
+const (
+	pathdServiceUnit  = "xray-proxya-pathd.service"
+	subTemplateUnit   = "xray-proxya-sub@.service"
+	rootManagerBinary = "/root/.local/bin/xray-proxya"
+)
+
+var systemdInstanceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Manage background service (Systemd/OpenRC for Root, Nohup for Rootless)",
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
-			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
-			os.Exit(1)
+	Short: "Install and control Xray-Proxya systemd units",
+}
+
+func userSystemdUnitDir() string {
+	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user")
+}
+
+func unitDirectory() string {
+	if os.Geteuid() == 0 {
+		return "/etc/systemd/system"
+	}
+	return userSystemdUnitDir()
+}
+
+func managedUnitPath(unit string) string { return filepath.Join(unitDirectory(), unit) }
+
+func directRootServiceError() error {
+	return directRootServiceErrorFor(os.Geteuid(), os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID"))
+}
+
+func directRootServiceErrorFor(euid int, sudoUser, sudoUID string) error {
+	if euid != 0 {
+		return fmt.Errorf("system service operation requires a direct root shell")
+	}
+	if sudoUser != "" || sudoUID != "" {
+		return fmt.Errorf("system service operation must not be run through sudo; use a direct root shell")
+	}
+	return nil
+}
+
+func validateRootManagerBinary() (string, error) {
+	path, err := filepath.EvalSymlinks(xray.GetXrayProxyaPath())
+	if err != nil {
+		return "", fmt.Errorf("resolve manager binary: %w", err)
+	}
+	path = filepath.Clean(path)
+	if path != rootManagerBinary {
+		return "", fmt.Errorf("root service binary must be %s, got %s", rootManagerBinary, path)
+	}
+	return validateRootOwnedExecutable(path)
+}
+
+func validateRootOwnedExecutable(path string) (string, error) {
+	path, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve executable: %w", err)
+	}
+	path = filepath.Clean(path)
+	for current := path; current != "/"; current = filepath.Dir(current) {
+		info, err := os.Stat(current)
+		if err != nil {
+			return "", fmt.Errorf("inspect %s: %w", current, err)
 		}
-	},
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 {
+			return "", fmt.Errorf("%s must be owned by root", current)
+		}
+		if info.Mode().Perm()&0022 != 0 {
+			return "", fmt.Errorf("%s must not be group- or world-writable", current)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s must be a regular executable file", path)
+	}
+	if info.Mode().Perm()&0111 == 0 {
+		return "", fmt.Errorf("%s is not executable", path)
+	}
+	return path, nil
 }
 
-func getSystemdPath() string {
-	return "/etc/systemd/system/xray-proxya.service"
+func mainUnitCapabilities(cfg *config.UserConfig) string {
+	if cfg != nil && cfg.Role == config.RoleGateway {
+		return "CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW"
+	}
+	return "CAP_NET_BIND_SERVICE"
 }
 
-func buildSystemdServiceContent(binPath string, workDir string, assetDir string, logPath string, configDir string) string {
+func buildSystemdServiceContent(binPath, workDir, assetDir, configDir, capabilities string, system bool) string {
+	userLine := ""
+	wantedBy := "default.target"
+	capabilityLines := ""
+	if system {
+		userLine = "User=root\n"
+		wantedBy = "multi-user.target"
+		capabilityLines = fmt.Sprintf("CapabilityBoundingSet=%s\nAmbientCapabilities=%s\n", capabilities, capabilities)
+	}
 	return fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Service
 After=network-online.target
@@ -37,227 +118,234 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
-ExecStart=%s run
+%sExecStart=%s run
 Restart=on-failure
+RestartSec=2
 WorkingDirectory=%s
 Environment=XRAY_LOCATION_ASSET=%s
-Environment=XRAY_PROXYA_CONFIG_DIR=%s
-StandardOutput=append:%s
-StandardError=append:%s
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=%s %s
+%s
 
 [Install]
-WantedBy=multi-user.target
-`, binPath, workDir, assetDir, configDir, logPath, logPath)
+WantedBy=%s
+`, userLine, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
 }
 
-func buildOpenRCServiceContent(binPath string, assetDir string, logPath string) string {
-	return fmt.Sprintf(`#!/sbin/openrc-run
-description="Xray-Proxya Service"
-command="%s"
-command_args="run"
-command_background=true
-pidfile="/run/${RC_SVCNAME}.pid"
-output_log="%s"
-error_log="%s"
-export XRAY_LOCATION_ASSET="%s"
-depend() {
-	need net
-}
-`, binPath, logPath, logPath, assetDir)
+func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string, system bool) string {
+	userLine := ""
+	wantedBy := "default.target"
+	capabilityLines := ""
+	if system {
+		userLine = "User=root\n"
+		wantedBy = "multi-user.target"
+		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\nAmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\n"
+	}
+	return fmt.Sprintf(`[Unit]
+Description=Xray-Proxya Subscription Server (%%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+%sExecStartPre=%s sub ensure-instance %%i
+ExecStart=%s sub run --instance %%i
+Restart=on-failure
+RestartSec=2
+WorkingDirectory=%s
+Environment=XRAY_LOCATION_ASSET=%s
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=%s %s
+%s
+
+[Install]
+WantedBy=%s
+`, userLine, binPath, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
 }
 
-var serviceInstallCmd = &cobra.Command{
-	Use:   "install",
-	Short: "Install as a system service (Requires Root)",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("ℹ️ Rootless mode uses 'nohup' automatically. No installation required.")
-			fmt.Println("🚀 Use 'service start' to run in background.")
-			return
+func serviceInstall() error {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return fmt.Errorf("systemd is required for service installation: %w", err)
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load configuration: %w", err)
+	}
+	system := os.Geteuid() == 0
+	if system {
+		if err := directRootServiceError(); err != nil {
+			return err
 		}
-
-		binPath := xray.GetXrayProxyaPath()
-		// Security Check: Ensure binary is not in a world-writable directory
-		if info, err := os.Stat(filepath.Dir(binPath)); err == nil {
-			if info.Mode()&0002 != 0 {
-				fmt.Printf("⚠️  SECURITY WARNING: Binary is in a world-writable directory (%s).\n", filepath.Dir(binPath))
-				fmt.Println("   This could allow other users to replace the binary and gain root privileges.")
-				fmt.Println("   Consider moving it to /usr/local/bin or a root-owned directory.")
+	} else if cfg.Role == config.RoleGateway {
+		return fmt.Errorf("gateway role requires a direct-root system service; user services are non-privileged")
+	} else if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate {
+		return fmt.Errorf("IPv6-rotate subscriptions require a direct-root system service")
+	} else if cfg.AdminSub.Enabled && cfg.AdminSub.Port > 0 && cfg.AdminSub.Port <= 1024 {
+		return fmt.Errorf("subscription ports <= 1024 require a direct-root system service")
+	} else {
+		for _, preset := range cfg.Presets {
+			if preset.Enabled && preset.Port > 0 && preset.Port <= 1024 {
+				return fmt.Errorf("proxy port %d (%s) requires a direct-root system service", preset.Port, preset.Mode)
 			}
 		}
-
-		home := config.GetHomeDir()
-		workDir := filepath.Join(home, ".local", "share", "xray-proxya")
-		assetDir := filepath.Join(workDir, "bin")
-		logPath := xray.GetXrayLogPath()
-		os.MkdirAll(workDir, 0700)
-		os.MkdirAll(filepath.Dir(logPath), 0700)
-		configDir := config.GetConfigDir()
-		if utils.IsRoot() && (!strings.HasPrefix(workDir, "/root") || !strings.HasPrefix(configDir, "/root")) {
-			fmt.Printf("❌ Security Violation: Root system service directory must reside in /root (workDir=%s, configDir=%s)\n", workDir, configDir)
-			return
-		}
-		if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-			f.Close()
-		} else {
-			fmt.Printf("❌ Failed to prepare log file: %v\n", err)
-			return
-		}
-
-		if _, err := exec.LookPath("systemctl"); err == nil {
-			content := buildSystemdServiceContent(binPath, workDir, assetDir, logPath, configDir)
-
-			err := os.WriteFile(getSystemdPath(), []byte(content), 0644)
-			if err != nil {
-				fmt.Printf("❌ Failed to write service file: %v\n", err)
-				return
-			}
-			exec.Command("systemctl", "daemon-reload").Run()
-			fmt.Println("✅ System (Root) service unit installed (Disabled by default).")
-			fmt.Println("🚀 Use 'service start' to run manually.")
-		} else if _, err := exec.LookPath("rc-service"); err == nil {
-			installOpenRC(true)
-		}
-	},
-}
-
-var serviceUninstallCmd = &cobra.Command{
-	Use:   "uninstall",
-	Short: "Uninstall the system service (Requires Root)",
-	Run: func(cmd *cobra.Command, args []string) {
-		if !utils.IsRoot() {
-			fmt.Println("❌ This command is for system service removal and requires root.")
-			return
-		}
-		if err := config.WithLifecycleLock(func() error { return gateway.CleanupFirewall() }); err != nil {
-			fmt.Printf("⚠️ Failed to clean gateway runtime before uninstall: %v\n", err)
-		}
-		if _, err := exec.LookPath("systemctl"); err == nil {
-			exec.Command("systemctl", "stop", "xray-proxya").Run()
-			exec.Command("systemctl", "disable", "xray-proxya").Run()
-			os.Remove(getSystemdPath())
-			exec.Command("systemctl", "daemon-reload").Run()
-			fmt.Println("✅ Systemd service uninstalled.")
-		} else if _, err := exec.LookPath("rc-service"); err == nil {
-			os.Remove("/etc/init.d/xray-proxya")
-			fmt.Println("✅ OpenRC service uninstalled.")
-		}
-	},
-}
-
-var serviceStartCmd = &cobra.Command{
-	Use:   "start",
-	Short: "Start the service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := xray.StartService(); err != nil {
-			fmt.Printf("❌ Failed to start: %v\n", err)
-		}
-	},
-}
-
-var serviceStopCmd = &cobra.Command{
-	Use:   "stop",
-	Short: "Stop the service",
-	Run: func(cmd *cobra.Command, args []string) {
-		err := config.WithLifecycleLock(func() error {
-			if utils.IsRoot() {
-				if err := gateway.CleanupFirewall(); err != nil {
-					fmt.Printf("⚠️ Failed to clean gateway runtime before stop: %v\n", err)
-				}
-			}
-			xray.StopService()
-			return nil
-		})
-		if err != nil {
-			fmt.Printf("⚠️ Failed to serialize service stop: %v\n", err)
-		}
-		fmt.Println("✅ Stop command executed.")
-	},
-}
-
-var serviceRestartCmd = &cobra.Command{
-	Use:   "restart",
-	Short: "Restart the service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := xray.RestartXrayService(); err != nil {
-			fmt.Printf("❌ Restart failed: %v\n", err)
-		}
-	},
-}
-
-var serviceStatusCmd = &cobra.Command{
-	Use:   "status",
-	Short: "Check service status",
-	Run: func(cmd *cobra.Command, args []string) {
-		// Just delegate to the main status logic for consistent output
-		statusCmd.Run(cmd, args)
-	},
-}
-
-func installOpenRC(isRoot bool) {
-	binPath := xray.GetXrayProxyaPath()
-	home := config.GetHomeDir()
-	assetDir := filepath.Join(home, ".local", "share", "xray-proxya", "bin")
-	logPath := xray.GetXrayLogPath()
-	os.MkdirAll(filepath.Dir(logPath), 0700)
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err == nil {
-		f.Close()
 	}
 
-	content := buildOpenRCServiceContent(binPath, assetDir, logPath)
-	os.WriteFile("/etc/init.d/xray-proxya", []byte(content), 0755)
-	fmt.Println("✅ OpenRC service installed (Disabled by default).")
+	binPath := xray.GetXrayProxyaPath()
+	if system {
+		if binPath, err = validateRootManagerBinary(); err != nil {
+			return err
+		}
+	} else if binPath, err = filepath.Abs(binPath); err != nil {
+		return fmt.Errorf("resolve manager binary: %w", err)
+	}
+	workDir := filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya")
+	assetDir := filepath.Join(workDir, "bin")
+	configDir := config.GetConfigDir()
+	pathdContent := ""
+	if system && cfg.Path.Enabled {
+		pathdPath, err := validateRootOwnedExecutable(pathdBinaryPath())
+		if err != nil {
+			return fmt.Errorf("pathd is enabled but binary is unavailable: %w", err)
+		}
+		if err := writePathdConfig(cfg); err != nil {
+			return fmt.Errorf("write pathd configuration: %w", err)
+		}
+		pathdContent = buildPathdSystemdServiceContent(pathdPath, pathdConfigPath())
+	}
+	if err := os.MkdirAll(unitDirectory(), 0700); err != nil {
+		return fmt.Errorf("create systemd unit directory: %w", err)
+	}
+	if err := os.WriteFile(managedUnitPath(xray.MainServiceUnit), []byte(buildSystemdServiceContent(binPath, workDir, assetDir, configDir, mainUnitCapabilities(cfg), system)), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", xray.MainServiceUnit, err)
+	}
+	if err := os.WriteFile(managedUnitPath(subTemplateUnit), []byte(buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", subTemplateUnit, err)
+	}
+	if pathdContent != "" {
+		if err := os.WriteFile(managedUnitPath(pathdServiceUnit), []byte(pathdContent), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", pathdServiceUnit, err)
+		}
+	}
+	if err := xray.ReloadSystemdDaemon(); err != nil {
+		return err
+	}
+	return nil
 }
 
-var (
-	serviceNow bool
-)
-
-var serviceEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Enable autostart for the system service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := xray.EnableService(serviceNow); err != nil {
-			fmt.Printf("❌ Failed to enable service: %v\n", err)
-			os.Exit(1)
+func activeManagedUnits() ([]string, error) {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil, fmt.Errorf("systemctl is required: %w", err)
+	}
+	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, "xray-proxya-sub@*.service")
+	out, err := exec.Command("systemctl", args...).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	var units []string
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 {
+			units = append(units, fields[0])
 		}
-		if serviceNow {
-			fmt.Println("✅ Service enabled and started.")
-		} else {
-			fmt.Println("✅ Service enabled.")
-		}
-	},
+	}
+	return units, nil
 }
 
-var serviceDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Disable autostart for the system service",
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := xray.DisableService(serviceNow); err != nil {
-			fmt.Printf("❌ Failed to disable service: %v\n", err)
-			os.Exit(1)
+func serviceUninstall() error {
+	if os.Geteuid() == 0 {
+		if err := directRootServiceError(); err != nil {
+			return err
 		}
-		if serviceNow {
-			fmt.Println("✅ Service disabled and stopped.")
-		} else {
-			fmt.Println("✅ Service disabled.")
+	}
+	active, err := activeManagedUnits()
+	if err != nil {
+		return err
+	}
+	if len(active) > 0 {
+		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
+	}
+	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subTemplateUnit} {
+		if err := os.Remove(managedUnitPath(unit)); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove %s: %w", unit, err)
 		}
-	},
+	}
+	return xray.ReloadSystemdDaemon()
 }
+
+func normalizedManagedUnit(input string) (string, error) {
+	if input == "" || input == "xray-proxya" || input == xray.MainServiceUnit {
+		return xray.MainServiceUnit, nil
+	}
+	if input == "xray-proxya-pathd" || input == pathdServiceUnit {
+		return pathdServiceUnit, nil
+	}
+	name := strings.TrimSuffix(input, ".service")
+	if strings.HasPrefix(name, "xray-proxya-sub@") {
+		instance := strings.TrimPrefix(name, "xray-proxya-sub@")
+		if systemdInstanceName.MatchString(instance) {
+			return "xray-proxya-sub@" + instance + ".service", nil
+		}
+	}
+	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, or xray-proxya-sub@<instance>")
+}
+
+func systemctlWrapper(action string) *cobra.Command {
+	var now bool
+	command := &cobra.Command{
+		Use:   action + " [unit-name]",
+		Short: "Run systemctl " + action + " for a managed unit",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if os.Geteuid() == 0 {
+				if err := directRootServiceError(); err != nil {
+					return err
+				}
+			}
+			input := ""
+			if len(args) == 1 {
+				input = args[0]
+			}
+			unit, err := normalizedManagedUnit(input)
+			if err != nil {
+				return err
+			}
+			arguments := []string{"--no-pager", action}
+			if now {
+				arguments = append(arguments, "--now")
+			}
+			arguments = append(arguments, unit)
+			return xray.RunSystemd(arguments...)
+		},
+	}
+	if action == "enable" || action == "disable" {
+		command.Flags().BoolVar(&now, "now", false, "Start or stop the unit immediately")
+	}
+	return command
+}
+
+var serviceInstallCmd = &cobra.Command{Use: "install", Short: "Write managed systemd unit files without enabling or starting them", RunE: func(cmd *cobra.Command, args []string) error { return serviceInstall() }}
+var serviceUninstallCmd = &cobra.Command{Use: "uninstall", Short: "Remove stopped managed systemd unit files without disabling them", RunE: func(cmd *cobra.Command, args []string) error { return serviceUninstall() }}
 
 func init() {
-	serviceEnableCmd.Flags().BoolVar(&serviceNow, "now", false, "Start the service immediately after enabling")
-	serviceDisableCmd.Flags().BoolVar(&serviceNow, "now", false, "Stop the service immediately after disabling")
+	enable := systemctlWrapper("enable")
+	disable := systemctlWrapper("disable")
 	serviceCmd.AddCommand(
 		serviceInstallCmd,
 		serviceUninstallCmd,
-		serviceStartCmd,
-		serviceStopCmd,
-		serviceRestartCmd,
-		serviceStatusCmd,
-		serviceEnableCmd,
-		serviceDisableCmd,
+		systemctlWrapper("start"),
+		systemctlWrapper("stop"),
+		systemctlWrapper("restart"),
+		systemctlWrapper("status"),
+		enable,
+		disable,
 	)
 	rootCmd.AddCommand(serviceCmd)
 }

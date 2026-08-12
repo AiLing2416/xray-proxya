@@ -35,7 +35,7 @@ var purgeCmd = &cobra.Command{
 		fmt.Println("🧨 STARTING FULL PURGE...")
 		bringGatewayDown()
 		exec.Command(xray.GetXrayProxyaPath(), "service", "uninstall").Run()
-		xray.StopXray()
+		_ = xray.ManageSystemdUnit("stop", xray.MainServiceUnit)
 		home := config.GetHomeDir()
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		os.RemoveAll(confDir)
@@ -49,7 +49,7 @@ var resetCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("🧹 Resetting configuration files...")
 		bringGatewayDown()
-		xray.StopXray()
+		_ = xray.ManageSystemdUnit("stop", xray.MainServiceUnit)
 		home := config.GetHomeDir()
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		files, _ := filepath.Glob(filepath.Join(confDir, "*.json*"))

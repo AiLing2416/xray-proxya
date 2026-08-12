@@ -26,9 +26,6 @@ domain_use_interactive_fds(xray_proxya_pathd_t)
 # still required for systemd to enter the dedicated pathd domain.
 allow init_t xray_proxya_pathd_t:process2 nnp_transition;
 
-type xray_proxya_log_t;
-logging_log_file(xray_proxya_log_t)
-
 # Short-lived domain entered only by explicit `gateway up` / `gateway down`.
 # The long-running proxy service never receives these system-management rights.
 type xray_proxya_gateway_t;
@@ -174,9 +171,3 @@ sysnet_read_config(xray_proxya_t)
 kernel_search_network_sysctl(xray_proxya_t)
 allow xray_proxya_t sysctl_net_t:file { getattr open read };
 fs_read_cgroup_files(xray_proxya_t)
-
-# systemd opens StandardOutput before transitioning the service into
-# xray_proxya_t.  It may append only the dedicated log file, not application
-# configuration or runtime state.
-allow init_t xray_proxya_config_t:dir search;
-allow init_t xray_proxya_log_t:file { append getattr open write };

@@ -131,9 +131,9 @@ func prepareFreshInit() {
 		if err := gateway.CleanupFirewall(); err != nil {
 			fmt.Printf("⚠️ Failed to clean gateway firewall: %v\n", err)
 		}
-		xray.StopManagedRuntime()
+		_ = xray.ManageSystemdUnit("stop", xray.MainServiceUnit)
 	} else {
-		xray.StopXray()
+		_ = xray.ManageSystemdUnit("stop", xray.MainServiceUnit)
 	}
 	for _, name := range []string{
 		"config.active.json",
@@ -141,7 +141,6 @@ func prepareFreshInit() {
 		"gateway.tun.disabled",
 		"tune.runtime.json",
 		".tune_state",
-		"xray.pid",
 	} {
 		_ = os.Remove(filepath.Join(config.GetConfigDir(), name))
 	}

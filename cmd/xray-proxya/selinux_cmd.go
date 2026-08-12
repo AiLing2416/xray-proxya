@@ -56,18 +56,6 @@ func installSELinuxPolicy() error {
 	if out, err := exec.Command("semodule", "-i", filepath.Join(dir, "xray_proxya.pp")).CombinedOutput(); err != nil {
 		return fmt.Errorf("install policy: %w (%s)", err, out)
 	}
-	// systemd opens StandardOutput before it transitions into xray_proxya_t.
-	// Create the dedicated append-only log while still running as root so the
-	// service never needs permission to create files in its private config dir.
-	logPath := "/root/.config/xray-proxya/xray.log"
-	if err := os.MkdirAll(filepath.Dir(logPath), 0700); err != nil {
-		return fmt.Errorf("create log directory: %w", err)
-	}
-	if f, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600); err != nil {
-		return fmt.Errorf("prepare service log: %w", err)
-	} else if err := f.Close(); err != nil {
-		return fmt.Errorf("close service log: %w", err)
-	}
 	// Older development builds labelled the bundled core as an entrypoint.  The
 	// core must instead stay a same-domain child executable.
 	_ = exec.Command("semanage", "fcontext", "-d", `/root/.local/share/xray-proxya/bin/xray`).Run()
@@ -81,7 +69,6 @@ func installSELinuxPolicy() error {
 		{`/root/.local/share/xray-proxya/bin/pathd`, "xray_proxya_pathd_exec_t"},
 		{`/root/.local/bin/xray-proxya`, "xray_proxya_exec_t"},
 		{`/root/.config/xray-proxya(/.*)?`, "xray_proxya_config_t"},
-		{`/root/.config/xray-proxya/xray\.log`, "xray_proxya_log_t"},
 	} {
 		if _, err := exec.Command("semanage", "fcontext", "-a", "-t", entry.label, entry.pattern).CombinedOutput(); err != nil {
 			if out, retryErr := exec.Command("semanage", "fcontext", "-m", "-t", entry.label, entry.pattern).CombinedOutput(); retryErr != nil {

@@ -39,7 +39,7 @@ func GetServiceState() ServiceState {
 	state := ServiceState{
 		IsRoot:     os.Geteuid() == 0,
 		InitSystem: "none",
-		LogPath:    GetXrayLogPath(),
+		LogPath:    "systemd journal",
 		ConfigPath: config.GetConfigPath(),
 		Uptime:     "-",
 		Status:     "stopped",
@@ -62,48 +62,11 @@ func GetServiceState() ServiceState {
 		}
 	}
 
-	if state.InitSystem == "none" {
-		if _, err := exec.LookPath("rc-service"); err == nil {
-			state.InitSystem = "openrc"
-		}
-	}
-	if state.InitSystem == "openrc" {
-		if _, err := os.Stat(openRCServiceFile(serviceUnitName)); err == nil {
-			state.UnitInstalled = true
-			state.ServiceFile = openRCServiceFile(serviceUnitName)
-			if state.ControlMode == "" {
-				state.ControlMode = "openrc"
-			}
-		}
-		if active, pid := getOpenRCState(serviceUnitName); active {
-			state.Active = true
-			state.PID = pid
-			state.Status = "running"
-			state.ControlMode = "openrc"
-		}
-	}
-
-	if active, pid := GetXrayStatus(); active {
-		if !state.Active {
-			state.Active = true
-			state.Status = "running"
-		}
-		if state.PID == 0 {
-			state.PID = pid
-		}
-		if state.ControlMode == "" || !state.UnitInstalled {
-			state.ControlMode = "nohup"
-		}
-	}
-
-	if state.Active && state.PID > 0 {
-		state.Uptime = GetXrayUptime(state.PID)
-	}
 	if state.ControlMode == "" {
 		if state.UnitInstalled {
 			state.ControlMode = state.InitSystem
 		} else {
-			state.ControlMode = "nohup"
+			state.ControlMode = "unmanaged"
 		}
 	}
 	state.XrayPresent, state.XrayVersion = inspectXrayBinary(state.XrayPath)
@@ -113,14 +76,17 @@ func GetServiceState() ServiceState {
 }
 
 func ReadLogTail(lines int) (string, error) {
-	data, err := os.ReadFile(GetXrayLogPath())
-	if err != nil {
-		return "", err
-	}
-	return tailLogContent(string(data), lines), nil
+	return JournalTail(MainServiceUnit, lines)
 }
 
 func findSystemdServiceFile(unit string) string {
+	if os.Geteuid() != 0 {
+		path := filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", unit)
+		if _, err := os.Stat(path); err == nil {
+			return path
+		}
+		return ""
+	}
 	for _, path := range []string{
 		filepath.Join("/etc/systemd/system", unit),
 		filepath.Join("/lib/systemd/system", unit),
@@ -133,16 +99,14 @@ func findSystemdServiceFile(unit string) string {
 	return ""
 }
 
-func openRCServiceFile(name string) string {
-	return filepath.Join("/etc/init.d", name)
-}
-
 func getSystemdState(name string) (bool, int) {
-	cmd := exec.Command("systemctl", "is-active", name)
+	args := append(SystemdScopeArgs(), "is-active", name)
+	cmd := exec.Command("systemctl", args...)
 	if err := cmd.Run(); err != nil {
 		return false, 0
 	}
-	out, err := exec.Command("systemctl", "show", "-p", "MainPID", "--value", name).Output()
+	showArgs := append(SystemdScopeArgs(), "show", "-p", "MainPID", "--value", name)
+	out, err := exec.Command("systemctl", showArgs...).Output()
 	if err != nil {
 		return true, 0
 	}
@@ -150,31 +114,18 @@ func getSystemdState(name string) (bool, int) {
 	return true, pid
 }
 
-func getOpenRCState(name string) (bool, int) {
-	if err := exec.Command("rc-service", name, "status").Run(); err != nil {
-		return false, 0
-	}
-	active, pid := GetXrayStatus()
-	if active {
-		return true, pid
-	}
-	return true, 0
-}
-
 func buildServiceHint(state ServiceState) string {
 	switch {
 	case state.Active && state.ControlMode == "systemd":
 		return "Managed by systemd."
-	case state.Active && state.ControlMode == "openrc":
-		return "Managed by OpenRC."
-	case state.Active && state.ControlMode == "nohup":
-		return "Running in rootless/nohup mode with xray.pid tracking."
+	case state.Active:
+		return "Managed by systemd."
 	case state.IsRoot && state.UnitInstalled:
 		return fmt.Sprintf("Managed unit installed via %s, currently stopped.", state.InitSystem)
 	case state.IsRoot:
-		return "No managed unit found. Start will fall back to nohup until a service is installed."
+		return "No managed systemd unit found. Run service install first."
 	default:
-		return "Rootless mode uses nohup and xray.pid. Install/uninstall is unavailable."
+		return "No user systemd unit found. Run service install first."
 	}
 }
 

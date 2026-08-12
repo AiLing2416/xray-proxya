@@ -35,12 +35,6 @@ var runCmd = &cobra.Command{
 			os.Exit(1)
 		}
 
-		// Ensure no background/service processes of Xray core are running
-		if active, pid := xray.GetXrayStatus(); active {
-			fmt.Printf("❌ Error: Xray Core is already running (PID %d) in the background. Stop the background service first.\n", pid)
-			os.Exit(1)
-		}
-
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			fmt.Printf("❌ Failed to load config: %v\n", err)
@@ -80,7 +74,6 @@ var runCmd = &cobra.Command{
 		}
 
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
-		pidPath := filepath.Join(config.GetConfigDir(), "xray.pid")
 		overrides := make(map[string]int)
 		pathdPort := 0
 		gatewayState := cfg.Gateway.State
@@ -126,11 +119,6 @@ var runCmd = &cobra.Command{
 			if err != nil {
 				return nil, nil, err
 			}
-			if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", process.Process.Pid)), 0600); err != nil {
-				process.Process.Kill()
-				return nil, nil, err
-			}
-
 			waitCh := make(chan error, 1)
 			go func() {
 				waitCh <- process.Wait()
@@ -169,7 +157,6 @@ var runCmd = &cobra.Command{
 				pathClient = nil
 			}
 			_ = os.Remove(pathRuntimePath())
-			os.Remove(pidPath)
 		}
 
 		process, waitCh, err := startProcess(cfg)

@@ -153,10 +153,11 @@ type Model struct {
 
 func tickStats(apiPort int) tea.Cmd {
 	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-		active, pid := xray.GetXrayStatus()
+		service := xray.GetServiceState()
+		active, pid := service.Active, service.PID
 		allStats, _ := xray.GetXrayStats(apiPort)
 		summary := trafficstats.Summarize(allStats)
-		return statsMsg{direct: summary.Direct, relay: summary.Relay, active: active, pid: pid, allStats: allStats, service: xray.GetServiceState()}
+		return statsMsg{direct: summary.Direct, relay: summary.Relay, active: active, pid: pid, allStats: allStats, service: service}
 	})
 }
 
@@ -262,7 +263,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickStats(m.active.APIInbound)
 	case gatewayActionResultMsg:
 		if msg.err != nil {
-			m.statusNote = fmt.Sprintf("❌ Gateway %s failed! View logs: tail -n 20 %s/xray.log", msg.action, config.GetConfigDir())
+			m.statusNote = fmt.Sprintf("❌ Gateway %s failed! View logs: xray-proxya logs -n 20", msg.action)
 		} else {
 			m.statusNote = fmt.Sprintf("✅ Gateway runtime rules applied (%s).", msg.action)
 		}

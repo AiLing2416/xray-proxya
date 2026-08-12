@@ -7,7 +7,6 @@ import (
 	"xray-proxya/internal/buildinfo"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/trafficstats"
-	"xray-proxya/internal/xray"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -24,7 +23,7 @@ func RenderStatus(cfg *config.UserConfig, active bool, pid int, allStats map[str
 	if active {
 		statusStr = fmt.Sprintf("Active (PID: %d)", pid)
 		statusStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
-		uptimeStr = xray.GetXrayUptime(pid)
+		uptimeStr = "managed by systemd"
 	}
 
 	summary := trafficstats.Summarize(allStats)
@@ -67,7 +66,7 @@ func buildStatusReport(cfg *config.UserConfig, active bool, pid int, allStats ma
 	uptimeStr := "-"
 	if active {
 		statusStr = fmt.Sprintf("Active (PID %d)", pid)
-		uptimeStr = xray.GetXrayUptime(pid)
+		uptimeStr = "managed by systemd"
 	}
 
 	summary := trafficstats.Summarize(allStats)

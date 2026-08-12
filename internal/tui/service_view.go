@@ -49,8 +49,6 @@ func serviceRuntimeLabel(state xray.ServiceState) string {
 	switch state.ControlMode {
 	case "systemd":
 		return "Root / Systemd"
-	case "openrc":
-		return "Root / OpenRC"
 	case "nohup":
 		if state.IsRoot {
 			return "Root / Fallback-Nohup"
