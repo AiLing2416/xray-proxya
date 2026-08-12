@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -129,6 +130,9 @@ var serviceUninstallCmd = &cobra.Command{
 			fmt.Println("❌ This command is for system service removal and requires root.")
 			return
 		}
+		if err := gateway.CleanupFirewall(); err != nil {
+			fmt.Printf("⚠️ Failed to clean gateway runtime before uninstall: %v\n", err)
+		}
 		if _, err := exec.LookPath("systemctl"); err == nil {
 			exec.Command("systemctl", "stop", "xray-proxya").Run()
 			exec.Command("systemctl", "disable", "xray-proxya").Run()
@@ -156,6 +160,11 @@ var serviceStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop the service",
 	Run: func(cmd *cobra.Command, args []string) {
+		if utils.IsRoot() {
+			if err := gateway.CleanupFirewall(); err != nil {
+				fmt.Printf("⚠️ Failed to clean gateway runtime before stop: %v\n", err)
+			}
+		}
 		xray.StopService()
 		fmt.Println("✅ Stop command executed.")
 	},

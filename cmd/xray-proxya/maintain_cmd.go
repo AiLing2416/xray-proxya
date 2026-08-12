@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -32,10 +33,9 @@ var purgeCmd = &cobra.Command{
 	Short: "Completely remove xray-proxya, services, and all data (requires sudo)",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("🧨 STARTING FULL PURGE...")
+		bringGatewayDown()
 		exec.Command(xray.GetXrayProxyaPath(), "service", "uninstall").Run()
 		xray.StopXray()
-		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_gateway").Run()
-		exec.Command("sudo", "nft", "delete", "table", "inet", "xray_tproxy").Run()
 		home := config.GetHomeDir()
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		os.RemoveAll(confDir)
@@ -48,6 +48,7 @@ var resetCmd = &cobra.Command{
 	Short: "Wipe all configurations but keep the program and Xray core",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("🧹 Resetting configuration files...")
+		bringGatewayDown()
 		xray.StopXray()
 		home := config.GetHomeDir()
 		confDir := filepath.Join(home, ".config", "xray-proxya")
@@ -57,6 +58,22 @@ var resetCmd = &cobra.Command{
 		}
 		fmt.Println("✅ Reset successful. You can now run 'init' to reconfigure.")
 	},
+}
+
+func bringGatewayDown() {
+	if os.Geteuid() != 0 {
+		return
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil || cfg == nil || cfg.Role != config.RoleGateway {
+		if cleanupErr := gateway.CleanupFirewall(); cleanupErr != nil {
+			fmt.Printf("⚠️ Failed to clean gateway runtime: %v\n", cleanupErr)
+		}
+		return
+	}
+	if err := gateway.Down(); err != nil {
+		fmt.Printf("⚠️ Failed to bring gateway down: %v\n", err)
+	}
 }
 
 func init() {

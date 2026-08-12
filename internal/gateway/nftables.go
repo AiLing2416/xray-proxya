@@ -220,10 +220,23 @@ func CleanupFirewall() error {
 	record("nft table", runDelete("nft", "delete", "table", "inet", tableName))
 	record("filter forward rules", cleanupFilterForwardRules())
 
-	for _, rule := range loadPolicyRules() {
-		record("policy rule", deletePolicyRule(rule))
+	rules, rulesErr := loadPolicyRules()
+	if rulesErr != nil {
+		record("policy rule state", rulesErr)
+	} else {
+		allRulesDeleted := true
+		for _, rule := range rules {
+			if err := deletePolicyRule(rule); err != nil {
+				allRulesDeleted = false
+				record("policy rule", err)
+			}
+		}
+		// Keep the state file when any kernel deletion failed. It is the only
+		// durable information that lets a later cleanup retry the exact rules.
+		if allRulesDeleted {
+			record("policy rule state", removeIfExists(policyRulesPath()))
+		}
 	}
-	record("policy rule state", removeIfExists(policyRulesPath()))
 	record("IPv4 Xray route", runDelete("ip", "route", "del", "default", "dev", tunName, "table", policyTable))
 	record("IPv6 Xray route", runDelete("ip", "-6", "route", "del", "default", "dev", tunName, "table", policyTable))
 	record("IPv4 PathLink route", runDelete("ip", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable))
@@ -306,12 +319,14 @@ func cleanupPathTTLRules() error {
 		if rules[i].IPv6 {
 			binary = "ip6tables"
 		}
-		if err := run(binary, args...); err != nil {
+		if err := runDelete(binary, args...); err != nil {
 			cleanupErrs = append(cleanupErrs, err)
 		}
 	}
-	if err := removeIfExists(pathTTLRulesPath()); err != nil {
-		cleanupErrs = append(cleanupErrs, err)
+	if len(cleanupErrs) == 0 {
+		if err := removeIfExists(pathTTLRulesPath()); err != nil {
+			cleanupErrs = append(cleanupErrs, err)
+		}
 	}
 	return errors.Join(cleanupErrs...)
 }
@@ -367,16 +382,19 @@ func savePolicyRules(rules []policyRuleSpec) error {
 	return nil
 }
 
-func loadPolicyRules() []policyRuleSpec {
+func loadPolicyRules() ([]policyRuleSpec, error) {
 	data, err := os.ReadFile(policyRulesPath())
 	if err != nil {
-		return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	var rules []policyRuleSpec
 	if err := json.Unmarshal(data, &rules); err != nil {
-		return nil
+		return nil, fmt.Errorf("decode gateway policy rules: %w", err)
 	}
-	return rules
+	return rules, nil
 }
 
 func addPolicyRule(rule policyRuleSpec) error {
@@ -394,7 +412,7 @@ func deletePolicyRule(rule policyRuleSpec) error {
 	if rule.IPv6 {
 		args = append([]string{"-6"}, args...)
 	}
-	return run("ip", args...)
+	return runDelete("ip", args...)
 }
 
 func SetupKernel(lanIface string) error {
@@ -755,12 +773,12 @@ func run(name string, args ...string) error {
 }
 
 func cleanupFilterForwardRules() error {
-	out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").Output()
+	out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").CombinedOutput()
 	if err != nil {
-		if strings.Contains(err.Error(), "No such file") || strings.Contains(err.Error(), "No such chain") {
+		if isMissingKernelObject(err, out) {
 			return nil
 		}
-		return err
+		return fmt.Errorf("list filter forward chain: %w (output: %q)", err, strings.TrimSpace(string(out)))
 	}
 	var cleanupErrs []error
 	lines := strings.Split(string(out), "\n")
@@ -778,7 +796,7 @@ func cleanupFilterForwardRules() error {
 					}
 				}
 				if digits != "" {
-					if err := run("nft", "delete", "rule", "inet", "filter", "forward", "handle", digits); err != nil {
+					if err := runDelete("nft", "delete", "rule", "inet", "filter", "forward", "handle", digits); err != nil {
 						cleanupErrs = append(cleanupErrs, err)
 					}
 				}
@@ -790,10 +808,30 @@ func cleanupFilterForwardRules() error {
 
 func runDelete(name string, args ...string) error {
 	err := run(name, args...)
-	if err == nil || strings.Contains(err.Error(), "No such file") || strings.Contains(err.Error(), "Cannot find") || strings.Contains(err.Error(), "No such process") {
+	if err == nil || isMissingKernelObject(err, nil) {
 		return nil
 	}
 	return err
+}
+
+func isMissingKernelObject(err error, output []byte) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error() + " " + string(output))
+	for _, marker := range []string{
+		"no such file",
+		"no such chain",
+		"no such process",
+		"cannot find",
+		"no such rule",
+		"no rule",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func removeIfExists(path string) error {

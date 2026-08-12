@@ -1,11 +1,21 @@
 package gateway
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"xray-proxya/internal/config"
 )
+
+func TestIsMissingKernelObject(t *testing.T) {
+	if !isMissingKernelObject(errors.New("command failed"), []byte("Error: No such chain")) {
+		t.Fatal("missing nft chain should be treated as an idempotent cleanup")
+	}
+	if isMissingKernelObject(errors.New("command failed"), []byte("permission denied")) {
+		t.Fatal("permission errors must not be treated as missing objects")
+	}
+}
 
 func TestParseDefaultInterface(t *testing.T) {
 	iface, err := ParseDefaultInterface("default via 192.168.1.1 dev ens18 proto dhcp src 192.168.1.10 metric 100\n")
