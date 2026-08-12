@@ -136,6 +136,7 @@ func ApplyPending(opts Options) ([]string, error) {
 	if gatewaySyncRequired {
 		if err := gateway.SyncDesired(cfg); err != nil {
 			lines = append(lines, fmt.Sprintf("❌ Failed to synchronize gateway runtime: %v", err))
+			return lines, fmt.Errorf("failed to synchronize gateway runtime: %w", err)
 		} else {
 			xrayRestarted = true
 			lines = append(lines, "✅ Gateway runtime synchronized with active configuration.")
@@ -223,6 +224,11 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.XrayConfigChanged = true
 		impact.GatewayRuntimeChanged = true
 		mark("gateway.bypass_countries")
+	}
+	if !reflect.DeepEqual(activeCfg.Path, stagingCfg.Path) {
+		impact.XrayConfigChanged = true
+		impact.GatewayRuntimeChanged = true
+		mark("path")
 	}
 	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
 		if activeCfg.AdminSub.Port != stagingCfg.AdminSub.Port {
