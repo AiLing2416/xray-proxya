@@ -181,6 +181,10 @@ var pathInstallCmd = &cobra.Command{Use: "install", Short: "Install pathd as a r
 		fmt.Println("❌ pathd service installation requires root.")
 		return
 	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		fmt.Printf("❌ pathd installation requires systemd: %v\n", err)
+		return
+	}
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		fmt.Println("❌", err)
@@ -190,15 +194,16 @@ var pathInstallCmd = &cobra.Command{Use: "install", Short: "Install pathd as a r
 		fmt.Println("❌ pathd can be installed only on a Server after 'path enable' and 'apply'.")
 		return
 	}
-	if _, err := os.Stat(pathdBinaryPath()); err != nil {
-		fmt.Printf("❌ pathd binary missing at %s\n", pathdBinaryPath())
+	pathdPath, err := validateRootOwnedExecutable(pathdBinaryPath())
+	if err != nil {
+		fmt.Printf("❌ invalid pathd binary: %v\n", err)
 		return
 	}
 	if err := writePathdConfig(cfg); err != nil {
 		fmt.Println("❌", err)
 		return
 	}
-	content := buildPathdSystemdServiceContent(pathdBinaryPath(), pathdConfigPath())
+	content := buildPathdSystemdServiceContent(pathdPath, pathdConfigPath())
 	if err := os.WriteFile(pathdUnitPath(), []byte(content), 0644); err != nil {
 		fmt.Println("❌", err)
 		return
