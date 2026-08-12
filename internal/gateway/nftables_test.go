@@ -96,6 +96,30 @@ func TestBuildNFTRoutesPathLinkICMPToDedicatedMark(t *testing.T) {
 	}
 }
 
+func TestPathTunnelEnabledForEitherGatewayMode(t *testing.T) {
+	for _, mode := range []struct {
+		name  string
+		local bool
+		lan   bool
+	}{
+		{name: "local only", local: true},
+		{name: "lan only", lan: true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			cfg := testGatewayConfig(mode.local, mode.lan)
+			cfg.Path.Enabled, cfg.Path.Token = true, "token"
+			if !pathTunnelEnabled(cfg) {
+				t.Fatal("PathLink should be enabled when either gateway mode is enabled")
+			}
+		})
+	}
+	neither := testGatewayConfig(false, false)
+	neither.Path.Enabled, neither.Path.Token = true, "token"
+	if pathTunnelEnabled(neither) {
+		t.Fatal("PathLink should be disabled when both gateway modes are disabled")
+	}
+}
+
 func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
 	rules := policyRules("192.168.50.0/24", "fd00::/64", true)
 	if len(rules) != 10 {

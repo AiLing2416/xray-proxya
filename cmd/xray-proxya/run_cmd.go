@@ -88,7 +88,7 @@ var runCmd = &cobra.Command{
 		}
 		pathdEnabled := cfg.Role == config.RoleGateway &&
 			gatewayState == "proxy" &&
-			cfg.Gateway.LocalEnabled && cfg.Gateway.LANEnabled &&
+			(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) &&
 			cfg.Gateway.RelayAlias != "" && !config.GatewayTunDisabled() &&
 			cfg.Path.Enabled && cfg.Path.Token != ""
 		if pathdEnabled {

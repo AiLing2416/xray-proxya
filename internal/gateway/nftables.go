@@ -344,7 +344,7 @@ func pathTunnelEnabled(cfg *config.UserConfig) bool {
 		state = "proxy"
 	}
 	return cfg.Role == config.RoleGateway && state == "proxy" &&
-		cfg.Gateway.LocalEnabled && cfg.Gateway.LANEnabled &&
+		(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) &&
 		cfg.Path.Enabled && cfg.Path.Token != ""
 }
 
