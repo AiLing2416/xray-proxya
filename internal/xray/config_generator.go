@@ -276,7 +276,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if dnsInPort > 0 {
 		inbounds = append(inbounds, buildDNSInbound(dnsInPort))
 	}
-	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "0.0.0.0", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)})
+	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)})
 	if pathdPort > 0 {
 		inbounds = append(inbounds, map[string]interface{}{"tag": "pathd-socks", "port": pathdPort, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth"}})
 	}
@@ -432,6 +432,10 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if dnsInPort > 0 {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"})
 	}
+	// test-socks is only used as a local validation endpoint. Keep its
+	// explicit test target route above this guard, but never let the later
+	// catch-all rules turn it into an open proxy.
+	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "blocked"})
 	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
 	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
@@ -510,7 +514,6 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 
 	rules = append(rules, map[string]interface{}{"type": "field", "user": []string{"service-user"}, "outboundTag": "direct"})
 	rules = append(rules, map[string]interface{}{"type": "field", "network": "tcp,udp", "outboundTag": "direct"})
-	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "blocked"})
 
 	xc["routing"] = map[string]interface{}{"domainStrategy": "IPIfNonMatch", "rules": rules}
 	xc["stats"] = map[string]interface{}{}

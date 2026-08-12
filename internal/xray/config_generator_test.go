@@ -305,9 +305,35 @@ func TestGenerateXrayJSONUsesConfiguredTestInboundPort(t *testing.T) {
 		if got := int(inbound["port"].(float64)); got != 23456 {
 			t.Fatalf("test-socks port = %d, want 23456", got)
 		}
+		if got := inbound["listen"]; got != "127.0.0.1" {
+			t.Fatalf("test-socks listen = %q, want 127.0.0.1", got)
+		}
 	}
 	if !found {
 		t.Fatalf("test-socks inbound not found")
+	}
+}
+
+func TestGenerateXrayJSONBlocksTestSocksBeforeCatchAllRules(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleServer, TestInbound: 23456}
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	rules := parsed["routing"].(map[string]interface{})["rules"].([]interface{})
+
+	blockedIndex, directIndex := -1, -1
+	for index, rawRule := range rules {
+		rule := rawRule.(map[string]interface{})
+		if rule["outboundTag"] == "blocked" && containsInboundRule([]interface{}{rule}, "test-socks", "blocked") {
+			blockedIndex = index
+		}
+		if rule["outboundTag"] == "direct" && rule["network"] == "tcp,udp" {
+			directIndex = index
+		}
+	}
+	if blockedIndex < 0 {
+		t.Fatal("missing test-socks blocked rule")
+	}
+	if directIndex < 0 || blockedIndex > directIndex {
+		t.Fatalf("test-socks blocked rule index = %d, network catch-all index = %d", blockedIndex, directIndex)
 	}
 }
 
