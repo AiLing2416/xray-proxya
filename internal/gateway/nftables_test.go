@@ -92,6 +92,7 @@ func testGatewayConfig(local, lan bool) *config.UserConfig {
 			LocalEnabled: local,
 			LANEnabled:   lan,
 			Mode:         "tun",
+			RelayAlias:   "relay-a",
 		},
 	}
 }
@@ -140,6 +141,12 @@ func TestPathTunnelEnabledForEitherGatewayMode(t *testing.T) {
 	neither.Path.Enabled, neither.Path.Token = true, "token"
 	if pathTunnelEnabled(neither) {
 		t.Fatal("PathLink should be disabled when both gateway modes are disabled")
+	}
+	noRelay := testGatewayConfig(true, false)
+	noRelay.Gateway.RelayAlias = ""
+	noRelay.Path.Enabled, noRelay.Path.Token = true, "token"
+	if pathTunnelEnabled(noRelay) {
+		t.Fatal("PathLink should be disabled when no relay is configured")
 	}
 }
 

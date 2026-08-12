@@ -11,7 +11,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"xray-proxya/internal/config"
 )
 
@@ -119,28 +118,12 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
 
-	// Wait for tun interface to be created by Xray (which runs asynchronously)
-	var found bool
-	for i := 0; i < 40; i++ {
-		if _, err := net.InterfaceByName(tunName); err == nil {
-			found = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !found {
+	// Wait for tun interfaces to be created by Xray (which runs asynchronously).
+	if err := waitForTun(true); err != nil {
 		return fmt.Errorf("tun interface %s was not created in time by Xray core. (Hint: Is the 'xray-proxya' service running? Try 'xray-proxya service status' or 'service start')", tunName)
 	}
 	if pathTunnelEnabled(cfg) {
-		found = false
-		for i := 0; i < 40; i++ {
-			if _, err := net.InterfaceByName(pathTunName); err == nil {
-				found = true
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-		if !found {
+		if err := waitForInterface(pathTunName, true); err != nil {
 			return fmt.Errorf("ICMP PathLink TUN %s was not created in time", pathTunName)
 		}
 		if err := run("ip", "link", "set", "dev", pathTunName, "up"); err != nil {
@@ -365,6 +348,7 @@ func pathTunnelEnabled(cfg *config.UserConfig) bool {
 	}
 	return cfg.Role == config.RoleGateway && state == "proxy" &&
 		(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) &&
+		cfg.Gateway.RelayAlias != "" &&
 		cfg.Path.Enabled && cfg.Path.Token != ""
 }
 

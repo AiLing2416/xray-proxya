@@ -24,6 +24,15 @@ import (
 	"golang.org/x/crypto/curve25519"
 )
 
+var restartHook func() error
+
+// RegisterRestartHook installs the post-restart runtime synchronizer used by
+// consumers that own kernel state associated with the Xray process. The hook
+// runs only after the new process has been started successfully.
+func RegisterRestartHook(hook func() error) {
+	restartHook = hook
+}
+
 // --- Process Management (PID & /proc) ---
 
 func GetXrayStatus() (bool, int) {
@@ -216,6 +225,25 @@ func StartXrayBackground() error {
 }
 
 func RestartXrayService() error {
+	if err := restartXrayService(); err != nil {
+		return err
+	}
+	if restartHook != nil {
+		if err := restartHook(); err != nil {
+			return fmt.Errorf("restore runtime state after Xray restart: %w", err)
+		}
+	}
+	return nil
+}
+
+// RestartXrayServiceWithoutHook is used by gateway transitions that are
+// deliberately changing the TUN state themselves. All ordinary restarts must
+// use RestartXrayService so the registered runtime synchronizer runs.
+func RestartXrayServiceWithoutHook() error {
+	return restartXrayService()
+}
+
+func restartXrayService() error {
 	isRoot := os.Geteuid() == 0
 
 	if isRoot {

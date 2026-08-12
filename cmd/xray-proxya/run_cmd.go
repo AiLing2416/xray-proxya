@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/pathtun"
 	"xray-proxya/internal/quota"
@@ -217,6 +218,12 @@ var runCmd = &cobra.Command{
 				}(pathClient, pathRuntimeStop)
 			}
 		}
+		if err := gateway.RestoreTunState(cfg); err != nil {
+			fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
+			_ = stopProcess(process, waitCh)
+			cleanup()
+			return
+		}
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -265,14 +272,21 @@ var runCmd = &cobra.Command{
 						fmt.Printf("ℹ️  Guest quota: %s\n", msg)
 					}
 					fmt.Println("🔄 Reloading Xray to apply guest quota changes...")
-					_ = stopProcess(process, waitCh)
-					quotaMonitor.Reset()
-					if err := quotaMonitor.Save(); err != nil {
-						fmt.Printf("⚠️  Failed to reset quota monitor state: %v\n", err)
-					}
-					process, waitCh, err = startProcess(cfg)
-					if err != nil {
-						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", err)
+					restartErr := func() error {
+						_ = stopProcess(process, waitCh)
+						quotaMonitor.Reset()
+						if err := quotaMonitor.Save(); err != nil {
+							fmt.Printf("⚠️  Failed to reset quota monitor state: %v\n", err)
+						}
+						process, waitCh, err = startProcess(cfg)
+						if err != nil {
+							return fmt.Errorf("restart Xray after quota update: %w", err)
+						}
+						return gateway.RestoreTunState(cfg)
+					}()
+					if restartErr != nil {
+						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", restartErr)
+						_ = stopProcess(process, waitCh)
 						cleanup()
 						return
 					}

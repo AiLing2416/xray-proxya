@@ -16,6 +16,23 @@ import (
 
 const tunWaitTimeout = 5 * time.Second
 
+func init() {
+	// Xray recreates its TUN devices during every process restart. Register the
+	// gateway-owned state repair with the common restart path so service
+	// restarts, crash recovery, and ordinary apply operations all converge on
+	// the same kernel state.
+	xray.RegisterRestartHook(func() error {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		return RestoreTunState(cfg)
+	})
+}
+
 // WantsTunnel reports whether the desired gateway configuration needs an Xray
 // TUN inbound. Forward-only and disabled states deliberately run without one.
 func WantsTunnel(cfg *config.UserConfig) bool {
@@ -34,28 +51,53 @@ func WantsTunnel(cfg *config.UserConfig) bool {
 }
 
 func waitForTun(present bool) error {
+	return waitForInterface(tunName, present)
+}
+
+func waitForInterface(name string, present bool) error {
 	deadline := time.Now().Add(tunWaitTimeout)
 	for time.Now().Before(deadline) {
-		_, err := net.InterfaceByName(tunName)
+		_, err := net.InterfaceByName(name)
 		if (err == nil) == present {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	if present {
-		return fmt.Errorf("tun interface %s was not created in time by Xray core", tunName)
+		return fmt.Errorf("tun interface %s was not created in time", name)
 	}
-	return fmt.Errorf("tun interface %s still exists after Xray restart", tunName)
+	return fmt.Errorf("tun interface %s still exists after Xray restart", name)
 }
 
 func restartWithTunDisabled(disabled bool) error {
 	if err := config.SetGatewayTunDisabled(disabled); err != nil {
 		return fmt.Errorf("set gateway runtime state: %w", err)
 	}
-	if err := xray.RestartXrayService(); err != nil {
+	if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 		return fmt.Errorf("restart Xray service: %w", err)
 	}
 	return waitForTun(!disabled)
+}
+
+// RestoreTunState reapplies all kernel state that is intentionally outside
+// Xray's config: interface addresses, forwarding/rp_filter sysctls, policy
+// routing, and nftables. It is a no-op when the active gateway is down.
+func RestoreTunState(cfg *config.UserConfig) error {
+	if cfg == nil || !WantsTunnel(cfg) || config.GatewayTunDisabled() {
+		return nil
+	}
+	if err := waitForTun(true); err != nil {
+		return err
+	}
+	if pathTunnelEnabled(cfg) {
+		if err := waitForInterface(pathTunName, true); err != nil {
+			return err
+		}
+	}
+	if err := ApplyFirewall(cfg); err != nil {
+		return fmt.Errorf("reapply gateway runtime state: %w", err)
+	}
+	return waitForReady(cfg)
 }
 
 func waitForReady(cfg *config.UserConfig) error {
