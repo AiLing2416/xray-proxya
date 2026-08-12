@@ -17,7 +17,10 @@ import (
 	"xray-proxya/internal/pathd"
 )
 
-const Name = "path-tun"
+const (
+	Name                  = "path-tun"
+	maxConcurrentRequests = 32
+)
 
 type Manager struct {
 	file  *os.File
@@ -56,6 +59,7 @@ func (m *Manager) Close() error {
 
 func (m *Manager) serve() {
 	buf := make([]byte, 9216)
+	requestSem := make(chan struct{}, maxConcurrentRequests)
 	for {
 		n, err := m.file.Read(buf)
 		if err != nil {
@@ -65,7 +69,13 @@ func (m *Manager) serve() {
 		if !ok {
 			continue
 		}
+		select {
+		case requestSem <- struct{}{}:
+		default:
+			continue
+		}
 		go func(request request) {
+			defer func() { <-requestSem }()
 			result := m.relay(request.destination, int(request.ttl), request.echoData, request.dontFragment)
 			var response []byte
 			if result.Echo {
