@@ -15,6 +15,7 @@ import (
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
 	"golang.org/x/sys/unix"
+	"xray-proxya/pkg/utils"
 )
 
 // Server listens only on a local address. It has no HTTP or public listener.
@@ -402,7 +403,8 @@ func (p *pinger) diagnosticTarget(message *icmp.Message) net.IP {
 		}
 		return net.IPv4(data[16], data[17], data[18], data[19])
 	}
-	if len(data) < 40 || data[0]>>4 != 6 {
+	offset, _, ok := utils.IPv6QuotePayloadOffset(data, byte(p.proto))
+	if !ok || len(data) < offset+8 {
 		return nil
 	}
 	return append(net.IP(nil), data[24:40]...)
@@ -438,10 +440,11 @@ func (p *pinger) matchMessage(message *icmp.Message) (pingKey, bool, bool, bool)
 		}
 		return pingKey{id: binary.BigEndian.Uint16(data[offset+4:]), seq: binary.BigEndian.Uint16(data[offset+6:])}, false, true, true
 	}
-	if len(data) < 48 || data[0]>>4 != 6 {
+	offset, _, ok := utils.IPv6QuotePayloadOffset(data, byte(p.proto))
+	if !ok || len(data) < offset+8 {
 		return pingKey{}, false, false, false
 	}
-	return pingKey{id: binary.BigEndian.Uint16(data[44:]), seq: binary.BigEndian.Uint16(data[46:])}, false, true, true
+	return pingKey{id: binary.BigEndian.Uint16(data[offset+4:]), seq: binary.BigEndian.Uint16(data[offset+6:])}, false, true, true
 }
 
 func (p *pinger) sendIPv4DontFragment(packet []byte, ip net.IP, ttl int) (int, error) {

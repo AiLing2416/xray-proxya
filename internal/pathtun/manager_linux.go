@@ -15,6 +15,7 @@ import (
 
 	"golang.org/x/sys/unix"
 	"xray-proxya/internal/pathd"
+	"xray-proxya/pkg/utils"
 )
 
 const (
@@ -94,6 +95,7 @@ type request struct {
 	v6                  bool
 	source, destination net.IP
 	ttl                 byte
+	icmpOffset          int
 	icmp                []byte
 	original            []byte
 	echoData            []byte
@@ -125,19 +127,19 @@ func parseRequest(packet []byte) (request, bool) {
 		df := binary.BigEndian.Uint16(packet[6:8])&0x4000 != 0
 		return request{source: net.IPv4(packet[12], packet[13], packet[14], packet[15]), destination: destination, ttl: packet[8], icmp: icmp, original: append([]byte(nil), packet[:total]...), echoData: append([]byte(nil), icmp[8:]...), dontFragment: df}, true
 	}
-	if packet[0]>>4 != 6 || len(packet) < 48 || packet[6] != unix.IPPROTO_ICMPV6 || packet[40] != 128 || packet[41] != 0 {
+	if packet[0]>>4 != 6 {
 		return request{}, false
 	}
-	payload := int(binary.BigEndian.Uint16(packet[4:6]))
-	if payload < 8 || 40+payload > len(packet) {
+	icmpOffset, total, ok := utils.IPv6PayloadOffset(packet, unix.IPPROTO_ICMPV6)
+	if !ok || total < icmpOffset+8 || packet[icmpOffset] != 128 || packet[icmpOffset+1] != 0 {
 		return request{}, false
 	}
 	destination := append(net.IP(nil), packet[24:40]...)
 	if !pathd.IsPublicTarget(destination) {
 		return request{}, false
 	}
-	icmp := append([]byte(nil), packet[40:40+payload]...)
-	return request{v6: true, source: append(net.IP(nil), packet[8:24]...), destination: destination, ttl: packet[7], icmp: icmp, original: append([]byte(nil), packet[:40+payload]...), echoData: append([]byte(nil), icmp[8:]...)}, true
+	icmp := append([]byte(nil), packet[icmpOffset:total]...)
+	return request{v6: true, source: append(net.IP(nil), packet[8:24]...), destination: destination, ttl: packet[7], icmpOffset: icmpOffset, icmp: icmp, original: append([]byte(nil), packet[:total]...), echoData: append([]byte(nil), icmp[8:]...)}, true
 }
 
 func (r request) echoReply() []byte {
@@ -171,8 +173,12 @@ func (r request) diagnostic(result pathd.ProbeResult) []byte {
 			return nil
 		}
 		quote := r.original
-		if len(quote) > 48 {
-			quote = quote[:48]
+		quoteLimit := 48
+		if r.icmpOffset > 0 && r.icmpOffset+8 > quoteLimit {
+			quoteLimit = r.icmpOffset + 8
+		}
+		if len(quote) > quoteLimit {
+			quote = quote[:quoteLimit]
 		}
 		icmp := make([]byte, 8+len(quote))
 		icmp[0], icmp[1] = result.ICMPType, result.ICMPCode

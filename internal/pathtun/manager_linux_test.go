@@ -91,3 +91,26 @@ func TestIPv4FragmentedEchoRequestsAreRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestIPv6EchoWithHopByHopHeader(t *testing.T) {
+	icmp := []byte{128, 0, 0, 0, 0x12, 0x34, 0, 1, 'p', 'a', 't', 'h'}
+	packet := make([]byte, 40+8+len(icmp))
+	packet[0], packet[6], packet[7] = 0x60, 0, 64
+	binary.BigEndian.PutUint16(packet[4:6], uint16(len(packet)-40))
+	packet[40], packet[41] = unix.IPPROTO_ICMPV6, 0
+	copy(packet[8:24], net.ParseIP("2001:db8::10").To16())
+	copy(packet[24:40], net.ParseIP("2606:4700:4700::1111").To16())
+	copy(packet[48:], icmp)
+
+	req, ok := parseRequest(packet)
+	if !ok {
+		t.Fatal("parseRequest rejected an IPv6 Echo Request with a Hop-by-Hop header")
+	}
+	if req.icmpOffset != 48 || string(req.echoData) != "path" {
+		t.Fatalf("ICMP offset/data = %d/%q, want 48/path", req.icmpOffset, req.echoData)
+	}
+	reply := req.echoReply()
+	if reply[6] != unix.IPPROTO_ICMPV6 || reply[40] != 129 {
+		t.Fatalf("not an IPv6 Echo Reply: %v", reply[:41])
+	}
+}

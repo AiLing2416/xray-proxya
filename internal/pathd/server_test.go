@@ -7,6 +7,7 @@ import (
 
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 )
 
 func TestPendingPingRequiresMatchingEchoSource(t *testing.T) {
@@ -35,5 +36,25 @@ func TestPendingPingRequiresMatchingDiagnosticQuoteTarget(t *testing.T) {
 	}
 	if p.pendingMatches(pendingPing{target: net.ParseIP("1.1.1.1")}, nil, true, message) {
 		t.Fatal("diagnostic quoting another target was accepted")
+	}
+}
+
+func TestMatchMessageFindsICMPv6AfterHopByHopHeader(t *testing.T) {
+	quote := make([]byte, 40+8+8)
+	quote[0], quote[6] = 0x60, 0
+	binary.BigEndian.PutUint16(quote[4:6], 64)
+	copy(quote[24:40], net.ParseIP("2606:4700:4700::1111").To16())
+	quote[40], quote[41] = 58, 0
+	quote[48] = 128
+	binary.BigEndian.PutUint16(quote[52:54], 0x5054)
+	binary.BigEndian.PutUint16(quote[54:56], 7)
+
+	p := &pinger{proto: 58, reply: ipv6.ICMPTypeEchoReply}
+	key, cookieMatch, diagnostic, ok := p.matchMessage(&icmp.Message{Type: ipv6.ICMPTypeTimeExceeded, Body: &icmp.TimeExceeded{Data: quote}})
+	if !ok || !diagnostic || cookieMatch || key.id != 0x5054 || key.seq != 7 {
+		t.Fatalf("matchMessage() = %#v, %t, %t, %t", key, cookieMatch, diagnostic, ok)
+	}
+	if !p.pendingMatches(pendingPing{target: net.ParseIP("2606:4700:4700::1111")}, nil, true, &icmp.Message{Type: ipv6.ICMPTypeTimeExceeded, Body: &icmp.TimeExceeded{Data: quote}}) {
+		t.Fatal("IPv6 diagnostic with an extension header did not match its target")
 	}
 }
