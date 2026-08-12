@@ -31,6 +31,14 @@ func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	if !strings.Contains(rules, "ip daddr 192.168.50.0/24 return") {
 		t.Fatalf("rules should exclude configured LAN subnet: %s", rules)
 	}
+	if !strings.Contains(rules, "ip saddr != 192.168.50.0/24 return") {
+		t.Fatalf("rules should reject spoofed IPv4 LAN sources: %s", rules)
+	}
+
+	rulesIPv6 := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24", "fd00::/64")
+	if !strings.Contains(rulesIPv6, "ip6 saddr != fd00::/64 return") {
+		t.Fatalf("rules should reject spoofed IPv6 LAN sources: %s", rulesIPv6)
+	}
 }
 
 func TestBuildNFTConditionalChains(t *testing.T) {

@@ -18,15 +18,23 @@ import (
 	"xray-proxya/pkg/utils"
 )
 
+const (
+	maxGlobalInFlight = 128
+	maxConnections    = 64
+	maxPayloadSize    = 1024
+)
+
 // Server listens only on a local address. It has no HTTP or public listener.
 type Server struct {
-	listener  net.Listener
-	token     string
-	idle      time.Duration
-	pinger4   *pinger
-	pinger6   *pinger
-	closed    chan struct{}
-	closeOnce sync.Once
+	listener    net.Listener
+	token       string
+	idle        time.Duration
+	pinger4     *pinger
+	pinger6     *pinger
+	inFlight    chan struct{}
+	connections chan struct{}
+	closed      chan struct{}
+	closeOnce   sync.Once
 }
 
 func Listen(address, token string, idle time.Duration) (*Server, error) {
@@ -54,7 +62,16 @@ func Listen(address, token string, idle time.Duration) (*Server, error) {
 		_ = p4.Close()
 		return nil, fmt.Errorf("open raw IPv6 ICMP socket: %w", err)
 	}
-	return &Server{listener: listener, token: token, idle: idle, pinger4: p4, pinger6: p6, closed: make(chan struct{})}, nil
+	return &Server{
+		listener:    listener,
+		token:       token,
+		idle:        idle,
+		pinger4:     p4,
+		pinger6:     p6,
+		inFlight:    make(chan struct{}, maxGlobalInFlight),
+		connections: make(chan struct{}, maxConnections),
+		closed:      make(chan struct{}),
+	}, nil
 }
 
 // ValidateListenAddress guarantees that pathd cannot accidentally become a
@@ -82,7 +99,12 @@ func (s *Server) Serve() error {
 				return err
 			}
 		}
-		go s.serveConn(conn)
+		select {
+		case s.connections <- struct{}{}:
+			go s.serveConn(conn)
+		default:
+			_ = conn.Close()
+		}
 	}
 }
 
@@ -95,6 +117,7 @@ func (s *Server) Close() error {
 
 func (s *Server) serveConn(conn net.Conn) {
 	defer conn.Close()
+	defer func() { <-s.connections }()
 	var writeMu sync.Mutex
 	sem := make(chan struct{}, maxInFlight)
 	_ = conn.SetDeadline(time.Now().Add(s.idle))
@@ -123,8 +146,17 @@ func (s *Server) serveConn(conn net.Conn) {
 			writeMu.Unlock()
 			continue
 		}
+		select {
+		case s.inFlight <- struct{}{}:
+		default:
+			<-sem
+			writeMu.Lock()
+			_ = writeFrame(conn, frame{Type: "result", ID: request.ID, Error: "PathLink is busy"})
+			writeMu.Unlock()
+			continue
+		}
 		go func(request frame) {
-			defer func() { <-sem }()
+			defer func() { <-sem; <-s.inFlight }()
 			result := s.handleProbe(request)
 			writeMu.Lock()
 			_ = writeFrame(conn, result)
@@ -155,13 +187,13 @@ func (s *Server) handleProbe(request frame) frame {
 	if payloadSize == 0 {
 		payloadSize = 8
 	}
-	if payloadSize < 8 || payloadSize > 65507 {
+	if payloadSize < 8 || payloadSize > maxPayloadSize {
 		return frame{Type: "result", ID: request.ID, Error: "invalid ICMP payload size"}
 	}
 	var probe ProbeResult
 	var err error
 	if request.Relay {
-		if len(request.EchoData) > 8192 {
+		if len(request.EchoData) > maxPayloadSize {
 			return frame{Type: "result", ID: request.ID, Error: "ICMP echo payload is too large"}
 		}
 		echoData := request.EchoData

@@ -10,6 +10,26 @@ import (
 	"golang.org/x/net/ipv6"
 )
 
+func TestHandleProbeRejectsOversizedPayload(t *testing.T) {
+	s := &Server{}
+	result := s.handleProbe(frame{
+		Type:        "icmp_echo",
+		Target:      "8.8.8.8",
+		Timeout:     1000,
+		TTL:         64,
+		PayloadSize: maxPayloadSize + 1,
+	})
+	if result.Error != "invalid ICMP payload size" {
+		t.Fatalf("oversized payload error = %q", result.Error)
+	}
+}
+
+func TestServerLimitsAreFinite(t *testing.T) {
+	if maxGlobalInFlight <= maxInFlight || maxConnections <= 0 || maxPayloadSize != 1024 {
+		t.Fatalf("unexpected limits: global=%d per-connection=%d connections=%d payload=%d", maxGlobalInFlight, maxInFlight, maxConnections, maxPayloadSize)
+	}
+}
+
 func TestPendingPingRequiresMatchingEchoSource(t *testing.T) {
 	p := &pinger{proto: 1}
 	pending := pendingPing{target: net.ParseIP("8.8.8.8")}
