@@ -19,7 +19,7 @@ var maintainCmd = &cobra.Command{
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update Xray core binary to the latest version",
+	Short: "Update Xray core binary to the pinned tested version",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("🔄 Checking for Xray core updates...")
 		xrayPath := xray.GetXrayBinaryPath()

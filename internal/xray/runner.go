@@ -26,6 +26,11 @@ import (
 
 var restartHook func() error
 
+// PinnedXrayVersion is deliberately fixed for reproducible installs. Update
+// this value only after the release has passed the project's gateway and
+// protocol regression tests.
+const PinnedXrayVersion = "v1.8.24"
+
 // RegisterRestartHook installs the post-restart runtime synchronizer used by
 // consumers that own kernel state associated with the Xray process. The hook
 // runs only after the new process has been started successfully.
@@ -589,7 +594,7 @@ func DownloadXray() error {
 	if strings.Contains(string(out), "aarch64") || strings.Contains(string(out), "arm64") {
 		arch = "arm64-v8a"
 	}
-	url := fmt.Sprintf("https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-%s.zip", arch)
+	url := xrayDownloadURL(arch)
 	binPath := GetXrayBinaryPath()
 	binDir := filepath.Dir(binPath)
 	os.MkdirAll(binDir, 0755)
@@ -682,6 +687,10 @@ func DownloadXray() error {
 		}
 	}
 	return nil
+}
+
+func xrayDownloadURL(arch string) string {
+	return fmt.Sprintf("https://github.com/XTLS/Xray-core/releases/download/%s/Xray-linux-%s.zip", PinnedXrayVersion, arch)
 }
 
 func EnableService(now bool) error {
