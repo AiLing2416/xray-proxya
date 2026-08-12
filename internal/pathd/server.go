@@ -58,9 +58,9 @@ func Listen(address, token string, idle time.Duration) (*Server, error) {
 	}
 	p6, err := newPinger("ip6:ipv6-icmp", "::", 58, ipv6.ICMPTypeEchoRequest, ipv6.ICMPTypeEchoReply)
 	if err != nil {
-		listener.Close()
-		_ = p4.Close()
-		return nil, fmt.Errorf("open raw IPv6 ICMP socket: %w", err)
+		// IPv6 is an optional PathLink capability. A host without IPv6 or
+		// CAP_NET_RAW for IPv6 can still serve all IPv4 probes.
+		p6 = nil
 	}
 	return &Server{
 		listener:    listener,
@@ -111,7 +111,16 @@ func (s *Server) Serve() error {
 func (s *Server) Addr() net.Addr { return s.listener.Addr() }
 
 func (s *Server) Close() error {
-	s.closeOnce.Do(func() { close(s.closed); _ = s.listener.Close(); _ = s.pinger4.Close(); _ = s.pinger6.Close() })
+	s.closeOnce.Do(func() {
+		close(s.closed)
+		_ = s.listener.Close()
+		if s.pinger4 != nil {
+			_ = s.pinger4.Close()
+		}
+		if s.pinger6 != nil {
+			_ = s.pinger6.Close()
+		}
+	})
 	return nil
 }
 
@@ -200,8 +209,14 @@ func (s *Server) handleProbe(request frame) frame {
 		if echoData == nil {
 			echoData = []byte{}
 		}
+		if pinger == nil {
+			return frame{Type: "result", ID: request.ID, Error: "IPv6 ICMP is unavailable"}
+		}
 		probe, err = pinger.RelayEcho(ip, time.Duration(request.Timeout)*time.Millisecond, request.TTL, echoData, request.DontFragment)
 	} else {
+		if pinger == nil {
+			return frame{Type: "result", ID: request.ID, Error: "IPv6 ICMP is unavailable"}
+		}
 		probe, err = pinger.ProbeWithOptions(ip, time.Duration(request.Timeout)*time.Millisecond, ProbeOptions{TTL: request.TTL, PayloadSize: payloadSize, DontFragment: request.DontFragment})
 	}
 	result := frame{Type: "result", ID: request.ID, RTT: probe.RTT.Nanoseconds(), Echo: probe.Echo, ICMPType: probe.ICMPType, ICMPCode: probe.ICMPCode, MTU: probe.MTU}
@@ -287,7 +302,7 @@ func (p *pinger) RelayEcho(ip net.IP, timeout time.Duration, ttl int, data []byt
 
 func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, relayData []byte) (ProbeResult, error) {
 	ttl := options.TTL
-	if relayData == nil && (options.PayloadSize < 8 || options.PayloadSize > 65507) {
+	if relayData == nil && (options.PayloadSize < 8 || options.PayloadSize > maxPayloadSize) {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP payload size")
 	}
 	if p.proto == 1 {

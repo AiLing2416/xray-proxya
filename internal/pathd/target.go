@@ -5,6 +5,31 @@ import (
 	"net"
 )
 
+var nonPublicIPv4 = mustCIDRs([]string{
+	"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+	"169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+	"192.88.99.0/24", "192.168.0.0/16", "192.175.48.0/24", "198.18.0.0/15",
+	"198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+})
+
+var nonPublicIPv6 = mustCIDRs([]string{
+	"::/128", "::1/128", "::ffff:0:0/96", "64:ff9b:1::/48", "100::/64",
+	"100:0:0:1::/64", "2001::/32", "2001:10::/28", "2001:db8::/32",
+	"3fff::/20", "fc00::/7", "fe80::/10",
+})
+
+func mustCIDRs(values []string) []*net.IPNet {
+	result := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			panic(err)
+		}
+		result = append(result, network)
+	}
+	return result
+}
+
 // ValidateProbeTarget permits only globally routable addresses. It is checked
 // on both ends of PathLink so a compromised gateway cannot probe remote-local
 // networks, metadata endpoints, or reserved address space.
@@ -29,25 +54,20 @@ func IsPublicTarget(ip net.IP) bool { return ValidateProbeTarget(ip) == nil }
 
 func isPublicIPv4(ip net.IP) bool {
 	v := ip.To4()
-	if v == nil || v[0] == 0 || v[0] >= 224 || v[0] == 10 || v[0] == 127 {
+	if v == nil {
 		return false
 	}
-	if v[0] == 100 && v[1]&0xc0 == 0x40 {
-		return false
-	} // CGNAT
-	if v[0] == 169 && v[1] == 254 {
-		return false
+	// IANA assigns 192.0.0.9/32 and 192.0.0.10/32 as globally reachable
+	// exceptions inside the otherwise non-public 192.0.0.0/24 block.
+	if v[0] == 192 && v[1] == 0 && v[2] == 0 && (v[3] == 9 || v[3] == 10) {
+		return true
 	}
-	if v[0] == 172 && v[1] >= 16 && v[1] <= 31 {
-		return false
+	for _, network := range nonPublicIPv4 {
+		if network.Contains(v) {
+			return false
+		}
 	}
-	if v[0] == 192 && (v[1] == 0 || v[1] == 168 || (v[1] == 0 && v[2] == 2)) {
-		return false
-	}
-	if v[0] == 198 && (v[1] == 18 || v[1] == 19 || v[1] == 51) {
-		return false
-	}
-	return !(v[0] == 203 && v[1] == 0 && v[2] == 113)
+	return true
 }
 
 func isPublicIPv6(ip net.IP) bool {
@@ -55,6 +75,10 @@ func isPublicIPv6(ip net.IP) bool {
 	if v == nil || ip.To4() != nil || v[0]&0xe0 != 0x20 {
 		return false
 	}
-	// RFC 3849 documentation prefix must not be a probe target.
-	return !(v[0] == 0x20 && v[1] == 0x01 && v[2] == 0x0d && v[3] == 0xb8)
+	for _, network := range nonPublicIPv6 {
+		if network.Contains(v) {
+			return false
+		}
+	}
+	return true
 }

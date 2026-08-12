@@ -154,10 +154,10 @@ func (c *Client) probe(target string, timeoutMS int, options ProbeOptions, relay
 	if options.TTL < 1 || options.TTL > 255 {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP TTL")
 	}
-	if !relay && (options.PayloadSize < 8 || options.PayloadSize > 65507) {
+	if !relay && (options.PayloadSize < 8 || options.PayloadSize > maxPayloadSize) {
 		return ProbeResult{}, fmt.Errorf("invalid ICMP payload size")
 	}
-	if relay && len(echoData) > 8192 {
+	if relay && len(echoData) > maxPayloadSize {
 		return ProbeResult{}, fmt.Errorf("ICMP echo payload is too large")
 	}
 	c.mu.Lock()

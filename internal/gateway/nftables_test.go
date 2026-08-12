@@ -39,6 +39,9 @@ func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	if !strings.Contains(rulesIPv6, "ip6 saddr != fd00::/64 return") {
 		t.Fatalf("rules should reject spoofed IPv6 LAN sources: %s", rulesIPv6)
 	}
+	if !strings.Contains(rules, "ip6 saddr ::/0 return") {
+		t.Fatalf("rules should bypass IPv6 LAN interception without a LAN IPv6 subnet: %s", rules)
+	}
 }
 
 func TestBuildNFTConditionalChains(t *testing.T) {

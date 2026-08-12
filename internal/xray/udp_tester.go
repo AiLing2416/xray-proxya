@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -72,18 +73,18 @@ func TestUDP(socksAddr string, user, pass string) (time.Duration, error) {
 		relayIP = string(buf[pos+1 : pos+1+l])
 		pos += 1 + l
 	case 0x04: // IPv6
-		relayIP = "[" + net.IP(buf[pos:pos+16]).String() + "]"
+		relayIP = net.IP(buf[pos : pos+16]).String()
 		pos += 16
 	default:
 		return 0, fmt.Errorf("unknown ATYP: %d", atyp)
 	}
 	relayPort = int(buf[pos])<<8 | int(buf[pos+1])
-	relayAddr := fmt.Sprintf("%s:%d", relayIP, relayPort)
+	relayAddr := net.JoinHostPort(relayIP, strconv.Itoa(relayPort))
 
 	// If relay IP is all zeros, use the SOCKS server's IP
 	if strings.Contains(relayIP, "0.0.0.0") || strings.Contains(relayIP, "::") {
 		host, _, _ := net.SplitHostPort(socksAddr)
-		relayAddr = fmt.Sprintf("%s:%d", host, relayPort)
+		relayAddr = net.JoinHostPort(host, strconv.Itoa(relayPort))
 	}
 
 	// 5. Send UDP Data to Relay

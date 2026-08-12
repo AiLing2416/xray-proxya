@@ -158,13 +158,13 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	if err := run("ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
 		return err
 	}
-	if err := run("ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
-		return err
-	}
-
-	ipv6Supported := false
-	if _, err := os.Stat("/proc/net/if_inet6"); err == nil {
-		ipv6Supported = true
+	ipv6Supported := ipv6Available()
+	if ipv6Supported {
+		if err := run("ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
+			// IPv6 is an optional feature. Keep the IPv4 gateway operational
+			// when the kernel or TUN device cannot install the IPv6 address.
+			ipv6Supported = false
+		}
 	}
 
 	rulesToAdd := policyRules(lanCIDR, lanIPv6CIDR, ipv6Supported)
@@ -259,9 +259,9 @@ func pathTTLRulesPath() string {
 }
 
 func installPathTTLRules(lanIface string, ipv6Supported bool) error {
-	rules := []pathTTLRule{{Args: []string{"-t", "mangle", "-A", "PREROUTING", "-i", lanIface, "-p", "icmp", "--icmp-type", "echo-request", "-j", "TTL", "--ttl-inc", "1"}}}
+	rules := []pathTTLRule{{Args: []string{"-t", "mangle", "-A", "PREROUTING", "-i", lanIface, "-m", "mark", "--mark", pathTunMark, "-p", "icmp", "--icmp-type", "echo-request", "-j", "TTL", "--ttl-inc", "1"}}}
 	if ipv6Supported {
-		rules = append(rules, pathTTLRule{IPv6: true, Args: []string{"-t", "mangle", "-A", "PREROUTING", "-i", lanIface, "-p", "ipv6-icmp", "--icmpv6-type", "echo-request", "-j", "HL", "--hl-inc", "1"}})
+		rules = append(rules, pathTTLRule{IPv6: true, Args: []string{"-t", "mangle", "-A", "PREROUTING", "-i", lanIface, "-m", "mark", "--mark", pathTunMark, "-p", "ipv6-icmp", "--icmpv6-type", "echo-request", "-j", "HL", "--hl-inc", "1"}})
 	}
 	for index, rule := range rules {
 		binary := "iptables"
@@ -420,8 +420,10 @@ func SetupKernel(lanIface string) error {
 	if err := run("sysctl", "-w", "net.ipv4.ip_forward=1"); err != nil {
 		return err
 	}
-	if err := run("sysctl", "-w", "net.ipv6.conf.all.forwarding=1"); err != nil {
-		return err
+	if ipv6Available() {
+		if err := run("sysctl", "-w", "net.ipv6.conf.all.forwarding=1"); err != nil {
+			return err
+		}
 	}
 	if err := run("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0"); err != nil {
 		return err
@@ -541,10 +543,7 @@ func Verify(cfg *config.UserConfig) []string {
 		if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
 			problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
 		}
-		ipv6Supported := false
-		if _, err := os.Stat("/proc/net/if_inet6"); err == nil {
-			ipv6Supported = true
-		}
+		ipv6Supported := ipv6Available()
 		if ipv6Supported && !interfaceHasCIDR(tunName, tunIPv6CIDR) {
 			problems = append(problems, tunName+" is missing IPv6 address "+tunIPv6CIDR)
 		}
@@ -588,6 +587,10 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 		b.WriteString("        ip saddr != " + lanCIDR + " return\n")
 		if lanIPv6CIDR != "" {
 			b.WriteString("        ip6 saddr != " + lanIPv6CIDR + " return\n")
+		} else {
+			// No discovered LAN IPv6 subnet means IPv6 LAN interception is
+			// unavailable; leave all IPv6 packets on the normal route.
+			b.WriteString("        ip6 saddr ::/0 return\n")
 		}
 		b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
 		b.WriteString("        ip daddr " + lanCIDR + " return\n")
@@ -833,14 +836,27 @@ func readSysctl(key string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
+func ipv6Available() bool {
+	data, err := os.ReadFile("/proc/net/if_inet6")
+	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
+		return false
+	}
+	if data, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6"); err == nil && strings.TrimSpace(string(data)) == "1" {
+		return false
+	}
+	return true
+}
+
 func saveSysctlState(lanIface string) error {
 	keys := []string{
 		"net.ipv4.ip_forward",
-		"net.ipv6.conf.all.forwarding",
 		"net.ipv4.conf.all.rp_filter",
 		"net.ipv4.conf.default.rp_filter",
 		"net.ipv4.conf.all.send_redirects",
 		"net.ipv4.conf.default.send_redirects",
+	}
+	if ipv6Available() {
+		keys = append(keys, "net.ipv6.conf.all.forwarding")
 	}
 	if lanIface != "" {
 		keys = append(keys,
