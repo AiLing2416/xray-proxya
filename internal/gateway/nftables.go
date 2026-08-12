@@ -150,7 +150,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		}
 	}
 
-	rulesToAdd := policyRules(lanCIDR, lanIPv6CIDR, ipv6Supported)
+	rulesToAdd := policyRules(cfg, lanCIDR, lanIPv6CIDR, ipv6Supported)
 	if err := savePolicyRules(rulesToAdd); err != nil {
 		return err
 	}
@@ -331,22 +331,24 @@ func cleanupPathTTLRules() error {
 	return errors.Join(cleanupErrs...)
 }
 
-func policyRules(lanCIDR, lanIPv6CIDR string, ipv6Supported bool) []policyRuleSpec {
+func policyRules(cfg *config.UserConfig, lanCIDR, lanIPv6CIDR string, ipv6Supported bool) []policyRuleSpec {
 	rules := []policyRuleSpec{
 		{Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}},
-		{Args: []string{"fwmark", pathTunMark, "table", pathPolicyTable, "pref", prefPathTun}},
 		{Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}},
 		{Args: []string{"to", lanCIDR, "table", "main", "pref", prefLAN}},
 		{Args: []string{"to", "127.0.0.0/8", "table", "main", "pref", prefLoopback}},
 	}
+	if pathTunnelEnabled(cfg) {
+		rules = append(rules, policyRuleSpec{Args: []string{"fwmark", pathTunMark, "table", pathPolicyTable, "pref", prefPathTun}})
+	}
 	if !ipv6Supported {
 		return rules
 	}
-	rules = append(rules,
-		policyRuleSpec{IPv6: true, Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}},
-		policyRuleSpec{IPv6: true, Args: []string{"fwmark", pathTunMark, "table", pathPolicyTable, "pref", prefPathTun}},
-		policyRuleSpec{IPv6: true, Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}},
-	)
+	rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}})
+	if pathTunnelEnabled(cfg) {
+		rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"fwmark", pathTunMark, "table", pathPolicyTable, "pref", prefPathTun}})
+	}
+	rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}})
 	if lanIPv6CIDR != "" {
 		rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"to", lanIPv6CIDR, "table", "main", "pref", prefLAN}})
 	}
@@ -520,9 +522,7 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 
 	if state == "disabled" {
-		if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err == nil {
-			problems = append(problems, "nft table inet "+tableName+" is still present but gateway state is disabled")
-		}
+		problems = append(problems, verifyNoManagedRuntime("disabled")...)
 		return problems
 	}
 
@@ -532,9 +532,7 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 
 	if state == "forward-only" {
-		if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err == nil {
-			problems = append(problems, "nft table inet "+tableName+" is present but gateway state is forward-only")
-		}
+		problems = append(problems, verifyNoManagedRuntime("forward-only")...)
 		return problems
 	}
 
@@ -542,23 +540,237 @@ func Verify(cfg *config.UserConfig) []string {
 	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
 		problems = append(problems, tunName+" interface is not present (Hint: Is the 'xray-proxya' service running?)")
 	} else {
+		if !interfaceIsUp(tunName) {
+			problems = append(problems, tunName+" interface is not UP")
+		}
 		if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
 			problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
-		}
-		ipv6Supported := ipv6Available()
-		if ipv6Supported && !interfaceHasCIDR(tunName, tunIPv6CIDR) {
-			problems = append(problems, tunName+" is missing IPv6 address "+tunIPv6CIDR)
 		}
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := exec.Command("ip", "link", "show", pathTunName).Run(); err != nil {
 			problems = append(problems, pathTunName+" interface is not present (Hint: Is PathLink enabled and is the xray-proxya service running?)")
+		} else {
+			if !interfaceIsUp(pathTunName) {
+				problems = append(problems, pathTunName+" interface is not UP")
+			}
+			if value, err := readSysctl("net.ipv4.conf." + pathTunName + ".rp_filter"); err != nil || value != "0" {
+				problems = append(problems, pathTunName+" rp_filter is not 0")
+			}
 		}
+	} else if interfaceExists(pathTunName) {
+		problems = append(problems, pathTunName+" interface is present but PathLink is disabled")
 	}
 	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err != nil {
 		problems = append(problems, "nft table inet "+tableName+" is not present")
 	}
+
+	if ok, err := hasDefaultRoute(policyTable, tunName, false); err != nil {
+		problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
+	} else if !ok {
+		problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via "+tunName)
+	}
+	if pathTunnelEnabled(cfg) {
+		if ok, err := hasDefaultRoute(pathPolicyTable, pathTunName, false); err != nil {
+			problems = append(problems, "cannot inspect IPv4 policy table "+pathPolicyTable+": "+err.Error())
+		} else if !ok {
+			problems = append(problems, "IPv4 policy table "+pathPolicyTable+" has no default route via "+pathTunName)
+		}
+	}
+
+	lanCIDR, err := getInterfaceCIDR(cfg.Gateway.LANInterface)
+	if err != nil {
+		problems = append(problems, "cannot determine LAN CIDR for policy rules: "+err.Error())
+	} else {
+		// IPv6 is optional. Only require IPv6 policy state when the TUN
+		// actually received its IPv6 address; a host with IPv6 disabled or an
+		// Xray core that rejected the optional address remains IPv4-healthy.
+		ipv6Configured := interfaceHasCIDR(tunName, tunIPv6CIDR)
+		expected := policyRules(cfg, lanCIDR, "", ipv6Configured)
+		problems = append(problems, verifyPolicyRules(expected)...)
+	}
 	return problems
+}
+
+func interfaceExists(name string) bool {
+	_, err := net.InterfaceByName(name)
+	return err == nil
+}
+
+func interfaceIsUp(name string) bool {
+	out, err := exec.Command("ip", "link", "show", "dev", name).Output()
+	if err != nil {
+		return false
+	}
+	line := string(out)
+	return strings.Contains(line, "state UP") || strings.Contains(line, "<UP,") || strings.Contains(line, ",UP>")
+}
+
+func hasDefaultRoute(table, device string, ipv6 bool) (bool, error) {
+	args := []string{"route", "show", "table", table}
+	if ipv6 {
+		args = append([]string{"-6"}, args...)
+	} else {
+		args = append([]string{"-4"}, args...)
+	}
+	out, err := exec.Command("ip", args...).CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("%w (output: %q)", err, strings.TrimSpace(string(out)))
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 0 || fields[0] != "default" {
+			continue
+		}
+		for i := 1; i+1 < len(fields); i++ {
+			if fields[i] == "dev" && fields[i+1] == device {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func verifyPolicyRules(expected []policyRuleSpec) []string {
+	var problems []string
+	cache := map[bool]string{}
+	for _, rule := range expected {
+		output, ok := cache[rule.IPv6]
+		if !ok {
+			args := []string{"rule", "show"}
+			if rule.IPv6 {
+				args = append([]string{"-6"}, args...)
+			} else {
+				args = append([]string{"-4"}, args...)
+			}
+			out, err := exec.Command("ip", args...).CombinedOutput()
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("cannot inspect %s policy rules: %v (output: %q)", map[bool]string{true: "IPv6", false: "IPv4"}[rule.IPv6], err, strings.TrimSpace(string(out))))
+				cache[rule.IPv6] = ""
+				continue
+			}
+			output = string(out)
+			cache[rule.IPv6] = output
+		}
+		if !policyRuleOutputContains(output, rule) {
+			problems = append(problems, fmt.Sprintf("missing policy rule: %s", strings.Join(rule.Args, " ")))
+		}
+	}
+	return problems
+}
+
+func policyRuleOutputContains(output string, rule policyRuleSpec) bool {
+	pref := ""
+	for i := 0; i+1 < len(rule.Args); i++ {
+		if rule.Args[i] == "pref" {
+			pref = rule.Args[i+1]
+			break
+		}
+	}
+	for _, line := range strings.Split(output, "\n") {
+		if pref == "" || !(strings.HasPrefix(strings.TrimSpace(line), pref+":") || strings.Contains(line, " "+pref+":")) {
+			continue
+		}
+		matches := true
+		for i := 0; i < len(rule.Args); i++ {
+			switch rule.Args[i] {
+			case "fwmark":
+				if i+1 >= len(rule.Args) || !ruleLineHasMark(line, rule.Args[i+1]) {
+					matches = false
+				}
+				i++
+			case "table":
+				if i+1 >= len(rule.Args) || !(strings.Contains(line, "lookup "+rule.Args[i+1]) || strings.Contains(line, "table "+rule.Args[i+1])) {
+					matches = false
+				}
+				i++
+			case "to":
+				if i+1 >= len(rule.Args) || !strings.Contains(line, "to "+rule.Args[i+1]) {
+					matches = false
+				}
+				i++
+			case "pref":
+				i++
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+func ruleLineHasMark(line, value string) bool {
+	mark, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(line, fmt.Sprintf("fwmark 0x%x", mark)) || strings.Contains(line, "fwmark "+value)
+}
+
+func verifyNoManagedRuntime(state string) []string {
+	var problems []string
+	if interfaceExists(tunName) {
+		problems = append(problems, tunName+" interface is present but gateway state is "+state)
+	}
+	if interfaceExists(pathTunName) {
+		problems = append(problems, pathTunName+" interface is present but gateway state is "+state)
+	}
+	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err == nil {
+		problems = append(problems, "nft table inet "+tableName+" is present but gateway state is "+state)
+	}
+	for _, table := range []string{policyTable, pathPolicyTable} {
+		for _, ipv6 := range []bool{false, true} {
+			args := []string{"route", "show", "table", table}
+			if ipv6 {
+				args = append([]string{"-6"}, args...)
+			} else {
+				args = append([]string{"-4"}, args...)
+			}
+			out, err := exec.Command("ip", args...).CombinedOutput()
+			if err != nil {
+				problems = append(problems, fmt.Sprintf("cannot inspect %s policy table %s: %v", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], table, err))
+			} else if strings.TrimSpace(string(out)) != "" {
+				problems = append(problems, fmt.Sprintf("%s policy table %s still contains routes", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], table))
+			}
+		}
+	}
+	for _, ipv6 := range []bool{false, true} {
+		args := []string{"rule", "show"}
+		if ipv6 {
+			args = append([]string{"-6"}, args...)
+		} else {
+			args = append([]string{"-4"}, args...)
+		}
+		out, err := exec.Command("ip", args...).CombinedOutput()
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("cannot inspect %s policy rules: %v", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], err))
+			continue
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if managedRuleLine(line) {
+				problems = append(problems, fmt.Sprintf("managed %s policy rule still exists: %s", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], strings.TrimSpace(line)))
+			}
+		}
+	}
+	if out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").CombinedOutput(); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, `comment "xray-proxya"`) {
+				problems = append(problems, "managed filter forward rule still exists")
+				break
+			}
+		}
+	}
+	return problems
+}
+
+func managedRuleLine(line string) bool {
+	for _, pref := range []string{prefXray, prefLAN, prefLoopback, prefTun, prefPathTun} {
+		if strings.HasPrefix(strings.TrimSpace(line), pref+":") || strings.Contains(line, " "+pref+":") {
+			return true
+		}
+	}
+	return false
 }
 
 func interfaceHasCIDR(name, cidr string) bool {

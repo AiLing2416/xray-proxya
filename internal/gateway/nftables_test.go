@@ -17,6 +17,16 @@ func TestIsMissingKernelObject(t *testing.T) {
 	}
 }
 
+func TestPolicyRuleOutputContains(t *testing.T) {
+	rule := policyRuleSpec{Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}}
+	if !policyRuleOutputContains("10100: from all fwmark 0x1 lookup 100\n", rule) {
+		t.Fatal("expected IPv4 fwmark policy rule to be recognized")
+	}
+	if policyRuleOutputContains("10100: from all fwmark 0x2 lookup 101\n", rule) {
+		t.Fatal("different mark/table must not satisfy policy rule")
+	}
+}
+
 func TestParseDefaultInterface(t *testing.T) {
 	iface, err := ParseDefaultInterface("default via 192.168.1.1 dev ens18 proto dhcp src 192.168.1.10 metric 100\n")
 	if err != nil {
@@ -161,9 +171,9 @@ func TestPathTunnelEnabledForEitherGatewayMode(t *testing.T) {
 }
 
 func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
-	rules := policyRules("192.168.50.0/24", "fd00::/64", true)
-	if len(rules) != 10 {
-		t.Fatalf("policyRules returned %d rules, want 10", len(rules))
+	rules := policyRules(testGatewayConfig(true, true), "192.168.50.0/24", "fd00::/64", true)
+	if len(rules) != 8 {
+		t.Fatalf("policyRules returned %d rules, want 8", len(rules))
 	}
 	for _, rule := range rules {
 		foundDedicatedPriority := false
@@ -175,5 +185,10 @@ func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
 		if !foundDedicatedPriority {
 			t.Fatalf("rule %v has no dedicated priority", rule.Args)
 		}
+	}
+	pathCfg := testGatewayConfig(true, true)
+	pathCfg.Path.Enabled, pathCfg.Path.Token = true, "token"
+	if got := len(policyRules(pathCfg, "192.168.50.0/24", "fd00::/64", true)); got != 10 {
+		t.Fatalf("PathLink policyRules returned %d rules, want 10", got)
 	}
 }
