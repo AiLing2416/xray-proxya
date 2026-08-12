@@ -9,6 +9,9 @@ type xray_proxya_t;
 type xray_proxya_exec_t;
 init_daemon_domain(xray_proxya_t, xray_proxya_exec_t)
 domain_use_interactive_fds(xray_proxya_t)
+# The hardened root unit uses NoNewPrivileges=true. Fedora requires this
+# explicit permission for systemd to transition into the dedicated domain.
+allow init_t xray_proxya_t:process2 nnp_transition;
 
 type xray_proxya_config_t;
 files_type(xray_proxya_config_t)
@@ -34,7 +37,8 @@ role system_r types xray_proxya_gateway_t;
 domain_use_interactive_fds(xray_proxya_gateway_t)
 
 ########################################
-# Own configuration, logs, generated Xray JSON, PID and gateway state.
+# Own configuration, generated Xray JSON, PID and gateway state. Service logs
+# are written to journald, so this policy grants no private log-file access.
 
 files_search_home(xray_proxya_t)
 gen_require(`
@@ -46,9 +50,6 @@ allow xray_proxya_t gconf_home_t:dir search;
 manage_dirs_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 manage_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 manage_lnk_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
-
-manage_dirs_pattern(xray_proxya_t, xray_proxya_log_t, xray_proxya_log_t)
-manage_files_pattern(xray_proxya_t, xray_proxya_log_t, xray_proxya_log_t)
 
 manage_dirs_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
 manage_files_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)

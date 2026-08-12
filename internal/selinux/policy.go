@@ -2,7 +2,7 @@ package selinux
 
 import _ "embed"
 
-// PolicySource is compiled locally by `xray-proxya selinux install`. Keeping
+// PolicySource is compiled locally by `xray-proxya doctor selinux`. Keeping
 // it in the binary makes deployment deterministic while still letting Fedora
 // compile it against its installed SELinux reference policy.
 //
