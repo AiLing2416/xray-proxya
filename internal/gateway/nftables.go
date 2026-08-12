@@ -631,6 +631,7 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 			}
 		}
 		for _, port := range getSSHPorts() {
+			b.WriteString("        tcp sport " + port + " return\n")
 			b.WriteString("        tcp dport " + port + " return\n")
 		}
 		if pathTunnelEnabled(cfg) {
