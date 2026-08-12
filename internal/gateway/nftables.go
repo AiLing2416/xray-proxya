@@ -1064,6 +1064,7 @@ func isMissingKernelObject(err error, output []byte) bool {
 		"cannot find",
 		"no such rule",
 		"no rule",
+		"does not exist",
 	} {
 		if strings.Contains(text, marker) {
 			return true

@@ -12,6 +12,9 @@ func TestIsMissingKernelObject(t *testing.T) {
 	if !isMissingKernelObject(errors.New("command failed"), []byte("Error: No such chain")) {
 		t.Fatal("missing nft chain should be treated as an idempotent cleanup")
 	}
+	if !isMissingKernelObject(errors.New("command failed"), []byte("Error: FIB table does not exist.")) {
+		t.Fatal("missing policy-routing table should be treated as an idempotent cleanup")
+	}
 	if isMissingKernelObject(errors.New("command failed"), []byte("permission denied")) {
 		t.Fatal("permission errors must not be treated as missing objects")
 	}
