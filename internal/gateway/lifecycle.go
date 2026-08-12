@@ -94,6 +94,13 @@ func RestoreTunStateLocked(cfg *config.UserConfig) error {
 	if cfg == nil || !WantsTunnel(cfg) || config.GatewayTunDisabled() {
 		return nil
 	}
+	// A gateway transition may have already repaired the freshly recreated
+	// interface while the service process was waiting for this lock. Avoid a
+	// second cleanup/rebuild pass, which would expose a transient window with
+	// no nftables or policy rules after `gateway up` returns.
+	if len(Verify(cfg)) == 0 {
+		return nil
+	}
 	if err := waitForTun(true); err != nil {
 		return err
 	}

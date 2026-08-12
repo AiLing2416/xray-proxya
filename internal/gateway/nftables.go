@@ -603,7 +603,7 @@ func interfaceIsUp(name string) bool {
 		return false
 	}
 	line := string(out)
-	return strings.Contains(line, "state UP") || strings.Contains(line, "<UP,") || strings.Contains(line, ",UP>")
+	return strings.Contains(line, "state UP") || strings.Contains(line, "<UP,") || strings.Contains(line, ",UP,") || strings.Contains(line, ",UP>")
 }
 
 func hasDefaultRoute(table, device string, ipv6 bool) (bool, error) {
@@ -685,7 +685,7 @@ func policyRuleOutputContains(output string, rule policyRuleSpec) bool {
 				}
 				i++
 			case "to":
-				if i+1 >= len(rule.Args) || !strings.Contains(line, "to "+rule.Args[i+1]) {
+				if i+1 >= len(rule.Args) || !ruleLineHasDestination(line, rule.Args[i+1]) {
 					matches = false
 				}
 				i++
@@ -696,6 +696,16 @@ func policyRuleOutputContains(output string, rule policyRuleSpec) bool {
 		if matches {
 			return true
 		}
+	}
+	return false
+}
+
+func ruleLineHasDestination(line, destination string) bool {
+	if strings.Contains(line, "to "+destination) {
+		return true
+	}
+	if _, network, err := net.ParseCIDR(destination); err == nil {
+		return strings.Contains(line, "to "+network.IP.String())
 	}
 	return false
 }
