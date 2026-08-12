@@ -566,7 +566,9 @@ func extractSHA256(content string) (string, error) {
 		}
 		normalized := strings.ToLower(line)
 		var hashPart string
-		if idx := strings.Index(normalized, "sha256="); idx >= 0 {
+		if idx := strings.Index(normalized, "sha2-256="); idx >= 0 {
+			hashPart = line[idx+len("sha2-256="):]
+		} else if idx := strings.Index(normalized, "sha256="); idx >= 0 {
 			hashPart = line[idx+len("sha256="):]
 		} else if idx := strings.Index(normalized, "sha-256="); idx >= 0 {
 			hashPart = line[idx+len("sha-256="):]
