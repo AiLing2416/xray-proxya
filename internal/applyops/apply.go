@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"syscall"
 	"time"
@@ -301,7 +302,11 @@ func RestartSubServiceIfInstalled() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
 	}
-	return exec.Command("systemctl", "restart", "xray-proxya-sub").Run()
+	args := []string{"try-restart", "xray-proxya-sub@default"}
+	if os.Geteuid() != 0 {
+		args = append([]string{"--user"}, args...)
+	}
+	return exec.Command("systemctl", args...).Run()
 }
 
 func fileExists(path string) bool {
@@ -310,7 +315,10 @@ func fileExists(path string) bool {
 }
 
 func subServicePath() string {
-	return "/etc/systemd/system/xray-proxya-sub.service"
+	if os.Geteuid() == 0 {
+		return "/etc/systemd/system/xray-proxya-sub@.service"
+	}
+	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub@.service")
 }
 
 func guestsAffectXray(activeGuests, stagingGuests []config.GuestConfig) bool {

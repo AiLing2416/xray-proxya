@@ -131,7 +131,7 @@ func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "http://127.0.0.1/sub/admintoken", nil)
 	rec := httptest.NewRecorder()
-	httpAdminSubHandler()(rec, req)
+	httpAdminSubHandler(cfg.AdminSub)(rec, req)
 	if rec.Code != 200 {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}

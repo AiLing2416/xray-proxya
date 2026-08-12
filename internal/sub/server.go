@@ -19,9 +19,19 @@ import (
 
 var ipMutex sync.Mutex
 
-func StartSubServer(port int, guestBind string, guestPort int) error {
+func StartSubServer(instance config.SubscriptionServiceConfig) error {
+	if instance.Port <= 0 || instance.Port > 65535 {
+		return fmt.Errorf("subscription listener port must be between 1 and 65535")
+	}
+	listen := strings.TrimSpace(instance.Listen)
+	if listen == "" {
+		listen = "127.0.0.1"
+	}
+	if ip := net.ParseIP(listen); ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("subscription listener must bind to a loopback IP")
+	}
 	adminMux := http.NewServeMux()
-	adminMux.HandleFunc("/sub/", httpAdminSubHandler())
+	adminMux.HandleFunc("/sub/", httpAdminSubHandler(instance.AdminSub))
 
 	guestMux := http.NewServeMux()
 	guestMux.HandleFunc("/guest-sub/", httpGuestSubHandler())
@@ -29,15 +39,16 @@ func StartSubServer(port int, guestBind string, guestPort int) error {
 	errCh := make(chan error, 2)
 
 	go func() {
-		fmt.Printf("🔓 Admin subscription server listening on http://127.0.0.1:%d (local only)\n", port)
-		errCh <- http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", port), adminMux)
+		addr := net.JoinHostPort(listen, strconv.Itoa(instance.Port))
+		fmt.Printf("🔓 Admin subscription server listening on http://%s\n", addr)
+		errCh <- http.ListenAndServe(addr, adminMux)
 	}()
 
-	if guestPort > 0 {
-		if err := validatePrivateBindAddress(guestBind); err != nil {
+	if instance.GuestPort > 0 {
+		if err := validatePrivateBindAddress(instance.GuestBind); err != nil {
 			return err
 		}
-		addr := net.JoinHostPort(guestBind, strconv.Itoa(guestPort))
+		addr := net.JoinHostPort(instance.GuestBind, strconv.Itoa(instance.GuestPort))
 		go func() {
 			fmt.Printf("🔓 Guest subscription server listening on http://%s\n", addr)
 			errCh <- http.ListenAndServe(addr, guestMux)
@@ -47,7 +58,7 @@ func StartSubServer(port int, guestBind string, guestPort int) error {
 	return <-errCh
 }
 
-func httpAdminSubHandler() http.HandlerFunc {
+func httpAdminSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.URL.Path, "/sub/")
 		if token == "" {
@@ -61,8 +72,8 @@ func httpAdminSubHandler() http.HandlerFunc {
 			return
 		}
 
-		if cfg.AdminSub.Enabled && cfg.AdminSub.Token == token {
-			handleAdminSubRequest(w, cfg)
+		if admin.Enabled && admin.Token == token {
+			handleAdminSubRequest(w, cfg, admin)
 			return
 		}
 
@@ -84,18 +95,18 @@ func httpAdminSubHandler() http.HandlerFunc {
 	}
 }
 
-func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig) {
-	addr := cfg.AdminSub.Address
+func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin config.AdminSubConfig) {
+	addr := admin.Address
 	if addr == "" {
 		addr = utils.GetSmartIP(false)
 	}
-	if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate && cfg.AdminSub.IPv6Rotate.Subnet != "" && cfg.AdminSub.IPv6Rotate.Interface != "" {
-		if rotated, ok := nextRotatedIPv6(cfg.AdminSub.IPv6Rotate); ok {
+	if admin.Mode == config.AdminSubModeIPv6Rotate && admin.IPv6Rotate.Subnet != "" && admin.IPv6Rotate.Interface != "" {
+		if rotated, ok := nextRotatedIPv6(admin.IPv6Rotate); ok {
 			addr = rotated
 		}
 	}
 
-	links := generateSubscriptionLinks(cfg, cfg.AdminSub.TargetType, cfg.AdminSub.TargetAlias, addr)
+	links := generateSubscriptionLinks(cfg, admin.TargetType, admin.TargetAlias, addr)
 	if len(links) == 0 {
 		http.Error(w, "No links generated for this subscription", http.StatusInternalServerError)
 		return

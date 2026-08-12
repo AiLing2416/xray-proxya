@@ -1,14 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/sub"
 	"xray-proxya/internal/xray"
@@ -25,6 +23,7 @@ var (
 	subSubnet   string
 	subMax      int
 	subNDP      bool
+	subInstance string
 
 	subShowGuest  string
 	subShowRelay  string
@@ -260,201 +259,125 @@ func reconcileSubscriptions(cfg *config.UserConfig) bool {
 	return changed
 }
 
-// --- Service Management ---
+// --- Per-instance service configuration ---
 
-func getSubServicePath() string {
-	return "/etc/systemd/system/xray-proxya-sub.service"
+const defaultSubInstance = "default"
+
+func subInstancePath(name string) (string, error) {
+	if !systemdInstanceName.MatchString(name) {
+		return "", fmt.Errorf("invalid subscription instance %q", name)
+	}
+	return filepath.Join(config.GetConfigDir(), "subscriptions", name+".json"), nil
 }
 
-func getSubPidPath() string {
-	return filepath.Join(config.GetConfigDir(), "sub.pid")
-}
-
-func getSubLogPath() string {
-	return filepath.Join(config.GetConfigDir(), "sub.log")
-}
-
-func getSubStatus() (bool, int) {
-	pidPath := getSubPidPath()
-	data, err := os.ReadFile(pidPath)
+func ensureSubInstance(name string) error {
+	path, err := subInstancePath(name)
 	if err != nil {
-		return false, 0
+		return err
 	}
-	var pid int
-	fmt.Sscanf(string(data), "%d", &pid)
-	if pid <= 0 {
-		return false, 0
-	}
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d", pid)); err != nil {
-		return false, 0
-	}
-	exePath, err := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
-	if err == nil {
-		base := filepath.Base(exePath)
-		if base != "xray-proxya" {
-			return false, 0
-		}
-	} else {
-		if commData, commErr := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid)); commErr == nil {
-			commStr := strings.TrimSpace(string(commData))
-			if commStr != "xray-proxya" {
-				return false, 0
-			}
-		}
-	}
-	process, err := os.FindProcess(pid)
-	if err == nil {
-		sigErr := process.Signal(syscall.Signal(0))
-		if sigErr == nil || sigErr == syscall.EPERM {
-			return true, pid
-		}
-	}
-	return false, 0
-}
-
-func startSubBackground() error {
-	active, pid := getSubStatus()
-	if active {
-		fmt.Printf("ℹ️ Subscription server is already running (PID: %d).\n", pid)
+	if _, err := os.Stat(path); err == nil {
 		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect subscription instance %s: %w", name, err)
 	}
-
-	path, err := os.Executable()
-	if err != nil || path == "" {
-		path = os.Args[0]
-	}
-	absPath, _ := filepath.Abs(path)
-
-	logPath := getSubLogPath()
-	os.MkdirAll(filepath.Dir(logPath), 0700)
-
-	cmd := exec.Command(absPath, "sub", "run")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	cfg, err := config.LoadConfig()
 	if err != nil {
-		return err
+		return fmt.Errorf("load active configuration: %w", err)
 	}
-
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setsid: true,
+	if !cfg.AdminSub.Enabled || cfg.AdminSub.Token == "" || cfg.AdminSub.Port <= 0 {
+		return fmt.Errorf("admin subscription is not configured; use 'sub enable', apply, then retry")
 	}
-
-	if err := cmd.Start(); err != nil {
-		logFile.Close()
-		return err
-	}
-	logFile.Close()
-
-	waitCh := make(chan error, 1)
-	go func() {
-		waitCh <- cmd.Wait()
-	}()
-
-	select {
-	case err := <-waitCh:
+	port := cfg.AdminSub.Port
+	guestPort := cfg.GuestSubPort
+	if name != defaultSubInstance {
+		port, err = xray.GetFreePort()
 		if err != nil {
-			return fmt.Errorf("subscription server exited immediately. Check logs at %s: %w", logPath, err)
+			return fmt.Errorf("allocate listener port for %s: %w", name, err)
 		}
-		return fmt.Errorf("subscription server exited immediately. Check logs at %s", logPath)
-	case <-time.After(1 * time.Second):
+		guestPort = 0
 	}
-
-	pidStr := fmt.Sprintf("%d", cmd.Process.Pid)
-	os.WriteFile(getSubPidPath(), []byte(pidStr), 0644)
-	os.Chmod(getSubPidPath(), 0644)
+	instance := config.SubscriptionServiceConfig{
+		Listen:    "127.0.0.1",
+		Port:      port,
+		GuestBind: cfg.GuestSubBind,
+		GuestPort: guestPort,
+		AdminSub:  cfg.AdminSub,
+	}
+	data, err := json.MarshalIndent(instance, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode subscription instance: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return fmt.Errorf("create subscription instance directory: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		return fmt.Errorf("write subscription instance %s: %w", name, err)
+	}
 	return nil
 }
 
-func stopSubBackground() {
-	active, pid := getSubStatus()
-	if active {
-		process, _ := os.FindProcess(pid)
-		process.Signal(syscall.SIGTERM)
-		time.Sleep(500 * time.Millisecond)
-		if active, _ := getSubStatus(); active {
-			process.Kill()
-		}
+func loadSubInstance(name string) (config.SubscriptionServiceConfig, error) {
+	path, err := subInstancePath(name)
+	if err != nil {
+		return config.SubscriptionServiceConfig{}, err
 	}
-	os.Remove(getSubPidPath())
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return config.SubscriptionServiceConfig{}, fmt.Errorf("read subscription instance %s: %w", name, err)
+	}
+	var instance config.SubscriptionServiceConfig
+	if err := json.Unmarshal(data, &instance); err != nil {
+		return config.SubscriptionServiceConfig{}, fmt.Errorf("decode subscription instance %s: %w", name, err)
+	}
+	if instance.Listen == "" {
+		instance.Listen = "127.0.0.1"
+	}
+	if instance.GuestPort > 0 && instance.GuestBind == "" {
+		instance.GuestBind = "127.0.0.1"
+	}
+	return instance, nil
 }
 
 var subEnableCmd = &cobra.Command{
 	Use:   "enable",
-	Short: "Enable subscription server (auto-start on boot or run in background)",
+	Short: "Enable the default subscription configuration in STAGING",
 	Run: func(cmd *cobra.Command, args []string) {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
 			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 			return
 		}
 
-		cfg, _ := config.LoadConfig()
-		if cfg != nil {
-			if reconcileSubscriptions(cfg) {
-				cfg.Save()
-			}
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			fmt.Printf("❌ Failed to load staging configuration: %v\n", err)
+			return
 		}
-
-		if utils.IsRoot() {
-			binPath, _ := os.Executable()
-			home := config.GetHomeDir()
-			workDir := filepath.Join(home, ".local", "share", "xray-proxya")
-			os.MkdirAll(workDir, 0700)
-			configDir := config.GetConfigDir()
-			if !strings.HasPrefix(workDir, "/root") || !strings.HasPrefix(configDir, "/root") {
-				fmt.Printf("❌ Security Violation: Root subscription service directory must reside in /root (workDir=%s, configDir=%s)\n", workDir, configDir)
-				return
-			}
-
-			content := fmt.Sprintf(`[Unit]
-Description=Xray-Proxya Subscription Server
-After=network-online.target xray-proxya.service
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=%s sub run
-Restart=on-failure
-WorkingDirectory=%s
-Environment=XRAY_PROXYA_CONFIG_DIR=%s
-
-[Install]
-WantedBy=multi-user.target
-`, binPath, workDir, configDir)
-
-			if err := os.WriteFile(getSubServicePath(), []byte(content), 0644); err != nil {
-				fmt.Printf("❌ Failed to write systemd service file: %v\n", err)
-				return
-			}
-			exec.Command("systemctl", "daemon-reload").Run()
-			exec.Command("systemctl", "enable", "xray-proxya-sub").Run()
-			exec.Command("systemctl", "start", "xray-proxya-sub").Run()
-			fmt.Println("✅ Subscription service enabled, installed, and started.")
-		} else {
-			if err := startSubBackground(); err != nil {
-				fmt.Printf("❌ Failed to start subscription server: %v\n", err)
-				return
-			}
-			fmt.Println("✅ Subscription server started in background (rootless).")
+		reconcileSubscriptions(cfg)
+		ensureManagedSubscription(cfg)
+		ensureSubPortConfigured(cfg)
+		if err := cfg.SaveEx(true); err != nil {
+			fmt.Printf("❌ Failed to save staging configuration: %v\n", err)
+			return
 		}
+		fmt.Println("✅ Default subscription enabled in STAGING. Run 'apply', then 'service start xray-proxya-sub@default'.")
 	},
 }
 
 var subDisableCmd = &cobra.Command{
 	Use:   "disable",
-	Short: "Disable subscription server (uninstall service or stop background process)",
+	Short: "Disable the default subscription configuration in STAGING",
 	Run: func(cmd *cobra.Command, args []string) {
-		if utils.IsRoot() {
-			exec.Command("systemctl", "stop", "xray-proxya-sub").Run()
-			exec.Command("systemctl", "disable", "xray-proxya-sub").Run()
-			os.Remove(getSubServicePath())
-			exec.Command("systemctl", "daemon-reload").Run()
-			fmt.Println("✅ Subscription service stopped, disabled, and removed.")
-		} else {
-			stopSubBackground()
-			fmt.Println("✅ Subscription server stopped (rootless).")
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			fmt.Printf("❌ Failed to load staging configuration: %v\n", err)
+			return
 		}
+		cfg.AdminSub.Enabled = false
+		if err := cfg.SaveEx(true); err != nil {
+			fmt.Printf("❌ Failed to save staging configuration: %v\n", err)
+			return
+		}
+		fmt.Println("✅ Default subscription disabled in STAGING. Stop its instance explicitly with service stop xray-proxya-sub@default.")
 	},
 }
 
@@ -760,61 +683,35 @@ var subResetCmd = &cobra.Command{
 
 var subRunCmd = &cobra.Command{
 	Use:    "run",
-	Short:  "Run the subscription HTTP server in foreground (Requires Root for IPv6 rotate)",
+	Short:  "Run one subscription instance in the foreground",
 	Hidden: true,
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig()
+		instance, err := loadSubInstance(subInstance)
 		if err != nil {
-			fmt.Printf("❌ Failed to load config: %v\n", err)
-			os.Exit(1)
+			fmt.Printf("❌ %v\n", err)
+			return
 		}
-
-		pidPath := getSubPidPath()
-		if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
-			fmt.Printf("⚠️  Warning: Failed to write sub.pid: %v\n", err)
-		} else {
-			os.Chmod(pidPath, 0644)
-		}
-		defer os.Remove(pidPath)
-
-		if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate && !utils.IsRoot() {
+		if instance.AdminSub.Mode == config.AdminSubModeIPv6Rotate && !utils.IsRoot() {
 			fmt.Println("❌ IPv6 Rolling Pool requires root privileges.")
-			os.Exit(1)
+			return
 		}
-
-		adminPort := subPort
-		if !cmd.Flags().Changed("port") && cfg.AdminSub.Port > 0 {
-			adminPort = cfg.AdminSub.Port
-		} else if !cmd.Flags().Changed("port") && cfg.SubPort > 0 {
-			adminPort = cfg.SubPort
-		}
-
-		if adminPort > 0 && adminPort <= 1024 && !utils.IsRoot() {
+		if instance.Port <= 1024 && !utils.IsRoot() {
 			fmt.Println("❌ Listening on ports <= 1024 requires root privileges.")
-			os.Exit(1)
+			return
 		}
-
-		if adminPort > 0 && !utils.IsPortFree(adminPort) {
-			p, _ := xray.GetFreePort()
-			fmt.Printf("⚠️  Warning: Subscription Port %d occupied, using %d\n", adminPort, p)
-			adminPort = p
-			cfg.AdminSub.Port = p
-			cfg.SubPort = p
-			cfg.Save()
-		}
-
-		guestPort := cfg.GuestSubPort
-		if guestPort > 0 && !utils.IsPortFree(guestPort) {
-			p, _ := xray.GetFreePort()
-			fmt.Printf("⚠️  Warning: Guest subscription port %d occupied, using %d\n", guestPort, p)
-			guestPort = p
-			cfg.GuestSubPort = guestPort
-			cfg.Save()
-		}
-
-		if err := sub.StartSubServer(adminPort, cfg.GuestSubBind, guestPort); err != nil {
+		if err := sub.StartSubServer(instance); err != nil {
 			fmt.Printf("❌ Failed: %v\n", err)
 		}
+	},
+}
+
+var subEnsureInstanceCmd = &cobra.Command{
+	Use:    "ensure-instance <name>",
+	Short:  "Create a subscription instance configuration if it is missing",
+	Args:   cobra.ExactArgs(1),
+	Hidden: true,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return ensureSubInstance(args[0])
 	},
 }
 
@@ -842,8 +739,8 @@ func init() {
 	subResetCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
 	subResetCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
 
-	subRunCmd.Flags().IntVarP(&subPort, "port", "p", 8443, "HTTP port")
+	subRunCmd.Flags().StringVar(&subInstance, "instance", defaultSubInstance, "subscription instance name")
 
-	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subShowCmd, subResetCmd, subRunCmd)
+	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subShowCmd, subResetCmd, subRunCmd, subEnsureInstanceCmd)
 	rootCmd.AddCommand(subCmd)
 }
