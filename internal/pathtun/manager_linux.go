@@ -113,6 +113,10 @@ func parseRequest(packet []byte) (request, bool) {
 		if total < ihl+8 || total > len(packet) {
 			return request{}, false
 		}
+		fragment := binary.BigEndian.Uint16(packet[6:8])
+		if fragment&0x2000 != 0 || fragment&0x1fff != 0 {
+			return request{}, false
+		}
 		destination := net.IPv4(packet[16], packet[17], packet[18], packet[19])
 		if !pathd.IsPublicTarget(destination) {
 			return request{}, false
