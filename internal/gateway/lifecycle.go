@@ -29,6 +29,9 @@ func init() {
 			}
 			return err
 		}
+		if !WantsTunnel(cfg) || config.GatewayTunDisabled() {
+			return nil
+		}
 		if proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain() {
 			delegated, err := ensureManagementDomainWithLock("system-restore", true)
 			if err != nil {
@@ -92,6 +95,9 @@ func restartWithTunDisabled(disabled bool) error {
 // Xray's config: interface addresses, forwarding/rp_filter sysctls, policy
 // routing, and nftables. It is a no-op when the active gateway is down.
 func RestoreTunState(cfg *config.UserConfig) error {
+	if !WantsTunnel(cfg) || config.GatewayTunDisabled() {
+		return nil
+	}
 	delegated, err := ensureManagementDomain("system-restore")
 	if err != nil {
 		return err
