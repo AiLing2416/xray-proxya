@@ -60,7 +60,7 @@ func (c *IdleClient) RelayEcho(ip net.IP, ttl int, data []byte, dontFragment boo
 
 func (c *IdleClient) probe(ip net.IP, options ProbeOptions, relay bool, echoData []byte) (ProbeResult, error) {
 	c.mu.Lock()
-	if c.client != nil && time.Since(c.last) > c.idle {
+	if c.client != nil && c.inFlight == 0 && time.Since(c.last) > c.idle {
 		_ = c.client.Close()
 		c.client = nil
 	}
@@ -142,7 +142,7 @@ func (c *IdleClient) resetIdleTimerLocked() {
 	c.timer = time.AfterFunc(c.idle, func() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
-		if c.client == client && time.Since(c.last) >= c.idle {
+		if c.client == client && time.Since(c.last) >= c.idle && c.inFlight == 0 {
 			_ = client.Close()
 			c.client = nil
 		}
