@@ -142,8 +142,8 @@ var listOutboundCmd = &cobra.Command{
 		if cfg == nil {
 			return
 		}
-		fmt.Printf("\n%-3s | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-s\n", "ID", "ALIAS", "STATE", "PROTO", "REMOTE", "TRANSPORT", "INTERNAL", "DNS")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------------------------------")
+		fmt.Printf("\n%-3s | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n", "ID", "ALIAS", "STATE", "PROTO", "REMOTE", "TRANSPORT", "INTERNAL", "PRIVATE", "DNS")
+		fmt.Println("---------------------------------------------------------------------------------------------------------------------------------------------------")
 		for i, co := range cfg.CustomOutbounds {
 			status := "OFF"
 			if co.Enabled {
@@ -157,8 +157,12 @@ var listOutboundCmd = &cobra.Command{
 			if strategy == "" {
 				strategy = "default"
 			}
+			privateTargets := "BLOCKED"
+			if co.AllowPrivateTargets {
+				privateTargets = "ALLOWED"
+			}
 			fmt.Printf(
-				"%-3d | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-s\n",
+				"%-3d | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n",
 				i+1,
 				co.Alias,
 				status,
@@ -166,6 +170,7 @@ var listOutboundCmd = &cobra.Command{
 				outboundRemoteSummary(co),
 				outboundTransportSummary(co),
 				internal,
+				privateTargets,
 				outboundDNSSummary(co, strategy),
 			)
 		}
@@ -2178,6 +2183,67 @@ back to the global default DNS behavior generated from the active config.
 	},
 }
 
+var setPrivateTargetsRelayCmd = &cobra.Command{
+	Use:   "set-private-targets [alias] [true|false]",
+	Short: "Allow or block relay access to next-hop private addresses (STAGING)",
+	Long: strings.TrimSpace(`
+Each relay link authenticates as the user associated with its outbound. By
+default, that user cannot forward loopback or private-address requests to the
+next hop: such requests stay direct on this server.
+
+Set this to true only when the next hop intentionally exposes a private
+service through this relay, such as a remote PathLink agent on 127.0.0.1.
+`),
+	Example: strings.TrimSpace(`
+  xray-proxya outbound set-private-targets remote true
+  xray-proxya outbound set-private-targets remote false
+`),
+	Args: cobra.ExactArgs(2),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+		}
+		return []string{"true", "false"}, cobra.ShellCompDirectiveNoFileComp
+	},
+	Run: func(cmd *cobra.Command, args []string) {
+		alias := args[0]
+		allow, err := strconv.ParseBool(args[1])
+		if err != nil {
+			fmt.Println("❌ Value must be true or false.")
+			return
+		}
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		if !setRelayPrivateTargets(cfg, alias, allow) {
+			fmt.Printf("❌ Relay '%s' not found.\n", alias)
+			return
+		}
+		if err := cfg.SaveEx(true); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		state := "blocked"
+		if allow {
+			state = "allowed"
+		}
+		fmt.Printf("✅ Private targets are %s for relay '%s' in STAGING.\n", state, alias)
+		fmt.Println("🚀 Run 'apply' to commit changes.")
+	},
+}
+
+func setRelayPrivateTargets(cfg *config.UserConfig, alias string, allow bool) bool {
+	for i := range cfg.CustomOutbounds {
+		if cfg.CustomOutbounds[i].Alias == alias {
+			cfg.CustomOutbounds[i].AllowPrivateTargets = allow
+			return true
+		}
+	}
+	return false
+}
+
 var setInternalProxyCmd = &cobra.Command{
 	Use:        "set-internal-proxy [alias]",
 	Deprecated: "Use 'xray-proxya proxy set [alias]' instead",
@@ -2391,6 +2457,6 @@ func init() {
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
-	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd, resolveOutboundCmd)
+	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }

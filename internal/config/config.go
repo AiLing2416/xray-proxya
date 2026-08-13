@@ -159,15 +159,20 @@ type GatewayConfig struct {
 }
 
 type CustomOutbound struct {
-	Alias              string                 `json:"alias"`
-	Enabled            bool                   `json:"enabled"`
-	UserUUID           string                 `json:"user_uuid"`
-	DNSStrategy        string                 `json:"dns_strategy,omitempty"`
-	DNSServers         []string               `json:"dns_servers,omitempty"`
-	InternalProxyPort  int                    `json:"internal_proxy_port,omitempty"`
-	InternalHttpPort   int                    `json:"internal_http_port,omitempty"`
-	InternalListenAddr string                 `json:"internal_listen_addr,omitempty"`
-	Config             map[string]interface{} `json:"config"`
+	Alias    string `json:"alias"`
+	Enabled  bool   `json:"enabled"`
+	UserUUID string `json:"user_uuid"`
+	// AllowPrivateTargets permits the relay identity generated for this
+	// outbound to forward RFC1918 and loopback destinations to its next hop.
+	// It is false by default so relay users cannot reach a next-hop private
+	// network unless an operator explicitly opts in.
+	AllowPrivateTargets bool                   `json:"allow_private_targets"`
+	DNSStrategy         string                 `json:"dns_strategy,omitempty"`
+	DNSServers          []string               `json:"dns_servers,omitempty"`
+	InternalProxyPort   int                    `json:"internal_proxy_port,omitempty"`
+	InternalHttpPort    int                    `json:"internal_http_port,omitempty"`
+	InternalListenAddr  string                 `json:"internal_listen_addr,omitempty"`
+	Config              map[string]interface{} `json:"config"`
 }
 
 type ModeInfo struct {

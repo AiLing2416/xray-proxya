@@ -439,6 +439,20 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
 	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
+	// Only an outbound explicitly opted into private targets may route its
+	// relay user before the private-IP guard. This supports chained relays to
+	// a next-hop loopback service (such as remote pathd) without exposing a
+	// next-hop private network to every relay link by default.
+	for _, co := range userCfg.CustomOutbounds {
+		if !co.Enabled || !co.AllowPrivateTargets {
+			continue
+		}
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"user":        []string{relayUserEmail(co.Alias)},
+			"outboundTag": "outbound-" + co.Alias,
+		})
+	}
 	rules = append(rules,
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
 	)

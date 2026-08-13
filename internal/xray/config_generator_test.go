@@ -358,6 +358,46 @@ func TestGenerateXrayJSONRoutesPathdThroughGatewayRelay(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONRoutesRelayPrivateTargetsOnlyWhenAllowed(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		allowPrivate   bool
+		wantRelayFirst bool
+	}{
+		{name: "blocked by default", wantRelayFirst: false},
+		{name: "explicitly allowed", allowPrivate: true, wantRelayFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.UserConfig{
+				Role: config.RoleServer,
+				CustomOutbounds: []config.CustomOutbound{{
+					Alias:               "remote",
+					Enabled:             true,
+					AllowPrivateTargets: test.allowPrivate,
+					Config:              map[string]interface{}{"protocol": "freedom"},
+				}},
+			}
+			rules := generateAndDecodeXrayConfig(t, cfg, "")["routing"].(map[string]interface{})["rules"].([]interface{})
+			relayIndex, privateIndex := -1, -1
+			for index, rawRule := range rules {
+				rule := rawRule.(map[string]interface{})
+				if relayIndex < 0 && rule["outboundTag"] == "outbound-remote" && containsString(rule["user"], "relay-remote") {
+					relayIndex = index
+				}
+				if rule["outboundTag"] == "direct" && containsString(rule["ip"], "geoip:private") {
+					privateIndex = index
+				}
+			}
+			if relayIndex < 0 || privateIndex < 0 {
+				t.Fatalf("missing relay or private-IP rule: relay=%d private=%d", relayIndex, privateIndex)
+			}
+			if got := relayIndex < privateIndex; got != test.wantRelayFirst {
+				t.Fatalf("relay user rule before private-IP guard = %t, want %t (relay=%d private=%d)", got, test.wantRelayFirst, relayIndex, privateIndex)
+			}
+		})
+	}
+}
+
 func TestGenerateXrayJSONSkipsDisabledGuests(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
@@ -568,6 +608,19 @@ func containsSliceRuleValue(rules []interface{}, key string, expected string, ou
 			if value, _ := rawValue.(string); value == expected {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func containsString(value interface{}, expected string) bool {
+	items, ok := value.([]interface{})
+	if !ok {
+		return false
+	}
+	for _, rawItem := range items {
+		if item, _ := rawItem.(string); item == expected {
+			return true
 		}
 	}
 	return false

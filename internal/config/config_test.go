@@ -32,6 +32,9 @@ func TestBackfillDefaultsPopulatesMissingFields(t *testing.T) {
 	if cfg.CustomOutbounds[0].UserUUID == "" {
 		t.Fatalf("Custom outbound user UUID was not generated")
 	}
+	if cfg.CustomOutbounds[0].AllowPrivateTargets {
+		t.Fatal("AllowPrivateTargets = true, want safe default false")
+	}
 	if cfg.CustomOutbounds[0].DNSStrategy != "UseIPv4" {
 		t.Fatalf("DNSStrategy = %q, want UseIPv4", cfg.CustomOutbounds[0].DNSStrategy)
 	}
@@ -178,4 +181,3 @@ func TestGetHomeDir(t *testing.T) {
 		t.Fatalf("GetHomeDir() returned empty string")
 	}
 }
-

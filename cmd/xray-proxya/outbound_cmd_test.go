@@ -10,6 +10,19 @@ import (
 	"xray-proxya/internal/config"
 )
 
+func TestSetRelayPrivateTargets(t *testing.T) {
+	cfg := &config.UserConfig{CustomOutbounds: []config.CustomOutbound{{Alias: "remote"}}}
+	if !setRelayPrivateTargets(cfg, "remote", true) {
+		t.Fatal("setRelayPrivateTargets() = false, want true")
+	}
+	if !cfg.CustomOutbounds[0].AllowPrivateTargets {
+		t.Fatal("AllowPrivateTargets = false, want true")
+	}
+	if setRelayPrivateTargets(cfg, "missing", false) {
+		t.Fatal("setRelayPrivateTargets() = true for missing relay")
+	}
+}
+
 func TestNormalizeDNSFlagsRejectsResetCombination(t *testing.T) {
 	_, _, err := normalizeDNSFlags("UseIPv4", []string{"1.1.1.1"}, true)
 	if err == nil {
