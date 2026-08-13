@@ -11,6 +11,16 @@ import (
 	"xray-proxya/internal/pathd"
 )
 
+func TestTunFlagsRequireExclusiveOwnership(t *testing.T) {
+	flags := tunFlags()
+	if flags&unix.IFF_TUN_EXCL == 0 {
+		t.Fatalf("TUN flags %#x do not require exclusive ownership", flags)
+	}
+	if flags&(unix.IFF_TUN|unix.IFF_NO_PI) != unix.IFF_TUN|unix.IFF_NO_PI {
+		t.Fatalf("TUN flags %#x are missing required packet mode flags", flags)
+	}
+}
+
 func TestIPv4EchoRoundTripKeepsClientPayload(t *testing.T) {
 	icmp := []byte{8, 0, 0, 0, 0x12, 0x34, 0, 1, 'p', 'a', 't', 'h'}
 	binary.BigEndian.PutUint16(icmp[2:4], checksum(icmp))

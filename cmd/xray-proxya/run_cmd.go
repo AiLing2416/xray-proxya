@@ -30,25 +30,23 @@ const guestQuotaCheckInterval = 6 * time.Hour
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run Xray core in foreground",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
-			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
-			os.Exit(1)
+			return fmt.Errorf("Xray-Proxya has not been initialized; run 'xray-proxya init' first")
 		}
 
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			fmt.Printf("❌ Failed to load config: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("load config: %w", err)
 		}
 
 		// v0.2.4 Port Policy:
 		// By default (especially as a service), we are STRICT.
 		// We only allow port drift if --audit is explicitly provided.
 		changed := false
-		auditPort := func(label string, current *int) {
+		auditPort := func(label string, current *int) error {
 			if *current <= 0 {
-				return
+				return nil
 			}
 			if !utils.IsPortFree(*current) {
 				if runAudit {
@@ -57,21 +55,27 @@ var runCmd = &cobra.Command{
 					*current = newP
 					changed = true
 				} else {
-					fmt.Printf("❌ Error: %s Port %d is occupied. Use --audit to allow dynamic port selection.\n", label, *current)
-					os.Exit(1)
+					return fmt.Errorf("%s port %d is occupied; use --audit to allow dynamic port selection", label, *current)
+				}
+			}
+			return nil
+		}
+
+		if err := auditPort("API", &cfg.APIInbound); err != nil {
+			return err
+		}
+		for i := range cfg.Presets {
+			if cfg.Presets[i].Enabled {
+				if err := auditPort(string(cfg.Presets[i].Mode), &cfg.Presets[i].Port); err != nil {
+					return err
 				}
 			}
 		}
 
-		auditPort("API", &cfg.APIInbound)
-		for i := range cfg.Presets {
-			if cfg.Presets[i].Enabled {
-				auditPort(string(cfg.Presets[i].Mode), &cfg.Presets[i].Port)
-			}
-		}
-
 		if changed {
-			cfg.Save()
+			if err := cfg.Save(); err != nil {
+				return fmt.Errorf("save audited config: %w", err)
+			}
 		}
 
 		confPath := filepath.Join(config.GetConfigDir(), "config.active.json")
@@ -87,6 +91,11 @@ var runCmd = &cobra.Command{
 			cfg.Gateway.RelayAlias != "" && !config.GatewayTunDisabled() &&
 			cfg.Path.Enabled && cfg.Path.Token != ""
 		if pathdEnabled {
+			// Retry PathLink when the service is restarted.  If allocation fails,
+			// the marker below makes the gateway omit only its optional ICMP path.
+			if err := config.SetPathTunDisabled(false); err != nil {
+				return fmt.Errorf("clear PathLink runtime state: %w", err)
+			}
 			port, err := xray.GetFreePort()
 			if err != nil {
 				fmt.Printf("⚠️  PathLink disabled: allocate SOCKS port: %v\n", err)
@@ -162,8 +171,7 @@ var runCmd = &cobra.Command{
 
 		process, waitCh, err := startProcess(cfg)
 		if err != nil {
-			fmt.Printf("❌ Failed to start Xray: %v\n", err)
-			return
+			return fmt.Errorf("start Xray: %w", err)
 		}
 		if pathdEnabled {
 			idle := time.Duration(cfg.Path.IdleSeconds) * time.Second
@@ -183,8 +191,24 @@ var runCmd = &cobra.Command{
 				return result
 			})
 			if err != nil {
-				fmt.Printf("⚠️  PathLink disabled: %v\n", err)
+				if markerErr := config.SetPathTunDisabled(true); markerErr != nil {
+					_ = stopProcess(process, waitCh)
+					cleanup()
+					return fmt.Errorf("create PathLink TUN: %w (record runtime state: %v)", err, markerErr)
+				}
+				_ = pathClient.Close()
+				pathClient = nil
+				fmt.Printf("⚠️  PathLink disabled for this runtime: %v\n", err)
 			} else {
+				if markerErr := config.SetPathTunDisabled(false); markerErr != nil {
+					_ = pathTunManager.Close()
+					pathTunManager = nil
+					_ = pathClient.Close()
+					pathClient = nil
+					_ = stopProcess(process, waitCh)
+					cleanup()
+					return fmt.Errorf("record PathLink TUN runtime state: %w", markerErr)
+				}
 				if pathTunManager != nil {
 					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", cfg.Gateway.RelayAlias)
 				}
@@ -217,7 +241,7 @@ var runCmd = &cobra.Command{
 				fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
 				_ = stopProcess(process, waitCh)
 				cleanup()
-				return
+				return fmt.Errorf("restore gateway runtime state: %w", err)
 			}
 		}
 
@@ -233,20 +257,15 @@ var runCmd = &cobra.Command{
 				fmt.Printf("\n🛑 Stopping Xray (%s)...\n", sig)
 				_ = stopProcess(process, waitCh)
 				cleanup()
-				return
+				return nil
 			case err := <-waitCh:
 				cleanup()
 				if err != nil {
 					fmt.Printf("\n❌ Xray core exited unexpectedly: %v\n", err)
-					if exitErr, ok := err.(*exec.ExitError); ok {
-						if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
-							os.Exit(status.ExitStatus())
-						}
-					}
-					os.Exit(1)
+					return fmt.Errorf("Xray core exited unexpectedly: %w", err)
 				}
 				fmt.Println("\nℹ️ Xray core exited normally.")
-				return
+				return nil
 			case <-quotaTicker.C:
 				reloadedCfg, err := config.LoadConfig()
 				if err != nil {
@@ -284,7 +303,7 @@ var runCmd = &cobra.Command{
 						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", restartErr)
 						_ = stopProcess(process, waitCh)
 						cleanup()
-						return
+						return fmt.Errorf("restart Xray after quota update: %w", restartErr)
 					}
 				}
 			}

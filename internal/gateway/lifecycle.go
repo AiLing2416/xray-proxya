@@ -70,7 +70,11 @@ func waitForInterface(name string, present bool) error {
 	deadline := time.Now().Add(tunWaitTimeout)
 	for time.Now().Before(deadline) {
 		_, err := net.InterfaceByName(name)
-		if (err == nil) == present {
+		found := err == nil
+		if found && present {
+			found = isTunInterface(name)
+		}
+		if found == present {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -81,6 +85,11 @@ func waitForInterface(name string, present bool) error {
 	return fmt.Errorf("tun interface %s still exists after Xray restart", name)
 }
 
+func isTunInterface(name string) bool {
+	_, err := os.Stat("/sys/class/net/" + name + "/tun_flags")
+	return err == nil
+}
+
 func restartWithTunDisabled(disabled bool) error {
 	if err := config.SetGatewayTunDisabled(disabled); err != nil {
 		return fmt.Errorf("set gateway runtime state: %w", err)
@@ -88,7 +97,48 @@ func restartWithTunDisabled(disabled bool) error {
 	if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 		return fmt.Errorf("restart Xray service: %w", err)
 	}
-	return waitForTun(!disabled)
+	if err := waitForTun(!disabled); err != nil {
+		return err
+	}
+	if disabled {
+		return waitForInterface(pathTunName, false)
+	}
+	return nil
+}
+
+// convergeDownLocked is the failure-safe counterpart of gateway down.  The
+// marker is written before process management, then the service is restarted
+// without its TUN inbound.  If restarting fails, stopping it is safer than
+// continuing with a possibly stale TUN and interception rules.
+func convergeDownLocked() error {
+	var errs []error
+	markerReady := true
+	if err := config.SetGatewayTunDisabled(true); err != nil {
+		markerReady = false
+		errs = append(errs, fmt.Errorf("set gateway runtime state: %w", err))
+	}
+	if err := CleanupFirewall(); err != nil {
+		errs = append(errs, err)
+	}
+	if markerReady {
+		if err := xray.RestartXrayServiceWithoutHook(); err != nil {
+			errs = append(errs, fmt.Errorf("restart Xray service without TUN: %w", err))
+			if stopErr := xray.ManageSystemdUnit("stop", xray.MainServiceUnit); stopErr != nil {
+				errs = append(errs, fmt.Errorf("stop Xray service after failed restart: %w", stopErr))
+			}
+		}
+	} else {
+		if stopErr := xray.ManageSystemdUnit("stop", xray.MainServiceUnit); stopErr != nil {
+			errs = append(errs, fmt.Errorf("stop Xray service after failed state update: %w", stopErr))
+		}
+	}
+	if err := waitForTun(false); err != nil {
+		errs = append(errs, err)
+	}
+	if err := waitForInterface(pathTunName, false); err != nil {
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
 }
 
 // RestoreTunState reapplies all kernel state that is intentionally outside
@@ -185,19 +235,22 @@ func upLocked(cfg *config.UserConfig) error {
 	if !WantsTunnel(cfg) {
 		return fmt.Errorf("gateway TUN is not enabled in active config; set state=proxy and enable local or LAN first")
 	}
+	// Start every explicit transition from a verified TUN-free state.  This
+	// rejects stale or foreign fixed-name interfaces instead of mistaking them
+	// for a freshly-created Xray/PathLink device.
+	if err := convergeDownLocked(); err != nil {
+		return fmt.Errorf("prepare TUN-free gateway state: %w", err)
+	}
 	if err := restartWithTunDisabled(false); err != nil {
-		_ = config.SetGatewayTunDisabled(true)
-		return errors.Join(err, CleanupFirewall())
+		return errors.Join(err, convergeDownLocked())
 	}
 	// Firewall and policy routing are owned by this explicit root operation,
 	// rather than the long-running Xray service domain.
 	if err := ApplyFirewall(cfg); err != nil {
-		_ = downLocked()
-		return fmt.Errorf("apply gateway firewall: %w", err)
+		return errors.Join(fmt.Errorf("apply gateway firewall: %w", err), convergeDownLocked())
 	}
 	if err := waitForReady(cfg); err != nil {
-		_ = downLocked()
-		return err
+		return errors.Join(err, convergeDownLocked())
 	}
 	return nil
 }
@@ -221,8 +274,7 @@ func downLocked() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("gateway down requires root")
 	}
-	cleanupErr := CleanupFirewall()
-	return errors.Join(cleanupErr, restartWithTunDisabled(true))
+	return convergeDownLocked()
 }
 
 // SyncDesired is used by apply after committing a gateway configuration change.
@@ -261,10 +313,7 @@ func syncDesiredLocked(cfg *config.UserConfig) error {
 	if WantsTunnel(cfg) {
 		return upLocked(cfg)
 	}
-	if err := CleanupFirewall(); err != nil {
-		return err
-	}
-	if err := restartWithTunDisabled(true); err != nil {
+	if err := convergeDownLocked(); err != nil {
 		return err
 	}
 	if cfg.Gateway.State == "forward-only" {

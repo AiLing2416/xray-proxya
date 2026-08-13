@@ -35,6 +35,10 @@ type ifreq struct {
 	Pad   [22]byte
 }
 
+func tunFlags() uint16 {
+	return unix.IFF_TUN | unix.IFF_NO_PI | unix.IFF_TUN_EXCL
+}
+
 func Start(relay func(net.IP, int, []byte, bool) pathd.ProbeResult) (*Manager, error) {
 	fd, err := unix.Open("/dev/net/tun", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
@@ -42,7 +46,10 @@ func Start(relay func(net.IP, int, []byte, bool) pathd.ProbeResult) (*Manager, e
 	}
 	var req ifreq
 	copy(req.Name[:], Name)
-	req.Flags = unix.IFF_TUN | unix.IFF_NO_PI
+	// PathLink owns this fixed-name device exclusively.  Without IFF_TUN_EXCL,
+	// TUNSETIFF can attach to an existing queue with the same name, making an
+	// unrelated stale interface look like one created by this service.
+	req.Flags = tunFlags()
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), uintptr(unix.TUNSETIFF), uintptr(unsafe.Pointer(&req))); errno != 0 {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("create %s: %w", Name, errno)

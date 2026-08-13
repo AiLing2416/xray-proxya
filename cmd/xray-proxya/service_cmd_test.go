@@ -12,6 +12,7 @@ func TestBuildSystemdServiceContentUsesJournaldAndSandbox(t *testing.T) {
 	content := buildSystemdServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya", "CAP_NET_BIND_SERVICE", true, true)
 	for _, required := range []string{
 		"User=root", "ExecStart=/root/.local/bin/xray-proxya run",
+		"Type=exec",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
 		"ReadWritePaths=/root/.config/xray-proxya /root/.local/share/xray-proxya",
 		"CapabilityBoundingSet=CAP_NET_BIND_SERVICE",
@@ -22,6 +23,30 @@ func TestBuildSystemdServiceContentUsesJournaldAndSandbox(t *testing.T) {
 	}
 	if strings.Contains(content, "StandardOutput=") || strings.Contains(content, "StandardError=") {
 		t.Fatalf("unit must send logs to journald:\n%s", content)
+	}
+}
+
+func TestRunCommandReturnsErrorsToSystemd(t *testing.T) {
+	if runCmd.RunE == nil {
+		t.Fatal("run command must use RunE so startup and TUN recovery failures reach systemd")
+	}
+}
+
+func TestGatewayServiceStartUsesLifecycleRecovery(t *testing.T) {
+	for _, test := range []struct {
+		action string
+		now    bool
+		want   bool
+	}{
+		{action: "start", want: true},
+		{action: "enable", now: true, want: true},
+		{action: "enable", want: false},
+		{action: "restart", want: false},
+		{action: "stop", want: false},
+	} {
+		if got := mainServiceActionNeedsGatewayRecovery(test.action, test.now); got != test.want {
+			t.Fatalf("mainServiceActionNeedsGatewayRecovery(%q, %t) = %t, want %t", test.action, test.now, got, test.want)
+		}
 	}
 }
 

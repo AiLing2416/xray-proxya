@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"syscall"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -121,7 +123,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+	Type=exec
 %sExecStart=%s run
 Restart=on-failure
 RestartSec=2
@@ -322,6 +324,9 @@ func systemctlWrapper(action string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			if unit == xray.MainServiceUnit && os.Geteuid() == 0 {
+				return manageMainServiceAction(action, now)
+			}
 			arguments := []string{"--no-pager", action}
 			if now {
 				arguments = append(arguments, "--now")
@@ -334,6 +339,53 @@ func systemctlWrapper(action string) *cobra.Command {
 		command.Flags().BoolVar(&now, "now", false, "Start or stop the unit immediately")
 	}
 	return command
+}
+
+// manageMainServiceAction keeps generic systemctl operations from bypassing
+// the gateway lifecycle lock.  A direct stop must remove interception before
+// the TUN file descriptors disappear; restart uses the registered recovery
+// hook so the freshly-created TUN receives its managed routes and firewall.
+func manageMainServiceAction(action string, now bool) error {
+	if action == "restart" {
+		return xray.RestartXrayService()
+	}
+	if action == "stop" || (action == "disable" && now) {
+		return config.WithLifecycleLock(func() error {
+			cleanupErr := gateway.CleanupFirewall()
+			arguments := []string{"--no-pager", action}
+			if now {
+				arguments = append(arguments, "--now")
+			}
+			arguments = append(arguments, xray.MainServiceUnit)
+			return errors.Join(cleanupErr, xray.RunSystemd(arguments...))
+		})
+	}
+	arguments := []string{"--no-pager", action}
+	if now {
+		arguments = append(arguments, "--now")
+	}
+	arguments = append(arguments, xray.MainServiceUnit)
+	if err := xray.RunSystemd(arguments...); err != nil {
+		return err
+	}
+	// systemd Type=exec confirms only that the manager binary was executed;
+	// the Xray child creates proxya-tun asynchronously.  Wait for the same
+	// locked runtime repair used by a restart before reporting a gateway start
+	// as successful.  This also covers `enable --now`.
+	if mainServiceActionNeedsGatewayRecovery(action, now) {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("load active config after service start: %w", err)
+		}
+		if err := gateway.RestoreTunState(cfg); err != nil {
+			return fmt.Errorf("restore gateway runtime after service start: %w", err)
+		}
+	}
+	return nil
+}
+
+func mainServiceActionNeedsGatewayRecovery(action string, now bool) bool {
+	return action == "start" || (action == "enable" && now)
 }
 
 var serviceInstallCmd = &cobra.Command{Use: "install", Short: "Write managed systemd unit files without enabling or starting them", RunE: func(cmd *cobra.Command, args []string) error { return serviceInstall() }}

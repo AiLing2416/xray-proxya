@@ -567,6 +567,30 @@ func SetGatewayTunDisabled(disabled bool) error {
 	return nil
 }
 
+// PathTunDisabledPath records that the optional PathLink TUN could not be
+// created for the current service runtime.  It is deliberately separate from
+// the desired configuration: a PathLink failure must not prevent the main
+// transparent gateway from coming up.
+func PathTunDisabledPath() string {
+	return filepath.Join(GetConfigDir(), "gateway.path-tun.disabled")
+}
+
+func PathTunDisabled() bool {
+	_, err := os.Stat(PathTunDisabledPath())
+	return err == nil
+}
+
+func SetPathTunDisabled(disabled bool) error {
+	path := PathTunDisabledPath()
+	if disabled {
+		return os.WriteFile(path, []byte("disabled\n"), 0600)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 func StagingExists() bool {
 	_, err := os.Stat(GetConfigPathEx(true))
 	return err == nil

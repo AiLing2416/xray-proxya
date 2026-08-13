@@ -139,6 +139,7 @@ func prepareFreshInit() {
 		"config.active.json",
 		"gateway.policy-rules.json",
 		"gateway.tun.disabled",
+		"gateway.path-tun.disabled",
 		"tune.runtime.json",
 		".tune_state",
 	} {

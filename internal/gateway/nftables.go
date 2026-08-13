@@ -43,7 +43,7 @@ func SyncFirewall(cfg *config.UserConfig) {
 	}
 }
 
-func ApplyFirewall(cfg *config.UserConfig) error {
+func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	if cfg == nil || cfg.Role != config.RoleGateway {
 		return nil
 	}
@@ -114,6 +114,16 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 	if err := CleanupFirewall(); err != nil {
 		return fmt.Errorf("clean up existing gateway state: %w", err)
 	}
+	// From here until the managed nftables table is installed, every failure
+	// must undo the addresses, routes, policy rules and temporary sysctls that
+	// may already have been applied.  This keeps a failed TUN creation from
+	// leaving traffic marked towards a disappeared interface.
+	rollback := true
+	defer func() {
+		if err != nil && rollback {
+			err = errors.Join(err, CleanupFirewall())
+		}
+	}()
 	if err := SetupKernel(lanIface); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
@@ -202,6 +212,7 @@ func ApplyFirewall(cfg *config.UserConfig) error {
 		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", lanIface, "accept", "comment", "\"xray-proxya\"")
 	}
 
+	rollback = false
 	return nil
 }
 
@@ -366,7 +377,7 @@ func pathTunnelEnabled(cfg *config.UserConfig) bool {
 	return cfg.Role == config.RoleGateway && state == "proxy" &&
 		(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) &&
 		cfg.Gateway.RelayAlias != "" &&
-		cfg.Path.Enabled && cfg.Path.Token != ""
+		cfg.Path.Enabled && cfg.Path.Token != "" && !config.PathTunDisabled()
 }
 
 func policyRulesPath() string {
