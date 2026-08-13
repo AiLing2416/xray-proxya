@@ -132,3 +132,12 @@ func TestStripLegacyZshCompletionPreservesCompinit(t *testing.T) {
 		t.Fatalf("user zsh configuration was removed:\n%s", cleaned)
 	}
 }
+
+func containsCompletion(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}

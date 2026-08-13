@@ -321,6 +321,28 @@ func normalizedManagedUnit(input string) (string, error) {
 	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, or xray-proxya-sub@<instance>")
 }
 
+func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	units := []string{
+		"xray-proxya\tmain Xray-Proxya service",
+		"xray-proxya-pathd\tPathLink ICMP agent",
+	}
+
+	instanceDir := filepath.Join(config.GetConfigDir(), "subscriptions")
+	entries, err := os.ReadDir(instanceDir)
+	if err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
+			}
+			instance := strings.TrimSuffix(entry.Name(), ".json")
+			if systemdInstanceName.MatchString(instance) {
+				units = append(units, "xray-proxya-sub@"+instance+"\tsubscription instance")
+			}
+		}
+	}
+	return units, cobra.ShellCompDirectiveNoFileComp
+}
+
 func systemctlWrapper(action string) *cobra.Command {
 	var now bool
 	command := &cobra.Command{
@@ -411,15 +433,17 @@ var serviceUninstallCmd = &cobra.Command{Use: "uninstall", Short: "Remove stoppe
 func init() {
 	enable := systemctlWrapper("enable")
 	disable := systemctlWrapper("disable")
-	serviceCmd.AddCommand(
-		serviceInstallCmd,
-		serviceUninstallCmd,
+	serviceActions := []*cobra.Command{
 		systemctlWrapper("start"),
 		systemctlWrapper("stop"),
 		systemctlWrapper("restart"),
 		systemctlWrapper("status"),
 		enable,
 		disable,
-	)
+	}
+	for _, action := range serviceActions {
+		action.ValidArgsFunction = completeManagedServiceUnits
+	}
+	serviceCmd.AddCommand(append([]*cobra.Command{serviceInstallCmd, serviceUninstallCmd}, serviceActions...)...)
 	rootCmd.AddCommand(serviceCmd)
 }

@@ -204,6 +204,28 @@ func completeRelayAliases(cmd *cobra.Command, args []string, toComplete string) 
 	return res, cobra.ShellCompDirectiveNoFileComp
 }
 
+func completeSubscriptionInstances(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	instanceDir := filepath.Join(config.GetConfigDir(), "subscriptions")
+	entries, err := os.ReadDir(instanceDir)
+	if err != nil {
+		return []string{defaultSubInstance}, cobra.ShellCompDirectiveNoFileComp
+	}
+	instances := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), ".json")
+		if systemdInstanceName.MatchString(name) {
+			instances = append(instances, name)
+		}
+	}
+	if len(instances) == 0 {
+		instances = append(instances, defaultSubInstance)
+	}
+	return instances, cobra.ShellCompDirectiveNoFileComp
+}
+
 func reconcileSubscriptions(cfg *config.UserConfig) bool {
 	changed := false
 
@@ -740,6 +762,8 @@ func init() {
 	subResetCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
 
 	subRunCmd.Flags().StringVar(&subInstance, "instance", defaultSubInstance, "subscription instance name")
+	subRunCmd.RegisterFlagCompletionFunc("instance", completeSubscriptionInstances)
+	subEnsureInstanceCmd.ValidArgsFunction = completeSubscriptionInstances
 
 	subCmd.AddCommand(subEnableCmd, subDisableCmd, subModeCmd, subShowCmd, subResetCmd, subRunCmd, subEnsureInstanceCmd)
 	rootCmd.AddCommand(subCmd)

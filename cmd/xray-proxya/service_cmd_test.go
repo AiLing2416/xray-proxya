@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func TestBuildSystemdServiceContentUsesJournaldAndSandbox(t *testing.T) {
@@ -84,6 +86,38 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	unit, err := normalizedManagedUnit("xray-proxya-sub@mysub")
 	if err != nil || unit != "xray-proxya-sub@mysub.service" {
 		t.Fatalf("template unit = %q, %v", unit, err)
+	}
+}
+
+func TestManagedServiceUnitCompletionIncludesStaticAndSubscriptionInstances(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+	instanceDir := filepath.Join(tempDir, "subscriptions")
+	if err := os.MkdirAll(instanceDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"default.json", "client-a.json", "invalid name.json", "README"} {
+		if err := os.WriteFile(filepath.Join(instanceDir, name), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	units, directive := completeManagedServiceUnits(nil, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("completion directive = %v, want no file completion", directive)
+	}
+	for _, want := range []string{
+		"xray-proxya\tmain Xray-Proxya service",
+		"xray-proxya-pathd\tPathLink ICMP agent",
+		"xray-proxya-sub@default\tsubscription instance",
+		"xray-proxya-sub@client-a\tsubscription instance",
+	} {
+		if !containsCompletion(units, want) {
+			t.Fatalf("completion missing %q: %v", want, units)
+		}
+	}
+	if containsCompletion(units, "xray-proxya-sub@invalid name\tsubscription instance") {
+		t.Fatalf("invalid instance appeared in completion: %v", units)
 	}
 }
 
