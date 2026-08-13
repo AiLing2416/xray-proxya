@@ -30,7 +30,7 @@ Gateway 的 `nft`、`ip`、`sysctl` 等系统网络改动不由长期服务执�
 部署当前版本二进制并完成初始化后，安装项目内置的静态策略：
 
 ```bash
-xray-proxya selinux install
+xray-proxya doctor selinux
 ```
 
 该命令会：
@@ -65,7 +65,7 @@ ps -eZ | grep -E 'xray-proxya| xray$'
 
 ```bash
 xray-proxya init --role server
-xray-proxya selinux install
+xray-proxya doctor selinux
 xray-proxya service install
 xray-proxya service start
 ```
@@ -97,7 +97,7 @@ ausearch -m AVC,USER_AVC -ts recent -i
 
 ```bash
 xray-proxya init --role gateway
-xray-proxya selinux install
+xray-proxya doctor selinux
 xray-proxya outbound add remote 'vless://...'
 xray-proxya gateway set --relay remote --lan eth0
 xray-proxya apply

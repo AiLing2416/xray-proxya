@@ -17,7 +17,7 @@ import (
 // explicit subcommands so invoking `doctor` alone cannot change host state.
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Environment diagnostics and automated tuning tools",
+	Short: "Environment diagnostics, completion, and automated tuning tools",
 }
 
 var doctorSELinuxCmd = &cobra.Command{
@@ -98,6 +98,6 @@ func containsSELinuxEnabled(status string) bool {
 }
 
 func init() {
-	doctorCmd.AddCommand(doctorSELinuxCmd)
+	doctorCmd.AddCommand(doctorSELinuxCmd, doctorCompletionCmd)
 	rootCmd.AddCommand(doctorCmd)
 }

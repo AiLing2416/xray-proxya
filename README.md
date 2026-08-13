@@ -28,6 +28,8 @@ Xray-Proxya is a Go-based Xray manager for two main jobs: running a role-based p
 - **Operational safety**:
   - Gateway firewall sync protects active SSH listeners from interception.
   - Runtime-only `tune` profiles can apply temporary kernel `sysctl` changes for `gateway`, `relay`, and `server` roles.
+  - PathLink provides authenticated, relay-carried ICMP probes without exposing its agent publicly.
+  - Managed systemd units keep the main proxy, PathLink agent, and subscription instances on explicit lifecycles.
   - Shell completion generation and install helpers are built in.
 
 ## Installation
@@ -50,7 +52,13 @@ Requires Go 1.25+
 git clone https://github.com/AiLing2416/xray-proxya
 cd xray-proxya
 CGO_ENABLED=0 go build -ldflags "-s -w" -o xray-proxya ./cmd/xray-proxya
+CGO_ENABLED=0 go build -ldflags "-s -w" -o pathd ./cmd/xray-proxya-pathd
 ```
+
+`pathd` is a private companion binary. Install it under
+`~/.local/share/xray-proxya/bin/pathd` (or
+`/root/.local/share/xray-proxya/bin/pathd` for root) rather than adding it to
+`PATH`.
 
 ## Quick Start
 
@@ -86,24 +94,59 @@ xray-proxya gateway up
 ```
 
 ### 5. Temporary Kernel Tuning
+
+`tune` is root-only. Enter a direct root shell or use `su -` before running
+these commands; do not invoke it through `sudo`.
+
 ```bash
 # Inspect available tuning profiles
-sudo xray-proxya tune profiles
+xray-proxya tune profiles
 
 # Preview the relay profile before applying it
-sudo xray-proxya tune diff relay
+xray-proxya tune diff relay
 
-# Apply and persist sysctl tuning (auto-replayed on next 'run')
-sudo xray-proxya tune use relay
+# Apply temporary runtime sysctl tuning
+xray-proxya tune use relay
 
 # Verify or rollback the session later
-sudo xray-proxya tune verify relay
-sudo xray-proxya tune rollback
+xray-proxya tune verify relay
+xray-proxya tune rollback
 ```
 
 Notes:
 - `tune` is root-only by design.
 - Tuning does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`. `tune use` changes only the current runtime; restarting Xray-Proxya does not reapply a profile, and a reboot restores the system-managed sysctl state. `tune rollback` restores values recorded for the current runtime session.
+
+### 6. PathLink ICMP Probes
+
+PathLink is a root-only feature for probing a public destination through the
+Gateway's selected relay. Use a direct root login or `su -`, never `sudo`.
+
+On the Server, enable PathLink, commit the staged configuration, and install
+the managed units. Keep the generated token for the paired Gateway:
+
+```bash
+xray-proxya path enable
+xray-proxya apply
+xray-proxya service install
+xray-proxya service start xray-proxya-pathd
+```
+
+On the paired Gateway, use that same token and then bring up the configured
+Gateway relay:
+
+```bash
+xray-proxya path enable --token <server-pathlink-token>
+xray-proxya apply
+xray-proxya gateway up
+xray-proxya path ping 1.1.1.1
+xray-proxya path trace 1.1.1.1
+xray-proxya path mtu 1.1.1.1
+```
+
+Only public IP addresses and hostnames resolving to public addresses can be
+probed. `path status` reports the local agent state on a Server and the relay
+connection state on a Gateway.
 
 ### Tune migration
 
@@ -134,4 +177,6 @@ xray-proxya outbound probe-local hk-node -4
 - `tune`: Apply and rollback temporary kernel tuning profiles for gateway, relay, and server roles.
 - `status`: Real-time traffic stats and process monitoring.
 - `apply / undo`: Commit or discard staging changes with automatic validation.
-- `completion install`: Setup shell autocompletion.
+- `path`: Configure PathLink and run relay-carried ICMP ping, trace, and MTU probes from a root Gateway shell.
+- `service`: Install and control the managed systemd units. `service install` only writes units; it does not enable or start them. The managed units are `xray-proxya`, optional `xray-proxya-pathd`, and `xray-proxya-sub@<instance>`.
+- `doctor completion install / uninstall`: Automatically detect bash, zsh, or fish and manage its shell completion.
