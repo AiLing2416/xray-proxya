@@ -43,17 +43,34 @@ func unitDirectory() string {
 func managedUnitPath(unit string) string { return filepath.Join(unitDirectory(), unit) }
 
 func directRootServiceError() error {
-	return directRootServiceErrorFor(os.Geteuid(), os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID"))
+	return directRootServiceErrorFor(os.Geteuid(), os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID"), os.Getenv("SUDO_COMMAND"))
 }
 
-func directRootServiceErrorFor(euid int, sudoUser, sudoUID string) error {
+func directRootServiceErrorFor(euid int, sudoUser, sudoUID, sudoCommand string) error {
 	if euid != 0 {
-		return fmt.Errorf("system service operation requires a direct root shell")
+		return fmt.Errorf("system service operation requires a root shell")
 	}
-	if sudoUser != "" || sudoUID != "" {
-		return fmt.Errorf("system service operation must not be run through sudo; use a direct root shell")
+	// sudo -i keeps SUDO_USER and SUDO_UID in the root login shell. The service
+	// code already resolves all paths from the effective root user, so accepting
+	// that shell cannot mix user and root configuration. Keep rejecting a direct
+	// `sudo xray-proxya service ...` invocation: it has not entered a root shell.
+	if (sudoUser != "" || sudoUID != "") && !isRootShellCommand(sudoCommand) {
+		return fmt.Errorf("system service operation requires a root shell; use sudo -i, su -, or a direct root login")
 	}
 	return nil
+}
+
+func isRootShellCommand(command string) bool {
+	fields := strings.Fields(command)
+	if len(fields) == 0 {
+		return false
+	}
+	switch filepath.Base(fields[0]) {
+	case "bash", "sh", "zsh", "fish", "dash", "ksh":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateRootManagerBinary() (string, error) {

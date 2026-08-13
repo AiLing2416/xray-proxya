@@ -87,19 +87,21 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	}
 }
 
-func TestDirectRootServiceRejectsSudoMarkers(t *testing.T) {
+func TestDirectRootServiceAllowsSudoLoginShellButRejectsDirectSudo(t *testing.T) {
 	for _, test := range []struct {
-		euid              int
-		sudoUser, sudoUID string
-		wantError         bool
+		euid                           int
+		sudoUser, sudoUID, sudoCommand string
+		wantError                      bool
 	}{
 		{euid: 0},
 		{euid: 1000, wantError: true},
-		{euid: 0, sudoUser: "ailing", wantError: true},
-		{euid: 0, sudoUID: "1000", wantError: true},
+		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/bash"},
+		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/zsh"},
+		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/root/.local/bin/xray-proxya service install", wantError: true},
+		{euid: 0, sudoUser: "ailing", sudoUID: "1000", wantError: true},
 	} {
-		if err := directRootServiceErrorFor(test.euid, test.sudoUser, test.sudoUID); (err != nil) != test.wantError {
-			t.Fatalf("directRootServiceErrorFor(%d, %q, %q) = %v, want error %t", test.euid, test.sudoUser, test.sudoUID, err, test.wantError)
+		if err := directRootServiceErrorFor(test.euid, test.sudoUser, test.sudoUID, test.sudoCommand); (err != nil) != test.wantError {
+			t.Fatalf("directRootServiceErrorFor(%d, %q, %q, %q) = %v, want error %t", test.euid, test.sudoUser, test.sudoUID, test.sudoCommand, err, test.wantError)
 		}
 	}
 }
