@@ -43,28 +43,41 @@ type UserConfig struct {
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
-	Path            PathConfig       `json:"path,omitempty"`
-	AdminSub        AdminSubConfig   `json:"admin_sub,omitempty"`
-	Subscriptions   []Subscription   `json:"subscriptions"`
-	SubPort         int              `json:"sub_port"`
-	GuestSubPort    int              `json:"guest_sub_port,omitempty"`
-	GuestSubBind    string           `json:"guest_sub_bind,omitempty"`
-	IPv6Pool        IPv6Config       `json:"ipv6_pool"`
+	// Path is the local Pathd daemon endpoint. It is meaningful only on a
+	// Server. Gateway-side PathLink credentials live on the relay that uses
+	// them (CustomOutbound.Path).
+	Path          PathConfig     `json:"path,omitempty"`
+	AdminSub      AdminSubConfig `json:"admin_sub,omitempty"`
+	Subscriptions []Subscription `json:"subscriptions"`
+	SubPort       int            `json:"sub_port"`
+	GuestSubPort  int            `json:"guest_sub_port,omitempty"`
+	GuestSubBind  string         `json:"guest_sub_bind,omitempty"`
+	IPv6Pool      IPv6Config     `json:"ipv6_pool"`
+
+	// legacyPath* are populated only while decoding the pre-relay PathLink
+	// schema. They are intentionally not persisted.
+	legacyPathEnabled *bool
+	legacyPathSeen    bool
 }
 
-// PathConfig configures the loopback-only pathd ICMP agent. The same token is
-// stored on the paired gateway; it is never exposed by a subscription link.
+// PathConfig configures one loopback-only Pathd endpoint.  On a Server it is
+// the local daemon configuration; on a Gateway it is attached to a relay.
+// Service enablement deliberately belongs to systemd, not this config.
 type PathConfig struct {
-	Enabled     bool   `json:"enabled,omitempty"`
 	Listen      string `json:"listen,omitempty"`
 	Token       string `json:"token,omitempty"`
 	IdleSeconds int    `json:"idle_seconds,omitempty"`
+	// LegacyEnabled is retained only for an enabled legacy Gateway config whose
+	// selected relay no longer exists. It is cleared as soon as migration can
+	// attach the credential; new code never reads it for enablement.
+	LegacyEnabled bool `json:"enabled,omitempty"`
 }
 
 func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
 	type Alias UserConfig
 	aux := &struct {
-		ActiveModes []ModeInfo `json:"active_modes"`
+		ActiveModes []ModeInfo      `json:"active_modes"`
+		Path        json.RawMessage `json:"path"`
 		*Alias
 	}{
 		Alias: (*Alias)(cfg),
@@ -74,6 +87,22 @@ func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
 	}
 	if len(aux.ActiveModes) > 0 && len(cfg.Presets) == 0 {
 		cfg.Presets = aux.ActiveModes
+	}
+	if len(aux.Path) > 0 && string(aux.Path) != "null" {
+		if err := json.Unmarshal(aux.Path, &cfg.Path); err != nil {
+			return err
+		}
+		var legacy struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.Unmarshal(aux.Path, &legacy); err != nil {
+			return err
+		}
+		cfg.legacyPathEnabled = legacy.Enabled
+		cfg.legacyPathSeen = legacy.Enabled != nil
+		if legacy.Enabled != nil && *legacy.Enabled {
+			cfg.Path.LegacyEnabled = true
+		}
 	}
 	return nil
 }
@@ -166,13 +195,16 @@ type CustomOutbound struct {
 	// outbound to forward RFC1918 and loopback destinations to its next hop.
 	// It is false by default so relay users cannot reach a next-hop private
 	// network unless an operator explicitly opts in.
-	AllowPrivateTargets bool                   `json:"allow_private_targets"`
-	DNSStrategy         string                 `json:"dns_strategy,omitempty"`
-	DNSServers          []string               `json:"dns_servers,omitempty"`
-	InternalProxyPort   int                    `json:"internal_proxy_port,omitempty"`
-	InternalHttpPort    int                    `json:"internal_http_port,omitempty"`
-	InternalListenAddr  string                 `json:"internal_listen_addr,omitempty"`
-	Config              map[string]interface{} `json:"config"`
+	AllowPrivateTargets bool     `json:"allow_private_targets"`
+	DNSStrategy         string   `json:"dns_strategy,omitempty"`
+	DNSServers          []string `json:"dns_servers,omitempty"`
+	InternalProxyPort   int      `json:"internal_proxy_port,omitempty"`
+	InternalHttpPort    int      `json:"internal_http_port,omitempty"`
+	InternalListenAddr  string   `json:"internal_listen_addr,omitempty"`
+	// Path holds the remote loopback Pathd credentials used when this outbound
+	// is selected as the Gateway relay. It is not rendered into share links.
+	Path   *PathConfig            `json:"path,omitempty"`
+	Config map[string]interface{} `json:"config"`
 }
 
 type ModeInfo struct {
@@ -280,6 +312,17 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if cfg.Role == "" {
 		cfg.Role = RoleServer
 		changes = append(changes, "set missing role=server")
+	}
+	changes = append(changes, cfg.migrateLegacyPath()...)
+	if cfg.Role == RoleServer && cfg.Path.Token != "" {
+		if cfg.Path.Listen == "" {
+			cfg.Path.Listen = "127.0.0.1:39091"
+			changes = append(changes, "set missing pathd.listen=127.0.0.1:39091")
+		}
+		if cfg.Path.IdleSeconds <= 0 {
+			cfg.Path.IdleSeconds = 20
+			changes = append(changes, "set missing pathd.idle_seconds=20")
+		}
 	}
 	if cfg.UUID == "" {
 		cfg.UUID = randomHexString(32)
@@ -505,6 +548,60 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		changes = append(changes, "completed presets to current preset set")
 	}
 
+	return changes
+}
+
+// migrateLegacyPath moves the former global, enabled Gateway PathLink
+// credentials onto the relay selected by that configuration. Server Pathd
+// configuration stays top-level because it describes the local daemon.
+// The migration is idempotent and is persisted on the next normal config save.
+func (cfg *UserConfig) migrateLegacyPath() []string {
+	if cfg == nil || !cfg.legacyPathSeen {
+		return nil
+	}
+	changes := []string{}
+	legacyEnabled := cfg.legacyPathEnabled != nil && *cfg.legacyPathEnabled
+	if cfg.Role == RoleServer {
+		cfg.Path.LegacyEnabled = false
+		cfg.legacyPathSeen = false
+		return append(changes, "migrated legacy Server path configuration")
+	}
+	if cfg.Role != RoleGateway {
+		return nil
+	}
+	if legacyEnabled && cfg.Path.Token != "" && cfg.Gateway.RelayAlias != "" {
+		for i := range cfg.CustomOutbounds {
+			outbound := &cfg.CustomOutbounds[i]
+			if outbound.Alias != cfg.Gateway.RelayAlias {
+				continue
+			}
+			if outbound.Path == nil || outbound.Path.Token == "" {
+				endpoint := cfg.Path
+				endpoint.LegacyEnabled = false
+				if endpoint.Listen == "" {
+					endpoint.Listen = "127.0.0.1:39091"
+				}
+				if endpoint.IdleSeconds <= 0 {
+					endpoint.IdleSeconds = 20
+				}
+				outbound.Path = &endpoint
+				changes = append(changes, "migrated legacy enabled path credentials to relay "+outbound.Alias)
+			} else {
+				changes = append(changes, "kept existing relay path credentials for "+outbound.Alias)
+			}
+			cfg.Path = PathConfig{}
+			cfg.legacyPathSeen = false
+			return changes
+		}
+	}
+	if !legacyEnabled {
+		cfg.Path = PathConfig{}
+		cfg.legacyPathSeen = false
+		return append(changes, "removed disabled legacy gateway path configuration")
+	}
+	// Keep an enabled legacy value in memory until its selected relay exists;
+	// LegacyEnabled causes it to remain durable until a later config operation
+	// supplies that relay, avoiding silent credential loss during an upgrade.
 	return changes
 }
 

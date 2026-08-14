@@ -137,6 +137,7 @@ func prepareFreshInit() {
 	}
 	for _, name := range []string{
 		"config.active.json",
+		"pathd.json",
 		"gateway.policy-rules.json",
 		"gateway.tun.disabled",
 		"gateway.path-tun.disabled",

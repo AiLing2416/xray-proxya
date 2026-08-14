@@ -85,11 +85,13 @@ var runCmd = &cobra.Command{
 		if gatewayState == "" {
 			gatewayState = "proxy"
 		}
-		pathdEnabled := cfg.Role == config.RoleGateway &&
-			gatewayState == "proxy" &&
-			(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) &&
-			cfg.Gateway.RelayAlias != "" && !config.GatewayTunDisabled() &&
-			cfg.Path.Enabled && cfg.Path.Token != ""
+		pathEndpoint, pathRelayAlias, pathErr := selectedGatewayPath(cfg)
+		pathdEnabled := pathErr == nil && gatewayState == "proxy" && !config.GatewayTunDisabled()
+		if cfg.Role == config.RoleGateway && gatewayState == "proxy" &&
+			(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) && cfg.Gateway.RelayAlias != "" &&
+			!config.GatewayTunDisabled() && pathErr != nil {
+			fmt.Printf("ℹ️  PathLink unavailable for relay %s: %v\n", cfg.Gateway.RelayAlias, pathErr)
+		}
 		if pathdEnabled {
 			// Retry PathLink when the service is restarted.  If allocation fails,
 			// the marker below makes the gateway omit only its optional ICMP path.
@@ -174,15 +176,11 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("start Xray: %w", err)
 		}
 		if pathdEnabled {
-			idle := time.Duration(cfg.Path.IdleSeconds) * time.Second
+			idle := time.Duration(pathEndpoint.IdleSeconds) * time.Second
 			if idle <= 0 {
 				idle = 15 * time.Second
 			}
-			pathTarget := cfg.Path.Listen
-			if pathTarget == "" {
-				pathTarget = "127.0.0.1:39091"
-			}
-			pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathTarget, cfg.Path.Token, idle)
+			pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathEndpoint.Listen, pathEndpoint.Token, idle)
 			pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte, dontFragment bool) pathd.ProbeResult {
 				result, err := pathClient.RelayEcho(destination, ttl, echoData, dontFragment)
 				if err != nil {
@@ -210,7 +208,7 @@ var runCmd = &cobra.Command{
 					return fmt.Errorf("record PathLink TUN runtime state: %w", markerErr)
 				}
 				if pathTunManager != nil {
-					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", cfg.Gateway.RelayAlias)
+					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", pathRelayAlias)
 				}
 			}
 			if pathClient != nil {

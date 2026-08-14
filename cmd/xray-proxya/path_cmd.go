@@ -23,6 +23,8 @@ var (
 	pathListen    string
 	pathToken     string
 	pathIdle      int
+	pathRelay     string
+	pathGenerate  bool
 	pathPingTTL   int
 	pathTraceHops int
 	pathMTUMin    int
@@ -71,14 +73,20 @@ WantedBy=multi-user.target
 }
 
 func writePathdConfig(cfg *config.UserConfig) error {
+	if cfg == nil || cfg.Role != config.RoleServer {
+		return fmt.Errorf("pathd configuration is available only on a Server")
+	}
 	if cfg.Path.Listen == "" {
-		cfg.Path.Listen = "127.0.0.1:39091"
+		return fmt.Errorf("pathd listen address is not configured; run 'path set --listen <address>'")
 	}
 	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
 		return err
 	}
 	if cfg.Path.IdleSeconds <= 0 {
-		cfg.Path.IdleSeconds = 20
+		return fmt.Errorf("pathd idle timeout is invalid")
+	}
+	if cfg.Path.Token == "" {
+		return fmt.Errorf("pathd token is not configured; run 'path set --token <token>'")
 	}
 	data, err := json.MarshalIndent(struct {
 		Listen      string `json:"listen"`
@@ -88,7 +96,25 @@ func writePathdConfig(cfg *config.UserConfig) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(pathdConfigPath(), data, 0600)
+	path := pathdConfigPath()
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pathd.json-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }
 
 var pathCmd = &cobra.Command{Use: "path", Short: "Manage the root-only loopback PathLink ICMP agent", PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -114,119 +140,167 @@ func pathRootOnlyError(euid int, sudoUser, sudoUID string) error {
 	return nil
 }
 
-var pathEnableCmd = &cobra.Command{Use: "enable", Short: "Enable PathLink in staging and create its private configuration", Run: func(cmd *cobra.Command, args []string) {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil {
-		fmt.Println("❌", err)
-		return
+func setPathEndpoint(cmd *cobra.Command, endpoint *config.PathConfig, requireToken bool) (string, error) {
+	if pathGenerate && cmd.Flags().Changed("token") {
+		return "", fmt.Errorf("--generate-token cannot be combined with --token")
 	}
-	if pathListen != "" {
-		cfg.Path.Listen = pathListen
+	if !cmd.Flags().Changed("token") && !cmd.Flags().Changed("listen") && !cmd.Flags().Changed("idle") && !pathGenerate {
+		return "", fmt.Errorf("specify --token, --listen, --idle, or --generate-token")
 	}
-	if pathIdle > 0 {
-		cfg.Path.IdleSeconds = pathIdle
+	generated := ""
+	if cmd.Flags().Changed("listen") {
+		endpoint.Listen = pathListen
 	}
-	if pathToken != "" {
-		cfg.Path.Token = pathToken
+	if cmd.Flags().Changed("idle") {
+		endpoint.IdleSeconds = pathIdle
 	}
-	if cfg.Path.Listen == "" {
-		cfg.Path.Listen = "127.0.0.1:39091"
+	if cmd.Flags().Changed("token") {
+		endpoint.Token = pathToken
 	}
-	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
-		fmt.Println("❌", err)
-		return
-	}
-	if cfg.Path.Token == "" {
-		b := make([]byte, 32)
-		if _, err := rand.Read(b); err != nil {
-			fmt.Println("❌ Generate token:", err)
-			return
+	if pathGenerate {
+		bytes := make([]byte, 32)
+		if _, err := rand.Read(bytes); err != nil {
+			return "", fmt.Errorf("generate token: %w", err)
 		}
-		cfg.Path.Token = hex.EncodeToString(b)
+		generated = hex.EncodeToString(bytes)
+		endpoint.Token = generated
 	}
-	cfg.Path.Enabled = true
-	if err := cfg.SaveEx(true); err != nil {
-		fmt.Println("❌", err)
-		return
+	if endpoint.Listen == "" {
+		endpoint.Listen = "127.0.0.1:39091"
 	}
-	if err := writePathdConfig(cfg); err != nil {
-		fmt.Println("❌ Write private pathd configuration:", err)
-		return
+	if endpoint.IdleSeconds <= 0 {
+		endpoint.IdleSeconds = 20
 	}
-	fmt.Printf("✅ PathLink enabled in STAGING (%s). Run 'apply', then 'path install' and 'path start'.\n", cfg.Path.Listen)
-	if cfg.Role == config.RoleServer {
-		fmt.Println("ℹ️ Copy this same PathLink token to the paired Gateway with: path enable --token <token>")
+	if err := pathd.ValidateListenAddress(endpoint.Listen); err != nil {
+		return "", err
 	}
-}}
-
-var pathDisableCmd = &cobra.Command{Use: "disable", Short: "Disable PathLink in staging and stop its local agent", Run: func(cmd *cobra.Command, args []string) {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil {
-		fmt.Println("❌", err)
-		return
+	if requireToken && endpoint.Token == "" {
+		return "", fmt.Errorf("a token is required for a new relay PathLink binding")
 	}
-	cfg.Path.Enabled = false
-	if err := cfg.SaveEx(true); err != nil {
-		fmt.Println("❌", err)
-		return
+	if endpoint.Token == "" {
+		return "", fmt.Errorf("pathd token is not configured; pass --token or --generate-token")
 	}
-	if os.Geteuid() == 0 {
-		_ = exec.Command("systemctl", "stop", pathdUnit).Run()
-	}
-	fmt.Println("✅ PathLink disabled in STAGING.")
-}}
-
-var pathInstallCmd = &cobra.Command{Use: "install", Short: "Install pathd as a root systemd service", Run: func(cmd *cobra.Command, args []string) {
-	if os.Geteuid() != 0 {
-		fmt.Println("❌ pathd service installation requires root.")
-		return
-	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		fmt.Printf("❌ pathd installation requires systemd: %v\n", err)
-		return
-	}
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		fmt.Println("❌", err)
-		return
-	}
-	if cfg.Role != config.RoleServer || !cfg.Path.Enabled {
-		fmt.Println("❌ pathd can be installed only on a Server after 'path enable' and 'apply'.")
-		return
-	}
-	pathdPath, err := validateRootOwnedExecutable(pathdBinaryPath())
-	if err != nil {
-		fmt.Printf("❌ invalid pathd binary: %v\n", err)
-		return
-	}
-	if err := writePathdConfig(cfg); err != nil {
-		fmt.Println("❌", err)
-		return
-	}
-	content := buildPathdSystemdServiceContent(pathdPath, pathdConfigPath())
-	if err := os.WriteFile(pathdUnitPath(), []byte(content), 0644); err != nil {
-		fmt.Println("❌", err)
-		return
-	}
-	_ = exec.Command("systemctl", "daemon-reload").Run()
-	fmt.Println("✅ pathd system service installed.")
-}}
-
-func pathSystemctl(action string) {
-	if os.Geteuid() != 0 {
-		fmt.Println("❌ pathd service control requires root.")
-		return
-	}
-	if err := exec.Command("systemctl", action, pathdUnit).Run(); err != nil {
-		fmt.Printf("❌ pathd %s failed: %v\n", action, err)
-		return
-	}
-	fmt.Printf("✅ pathd %s.\n", action)
+	return generated, nil
 }
 
-var pathStartCmd = &cobra.Command{Use: "start", Short: "Start pathd", Run: func(cmd *cobra.Command, args []string) { pathSystemctl("start") }}
-var pathStopCmd = &cobra.Command{Use: "stop", Short: "Stop pathd", Run: func(cmd *cobra.Command, args []string) { pathSystemctl("stop") }}
-var pathRestartCmd = &cobra.Command{Use: "restart", Short: "Restart pathd", Run: func(cmd *cobra.Command, args []string) { pathSystemctl("restart") }}
+func validatePathRole(role config.AppRole, relay string) error {
+	switch role {
+	case config.RoleServer:
+		if relay != "" {
+			return fmt.Errorf("Server Pathd is local; --relay is only valid on a Gateway")
+		}
+	case config.RoleGateway:
+		if relay == "" {
+			return fmt.Errorf("Gateway PathLink configuration requires --relay")
+		}
+	default:
+		return fmt.Errorf("unsupported role %q", role)
+	}
+	return nil
+}
+
+var pathSetCmd = &cobra.Command{Use: "set", Short: "Configure Pathd or a relay PathLink credential in STAGING", Run: func(cmd *cobra.Command, args []string) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	switch cfg.Role {
+	case config.RoleServer:
+		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		generated, err := setPathEndpoint(cmd, &cfg.Path, false)
+		if err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		if err := cfg.SaveEx(true); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		fmt.Printf("✅ Server Pathd configured in STAGING (%s). Run 'apply', then manage it with 'service enable --now xray-proxya-pathd'.\n", cfg.Path.Listen)
+		if generated != "" {
+			fmt.Printf("🔐 Generated token (save it now): %s\n", generated)
+		}
+	case config.RoleGateway:
+		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		if pathGenerate {
+			fmt.Println("❌ Gateway credentials must match the remote Pathd; pass --token instead of --generate-token.")
+			return
+		}
+		for i := range cfg.CustomOutbounds {
+			outbound := &cfg.CustomOutbounds[i]
+			if outbound.Alias != pathRelay {
+				continue
+			}
+			if outbound.Path == nil {
+				outbound.Path = &config.PathConfig{}
+			}
+			if _, err := setPathEndpoint(cmd, outbound.Path, outbound.Path.Token == ""); err != nil {
+				fmt.Println("❌", err)
+				return
+			}
+			if err := cfg.SaveEx(true); err != nil {
+				fmt.Println("❌", err)
+				return
+			}
+			fmt.Printf("✅ PathLink credentials for relay '%s' saved in STAGING. Run 'apply'.\n", pathRelay)
+			return
+		}
+		fmt.Printf("❌ Relay '%s' not found.\n", pathRelay)
+	default:
+		fmt.Printf("❌ Unsupported role %q.\n", cfg.Role)
+	}
+}}
+
+var pathUnsetCmd = &cobra.Command{Use: "unset", Short: "Remove a relay PathLink credential from STAGING", Run: func(cmd *cobra.Command, args []string) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	if cfg.Role == config.RoleServer {
+		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		if exec.Command("systemctl", "is-active", "--quiet", pathdUnit).Run() == nil {
+			fmt.Println("❌ Stop or disable xray-proxya-pathd with the service command before removing its configuration.")
+			return
+		}
+		cfg.Path = config.PathConfig{}
+	} else if cfg.Role == config.RoleGateway {
+		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
+			fmt.Println("❌", err)
+			return
+		}
+		found := false
+		for i := range cfg.CustomOutbounds {
+			if cfg.CustomOutbounds[i].Alias == pathRelay {
+				cfg.CustomOutbounds[i].Path = nil
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("❌ Relay '%s' not found.\n", pathRelay)
+			return
+		}
+	} else {
+		fmt.Printf("❌ Unsupported role %q.\n", cfg.Role)
+		return
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		fmt.Println("❌", err)
+		return
+	}
+	fmt.Println("✅ PathLink configuration removed from STAGING. Run 'apply'.")
+}}
 var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service state", Run: func(cmd *cobra.Command, args []string) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -234,21 +308,38 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 		return
 	}
 	serviceState := "unknown"
+	serviceEnabled := "unknown"
 	if os.Geteuid() == 0 && exec.Command("systemctl", "is-active", "--quiet", pathdUnit).Run() == nil {
 		serviceState = "active"
 	} else if os.Geteuid() == 0 {
 		serviceState = "inactive"
 	}
-	fmt.Printf("PathLink: %s\n", map[bool]string{true: "enabled", false: "disabled"}[cfg.Path.Enabled])
+	if os.Geteuid() == 0 {
+		if exec.Command("systemctl", "is-enabled", "--quiet", pathdUnit).Run() == nil {
+			serviceEnabled = "enabled"
+		} else {
+			serviceEnabled = "disabled"
+		}
+	}
 	fmt.Printf("Role: %s\n", cfg.Role)
 	if cfg.Role == config.RoleServer {
-		fmt.Printf("Agent: %s (%s)\n", serviceState, cfg.Path.Listen)
+		if cfg.Path.Token == "" {
+			fmt.Printf("Agent: %s (%s); configuration: missing\n", serviceState, serviceEnabled)
+			return
+		}
+		fmt.Printf("Agent: %s (%s), %s\n", serviceState, serviceEnabled, cfg.Path.Listen)
 		return
 	}
 	if cfg.Role != config.RoleGateway {
 		return
 	}
 	fmt.Printf("Relay: %s\n", cfg.Gateway.RelayAlias)
+	if endpoint, relay, err := selectedGatewayPath(cfg); err != nil {
+		fmt.Printf("PathLink credentials: unavailable (%v)\n", err)
+		return
+	} else {
+		fmt.Printf("PathLink credentials: configured for %s (%s)\n", relay, endpoint.Listen)
+	}
 	if state, err := readPathRuntime(); err == nil {
 		connection := "idle/disconnected"
 		if state.Connected {
@@ -266,8 +357,44 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 		}
 		return
 	}
-	fmt.Println("PathLink runtime: unavailable (run gateway up with PathLink enabled)")
+	fmt.Println("PathLink runtime: unavailable (run gateway up with PathLink credentials configured)")
 }}
+
+func selectedGatewayPath(cfg *config.UserConfig) (*config.PathConfig, string, error) {
+	if cfg == nil || cfg.Role != config.RoleGateway {
+		return nil, "", fmt.Errorf("PathLink is available only on a Gateway")
+	}
+	if cfg.Gateway.State != "proxy" || !(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) {
+		return nil, "", fmt.Errorf("Gateway proxy mode is not enabled")
+	}
+	if cfg.Gateway.RelayAlias == "" {
+		return nil, "", fmt.Errorf("no Gateway relay is selected")
+	}
+	for i := range cfg.CustomOutbounds {
+		outbound := &cfg.CustomOutbounds[i]
+		if outbound.Alias != cfg.Gateway.RelayAlias {
+			continue
+		}
+		if !outbound.Enabled {
+			return nil, "", fmt.Errorf("selected relay %q is disabled", outbound.Alias)
+		}
+		if outbound.Path == nil || outbound.Path.Token == "" {
+			return nil, "", fmt.Errorf("selected relay %q has no PathLink credentials", outbound.Alias)
+		}
+		endpoint := *outbound.Path
+		if endpoint.Listen == "" {
+			endpoint.Listen = "127.0.0.1:39091"
+		}
+		if endpoint.IdleSeconds <= 0 {
+			endpoint.IdleSeconds = 20
+		}
+		if err := pathd.ValidateListenAddress(endpoint.Listen); err != nil {
+			return nil, "", err
+		}
+		return &endpoint, outbound.Alias, nil
+	}
+	return nil, "", fmt.Errorf("selected relay %q does not exist", cfg.Gateway.RelayAlias)
+}
 
 var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one real ICMP echo through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
 	if os.Geteuid() != 0 {
@@ -279,8 +406,9 @@ var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one 
 		fmt.Println("❌", err)
 		return
 	}
-	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || cfg.Gateway.RelayAlias == "" {
-		fmt.Println("❌ path ping requires an enabled Gateway PathLink and selected proxy relay.")
+	endpoint, relay, err := selectedGatewayPath(cfg)
+	if err != nil {
+		fmt.Printf("❌ path ping requires Gateway PathLink credentials: %v\n", err)
 		return
 	}
 	ip, err := resolvePublicTarget(args[0])
@@ -293,23 +421,19 @@ var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one 
 		fmt.Println("❌", err)
 		return
 	}
-	target := cfg.Path.Listen
-	if target == "" {
-		target = "127.0.0.1:39091"
-	}
-	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
+	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
 	started := time.Now()
 	probe, err := client.ProbeTTL(ip, pathPingTTL)
 	if err != nil {
-		fmt.Printf("❌ %s through %s: %v\n", ip, cfg.Gateway.RelayAlias, err)
+		fmt.Printf("❌ %s through %s: %v\n", ip, relay, err)
 		return
 	}
 	if !probe.Echo {
-		fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, cfg.Gateway.RelayAlias, time.Since(started).Round(time.Millisecond), probe.Error())
+		fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, time.Since(started).Round(time.Millisecond), probe.Error())
 		return
 	}
-	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, cfg.Gateway.RelayAlias, time.Since(started).Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
+	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, time.Since(started).Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
 }}
 
 var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace remote ICMP hops through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
@@ -326,8 +450,9 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 		fmt.Println("❌", err)
 		return
 	}
-	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || cfg.Gateway.RelayAlias == "" {
-		fmt.Println("❌ path trace requires an enabled Gateway PathLink and selected proxy relay.")
+	endpoint, relay, err := selectedGatewayPath(cfg)
+	if err != nil {
+		fmt.Printf("❌ path trace requires Gateway PathLink credentials: %v\n", err)
 		return
 	}
 	ip, err := resolvePublicTarget(args[0])
@@ -340,13 +465,9 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 		fmt.Println("❌", err)
 		return
 	}
-	target := cfg.Path.Listen
-	if target == "" {
-		target = "127.0.0.1:39091"
-	}
-	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
+	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
-	fmt.Printf("Path trace to %s through %s (max %d hops)\n", ip, cfg.Gateway.RelayAlias, pathTraceHops)
+	fmt.Printf("Path trace to %s through %s (max %d hops)\n", ip, relay, pathTraceHops)
 	for ttl := 1; ttl <= pathTraceHops; ttl++ {
 		probe, err := client.ProbeTTL(ip, ttl)
 		if err != nil {
@@ -386,8 +507,9 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 		fmt.Println("❌", err)
 		return
 	}
-	if cfg.Role != config.RoleGateway || !cfg.Path.Enabled || cfg.Path.Token == "" || cfg.Gateway.State != "proxy" || cfg.Gateway.RelayAlias == "" {
-		fmt.Println("❌ path mtu requires an enabled Gateway PathLink and selected proxy relay.")
+	endpoint, relay, err := selectedGatewayPath(cfg)
+	if err != nil {
+		fmt.Printf("❌ path mtu requires Gateway PathLink credentials: %v\n", err)
 		return
 	}
 	ip, err := resolvePublicTarget(args[0])
@@ -411,11 +533,7 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 		fmt.Println("❌", err)
 		return
 	}
-	target := cfg.Path.Listen
-	if target == "" {
-		target = "127.0.0.1:39091"
-	}
-	client := pathd.NewIdleClient(socks, target, cfg.Path.Token, 15*time.Second)
+	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
 	ipHeader := 40
 	if ip.To4() != nil {
@@ -425,7 +543,7 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 	if minimum < ipHeader+icmpHeader {
 		minimum = ipHeader + icmpHeader
 	}
-	fmt.Printf("Active PMTU to %s through %s (%d–%d bytes)\n", ip, cfg.Gateway.RelayAlias, minimum, pathMTUMax)
+	fmt.Printf("Active PMTU to %s through %s (%d–%d bytes)\n", ip, relay, minimum, pathMTUMax)
 	low, high, best := minimum, pathMTUMax, 0
 	for low <= high {
 		candidate := low + (high-low)/2
@@ -523,13 +641,16 @@ func activePathdSOCKSAddress() (string, error) {
 }
 
 func init() {
-	pathEnableCmd.Flags().StringVar(&pathListen, "listen", "", "loopback pathd listen address")
-	pathEnableCmd.Flags().StringVar(&pathToken, "token", "", "shared 32-byte PathLink token")
-	pathEnableCmd.Flags().IntVar(&pathIdle, "idle", 20, "pathd connection idle timeout in seconds")
+	pathSetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay to bind PathLink credentials to (Gateway only)")
+	pathSetCmd.Flags().StringVarP(&pathListen, "listen", "l", "", "numeric loopback Pathd listen address")
+	pathSetCmd.Flags().StringVarP(&pathToken, "token", "t", "", "shared PathLink token")
+	pathSetCmd.Flags().IntVar(&pathIdle, "idle", 20, "Pathd connection idle timeout in seconds")
+	pathSetCmd.Flags().BoolVar(&pathGenerate, "generate-token", false, "generate a new Server Pathd token")
+	pathUnsetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay whose PathLink credentials to remove (Gateway only)")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
 	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
 	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
 	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "largest IP packet MTU to probe")
-	pathCmd.AddCommand(pathEnableCmd, pathDisableCmd, pathInstallCmd, pathStartCmd, pathStopCmd, pathRestartCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
+	pathCmd.AddCommand(pathSetCmd, pathUnsetCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
 	rootCmd.AddCommand(pathCmd)
 }

@@ -122,31 +122,36 @@ Notes:
 PathLink is a root-only feature for probing a public destination through the
 Gateway's selected relay. Use a direct root login or `su -`, never `sudo`.
 
-On the Server, enable PathLink, commit the staged configuration, and install
-the managed units. Keep the generated token for the paired Gateway:
+On the Server, configure the local Pathd endpoint, commit it, then enable its
+already-registered systemd service. `service install` writes the Pathd unit but
+does not enable or start it. Keep the token for the paired Gateway:
 
 ```bash
-xray-proxya path enable
+xray-proxya path set --generate-token
 xray-proxya apply
 xray-proxya service install
-xray-proxya service start xray-proxya-pathd
+xray-proxya service enable --now xray-proxya-pathd
 ```
 
-On the paired Gateway, use that same token and then bring up the configured
-Gateway relay:
+On the paired Gateway, bind that token to each relay that can reach a Pathd.
+Gateway relay selection automatically selects its matching credentials:
 
 ```bash
-xray-proxya path enable --token <server-pathlink-token>
+xray-proxya path set --relay hk --token <hk-token> --listen 127.0.0.1:39091
+xray-proxya path set --relay sg --token <sg-token> --listen 127.0.0.1:39091
 xray-proxya apply
+xray-proxya gateway set --relay hk
 xray-proxya gateway up
 xray-proxya path ping 1.1.1.1
 xray-proxya path trace 1.1.1.1
 xray-proxya path mtu 1.1.1.1
 ```
 
-Only public IP addresses and hostnames resolving to public addresses can be
-probed. `path status` reports the local agent state on a Server and the relay
-connection state on a Gateway.
+`--relay` is Gateway-only: a Server always configures its local Pathd and
+rejects this flag. Pathd enablement is owned by `service enable/disable`, not
+by the PathLink configuration. Only public IP addresses and hostnames resolving
+to public addresses can be probed. `path status` reports the local agent state
+on a Server and the selected relay's credential/runtime state on a Gateway.
 
 ### Tune migration
 
@@ -178,5 +183,5 @@ xray-proxya outbound probe-local hk-node -4
 - `status`: Real-time traffic stats and process monitoring.
 - `apply / undo`: Commit or discard staging changes with automatic validation.
 - `path`: Configure PathLink and run relay-carried ICMP ping, trace, and MTU probes from a root Gateway shell.
-- `service`: Install and control the managed systemd units. `service install` only writes units; it does not enable or start them. The managed units are `xray-proxya`, optional `xray-proxya-pathd`, and `xray-proxya-sub@<instance>`.
+- `service`: Install and control the managed systemd units. `service install` only writes units; it does not enable or start them. Root installs register `xray-proxya`, `xray-proxya-pathd`, and `xray-proxya-sub@<instance>`; Pathd remains disabled until explicitly enabled.
 - `doctor completion install / uninstall`: Automatically detect bash, zsh, or fish and manage its shell completion.

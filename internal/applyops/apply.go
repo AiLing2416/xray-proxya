@@ -1,6 +1,7 @@
 package applyops
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/presets"
 	"xray-proxya/internal/xray"
 )
@@ -19,6 +21,7 @@ type Impact struct {
 	SubListenerChanged    bool
 	SubContentChanged     bool
 	GatewayRuntimeChanged bool
+	PathdConfigChanged    bool
 	ChangedSections       []string
 }
 
@@ -116,6 +119,12 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	if len(impact.ChangedSections) > 0 {
 		lines = append(lines, fmt.Sprintf("ℹ️  Changed sections: %v", impact.ChangedSections))
 	}
+	if impact.PathdConfigChanged {
+		if err := syncPathdConfig(cfg); err != nil {
+			return lines, fmt.Errorf("synchronize Pathd configuration: %w", err)
+		}
+		lines = append(lines, "✅ Pathd configuration synchronized.")
+	}
 
 	xrayRestarted := false
 	if opts.Full || impact.XrayConfigChanged {
@@ -182,6 +191,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
 		impact.SubContentChanged = stagingCfg.AdminSub.Enabled || len(stagingCfg.Subscriptions) > 0
 		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled
+		impact.PathdConfigChanged = stagingCfg.Role == config.RoleServer && stagingCfg.Path.Token != ""
 		impact.ChangedSections = []string{"initial_apply"}
 		return impact
 	}
@@ -218,10 +228,19 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubContentChanged = true
 		mark("presets")
 	}
-	if !reflect.DeepEqual(activeCfg.CustomOutbounds, stagingCfg.CustomOutbounds) {
+	if customOutboundsAffectXray(activeCfg.CustomOutbounds, stagingCfg.CustomOutbounds) {
 		impact.XrayConfigChanged = true
 		impact.SubContentChanged = true
 		mark("custom_outbounds")
+	}
+	if relayPathCredentialsChanged(activeCfg, stagingCfg) {
+		mark("relay.path")
+		if activeCfg.Gateway.RelayAlias == stagingCfg.Gateway.RelayAlias &&
+			stagingCfg.Gateway.RelayAlias != "" &&
+			selectedRelayPathChanged(activeCfg, stagingCfg) {
+			impact.XrayConfigChanged = true
+			impact.GatewayRuntimeChanged = true
+		}
 	}
 	if guestsAffectXray(activeCfg.Guests, stagingCfg.Guests) {
 		impact.XrayConfigChanged = true
@@ -243,9 +262,12 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		mark("gateway.bypass_countries")
 	}
 	if !reflect.DeepEqual(activeCfg.Path, stagingCfg.Path) {
-		impact.XrayConfigChanged = true
-		impact.GatewayRuntimeChanged = true
-		mark("path")
+		if stagingCfg.Role == config.RoleServer {
+			impact.PathdConfigChanged = true
+			mark("pathd")
+		} else {
+			mark("path")
+		}
 	}
 	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
 		if activeCfg.AdminSub.Port != stagingCfg.AdminSub.Port {
@@ -286,6 +308,109 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	}
 
 	return impact
+}
+
+func customOutboundsAffectXray(active, staging []config.CustomOutbound) bool {
+	activeCopy := append([]config.CustomOutbound(nil), active...)
+	stagingCopy := append([]config.CustomOutbound(nil), staging...)
+	for i := range activeCopy {
+		activeCopy[i].Path = nil
+	}
+	for i := range stagingCopy {
+		stagingCopy[i].Path = nil
+	}
+	return !reflect.DeepEqual(activeCopy, stagingCopy)
+}
+
+func relayPathCredentialsChanged(active, staging *config.UserConfig) bool {
+	if active == nil || staging == nil {
+		return false
+	}
+	byAlias := make(map[string]*config.PathConfig, len(active.CustomOutbounds))
+	for i := range active.CustomOutbounds {
+		byAlias[active.CustomOutbounds[i].Alias] = active.CustomOutbounds[i].Path
+	}
+	for i := range staging.CustomOutbounds {
+		outbound := &staging.CustomOutbounds[i]
+		if !reflect.DeepEqual(byAlias[outbound.Alias], outbound.Path) {
+			return true
+		}
+		delete(byAlias, outbound.Alias)
+	}
+	return len(byAlias) != 0
+}
+
+func selectedRelayPathChanged(active, staging *config.UserConfig) bool {
+	if active == nil || staging == nil || active.Gateway.RelayAlias == "" ||
+		active.Gateway.RelayAlias != staging.Gateway.RelayAlias {
+		return false
+	}
+	return !reflect.DeepEqual(pathForRelay(active, active.Gateway.RelayAlias), pathForRelay(staging, staging.Gateway.RelayAlias))
+}
+
+func pathForRelay(cfg *config.UserConfig, alias string) *config.PathConfig {
+	for i := range cfg.CustomOutbounds {
+		if cfg.CustomOutbounds[i].Alias == alias {
+			return cfg.CustomOutbounds[i].Path
+		}
+	}
+	return nil
+}
+
+func syncPathdConfig(cfg *config.UserConfig) error {
+	if cfg == nil || cfg.Role != config.RoleServer {
+		return nil
+	}
+	path := filepath.Join(config.GetConfigDir(), "pathd.json")
+	if cfg.Path.Token == "" {
+		if os.Geteuid() == 0 && exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-pathd.service").Run() == nil {
+			return fmt.Errorf("Pathd is active; disable or stop it with the service command before removing its configuration")
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	if cfg.Path.Listen == "" || cfg.Path.IdleSeconds <= 0 {
+		return fmt.Errorf("incomplete Pathd configuration")
+	}
+	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(struct {
+		Listen      string `json:"listen"`
+		Token       string `json:"token"`
+		IdleSeconds int    `json:"idle_seconds"`
+	}{cfg.Path.Listen, cfg.Path.Token, cfg.Path.IdleSeconds}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pathd.json-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := tmp.Chmod(0600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		return err
+	}
+	if os.Geteuid() == 0 && exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-pathd.service").Run() == nil {
+		if err := exec.Command("systemctl", "restart", "xray-proxya-pathd.service").Run(); err != nil {
+			return fmt.Errorf("restart active Pathd service: %w", err)
+		}
+	}
+	return nil
 }
 
 func HasSubServiceInstalled() bool {

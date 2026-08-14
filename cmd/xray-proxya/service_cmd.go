@@ -233,13 +233,18 @@ func serviceInstall() error {
 	assetDir := filepath.Join(workDir, "bin")
 	configDir := config.GetConfigDir()
 	pathdContent := ""
-	if system && cfg.Path.Enabled {
+	if system {
 		pathdPath, err := validateRootOwnedExecutable(pathdBinaryPath())
 		if err != nil {
-			return fmt.Errorf("pathd is enabled but binary is unavailable: %w", err)
+			return fmt.Errorf("pathd binary is unavailable: %w", err)
 		}
-		if err := writePathdConfig(cfg); err != nil {
-			return fmt.Errorf("write pathd configuration: %w", err)
+		// Register Pathd independently from its configuration and enablement.
+		// A newly registered unit is disabled until the operator enables it via
+		// the service command. Only a Server can materialize daemon settings.
+		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
+			if err := writePathdConfig(cfg); err != nil {
+				return fmt.Errorf("write pathd configuration: %w", err)
+			}
 		}
 		pathdContent = buildPathdSystemdServiceContent(pathdPath, pathdConfigPath())
 	}
@@ -366,6 +371,11 @@ func systemctlWrapper(action string) *cobra.Command {
 			if unit == xray.MainServiceUnit && os.Geteuid() == 0 {
 				return manageMainServiceAction(action, now)
 			}
+			if unit == pathdServiceUnit && (action == "start" || action == "restart" || (action == "enable" && now)) {
+				if err := validatePathdServiceStart(); err != nil {
+					return err
+				}
+			}
 			arguments := []string{"--no-pager", action}
 			if now {
 				arguments = append(arguments, "--now")
@@ -378,6 +388,23 @@ func systemctlWrapper(action string) *cobra.Command {
 		command.Flags().BoolVar(&now, "now", false, "Start or stop the unit immediately")
 	}
 	return command
+}
+
+func validatePathdServiceStart() error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("xray-proxya-pathd requires a root system service")
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load active Pathd configuration: %w", err)
+	}
+	if cfg.Role != config.RoleServer {
+		return fmt.Errorf("xray-proxya-pathd can run only on a Server")
+	}
+	if err := writePathdConfig(cfg); err != nil {
+		return fmt.Errorf("configure Pathd first with 'path set', then apply: %w", err)
+	}
+	return nil
 }
 
 // manageMainServiceAction keeps generic systemctl operations from bypassing

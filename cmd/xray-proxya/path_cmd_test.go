@@ -3,6 +3,7 @@ package main
 import (
 	"strings"
 	"testing"
+	"xray-proxya/internal/config"
 )
 
 func TestPathRequiresDirectRootShell(t *testing.T) {
@@ -23,6 +24,21 @@ func TestPathRequiresDirectRootShell(t *testing.T) {
 				t.Fatalf("pathRootOnlyError() error = %v, want error %t", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestPathRoleRelayValidation(t *testing.T) {
+	if err := validatePathRole(config.RoleServer, "relay-a"); err == nil {
+		t.Fatal("Server must reject --relay")
+	}
+	if err := validatePathRole(config.RoleServer, ""); err != nil {
+		t.Fatalf("Server local Pathd config rejected: %v", err)
+	}
+	if err := validatePathRole(config.RoleGateway, ""); err == nil {
+		t.Fatal("Gateway must require --relay")
+	}
+	if err := validatePathRole(config.RoleGateway, "relay-a"); err != nil {
+		t.Fatalf("Gateway relay config rejected: %v", err)
 	}
 }
 

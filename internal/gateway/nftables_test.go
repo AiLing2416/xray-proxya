@@ -117,7 +117,12 @@ func testGatewayConfig(local, lan bool) *config.UserConfig {
 			Mode:         "tun",
 			RelayAlias:   "relay-a",
 		},
+		CustomOutbounds: []config.CustomOutbound{{Alias: "relay-a", Enabled: true}},
 	}
+}
+
+func configurePathRelay(cfg *config.UserConfig) {
+	cfg.CustomOutbounds[0].Path = &config.PathConfig{Listen: "127.0.0.1:39091", Token: "token", IdleSeconds: 20}
 }
 
 func TestBuildNFTWithBypassDNS(t *testing.T) {
@@ -134,7 +139,7 @@ func TestBuildNFTWithBypassDNS(t *testing.T) {
 
 func TestBuildNFTRoutesPathLinkICMPToDedicatedMark(t *testing.T) {
 	cfg := testGatewayConfig(true, true)
-	cfg.Path.Enabled, cfg.Path.Token = true, "token"
+	configurePathRelay(cfg)
 	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "fd00::/64")
 	for _, expected := range []string{"icmp type echo-request meta mark set " + pathTunMark, "icmpv6 type echo-request meta mark set " + pathTunMark} {
 		if !strings.Contains(rules, expected) {
@@ -154,20 +159,20 @@ func TestPathTunnelEnabledForEitherGatewayMode(t *testing.T) {
 	} {
 		t.Run(mode.name, func(t *testing.T) {
 			cfg := testGatewayConfig(mode.local, mode.lan)
-			cfg.Path.Enabled, cfg.Path.Token = true, "token"
+			configurePathRelay(cfg)
 			if !pathTunnelEnabled(cfg) {
 				t.Fatal("PathLink should be enabled when either gateway mode is enabled")
 			}
 		})
 	}
 	neither := testGatewayConfig(false, false)
-	neither.Path.Enabled, neither.Path.Token = true, "token"
+	configurePathRelay(neither)
 	if pathTunnelEnabled(neither) {
 		t.Fatal("PathLink should be disabled when both gateway modes are disabled")
 	}
 	noRelay := testGatewayConfig(true, false)
 	noRelay.Gateway.RelayAlias = ""
-	noRelay.Path.Enabled, noRelay.Path.Token = true, "token"
+	configurePathRelay(noRelay)
 	if pathTunnelEnabled(noRelay) {
 		t.Fatal("PathLink should be disabled when no relay is configured")
 	}
@@ -190,7 +195,7 @@ func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
 		}
 	}
 	pathCfg := testGatewayConfig(true, true)
-	pathCfg.Path.Enabled, pathCfg.Path.Token = true, "token"
+	configurePathRelay(pathCfg)
 	if got := len(policyRules(pathCfg, "192.168.50.0/24", "fd00::/64", true)); got != 10 {
 		t.Fatalf("PathLink policyRules returned %d rules, want 10", got)
 	}

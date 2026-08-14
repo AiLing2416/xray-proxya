@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/pathd"
 )
 
 const (
@@ -374,10 +375,25 @@ func pathTunnelEnabled(cfg *config.UserConfig) bool {
 	if state == "" {
 		state = "proxy"
 	}
-	return cfg.Role == config.RoleGateway && state == "proxy" &&
-		(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) &&
-		cfg.Gateway.RelayAlias != "" &&
-		cfg.Path.Enabled && cfg.Path.Token != "" && !config.PathTunDisabled()
+	if cfg.Role != config.RoleGateway || state != "proxy" ||
+		!(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) ||
+		cfg.Gateway.RelayAlias == "" || config.PathTunDisabled() {
+		return false
+	}
+	for i := range cfg.CustomOutbounds {
+		outbound := &cfg.CustomOutbounds[i]
+		if outbound.Alias == cfg.Gateway.RelayAlias {
+			if !outbound.Enabled || outbound.Path == nil || outbound.Path.Token == "" {
+				return false
+			}
+			listen := outbound.Path.Listen
+			if listen == "" {
+				listen = "127.0.0.1:39091"
+			}
+			return pathd.ValidateListenAddress(listen) == nil
+		}
+	}
+	return false
 }
 
 func policyRulesPath() string {
@@ -562,7 +578,7 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := exec.Command("ip", "link", "show", pathTunName).Run(); err != nil {
-			problems = append(problems, pathTunName+" interface is not present (Hint: Is PathLink enabled and is the xray-proxya service running?)")
+			problems = append(problems, pathTunName+" interface is not present (Hint: Does the selected relay have PathLink credentials and is the xray-proxya service running?)")
 		} else {
 			if !interfaceIsUp(pathTunName) {
 				problems = append(problems, pathTunName+" interface is not UP")

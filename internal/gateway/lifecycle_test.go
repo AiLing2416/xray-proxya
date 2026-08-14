@@ -38,7 +38,10 @@ func TestPathTunnelDisabledMarkerDegradesOnlyPathLink(t *testing.T) {
 		Gateway: config.GatewayConfig{
 			Mode: "tun", State: "proxy", LocalEnabled: true, RelayAlias: "relay-a",
 		},
-		Path: config.PathConfig{Enabled: true, Token: "token"},
+		CustomOutbounds: []config.CustomOutbound{{
+			Alias: "relay-a", Enabled: true,
+			Path: &config.PathConfig{Listen: "127.0.0.1:39091", Token: "token", IdleSeconds: 20},
+		}},
 	}
 	if !WantsTunnel(cfg) || !pathTunnelEnabled(cfg) {
 		t.Fatal("expected a configured gateway with PathLink to request both tunnels")
