@@ -46,13 +46,17 @@ type UserConfig struct {
 	// Path is the local Pathd daemon endpoint. It is meaningful only on a
 	// Server. Gateway-side PathLink credentials live on the relay that uses
 	// them (CustomOutbound.Path).
-	Path          PathConfig     `json:"path,omitempty"`
-	AdminSub      AdminSubConfig `json:"admin_sub,omitempty"`
-	Subscriptions []Subscription `json:"subscriptions"`
-	SubPort       int            `json:"sub_port"`
-	GuestSubPort  int            `json:"guest_sub_port,omitempty"`
-	GuestSubBind  string         `json:"guest_sub_bind,omitempty"`
-	IPv6Pool      IPv6Config     `json:"ipv6_pool"`
+	Path     PathConfig     `json:"path,omitempty"`
+	AdminSub AdminSubConfig `json:"admin_sub,omitempty"`
+	// IPv6Rotations contains the privileged address allocators used by
+	// subscription instances.  A subscription selects one by name; lifecycle
+	// belongs to the matching systemd unit, never to this configuration.
+	IPv6Rotations map[string]IPv6Config `json:"ipv6_rotations,omitempty"`
+	Subscriptions []Subscription        `json:"subscriptions"`
+	SubPort       int                   `json:"sub_port"`
+	GuestSubPort  int                   `json:"guest_sub_port,omitempty"`
+	GuestSubBind  string                `json:"guest_sub_bind,omitempty"`
+	IPv6Pool      IPv6Config            `json:"ipv6_pool"`
 
 	// legacyPath* are populated only while decoding the pre-relay PathLink
 	// schema. They are intentionally not persisted.
@@ -107,22 +111,18 @@ func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-type AdminSubMode string
-
-const (
-	AdminSubModeFixed      AdminSubMode = "fixed"
-	AdminSubModeIPv6Rotate AdminSubMode = "ipv6-rotate"
-)
-
 type AdminSubConfig struct {
-	Enabled     bool         `json:"enabled,omitempty"`
-	Token       string       `json:"token,omitempty"`
-	Address     string       `json:"address,omitempty"`
-	Port        int          `json:"port,omitempty"`
-	Mode        AdminSubMode `json:"mode,omitempty"`
-	TargetType  string       `json:"target_type,omitempty"`
-	TargetAlias string       `json:"target_alias,omitempty"`
-	IPv6Rotate  IPv6Config   `json:"ipv6_rotate,omitempty"`
+	Listen       string `json:"listen,omitempty"`
+	Token        string `json:"token,omitempty"`
+	Address      string `json:"address,omitempty"`
+	Port         int    `json:"port,omitempty"`
+	TargetType   string `json:"target_type,omitempty"`
+	TargetAlias  string `json:"target_alias,omitempty"`
+	IPv6Rotation string `json:"ipv6_rotation,omitempty"`
+
+	legacyEnabled    *bool
+	legacyMode       string
+	legacyIPv6Rotate IPv6Config
 }
 
 // SubscriptionServiceConfig is the private, per-instance runtime
@@ -138,11 +138,51 @@ type SubscriptionServiceConfig struct {
 }
 
 type IPv6Config struct {
-	Enabled      bool   `json:"enabled"`
 	Subnet       string `json:"subnet"`        // e.g., 2001:db8::/64
 	Interface    string `json:"interface"`     // e.g., eth0
 	MaxAddresses int    `json:"max_addresses"` // Max addresses to keep active (rotation limit)
 	EnableNDP    bool   `json:"enable_ndp"`    // Whether to auto-configure NDP
+
+	legacyEnabled *bool
+}
+
+// UnmarshalJSON accepts the pre-service schema but intentionally never
+// serializes its enablement/mode switches again.
+func (a *AdminSubConfig) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Listen       string     `json:"listen"`
+		Token        string     `json:"token"`
+		Address      string     `json:"address"`
+		Port         int        `json:"port"`
+		TargetType   string     `json:"target_type"`
+		TargetAlias  string     `json:"target_alias"`
+		IPv6Rotation string     `json:"ipv6_rotation"`
+		Enabled      *bool      `json:"enabled"`
+		Mode         string     `json:"mode"`
+		IPv6Rotate   IPv6Config `json:"ipv6_rotate"`
+	}
+	var v wire
+	if err := json.Unmarshal(data, &v); err != nil {
+		return err
+	}
+	*a = AdminSubConfig{Listen: v.Listen, Token: v.Token, Address: v.Address, Port: v.Port, TargetType: v.TargetType, TargetAlias: v.TargetAlias, IPv6Rotation: v.IPv6Rotation, legacyEnabled: v.Enabled, legacyMode: v.Mode, legacyIPv6Rotate: v.IPv6Rotate}
+	return nil
+}
+
+func (v *IPv6Config) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Subnet       string `json:"subnet"`
+		Interface    string `json:"interface"`
+		MaxAddresses int    `json:"max_addresses"`
+		EnableNDP    bool   `json:"enable_ndp"`
+		Enabled      *bool  `json:"enabled"`
+	}
+	var raw wire
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*v = IPv6Config{Subnet: raw.Subnet, Interface: raw.Interface, MaxAddresses: raw.MaxAddresses, EnableNDP: raw.EnableNDP, legacyEnabled: raw.Enabled}
+	return nil
 }
 
 type Subscription struct {
@@ -344,9 +384,8 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		cfg.Subscriptions = []Subscription{}
 		changes = append(changes, "initialized subscriptions")
 	}
-	if cfg.AdminSub.TargetType == "" {
-		cfg.AdminSub.TargetType = "direct"
-		changes = append(changes, "set missing admin_sub.target_type=direct")
+	if cfg.IPv6Rotations == nil {
+		cfg.IPv6Rotations = map[string]IPv6Config{}
 	}
 	if cfg.Role == RoleGateway {
 		if cfg.Gateway.Mode == "" {
@@ -403,10 +442,6 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	}
 	if legacyAdminIdx >= 0 {
 		legacyAdmin := cfg.Subscriptions[legacyAdminIdx]
-		if !cfg.AdminSub.Enabled {
-			cfg.AdminSub.Enabled = true
-			changes = append(changes, "migrated legacy admin subscription enablement")
-		}
 		if cfg.AdminSub.Token == "" {
 			cfg.AdminSub.Token = legacyAdmin.Token
 			changes = append(changes, "migrated legacy admin subscription token")
@@ -425,55 +460,48 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		cfg.AdminSub.Port = cfg.SubPort
 		changes = append(changes, "migrated legacy sub_port to admin_sub.port")
 	}
-	switch cfg.AdminSub.Mode {
-	case AdminSubModeFixed, AdminSubModeIPv6Rotate:
-	default:
-		if cfg.AdminSub.IPv6Rotate.Enabled || cfg.IPv6Pool.Enabled {
-			cfg.AdminSub.Mode = AdminSubModeIPv6Rotate
-		} else {
-			cfg.AdminSub.Mode = AdminSubModeFixed
-		}
-		changes = append(changes, "normalized admin_sub.mode")
+	// In the new schema an endpoint exists when it has a token; systemd owns
+	// whether it serves requests. A deliberately disabled legacy endpoint is
+	// therefore removed rather than accidentally exposed after migration.
+	if cfg.AdminSub.legacyEnabled != nil && !*cfg.AdminSub.legacyEnabled {
+		cfg.AdminSub = AdminSubConfig{}
+		changes = append(changes, "removed disabled legacy admin subscription")
 	}
-	if cfg.AdminSub.Mode == AdminSubModeIPv6Rotate {
-		if cfg.AdminSub.IPv6Rotate.Subnet == "" && cfg.IPv6Pool.Subnet != "" {
-			cfg.AdminSub.IPv6Rotate.Subnet = cfg.IPv6Pool.Subnet
-			changes = append(changes, "migrated legacy ipv6_pool.subnet to admin_sub")
-		}
-		if cfg.AdminSub.IPv6Rotate.Interface == "" && cfg.IPv6Pool.Interface != "" {
-			cfg.AdminSub.IPv6Rotate.Interface = cfg.IPv6Pool.Interface
-			changes = append(changes, "migrated legacy ipv6_pool.interface to admin_sub")
-		}
-		if cfg.AdminSub.IPv6Rotate.MaxAddresses == 0 && cfg.IPv6Pool.MaxAddresses != 0 {
-			cfg.AdminSub.IPv6Rotate.MaxAddresses = cfg.IPv6Pool.MaxAddresses
-			changes = append(changes, "migrated legacy ipv6_pool.max_addresses to admin_sub")
-		}
-		if !cfg.AdminSub.IPv6Rotate.EnableNDP && cfg.IPv6Pool.EnableNDP {
-			cfg.AdminSub.IPv6Rotate.EnableNDP = true
-			changes = append(changes, "migrated legacy ipv6_pool.ndp to admin_sub")
-		}
-		cfg.AdminSub.IPv6Rotate.Enabled = true
+	if cfg.AdminSub.Token != "" && cfg.AdminSub.TargetType == "" {
+		cfg.AdminSub.TargetType = "direct"
+		changes = append(changes, "set missing admin_sub.target_type=direct")
 	}
-	if cfg.AdminSub.Token != "" && !cfg.AdminSub.Enabled {
-		cfg.AdminSub.Enabled = true
-		changes = append(changes, "enabled admin_sub because token is present")
-	}
-	if cfg.AdminSub.Enabled && cfg.AdminSub.Token == "" {
-		cfg.AdminSub.Token = randomHexString(24)
-		changes = append(changes, "generated missing admin_sub token")
-	}
-	if cfg.AdminSub.Enabled && cfg.AdminSub.Port == 0 && cfg.SubPort > 0 {
+	if cfg.AdminSub.Token != "" && cfg.AdminSub.Port == 0 && cfg.SubPort > 0 {
 		cfg.AdminSub.Port = cfg.SubPort
+	}
+	legacyRotate := cfg.AdminSub.legacyMode == "ipv6-rotate" ||
+		(cfg.AdminSub.legacyIPv6Rotate.legacyEnabled != nil && *cfg.AdminSub.legacyIPv6Rotate.legacyEnabled) ||
+		(cfg.IPv6Pool.legacyEnabled != nil && *cfg.IPv6Pool.legacyEnabled)
+	if legacyRotate && cfg.AdminSub.Token != "" && cfg.AdminSub.IPv6Rotation == "" {
+		rotation := cfg.AdminSub.legacyIPv6Rotate
+		if rotation.Subnet == "" {
+			rotation.Subnet = cfg.IPv6Pool.Subnet
+		}
+		if rotation.Interface == "" {
+			rotation.Interface = cfg.IPv6Pool.Interface
+		}
+		if rotation.MaxAddresses == 0 {
+			rotation.MaxAddresses = cfg.IPv6Pool.MaxAddresses
+		}
+		if !rotation.EnableNDP {
+			rotation.EnableNDP = cfg.IPv6Pool.EnableNDP
+		}
+		cfg.IPv6Rotations["default"] = IPv6Config{Subnet: rotation.Subnet, Interface: rotation.Interface, MaxAddresses: rotation.MaxAddresses, EnableNDP: rotation.EnableNDP}
+		cfg.AdminSub.IPv6Rotation = "default"
+		changes = append(changes, "migrated legacy IPv6 rotation to ipv6_rotations.default")
 	}
 	if cfg.AdminSub.Port > 0 && cfg.SubPort != cfg.AdminSub.Port {
 		cfg.SubPort = cfg.AdminSub.Port
 		changes = append(changes, "synced legacy sub_port from admin_sub.port")
 	}
-	legacyRotate := cfg.AdminSub.IPv6Rotate
-	legacyRotate.Enabled = cfg.AdminSub.Mode == AdminSubModeIPv6Rotate
-	if cfg.IPv6Pool != legacyRotate {
-		cfg.IPv6Pool = legacyRotate
-		changes = append(changes, "synced legacy ipv6_pool from admin_sub")
+	if cfg.IPv6Pool.Subnet != "" || cfg.IPv6Pool.Interface != "" || cfg.IPv6Pool.MaxAddresses != 0 || cfg.IPv6Pool.EnableNDP {
+		cfg.IPv6Pool = IPv6Config{}
+		changes = append(changes, "removed migrated legacy ipv6_pool")
 	}
 	if legacyAdminIdx >= 0 {
 		newSubs := make([]Subscription, 0, len(cfg.Subscriptions)-1)

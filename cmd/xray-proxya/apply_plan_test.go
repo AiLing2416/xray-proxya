@@ -30,17 +30,10 @@ func testApplyConfig() *config.UserConfig {
 			RelayAlias: "remote",
 		},
 		AdminSub: config.AdminSubConfig{
-			Enabled:    true,
-			Token:      "admin-token",
-			Port:       8443,
-			Mode:       config.AdminSubModeIPv6Rotate,
-			TargetType: "direct",
-			IPv6Rotate: config.IPv6Config{
-				Enabled:      true,
-				Subnet:       "2001:db8::/64",
-				Interface:    "eth0",
-				MaxAddresses: 6,
-			},
+			Token:        "admin-token",
+			Port:         8443,
+			TargetType:   "direct",
+			IPv6Rotation: "default",
 		},
 		Subscriptions: []config.Subscription{{
 			Alias:       "sub1",
@@ -51,12 +44,11 @@ func testApplyConfig() *config.UserConfig {
 		SubPort:      8443,
 		GuestSubPort: 9443,
 		GuestSubBind: "127.0.0.1",
-		IPv6Pool: config.IPv6Config{
-			Enabled:      true,
+		IPv6Rotations: map[string]config.IPv6Config{"default": {
 			Subnet:       "2001:db8::/64",
 			Interface:    "eth0",
 			MaxAddresses: 6,
-		},
+		}},
 	}
 }
 

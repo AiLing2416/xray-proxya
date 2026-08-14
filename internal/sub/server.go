@@ -72,7 +72,7 @@ func httpAdminSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 			return
 		}
 
-		if admin.Enabled && admin.Token == token {
+		if admin.Token != "" && admin.Token == token {
 			handleAdminSubRequest(w, cfg, admin)
 			return
 		}
@@ -99,11 +99,6 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 	addr := admin.Address
 	if addr == "" {
 		addr = utils.GetSmartIP(false)
-	}
-	if admin.Mode == config.AdminSubModeIPv6Rotate && admin.IPv6Rotate.Subnet != "" && admin.IPv6Rotate.Interface != "" {
-		if rotated, ok := nextRotatedIPv6(admin.IPv6Rotate); ok {
-			addr = rotated
-		}
 	}
 
 	links := generateSubscriptionLinks(cfg, admin.TargetType, admin.TargetAlias, addr)

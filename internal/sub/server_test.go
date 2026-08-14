@@ -107,10 +107,8 @@ func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
 		AdminSub: config.AdminSubConfig{
-			Enabled:    true,
 			Token:      "admintoken",
 			Port:       8443,
-			Mode:       config.AdminSubModeFixed,
 			Address:    "sub.example.com",
 			TargetType: "direct",
 		},

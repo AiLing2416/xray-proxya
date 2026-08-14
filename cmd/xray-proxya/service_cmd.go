@@ -166,7 +166,7 @@ func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string
 	if system {
 		userLine = "User=root\n"
 		wantedBy = "multi-user.target"
-		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\nAmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\n"
+		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Subscription Server (%%i)
@@ -175,7 +175,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-%sExecStartPre=%s sub ensure-instance %%i
+%sExecStartPre=%s sub validate %%i
 ExecStart=%s sub run --instance %%i
 Restart=on-failure
 RestartSec=2
@@ -209,9 +209,9 @@ func serviceInstall() error {
 		}
 	} else if cfg.Role == config.RoleGateway {
 		return fmt.Errorf("gateway role requires a direct-root system service; user services are non-privileged")
-	} else if cfg.AdminSub.Mode == config.AdminSubModeIPv6Rotate {
+	} else if cfg.AdminSub.IPv6Rotation != "" {
 		return fmt.Errorf("IPv6-rotate subscriptions require a direct-root system service")
-	} else if cfg.AdminSub.Enabled && cfg.AdminSub.Port > 0 && cfg.AdminSub.Port <= 1024 {
+	} else if cfg.AdminSub.Token != "" && cfg.AdminSub.Port > 0 && cfg.AdminSub.Port <= 1024 {
 		return fmt.Errorf("subscription ports <= 1024 require a direct-root system service")
 	} else {
 		for _, preset := range cfg.Presets {
@@ -332,19 +332,7 @@ func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete s
 		"xray-proxya-pathd\tPathLink ICMP agent",
 	}
 
-	instanceDir := filepath.Join(config.GetConfigDir(), "subscriptions")
-	entries, err := os.ReadDir(instanceDir)
-	if err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-			instance := strings.TrimSuffix(entry.Name(), ".json")
-			if systemdInstanceName.MatchString(instance) {
-				units = append(units, "xray-proxya-sub@"+instance+"\tsubscription instance")
-			}
-		}
-	}
+	units = append(units, "xray-proxya-sub@default\tsubscription instance")
 	return units, cobra.ShellCompDirectiveNoFileComp
 }
 
@@ -376,6 +364,11 @@ func systemctlWrapper(action string) *cobra.Command {
 					return err
 				}
 			}
+			if strings.HasPrefix(unit, "xray-proxya-sub@") && (action == "start" || action == "restart" || (action == "enable" && now)) {
+				if err := validateSubscriptionServiceStart(unit); err != nil {
+					return err
+				}
+			}
 			arguments := []string{"--no-pager", action}
 			if now {
 				arguments = append(arguments, "--now")
@@ -403,6 +396,23 @@ func validatePathdServiceStart() error {
 	}
 	if err := writePathdConfig(cfg); err != nil {
 		return fmt.Errorf("configure Pathd first with 'path set', then apply: %w", err)
+	}
+	return nil
+}
+
+func validateSubscriptionServiceStart(unit string) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load active subscription configuration: %w", err)
+	}
+	if cfg.Role != config.RoleServer {
+		return fmt.Errorf("%s can run only on a Server", unit)
+	}
+	if cfg.AdminSub.Token == "" || cfg.AdminSub.Port <= 0 {
+		return fmt.Errorf("configure the subscription first with 'sub set', then apply")
+	}
+	if cfg.AdminSub.IPv6Rotation != "" && os.Geteuid() != 0 {
+		return fmt.Errorf("IPv6-rotate subscriptions require a root system service")
 	}
 	return nil
 }

@@ -189,7 +189,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if activeCfg == nil {
 		impact.XrayConfigChanged = true
 		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
-		impact.SubContentChanged = stagingCfg.AdminSub.Enabled || len(stagingCfg.Subscriptions) > 0
+		impact.SubContentChanged = stagingCfg.AdminSub.Token != "" || len(stagingCfg.Subscriptions) > 0
 		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled
 		impact.PathdConfigChanged = stagingCfg.Role == config.RoleServer && stagingCfg.Path.Token != ""
 		impact.ChangedSections = []string{"initial_apply"}
@@ -291,7 +291,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubContentChanged = true
 		mark("subscriptions")
 	}
-	if !reflect.DeepEqual(activeCfg.IPv6Pool, stagingCfg.IPv6Pool) {
+	if !reflect.DeepEqual(activeCfg.IPv6Pool, stagingCfg.IPv6Pool) || !reflect.DeepEqual(activeCfg.IPv6Rotations, stagingCfg.IPv6Rotations) {
 		impact.SubContentChanged = true
 		mark("ipv6_pool")
 	}

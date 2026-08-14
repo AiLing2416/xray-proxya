@@ -1,8 +1,6 @@
 package main
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
@@ -55,7 +53,7 @@ func TestGatewayServiceStartUsesLifecycleRecovery(t *testing.T) {
 func TestBuildSubTemplateUsesInstanceConfiguration(t *testing.T) {
 	content := buildSubTemplateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
 	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya sub ensure-instance %i",
+		"ExecStartPre=/root/.local/bin/xray-proxya sub validate %i",
 		"ExecStart=/root/.local/bin/xray-proxya sub run --instance %i",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
 	} {
@@ -89,19 +87,7 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	}
 }
 
-func TestManagedServiceUnitCompletionIncludesStaticAndSubscriptionInstances(t *testing.T) {
-	tempDir := t.TempDir()
-	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
-	instanceDir := filepath.Join(tempDir, "subscriptions")
-	if err := os.MkdirAll(instanceDir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range []string{"default.json", "client-a.json", "invalid name.json", "README"} {
-		if err := os.WriteFile(filepath.Join(instanceDir, name), nil, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
+func TestManagedServiceUnitCompletionIncludesDefaultSubscription(t *testing.T) {
 	units, directive := completeManagedServiceUnits(nil, nil, "")
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Fatalf("completion directive = %v, want no file completion", directive)
@@ -110,14 +96,10 @@ func TestManagedServiceUnitCompletionIncludesStaticAndSubscriptionInstances(t *t
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
 		"xray-proxya-sub@default\tsubscription instance",
-		"xray-proxya-sub@client-a\tsubscription instance",
 	} {
 		if !containsCompletion(units, want) {
 			t.Fatalf("completion missing %q: %v", want, units)
 		}
-	}
-	if containsCompletion(units, "xray-proxya-sub@invalid name\tsubscription instance") {
-		t.Fatalf("invalid instance appeared in completion: %v", units)
 	}
 }
 
@@ -140,13 +122,12 @@ func TestDirectRootServiceAllowsSudoLoginShellButRejectsDirectSudo(t *testing.T)
 	}
 }
 
-func TestEnsureSubInstanceCreatesIndependentConfiguration(t *testing.T) {
+func TestSubscriptionInstanceReadsActiveConfiguration(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
 		AdminSub: config.AdminSubConfig{
-			Enabled:    true,
 			Token:      "instance-token",
 			Port:       18443,
 			TargetType: "direct",
@@ -156,32 +137,14 @@ func TestEnsureSubInstanceCreatesIndependentConfiguration(t *testing.T) {
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
-	if err := ensureSubInstance(defaultSubInstance); err != nil {
-		t.Fatalf("ensure default instance: %v", err)
-	}
-	if err := ensureSubInstance("mysub"); err != nil {
-		t.Fatalf("ensure named instance: %v", err)
-	}
-	defaultConfig, err := loadSubInstance(defaultSubInstance)
+	defaultConfig, err := subscriptionInstance(defaultSubInstance)
 	if err != nil {
 		t.Fatalf("load default instance: %v", err)
 	}
-	namedConfig, err := loadSubInstance("mysub")
-	if err != nil {
-		t.Fatalf("load named instance: %v", err)
+	if defaultConfig.Port != 18443 {
+		t.Fatalf("port = %d, want 18443", defaultConfig.Port)
 	}
-	if defaultConfig.Port != 18443 || namedConfig.Port == defaultConfig.Port {
-		t.Fatalf("ports = default:%d named:%d, want independent listeners", defaultConfig.Port, namedConfig.Port)
-	}
-	path, err := subInstancePath("mysub")
-	if err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0600 || filepath.Dir(path) != filepath.Join(tempDir, "subscriptions") {
-		t.Fatalf("instance file permissions/path = %o %s", info.Mode().Perm(), path)
+	if _, err := subscriptionInstance("mysub"); err == nil {
+		t.Fatal("unknown instance was accepted")
 	}
 }

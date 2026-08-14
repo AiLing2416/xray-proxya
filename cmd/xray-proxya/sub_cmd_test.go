@@ -18,18 +18,6 @@ func TestEnsureManagedSubscriptionCreatesAdminEntry(t *testing.T) {
 	if subEntry.Token == "" {
 		t.Fatalf("expected generated token")
 	}
-	if !subEntry.Enabled {
-		t.Fatalf("expected admin sub to be enabled")
-	}
-}
-
-func TestCurrentSubMode(t *testing.T) {
-	if got := currentSubMode(&config.UserConfig{}); got != "fixed" {
-		t.Fatalf("mode = %q, want fixed", got)
-	}
-	if got := currentSubMode(&config.UserConfig{AdminSub: config.AdminSubConfig{Mode: config.AdminSubModeIPv6Rotate}}); got != "ipv6-rotate" {
-		t.Fatalf("mode = %q, want ipv6-rotate", got)
-	}
 }
 
 func TestManagedSubURLUsesOverrideAddress(t *testing.T) {
@@ -52,26 +40,6 @@ func TestManagedSubURLHandlesHostWithPort(t *testing.T) {
 	}
 }
 
-func TestDetectOrUseIPv6SettingsUsesOverrides(t *testing.T) {
-	cfg := &config.UserConfig{}
-	err := detectOrUseIPv6Settings(cfg, "eth0", "2001:db8::/64", 9, false)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.AdminSub.IPv6Rotate.Interface != "eth0" {
-		t.Fatalf("interface = %q, want eth0", cfg.AdminSub.IPv6Rotate.Interface)
-	}
-	if cfg.AdminSub.IPv6Rotate.Subnet != "2001:db8::/64" {
-		t.Fatalf("subnet = %q", cfg.AdminSub.IPv6Rotate.Subnet)
-	}
-	if cfg.AdminSub.IPv6Rotate.MaxAddresses != 9 {
-		t.Fatalf("max = %d, want 9", cfg.IPv6Pool.MaxAddresses)
-	}
-	if cfg.AdminSub.IPv6Rotate.EnableNDP {
-		t.Fatalf("ndp = true, want false")
-	}
-}
-
 func TestEnsureSubPortConfiguredKeepsExistingPort(t *testing.T) {
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 9443}}
 	ensureSubPortConfigured(cfg)
@@ -82,7 +50,7 @@ func TestEnsureSubPortConfiguredKeepsExistingPort(t *testing.T) {
 
 func TestManagedSubscriptionReusesExistingEntry(t *testing.T) {
 	cfg := &config.UserConfig{
-		AdminSub: config.AdminSubConfig{Enabled: true, Token: "existing", TargetType: "direct"},
+		AdminSub: config.AdminSubConfig{Token: "existing", TargetType: "direct"},
 	}
 	subEntry := ensureManagedSubscription(cfg)
 	if subEntry.Token != "existing" {
