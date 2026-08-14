@@ -20,6 +20,7 @@ type Impact struct {
 	XrayConfigChanged     bool
 	SubListenerChanged    bool
 	SubContentChanged     bool
+	IPv6RotationChanged   bool
 	GatewayRuntimeChanged bool
 	PathdConfigChanged    bool
 	ChangedSections       []string
@@ -124,6 +125,13 @@ func applyPendingLocked(opts Options) ([]string, error) {
 			return lines, fmt.Errorf("synchronize Pathd configuration: %w", err)
 		}
 		lines = append(lines, "✅ Pathd configuration synchronized.")
+	}
+	if impact.IPv6RotationChanged {
+		if err := RestartIPv6RotateServiceIfInstalled(); err != nil {
+			lines = append(lines, fmt.Sprintf("❌ Error reloading IPv6 rotation service: %v", err))
+		} else {
+			lines = append(lines, "🔄 IPv6 rotation service reloaded if active.")
+		}
 	}
 
 	xrayRestarted := false
@@ -270,14 +278,9 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		}
 	}
 	if !reflect.DeepEqual(activeCfg.AdminSub, stagingCfg.AdminSub) {
-		if activeCfg.AdminSub.Port != stagingCfg.AdminSub.Port {
-			impact.SubListenerChanged = true
-			mark("admin_sub.port")
-		}
-		if activeCfg.AdminSub != stagingCfg.AdminSub {
-			impact.SubContentChanged = true
-			mark("admin_sub")
-		}
+		impact.SubListenerChanged = true
+		impact.SubContentChanged = true
+		mark("admin_sub")
 	}
 	if activeCfg.SubPort != stagingCfg.SubPort {
 		impact.SubListenerChanged = true
@@ -293,6 +296,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	}
 	if !reflect.DeepEqual(activeCfg.IPv6Pool, stagingCfg.IPv6Pool) || !reflect.DeepEqual(activeCfg.IPv6Rotations, stagingCfg.IPv6Rotations) {
 		impact.SubContentChanged = true
+		impact.IPv6RotationChanged = true
 		mark("ipv6_pool")
 	}
 
@@ -434,6 +438,16 @@ func RestartSubServiceIfInstalled() error {
 	return exec.Command("systemctl", args...).Run()
 }
 
+func RestartIPv6RotateServiceIfInstalled() error {
+	if os.Geteuid() != 0 || !fileExists(ipv6RotateServicePath()) {
+		return nil
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return nil
+	}
+	return exec.Command("systemctl", "try-restart", "xray-proxya-ipv6-rotate@default").Run()
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
@@ -444,6 +458,13 @@ func subServicePath() string {
 		return "/etc/systemd/system/xray-proxya-sub@.service"
 	}
 	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub@.service")
+}
+
+func ipv6RotateServicePath() string {
+	if os.Geteuid() == 0 {
+		return "/etc/systemd/system/xray-proxya-ipv6-rotate@.service"
+	}
+	return ""
 }
 
 func guestsAffectXray(activeGuests, stagingGuests []config.GuestConfig) bool {

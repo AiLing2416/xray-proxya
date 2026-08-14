@@ -6,18 +6,14 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/ipv6rotate"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 )
-
-var ipMutex sync.Mutex
 
 func StartSubServer(instance config.SubscriptionServiceConfig) error {
 	if instance.Port <= 0 || instance.Port > 65535 {
@@ -100,6 +96,14 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 	if addr == "" {
 		addr = utils.GetSmartIP(false)
 	}
+	if admin.IPv6Rotation != "" {
+		rotated, err := ipv6rotate.Next(ipv6rotate.SocketPath(admin.IPv6Rotation))
+		if err != nil {
+			http.Error(w, "IPv6 rotation unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		addr = rotated
+	}
 
 	links := generateSubscriptionLinks(cfg, admin.TargetType, admin.TargetAlias, addr)
 	if len(links) == 0 {
@@ -154,44 +158,6 @@ func generateSubscriptionLinks(cfg *config.UserConfig, targetType string, target
 		}
 	}
 	return nil
-}
-
-func nextRotatedIPv6(rotation config.IPv6Config) (string, bool) {
-	newV6, err := utils.GenerateRandomIPv6(rotation.Subnet)
-	if err != nil {
-		return "", false
-	}
-	ipMutex.Lock()
-	defer ipMutex.Unlock()
-
-	maxLimit := rotation.MaxAddresses
-	if maxLimit <= 0 {
-		maxLimit = 6
-	}
-	cachePath := filepath.Join(config.GetConfigDir(), "ipv6_pool.cache")
-	data, _ := os.ReadFile(cachePath)
-	assignedIPs := []string{}
-	if len(data) > 0 {
-		for _, v := range strings.Split(string(data), "\n") {
-			if v != "" {
-				assignedIPs = append(assignedIPs, v)
-			}
-		}
-	}
-	for len(assignedIPs) >= maxLimit && len(assignedIPs) > 0 {
-		oldIP := assignedIPs[0]
-		assignedIPs = assignedIPs[1:]
-		fmt.Printf("♻️  Rotating IPv6: Removing oldest address %s\n", oldIP)
-		utils.RemoveIPv6Addr(oldIP, rotation.Interface)
-	}
-	fmt.Printf("🆕 Assigning new IPv6: %s\n", newV6)
-	utils.SetupIPv6Addr(newV6, rotation.Interface)
-	if rotation.EnableNDP {
-		utils.SetupNDPProxy(newV6, rotation.Interface)
-	}
-	assignedIPs = append(assignedIPs, newV6)
-	os.WriteFile(cachePath, []byte(strings.Join(assignedIPs, "\n")), 0600)
-	return newV6, true
 }
 
 func httpGuestSubHandler() http.HandlerFunc {

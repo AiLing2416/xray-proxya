@@ -152,8 +152,8 @@ func TestBuildApplyImpactAdminSubTokenChange(t *testing.T) {
 	if !impact.SubContentChanged {
 		t.Fatalf("expected admin sub token change to affect sub content")
 	}
-	if impact.SubListenerChanged {
-		t.Fatalf("expected admin sub token change to avoid listener restart")
+	if !impact.SubListenerChanged {
+		t.Fatalf("expected admin sub token change to restart the active service")
 	}
 }
 

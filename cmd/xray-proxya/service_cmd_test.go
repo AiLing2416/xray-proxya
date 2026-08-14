@@ -63,6 +63,20 @@ func TestBuildSubTemplateUsesInstanceConfiguration(t *testing.T) {
 	}
 }
 
+func TestBuildIPv6RotateTemplateIsPrivilegedAndIsolated(t *testing.T) {
+	content := buildIPv6RotateTemplateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin")
+	for _, required := range []string{
+		"ExecStartPre=/root/.local/bin/xray-proxya ipv6-rotate validate %i",
+		"ExecStart=/root/.local/bin/xray-proxya ipv6-rotate run %i",
+		"CapabilityBoundingSet=CAP_NET_ADMIN",
+		"NoNewPrivileges=yes", "ProtectSystem=strict",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("template missing %q:\n%s", required, content)
+		}
+	}
+}
+
 func TestUserUnitDoesNotRequestCapabilities(t *testing.T) {
 	content := buildSystemdServiceContent("/home/ailing/.local/bin/xray-proxya", "/home/ailing/.local/share/xray-proxya", "/home/ailing/.local/share/xray-proxya/bin", "/home/ailing/.config/xray-proxya", "", false, true)
 	if strings.Contains(content, "CapabilityBoundingSet=") || strings.Contains(content, "AmbientCapabilities=") || strings.Contains(content, "User=root") {

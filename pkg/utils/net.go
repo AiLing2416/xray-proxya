@@ -126,19 +126,34 @@ func SetupIPv6Addr(ip string, iface string) error {
 		return nil
 	}
 
-	exec.Command("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.accept_ra=2", iface)).Run()
 	// Use nodad to skip tentative state
-	return exec.Command("sudo", "ip", "-6", "addr", "add", ip+"/128", "dev", iface, "nodad").Run()
+	if out, err := exec.Command("ip", "-6", "addr", "add", ip+"/128", "dev", iface, "nodad").CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func RemoveIPv6Addr(ip string, iface string) error {
 	// Best effort to remove old IP
-	return exec.Command("sudo", "ip", "-6", "addr", "del", ip+"/128", "dev", iface).Run()
+	out, err := exec.Command("ip", "-6", "addr", "del", ip+"/128", "dev", iface).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func SetupNDPProxy(ip, iface string) error {
-	exec.Command("sudo", "sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.proxy_ndp=1", iface)).Run()
-	return exec.Command("sudo", "ip", "-6", "neigh", "add", "proxy", ip, "dev", iface).Run()
+	if out, err := exec.Command("sysctl", "-w", fmt.Sprintf("net.ipv6.conf.%s.proxy_ndp=1", iface)).CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("ip", "-6", "neigh", "add", "proxy", ip, "dev", iface).CombinedOutput(); err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func RemoveNDPProxy(ip, iface string) error {
+	return exec.Command("ip", "-6", "neigh", "del", "proxy", ip, "dev", iface).Run()
 }
 
 func AutoDetectIPv6Subnet() (string, string, error) {

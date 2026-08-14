@@ -49,6 +49,20 @@ func TestSELinuxPolicyAllowsHardenedServiceTransitions(t *testing.T) {
 	}
 }
 
+func TestSELinuxPolicyAllowsSubscriptionRotationSocket(t *testing.T) {
+	if !strings.Contains(proxyaSELinux.PolicySource, "manage_sock_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)") {
+		t.Fatal("policy must permit the private IPv6 rotation Unix socket")
+	}
+}
+
+func TestSELinuxPolicyAllowsIPv6RotationCommands(t *testing.T) {
+	for _, rule := range []string{"sysnet_exec_ifconfig(xray_proxya_t)", "corecmd_exec_bin(xray_proxya_t)"} {
+		if !strings.Contains(proxyaSELinux.PolicySource, rule) {
+			t.Fatalf("policy missing %q", rule)
+		}
+	}
+}
+
 func TestSELinuxPolicyReadsEnforcementModeWithoutGetenforce(t *testing.T) {
 	for _, domain := range []string{"xray_proxya_t", "xray_proxya_gateway_t"} {
 		if !strings.Contains(proxyaSELinux.PolicySource, "selinux_get_enforce_mode("+domain+")") {

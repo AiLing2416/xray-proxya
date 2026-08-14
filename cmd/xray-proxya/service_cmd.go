@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	pathdServiceUnit  = "xray-proxya-pathd.service"
-	subTemplateUnit   = "xray-proxya-sub@.service"
-	rootManagerBinary = "/root/.local/bin/xray-proxya"
+	pathdServiceUnit   = "xray-proxya-pathd.service"
+	subTemplateUnit    = "xray-proxya-sub@.service"
+	rotateTemplateUnit = "xray-proxya-ipv6-rotate@.service"
+	rootManagerBinary  = "/root/.local/bin/xray-proxya"
 )
 
 var systemdInstanceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -194,6 +195,35 @@ WantedBy=%s
 `, userLine, binPath, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
 }
 
+func buildIPv6RotateTemplateServiceContent(binPath, workDir, configDir, assetDir string) string {
+	return fmt.Sprintf(`[Unit]
+Description=Xray-Proxya IPv6 Rotation Service (%%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+ExecStartPre=%s ipv6-rotate validate %%i
+ExecStart=%s ipv6-rotate run %%i
+Restart=on-failure
+RestartSec=2
+WorkingDirectory=%s
+Environment=XRAY_LOCATION_ASSET=%s
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=%s %s
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
+`, binPath, binPath, workDir, assetDir, configDir, assetDir)
+}
+
 func serviceInstall() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return fmt.Errorf("systemd is required for service installation: %w", err)
@@ -258,6 +288,11 @@ func serviceInstall() error {
 	if err := os.WriteFile(managedUnitPath(subTemplateUnit), []byte(buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", subTemplateUnit, err)
 	}
+	if system {
+		if err := os.WriteFile(managedUnitPath(rotateTemplateUnit), []byte(buildIPv6RotateTemplateServiceContent(binPath, workDir, configDir, assetDir)), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rotateTemplateUnit, err)
+		}
+	}
 	if pathdContent != "" {
 		if err := os.WriteFile(managedUnitPath(pathdServiceUnit), []byte(pathdContent), 0644); err != nil {
 			return fmt.Errorf("write %s: %w", pathdServiceUnit, err)
@@ -273,7 +308,7 @@ func activeManagedUnits() ([]string, error) {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil, fmt.Errorf("systemctl is required: %w", err)
 	}
-	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, "xray-proxya-sub@*.service")
+	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, "xray-proxya-sub@*.service", "xray-proxya-ipv6-rotate@*.service")
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
@@ -301,7 +336,7 @@ func serviceUninstall() error {
 	if len(active) > 0 {
 		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
 	}
-	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subTemplateUnit} {
+	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subTemplateUnit, rotateTemplateUnit} {
 		if err := os.Remove(managedUnitPath(unit)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", unit, err)
 		}
@@ -323,13 +358,20 @@ func normalizedManagedUnit(input string) (string, error) {
 			return "xray-proxya-sub@" + instance + ".service", nil
 		}
 	}
-	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, or xray-proxya-sub@<instance>")
+	if strings.HasPrefix(name, "xray-proxya-ipv6-rotate@") {
+		instance := strings.TrimPrefix(name, "xray-proxya-ipv6-rotate@")
+		if systemdInstanceName.MatchString(instance) {
+			return "xray-proxya-ipv6-rotate@" + instance + ".service", nil
+		}
+	}
+	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, xray-proxya-sub@<instance>, or xray-proxya-ipv6-rotate@<instance>")
 }
 
 func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	units := []string{
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
+		"xray-proxya-ipv6-rotate@default\tIPv6 rotation instance",
 	}
 
 	units = append(units, "xray-proxya-sub@default\tsubscription instance")
@@ -366,6 +408,11 @@ func systemctlWrapper(action string) *cobra.Command {
 			}
 			if strings.HasPrefix(unit, "xray-proxya-sub@") && (action == "start" || action == "restart" || (action == "enable" && now)) {
 				if err := validateSubscriptionServiceStart(unit); err != nil {
+					return err
+				}
+			}
+			if strings.HasPrefix(unit, "xray-proxya-ipv6-rotate@") && (action == "start" || action == "restart" || (action == "enable" && now)) {
+				if err := validateIPv6RotateServiceStart(unit); err != nil {
 					return err
 				}
 			}
@@ -413,6 +460,28 @@ func validateSubscriptionServiceStart(unit string) error {
 	}
 	if cfg.AdminSub.IPv6Rotation != "" && os.Geteuid() != 0 {
 		return fmt.Errorf("IPv6-rotate subscriptions require a root system service")
+	}
+	return nil
+}
+
+func validateIPv6RotateServiceStart(unit string) error {
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("%s requires a root system service", unit)
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load active IPv6 rotation configuration: %w", err)
+	}
+	if cfg.Role != config.RoleServer {
+		return fmt.Errorf("%s can run only on a Server", unit)
+	}
+	instance := strings.TrimSuffix(strings.TrimPrefix(unit, "xray-proxya-ipv6-rotate@"), ".service")
+	rotation, ok := cfg.IPv6Rotations[instance]
+	if !ok {
+		return fmt.Errorf("configure IPv6 rotation %q first with 'ipv6-rotate set', then apply", instance)
+	}
+	if rotation.Interface == "" || rotation.Subnet == "" {
+		return fmt.Errorf("IPv6 rotation %q is incomplete", instance)
 	}
 	return nil
 }

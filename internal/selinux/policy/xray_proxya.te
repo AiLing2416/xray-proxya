@@ -53,6 +53,7 @@ allow xray_proxya_t gconf_home_t:dir search;
 manage_dirs_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 manage_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 manage_lnk_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
+manage_sock_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 
 manage_dirs_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
 manage_files_pattern(xray_proxya_t, xray_proxya_data_t, xray_proxya_data_t)
@@ -114,6 +115,8 @@ corenet_udp_sendrecv_all_nodes(xray_proxya_t)
 allow xray_proxya_t self:tcp_socket create_stream_socket_perms;
 allow xray_proxya_t self:udp_socket create_socket_perms;
 allow xray_proxya_t self:unix_stream_socket create_stream_socket_perms;
+sysnet_exec_ifconfig(xray_proxya_t)
+corecmd_exec_bin(xray_proxya_t)
 
 ########################################
 # Gateway mode.  This domain is only assigned to the root system service;
