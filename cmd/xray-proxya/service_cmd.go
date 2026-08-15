@@ -17,10 +17,10 @@ import (
 )
 
 const (
-	pathdServiceUnit   = "xray-proxya-pathd.service"
-	subTemplateUnit    = "xray-proxya-sub@.service"
-	rotateTemplateUnit = "xray-proxya-ipv6-rotate@.service"
-	rootManagerBinary  = "/root/.local/bin/xray-proxya"
+	pathdServiceUnit  = "xray-proxya-pathd.service"
+	subServiceUnit    = "xray-proxya-sub.service"
+	rotateServiceUnit = "xray-proxya-ipv6-rotate.service"
+	rootManagerBinary = "/root/.local/bin/xray-proxya"
 )
 
 var systemdInstanceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
@@ -160,7 +160,7 @@ WantedBy=%s
 `, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, assetDir, capabilityLines, wantedBy)
 }
 
-func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string, system bool) string {
+func buildSubServiceContent(binPath, workDir, configDir, assetDir string, system bool) string {
 	userLine := ""
 	wantedBy := "default.target"
 	capabilityLines := ""
@@ -170,14 +170,14 @@ func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string
 		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"
 	}
 	return fmt.Sprintf(`[Unit]
-Description=Xray-Proxya Subscription Server (%%i)
+Description=Xray-Proxya Subscription Server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-%sExecStartPre=%s sub validate %%i
-ExecStart=%s sub run --instance %%i
+%sExecStartPre=%s sub validate
+ExecStart=%s sub run
 Restart=on-failure
 RestartSec=2
 WorkingDirectory=%s
@@ -195,17 +195,17 @@ WantedBy=%s
 `, userLine, binPath, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
 }
 
-func buildIPv6RotateTemplateServiceContent(binPath, workDir, configDir, assetDir string) string {
+func buildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir string) string {
 	return fmt.Sprintf(`[Unit]
-Description=Xray-Proxya IPv6 Rotation Service (%%i)
+Description=Xray-Proxya IPv6 Rotation Service
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 User=root
-ExecStartPre=%s ipv6-rotate validate %%i
-ExecStart=%s ipv6-rotate run %%i
+ExecStartPre=%s ipv6-rotate validate
+ExecStart=%s ipv6-rotate run
 Restart=on-failure
 RestartSec=2
 WorkingDirectory=%s
@@ -285,12 +285,12 @@ func serviceInstall() error {
 	if err := os.WriteFile(managedUnitPath(xray.MainServiceUnit), []byte(buildSystemdServiceContent(binPath, workDir, assetDir, configDir, mainUnitCapabilities(cfg), system, privateDevices)), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", xray.MainServiceUnit, err)
 	}
-	if err := os.WriteFile(managedUnitPath(subTemplateUnit), []byte(buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
-		return fmt.Errorf("write %s: %w", subTemplateUnit, err)
+	if err := os.WriteFile(managedUnitPath(subServiceUnit), []byte(buildSubServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", subServiceUnit, err)
 	}
 	if system {
-		if err := os.WriteFile(managedUnitPath(rotateTemplateUnit), []byte(buildIPv6RotateTemplateServiceContent(binPath, workDir, configDir, assetDir)), 0644); err != nil {
-			return fmt.Errorf("write %s: %w", rotateTemplateUnit, err)
+		if err := os.WriteFile(managedUnitPath(rotateServiceUnit), []byte(buildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir)), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", rotateServiceUnit, err)
 		}
 	}
 	if pathdContent != "" {
@@ -308,7 +308,7 @@ func activeManagedUnits() ([]string, error) {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil, fmt.Errorf("systemctl is required: %w", err)
 	}
-	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, "xray-proxya-sub@*.service", "xray-proxya-ipv6-rotate@*.service")
+	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, subServiceUnit, rotateServiceUnit)
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
@@ -336,7 +336,7 @@ func serviceUninstall() error {
 	if len(active) > 0 {
 		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
 	}
-	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subTemplateUnit, rotateTemplateUnit} {
+	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subServiceUnit, rotateServiceUnit} {
 		if err := os.Remove(managedUnitPath(unit)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", unit, err)
 		}
@@ -352,29 +352,22 @@ func normalizedManagedUnit(input string) (string, error) {
 		return pathdServiceUnit, nil
 	}
 	name := strings.TrimSuffix(input, ".service")
-	if strings.HasPrefix(name, "xray-proxya-sub@") {
-		instance := strings.TrimPrefix(name, "xray-proxya-sub@")
-		if systemdInstanceName.MatchString(instance) {
-			return "xray-proxya-sub@" + instance + ".service", nil
-		}
+	if name == "xray-proxya-sub" || strings.HasPrefix(name, "xray-proxya-sub@") {
+		return subServiceUnit, nil
 	}
-	if strings.HasPrefix(name, "xray-proxya-ipv6-rotate@") {
-		instance := strings.TrimPrefix(name, "xray-proxya-ipv6-rotate@")
-		if systemdInstanceName.MatchString(instance) {
-			return "xray-proxya-ipv6-rotate@" + instance + ".service", nil
-		}
+	if name == "xray-proxya-ipv6-rotate" || strings.HasPrefix(name, "xray-proxya-ipv6-rotate@") {
+		return rotateServiceUnit, nil
 	}
-	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, xray-proxya-sub@<instance>, or xray-proxya-ipv6-rotate@<instance>")
+	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, xray-proxya-sub, or xray-proxya-ipv6-rotate")
 }
 
 func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	units := []string{
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
-		"xray-proxya-ipv6-rotate@default\tIPv6 rotation instance",
+		"xray-proxya-sub\tsubscription service",
+		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
 	}
-
-	units = append(units, "xray-proxya-sub@default\tsubscription instance")
 	return units, cobra.ShellCompDirectiveNoFileComp
 }
 
@@ -406,13 +399,13 @@ func systemctlWrapper(action string) *cobra.Command {
 					return err
 				}
 			}
-			if strings.HasPrefix(unit, "xray-proxya-sub@") && (action == "start" || action == "restart" || (action == "enable" && now)) {
-				if err := validateSubscriptionServiceStart(unit); err != nil {
+			if unit == subServiceUnit && (action == "start" || action == "restart" || (action == "enable" && now)) {
+				if err := validateSubscriptionServiceStart(); err != nil {
 					return err
 				}
 			}
-			if strings.HasPrefix(unit, "xray-proxya-ipv6-rotate@") && (action == "start" || action == "restart" || (action == "enable" && now)) {
-				if err := validateIPv6RotateServiceStart(unit); err != nil {
+			if unit == rotateServiceUnit && (action == "start" || action == "restart" || (action == "enable" && now)) {
+				if err := validateIPv6RotateServiceStart(); err != nil {
 					return err
 				}
 			}
@@ -447,13 +440,13 @@ func validatePathdServiceStart() error {
 	return nil
 }
 
-func validateSubscriptionServiceStart(unit string) error {
+func validateSubscriptionServiceStart() error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load active subscription configuration: %w", err)
 	}
 	if cfg.Role != config.RoleServer {
-		return fmt.Errorf("%s can run only on a Server", unit)
+		return fmt.Errorf("xray-proxya-sub can run only on a Server")
 	}
 	if cfg.AdminSub.Token == "" || cfg.AdminSub.Port <= 0 {
 		return fmt.Errorf("configure the subscription first with 'sub set', then apply")
@@ -464,24 +457,23 @@ func validateSubscriptionServiceStart(unit string) error {
 	return nil
 }
 
-func validateIPv6RotateServiceStart(unit string) error {
+func validateIPv6RotateServiceStart() error {
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("%s requires a root system service", unit)
+		return fmt.Errorf("xray-proxya-ipv6-rotate requires a root system service")
 	}
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("load active IPv6 rotation configuration: %w", err)
 	}
 	if cfg.Role != config.RoleServer {
-		return fmt.Errorf("%s can run only on a Server", unit)
+		return fmt.Errorf("xray-proxya-ipv6-rotate can run only on a Server")
 	}
-	instance := strings.TrimSuffix(strings.TrimPrefix(unit, "xray-proxya-ipv6-rotate@"), ".service")
-	rotation, ok := cfg.IPv6Rotations[instance]
-	if !ok {
-		return fmt.Errorf("configure IPv6 rotation %q first with 'ipv6-rotate set', then apply", instance)
+	rotation := cfg.IPv6Rotation
+	if rotation.Subnet == "" && cfg.IPv6Rotations != nil {
+		rotation = cfg.IPv6Rotations["default"]
 	}
 	if rotation.Interface == "" || rotation.Subnet == "" {
-		return fmt.Errorf("IPv6 rotation %q is incomplete", instance)
+		return fmt.Errorf("IPv6 rotation is not configured; use 'ipv6-rotate set', then apply")
 	}
 	return nil
 }

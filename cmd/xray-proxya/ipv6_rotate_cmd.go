@@ -10,7 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var rotateInstance, rotateInterface, rotateSubnet string
+var rotateInterface, rotateSubnet string
 var rotateMax int
 var rotateNDP bool
 
@@ -26,15 +26,17 @@ func requireRootRotation(cfg *config.UserConfig) error {
 	return nil
 }
 
-func rotationFor(cfg *config.UserConfig, instance string) (config.IPv6Config, error) {
-	if cfg == nil || cfg.IPv6Rotations == nil {
-		return config.IPv6Config{}, fmt.Errorf("IPv6 rotation %q is not configured", instance)
+func getActiveRotation(cfg *config.UserConfig) (config.IPv6Config, error) {
+	if cfg == nil {
+		return config.IPv6Config{}, fmt.Errorf("IPv6 rotation is not configured")
 	}
-	rotation, ok := cfg.IPv6Rotations[instance]
-	if !ok {
-		return config.IPv6Config{}, fmt.Errorf("IPv6 rotation %q is not configured", instance)
+	if cfg.IPv6Rotation.Subnet != "" {
+		return cfg.IPv6Rotation, nil
 	}
-	return rotation, nil
+	if cfg.IPv6Rotations != nil && cfg.IPv6Rotations["default"].Subnet != "" {
+		return cfg.IPv6Rotations["default"], nil
+	}
+	return config.IPv6Config{}, fmt.Errorf("IPv6 rotation is not configured; use 'ipv6-rotate set', then apply")
 }
 
 var ipv6RotateSetCmd = &cobra.Command{Use: "set", Short: "Set IPv6 rotation parameters in STAGING", RunE: func(cmd *cobra.Command, args []string) error {
@@ -45,13 +47,10 @@ var ipv6RotateSetCmd = &cobra.Command{Use: "set", Short: "Set IPv6 rotation para
 	if err := requireRootRotation(cfg); err != nil {
 		return err
 	}
-	if rotateInstance == "" {
-		rotateInstance = defaultSubInstance
+	rotation := cfg.IPv6Rotation
+	if rotation.Subnet == "" && cfg.IPv6Rotations != nil {
+		rotation = cfg.IPv6Rotations["default"]
 	}
-	if rotateInstance != defaultSubInstance {
-		return fmt.Errorf("IPv6 rotation instance %q is not supported", rotateInstance)
-	}
-	rotation := cfg.IPv6Rotations[rotateInstance]
 	if cmd.Flags().Changed("interface") {
 		rotation.Interface = strings.TrimSpace(rotateInterface)
 	}
@@ -85,14 +84,15 @@ var ipv6RotateSetCmd = &cobra.Command{Use: "set", Short: "Set IPv6 rotation para
 	if err := ipv6rotate.Validate(rotation); err != nil {
 		return err
 	}
+	cfg.IPv6Rotation = rotation
 	if cfg.IPv6Rotations == nil {
 		cfg.IPv6Rotations = map[string]config.IPv6Config{}
 	}
-	cfg.IPv6Rotations[rotateInstance] = rotation
+	cfg.IPv6Rotations["default"] = rotation
 	if err := cfg.SaveEx(true); err != nil {
 		return err
 	}
-	fmt.Println("✅ IPv6 rotation configuration updated in STAGING. Run 'apply', then enable xray-proxya-ipv6-rotate@default.")
+	fmt.Println("✅ IPv6 rotation configuration updated in STAGING. Run 'apply', then enable xray-proxya-ipv6-rotate.")
 	return nil
 }}
 
@@ -101,19 +101,15 @@ var ipv6RotateShowCmd = &cobra.Command{Use: "show", Short: "Show IPv6 rotation c
 	if err != nil {
 		return err
 	}
-	instance := rotateInstance
-	if instance == "" {
-		instance = defaultSubInstance
-	}
-	rotation, err := rotationFor(cfg, instance)
+	rotation, err := getActiveRotation(cfg)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Instance: %s\nInterface: %s\nSubnet: %s\nMax addresses: %d\nNDP: %t\n", instance, rotation.Interface, rotation.Subnet, rotation.MaxAddresses, rotation.EnableNDP)
+	fmt.Printf("Interface: %s\nSubnet: %s\nMax addresses: %d\nNDP: %t\n", rotation.Interface, rotation.Subnet, rotation.MaxAddresses, rotation.EnableNDP)
 	return nil
 }}
 
-var ipv6RotateRunCmd = &cobra.Command{Use: "run <instance>", Hidden: true, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+var ipv6RotateRunCmd = &cobra.Command{Use: "run", Hidden: true, RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return err
@@ -121,13 +117,14 @@ var ipv6RotateRunCmd = &cobra.Command{Use: "run <instance>", Hidden: true, Args:
 	if err := requireRootRotation(cfg); err != nil {
 		return err
 	}
-	rotation, err := rotationFor(cfg, args[0])
+	rotation, err := getActiveRotation(cfg)
 	if err != nil {
 		return err
 	}
-	return ipv6rotate.Serve(args[0], rotation)
+	return ipv6rotate.Serve("default", rotation)
 }}
-var ipv6RotateValidateCmd = &cobra.Command{Use: "validate <instance>", Hidden: true, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+
+var ipv6RotateValidateCmd = &cobra.Command{Use: "validate", Hidden: true, RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return err
@@ -135,21 +132,39 @@ var ipv6RotateValidateCmd = &cobra.Command{Use: "validate <instance>", Hidden: t
 	if err := requireRootRotation(cfg); err != nil {
 		return err
 	}
-	rotation, err := rotationFor(cfg, args[0])
+	rotation, err := getActiveRotation(cfg)
 	if err != nil {
 		return err
 	}
 	return ipv6rotate.Validate(rotation)
 }}
 
+var ipv6RotateClearCmd = &cobra.Command{Use: "clear", Short: "Clear IPv6 rotation configuration in STAGING", RunE: func(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return err
+	}
+	if err := requireRootRotation(cfg); err != nil {
+		return err
+	}
+	cfg.IPv6Rotation = config.IPv6Config{}
+	cfg.IPv6Rotations = nil
+	if cfg.AdminSub.IPv6Rotation != "" {
+		cfg.AdminSub.IPv6Rotation = ""
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		return err
+	}
+	fmt.Println("✅ IPv6 rotation configuration cleared in STAGING. Run 'apply' to commit.")
+	return nil
+}}
+
 func init() {
-	ipv6RotateSetCmd.Flags().StringVar(&rotateInstance, "instance", defaultSubInstance, "rotation instance")
 	ipv6RotateSetCmd.Flags().StringVarP(&rotateInterface, "interface", "i", "", "network interface")
 	ipv6RotateSetCmd.Flags().StringVarP(&rotateSubnet, "subnet", "s", "", "IPv6 subnet")
 	ipv6RotateSetCmd.Flags().IntVarP(&rotateMax, "max-addresses", "m", 0, "maximum active addresses")
 	ipv6RotateSetCmd.Flags().BoolVar(&rotateNDP, "ndp", true, "configure NDP proxy")
 	ipv6RotateSetCmd.RegisterFlagCompletionFunc("interface", completeNetworkInterfaces)
-	ipv6RotateShowCmd.Flags().StringVar(&rotateInstance, "instance", defaultSubInstance, "rotation instance")
-	ipv6RotateCmd.AddCommand(ipv6RotateSetCmd, ipv6RotateShowCmd, ipv6RotateRunCmd, ipv6RotateValidateCmd)
+	ipv6RotateCmd.AddCommand(ipv6RotateSetCmd, ipv6RotateShowCmd, ipv6RotateRunCmd, ipv6RotateValidateCmd, ipv6RotateClearCmd)
 	rootCmd.AddCommand(ipv6RotateCmd)
 }

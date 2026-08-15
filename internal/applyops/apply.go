@@ -422,16 +422,13 @@ func HasSubServiceInstalled() bool {
 }
 
 func RestartSubServiceIfInstalled() error {
-	if os.Geteuid() != 0 {
-		return nil
-	}
 	if !HasSubServiceInstalled() {
 		return nil
 	}
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
 	}
-	args := []string{"try-restart", "xray-proxya-sub@default"}
+	args := []string{"try-restart", "xray-proxya-sub.service"}
 	if os.Geteuid() != 0 {
 		args = append([]string{"--user"}, args...)
 	}
@@ -445,7 +442,7 @@ func RestartIPv6RotateServiceIfInstalled() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
 	}
-	return exec.Command("systemctl", "try-restart", "xray-proxya-ipv6-rotate@default").Run()
+	return exec.Command("systemctl", "try-restart", "xray-proxya-ipv6-rotate.service").Run()
 }
 
 func fileExists(path string) bool {
@@ -455,14 +452,14 @@ func fileExists(path string) bool {
 
 func subServicePath() string {
 	if os.Geteuid() == 0 {
-		return "/etc/systemd/system/xray-proxya-sub@.service"
+		return "/etc/systemd/system/xray-proxya-sub.service"
 	}
-	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub@.service")
+	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub.service")
 }
 
 func ipv6RotateServicePath() string {
 	if os.Geteuid() == 0 {
-		return "/etc/systemd/system/xray-proxya-ipv6-rotate@.service"
+		return "/etc/systemd/system/xray-proxya-ipv6-rotate.service"
 	}
 	return ""
 }

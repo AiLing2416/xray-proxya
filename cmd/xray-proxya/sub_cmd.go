@@ -181,12 +181,9 @@ func reconcileSubscriptions(cfg *config.UserConfig) bool {
 	return changed
 }
 
-// subscriptionInstance reads the active config every time a unit starts.  It
+// subscriptionInstance reads the active config every time a unit starts. It
 // replaces the former generated JSON snapshot, which could become stale.
-func subscriptionInstance(name string) (config.SubscriptionServiceConfig, error) {
-	if name != defaultSubInstance {
-		return config.SubscriptionServiceConfig{}, fmt.Errorf("subscription instance %q is not configured", name)
-	}
+func subscriptionInstance(name ...string) (config.SubscriptionServiceConfig, error) {
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return config.SubscriptionServiceConfig{}, fmt.Errorf("load active configuration: %w", err)
@@ -208,7 +205,7 @@ func subscriptionInstance(name string) (config.SubscriptionServiceConfig, error)
 	return config.SubscriptionServiceConfig{Listen: listen, Port: cfg.AdminSub.Port, GuestBind: guestBind, GuestPort: cfg.GuestSubPort, AdminSub: cfg.AdminSub}, nil
 }
 
-func validateSubInstance(name string) error { _, err := subscriptionInstance(name); return err }
+func validateSubInstance(name ...string) error { _, err := subscriptionInstance(name...); return err }
 
 var subSetCmd = &cobra.Command{Use: "set", Short: "Set default subscription parameters in STAGING", RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
@@ -347,7 +344,7 @@ var subResetCmd = &cobra.Command{Use: "reset", Short: "Rotate subscription token
 }}
 
 var subRunCmd = &cobra.Command{Use: "run", Hidden: true, RunE: func(cmd *cobra.Command, args []string) error {
-	instance, err := subscriptionInstance(subInstance)
+	instance, err := subscriptionInstance()
 	if err != nil {
 		return err
 	}
@@ -356,7 +353,7 @@ var subRunCmd = &cobra.Command{Use: "run", Hidden: true, RunE: func(cmd *cobra.C
 	}
 	return sub.StartSubServer(instance)
 }}
-var subValidateCmd = &cobra.Command{Use: "validate <instance>", Hidden: true, Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error { return validateSubInstance(args[0]) }}
+var subValidateCmd = &cobra.Command{Use: "validate", Hidden: true, RunE: func(cmd *cobra.Command, args []string) error { return validateSubInstance() }}
 
 func init() {
 	subSetCmd.Flags().StringVarP(&subListen, "listen", "l", "", "Loopback listener address")
@@ -365,14 +362,12 @@ func init() {
 	subSetCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTP port")
 	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "direct, outbound, or guest")
 	subSetCmd.Flags().StringVar(&subTargetAlias, "target", "", "Target alias for outbound or guest")
-	subSetCmd.Flags().StringVar(&subRotation, "ipv6-rotation", "", "IPv6 rotation instance, or none")
+	subSetCmd.Flags().StringVar(&subRotation, "ipv6-rotation", "", "IPv6 rotation, or none")
 	subSetCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
 	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Show guest subscription URL(s)")
 	subShowCmd.Flags().StringVarP(&subShowRelay, "relay", "r", "", "Show relay subscription URL(s)")
 	subResetCmd.Flags().StringVarP(&subResetGuest, "guest", "g", "", "Reset guest token(s)")
 	subResetCmd.Flags().StringVarP(&subResetRelay, "relay", "r", "", "Reset relay token(s)")
-	subRunCmd.Flags().StringVar(&subInstance, "instance", defaultSubInstance, "subscription instance")
-	subRunCmd.RegisterFlagCompletionFunc("instance", completeSubscriptionInstances)
 	subCmd.AddCommand(subSetCmd, subShowCmd, subResetCmd, subRunCmd, subValidateCmd)
 	rootCmd.AddCommand(subCmd)
 }

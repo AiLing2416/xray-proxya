@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -99,6 +100,7 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 	if admin.IPv6Rotation != "" {
 		rotated, err := ipv6rotate.Next(ipv6rotate.SocketPath(admin.IPv6Rotation))
 		if err != nil {
+			log.Printf("IPv6 rotation error: %v", err)
 			http.Error(w, "IPv6 rotation unavailable", http.StatusServiceUnavailable)
 			return
 		}

@@ -29,11 +29,19 @@ type state struct {
 
 var mutex sync.Mutex
 
-func SocketPath(instance string) string {
-	return filepath.Join(config.GetConfigDir(), "ipv6-rotate", instance+".sock")
+func SocketPath(instance ...string) string {
+	inst := "default"
+	if len(instance) > 0 && instance[0] != "" {
+		inst = instance[0]
+	}
+	return filepath.Join(config.GetConfigDir(), "ipv6-rotate", inst+".sock")
 }
-func statePath(instance string) string {
-	return filepath.Join(config.GetConfigDir(), "ipv6-rotate", instance+".json")
+func statePath(instance ...string) string {
+	inst := "default"
+	if len(instance) > 0 && instance[0] != "" {
+		inst = instance[0]
+	}
+	return filepath.Join(config.GetConfigDir(), "ipv6-rotate", inst+".json")
 }
 
 func Validate(rotation config.IPv6Config) error {

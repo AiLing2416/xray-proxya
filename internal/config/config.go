@@ -49,9 +49,10 @@ type UserConfig struct {
 	// them (CustomOutbound.Path).
 	Path     PathConfig     `json:"path,omitempty"`
 	AdminSub AdminSubConfig `json:"admin_sub,omitempty"`
-	// IPv6Rotations contains the privileged address allocators used by
-	// subscription instances.  A subscription selects one by name; lifecycle
-	// belongs to the matching systemd unit, never to this configuration.
+	// IPv6Rotation contains the privileged address allocator used by
+	// subscription services.
+	IPv6Rotation IPv6Config `json:"ipv6_rotation,omitempty"`
+	// IPv6Rotations is preserved for backwards compatibility with multi-instance schema.
 	IPv6Rotations map[string]IPv6Config `json:"ipv6_rotations,omitempty"`
 	Subscriptions []Subscription        `json:"subscriptions"`
 	SubPort       int                   `json:"sub_port"`
@@ -492,9 +493,19 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		if !rotation.EnableNDP {
 			rotation.EnableNDP = cfg.IPv6Pool.EnableNDP
 		}
-		cfg.IPv6Rotations["default"] = IPv6Config{Subnet: rotation.Subnet, Interface: rotation.Interface, MaxAddresses: rotation.MaxAddresses, EnableNDP: rotation.EnableNDP}
+		cfg.IPv6Rotation = IPv6Config{Subnet: rotation.Subnet, Interface: rotation.Interface, MaxAddresses: rotation.MaxAddresses, EnableNDP: rotation.EnableNDP}
+		cfg.IPv6Rotations["default"] = cfg.IPv6Rotation
 		cfg.AdminSub.IPv6Rotation = "default"
-		changes = append(changes, "migrated legacy IPv6 rotation to ipv6_rotations.default")
+		changes = append(changes, "migrated legacy IPv6 rotation to ipv6_rotation")
+	}
+	if cfg.IPv6Rotation.Subnet == "" && cfg.IPv6Rotations != nil && cfg.IPv6Rotations["default"].Subnet != "" {
+		cfg.IPv6Rotation = cfg.IPv6Rotations["default"]
+	}
+	if cfg.IPv6Rotation.Subnet != "" {
+		if cfg.IPv6Rotations == nil {
+			cfg.IPv6Rotations = make(map[string]IPv6Config)
+		}
+		cfg.IPv6Rotations["default"] = cfg.IPv6Rotation
 	}
 	if cfg.AdminSub.Port > 0 && cfg.SubPort != cfg.AdminSub.Port {
 		cfg.SubPort = cfg.AdminSub.Port

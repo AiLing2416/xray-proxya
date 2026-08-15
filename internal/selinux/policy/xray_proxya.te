@@ -114,7 +114,7 @@ corenet_udp_bind_all_nodes(xray_proxya_t)
 corenet_udp_sendrecv_all_nodes(xray_proxya_t)
 allow xray_proxya_t self:tcp_socket create_stream_socket_perms;
 allow xray_proxya_t self:udp_socket create_socket_perms;
-allow xray_proxya_t self:unix_stream_socket create_stream_socket_perms;
+allow xray_proxya_t self:unix_stream_socket { create_stream_socket_perms connectto };
 sysnet_exec_ifconfig(xray_proxya_t)
 corecmd_exec_bin(xray_proxya_t)
 

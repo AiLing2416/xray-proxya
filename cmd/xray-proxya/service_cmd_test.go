@@ -50,29 +50,29 @@ func TestGatewayServiceStartUsesLifecycleRecovery(t *testing.T) {
 	}
 }
 
-func TestBuildSubTemplateUsesInstanceConfiguration(t *testing.T) {
-	content := buildSubTemplateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
+func TestBuildSubServiceUsesConfiguration(t *testing.T) {
+	content := buildSubServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
 	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya sub validate %i",
-		"ExecStart=/root/.local/bin/xray-proxya sub run --instance %i",
+		"ExecStartPre=/root/.local/bin/xray-proxya sub validate",
+		"ExecStart=/root/.local/bin/xray-proxya sub run",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
 	} {
 		if !strings.Contains(content, required) {
-			t.Fatalf("template missing %q:\n%s", required, content)
+			t.Fatalf("sub service missing %q:\n%s", required, content)
 		}
 	}
 }
 
-func TestBuildIPv6RotateTemplateIsPrivilegedAndIsolated(t *testing.T) {
-	content := buildIPv6RotateTemplateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin")
+func TestBuildIPv6RotateServiceIsPrivilegedAndIsolated(t *testing.T) {
+	content := buildIPv6RotateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin")
 	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya ipv6-rotate validate %i",
-		"ExecStart=/root/.local/bin/xray-proxya ipv6-rotate run %i",
+		"ExecStartPre=/root/.local/bin/xray-proxya ipv6-rotate validate",
+		"ExecStart=/root/.local/bin/xray-proxya ipv6-rotate run",
 		"CapabilityBoundingSet=CAP_NET_ADMIN",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
 	} {
 		if !strings.Contains(content, required) {
-			t.Fatalf("template missing %q:\n%s", required, content)
+			t.Fatalf("rotate service missing %q:\n%s", required, content)
 		}
 	}
 }
@@ -95,9 +95,13 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	if _, err := normalizedManagedUnit("ssh.service"); err == nil {
 		t.Fatal("foreign unit was accepted")
 	}
-	unit, err := normalizedManagedUnit("xray-proxya-sub@mysub")
-	if err != nil || unit != "xray-proxya-sub@mysub.service" {
-		t.Fatalf("template unit = %q, %v", unit, err)
+	unit, err := normalizedManagedUnit("xray-proxya-sub")
+	if err != nil || unit != "xray-proxya-sub.service" {
+		t.Fatalf("sub unit = %q, %v", unit, err)
+	}
+	unit, err = normalizedManagedUnit("xray-proxya-ipv6-rotate")
+	if err != nil || unit != "xray-proxya-ipv6-rotate.service" {
+		t.Fatalf("rotate unit = %q, %v", unit, err)
 	}
 }
 
@@ -109,7 +113,8 @@ func TestManagedServiceUnitCompletionIncludesDefaultSubscription(t *testing.T) {
 	for _, want := range []string{
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
-		"xray-proxya-sub@default\tsubscription instance",
+		"xray-proxya-sub\tsubscription service",
+		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
 	} {
 		if !containsCompletion(units, want) {
 			t.Fatalf("completion missing %q: %v", want, units)
@@ -151,14 +156,11 @@ func TestSubscriptionInstanceReadsActiveConfiguration(t *testing.T) {
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
-	defaultConfig, err := subscriptionInstance(defaultSubInstance)
+	defaultConfig, err := subscriptionInstance()
 	if err != nil {
-		t.Fatalf("load default instance: %v", err)
+		t.Fatalf("load subscription instance: %v", err)
 	}
 	if defaultConfig.Port != 18443 {
 		t.Fatalf("port = %d, want 18443", defaultConfig.Port)
-	}
-	if _, err := subscriptionInstance("mysub"); err == nil {
-		t.Fatal("unknown instance was accepted")
 	}
 }
