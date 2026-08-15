@@ -1,6 +1,7 @@
 package presets
 
 import (
+	"net"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -25,6 +26,7 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			mode.Settings.PublicKey = pub
 			mode.Settings.ShortID = xray.GetRandomShortID()
 			mode.SNI = config.GetRandomRealityDomain()
+			mode.Dest = net.JoinHostPort(mode.SNI, "443")
 
 		case config.ModeVLESSReality:
 			pk, pub, err := xray.GenerateX25519()
@@ -36,6 +38,7 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			mode.Settings.PublicKey = pub
 			mode.Settings.ShortID = xray.GetRandomShortID()
 			mode.SNI = config.GetRandomRealityDomain()
+			mode.Dest = net.JoinHostPort(mode.SNI, "443")
 
 		case config.ModeVLESSXHTTP:
 			enc, dec, err := xray.GenerateMLKEM()

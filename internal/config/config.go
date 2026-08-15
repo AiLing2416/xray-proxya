@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -567,6 +568,22 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		if guest.ResetDay < 1 || guest.ResetDay > 31 {
 			guest.ResetDay = 1
 			changes = append(changes, "normalized invalid reset_day for guest "+guest.Alias)
+		}
+	}
+
+	for i := range cfg.Presets {
+		m := &cfg.Presets[i]
+		if m.Mode == ModeVLESSVision || m.Mode == ModeVLESSReality {
+			if m.SNI != "" {
+				expectedDest := net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), "."), "443")
+				if m.Dest == "www.google.com:443" && m.SNI != "www.google.com" {
+					m.Dest = expectedDest
+					changes = append(changes, "aligned default dest with SNI for preset "+string(m.Mode))
+				} else if m.Skin && m.Dest != expectedDest {
+					m.Dest = expectedDest
+					changes = append(changes, "aligned skin dest with SNI for preset "+string(m.Mode))
+				}
+			}
 		}
 	}
 

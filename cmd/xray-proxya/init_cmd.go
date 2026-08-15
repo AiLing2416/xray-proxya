@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"xray-proxya/internal/config"
@@ -96,11 +97,11 @@ var initCmd = &cobra.Command{
 			switch s.mode {
 			case config.ModeVLESSVision:
 				m.SNI = config.GetRandomRealityDomain()
-				m.Dest = "www.google.com:443"
+				m.Dest = net.JoinHostPort(m.SNI, "443")
 				m.Settings.PrivateKey, m.Settings.PublicKey, m.Settings.ShortID = pk, pub, utils.GenerateRandomString(4)
 			case config.ModeVLESSReality:
 				m.SNI = config.GetRandomRealityDomain()
-				m.Dest = "www.google.com:443"
+				m.Dest = net.JoinHostPort(m.SNI, "443")
 				m.Path = "/" + utils.GenerateRandomString(8)
 				m.Settings.PrivateKey, m.Settings.PublicKey, m.Settings.ShortID = pk, pub, utils.GenerateRandomString(4)
 			case config.ModeVLESSXHTTP:

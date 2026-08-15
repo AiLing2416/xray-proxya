@@ -186,6 +186,9 @@ TLS-preserving camouflage (Skin) highlights:
 		wasSkin := m.Skin
 		if presetSNI != "" {
 			m.SNI = presetSNI
+			if presetDest == "" && supportsSkin(m.Mode) {
+				m.Dest = net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSNI)), "."), "443")
+			}
 		}
 		if presetDest != "" {
 			m.Dest = presetDest
