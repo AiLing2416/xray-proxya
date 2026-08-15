@@ -31,7 +31,7 @@ var statusCmd = &cobra.Command{
 			fmt.Println("❌ Xray Core: Inactive")
 		}
 
-		fmt.Println("ℹ️  Subscription service is managed as xray-proxya-sub unit.")
+		fmt.Println("ℹ️  Subscription instances are managed as xray-proxya-sub@<instance> units.")
 
 		if !active {
 			return

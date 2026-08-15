@@ -428,11 +428,26 @@ func RestartSubServiceIfInstalled() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
 	}
-	args := []string{"try-restart", "xray-proxya-sub.service"}
-	if os.Geteuid() != 0 {
-		args = append([]string{"--user"}, args...)
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return nil
 	}
-	return exec.Command("systemctl", args...).Run()
+	instances := []string{"default"}
+	if cfg.SubscriptionInstances != nil {
+		for inst := range cfg.SubscriptionInstances {
+			if inst != "default" {
+				instances = append(instances, inst)
+			}
+		}
+	}
+	for _, inst := range instances {
+		args := []string{"try-restart", fmt.Sprintf("xray-proxya-sub@%s.service", inst)}
+		if os.Geteuid() != 0 {
+			args = append([]string{"--user"}, args...)
+		}
+		_ = exec.Command("systemctl", args...).Run()
+	}
+	return nil
 }
 
 func RestartIPv6RotateServiceIfInstalled() error {
@@ -452,9 +467,9 @@ func fileExists(path string) bool {
 
 func subServicePath() string {
 	if os.Geteuid() == 0 {
-		return "/etc/systemd/system/xray-proxya-sub.service"
+		return "/etc/systemd/system/xray-proxya-sub@.service"
 	}
-	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub.service")
+	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub@.service")
 }
 
 func ipv6RotateServicePath() string {

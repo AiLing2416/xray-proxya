@@ -60,3 +60,44 @@ func TestManagedSubscriptionReusesExistingEntry(t *testing.T) {
 		t.Fatalf("expected managed URL path once")
 	}
 }
+
+func TestMultiInstanceSubscriptionManagement(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		AdminSub: config.AdminSubConfig{
+			Token: "default-tok",
+			Port:  8443,
+		},
+		SubscriptionInstances: map[string]config.AdminSubConfig{
+			"default": {
+				Token: "default-tok",
+				Port:  8443,
+			},
+			"vip": {
+				Token:      "vip-tok",
+				Port:       8444,
+				TargetType: "direct",
+			},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	defSub, err := subscriptionInstance("default")
+	if err != nil || defSub.Port != 8443 {
+		t.Fatalf("load default sub: %v, port: %d", err, defSub.Port)
+	}
+
+	vipSub, err := subscriptionInstance("vip")
+	if err != nil || vipSub.Port != 8444 || vipSub.AdminSub.Token != "vip-tok" {
+		t.Fatalf("load vip sub: %v, entry: %+v", err, vipSub)
+	}
+
+	if _, err := subscriptionInstance("nonexistent"); err == nil {
+		t.Fatalf("expected error for nonexistent instance")
+	}
+}
+

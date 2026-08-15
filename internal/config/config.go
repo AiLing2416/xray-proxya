@@ -49,6 +49,8 @@ type UserConfig struct {
 	// them (CustomOutbound.Path).
 	Path     PathConfig     `json:"path,omitempty"`
 	AdminSub AdminSubConfig `json:"admin_sub,omitempty"`
+	// SubscriptionInstances contains named multi-instance subscription configurations.
+	SubscriptionInstances map[string]AdminSubConfig `json:"subscription_instances,omitempty"`
 	// IPv6Rotation contains the privileged address allocator used by
 	// subscription services.
 	IPv6Rotation IPv6Config `json:"ipv6_rotation,omitempty"`
@@ -506,6 +508,14 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			cfg.IPv6Rotations = make(map[string]IPv6Config)
 		}
 		cfg.IPv6Rotations["default"] = cfg.IPv6Rotation
+	}
+	if cfg.SubscriptionInstances == nil {
+		cfg.SubscriptionInstances = make(map[string]AdminSubConfig)
+	}
+	if cfg.AdminSub.Token != "" {
+		cfg.SubscriptionInstances["default"] = cfg.AdminSub
+	} else if defaultSub, ok := cfg.SubscriptionInstances["default"]; ok && defaultSub.Token != "" {
+		cfg.AdminSub = defaultSub
 	}
 	if cfg.AdminSub.Port > 0 && cfg.SubPort != cfg.AdminSub.Port {
 		cfg.SubPort = cfg.AdminSub.Port

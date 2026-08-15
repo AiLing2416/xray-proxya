@@ -50,15 +50,15 @@ func TestGatewayServiceStartUsesLifecycleRecovery(t *testing.T) {
 	}
 }
 
-func TestBuildSubServiceUsesConfiguration(t *testing.T) {
-	content := buildSubServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
+func TestBuildSubTemplateUsesInstanceConfiguration(t *testing.T) {
+	content := buildSubTemplateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
 	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya sub validate",
-		"ExecStart=/root/.local/bin/xray-proxya sub run",
+		"ExecStartPre=/root/.local/bin/xray-proxya sub validate %i",
+		"ExecStart=/root/.local/bin/xray-proxya sub run %i",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
 	} {
 		if !strings.Contains(content, required) {
-			t.Fatalf("sub service missing %q:\n%s", required, content)
+			t.Fatalf("template missing %q:\n%s", required, content)
 		}
 	}
 }
@@ -95,8 +95,8 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	if _, err := normalizedManagedUnit("ssh.service"); err == nil {
 		t.Fatal("foreign unit was accepted")
 	}
-	unit, err := normalizedManagedUnit("xray-proxya-sub")
-	if err != nil || unit != "xray-proxya-sub.service" {
+	unit, err := normalizedManagedUnit("xray-proxya-sub@mysub")
+	if err != nil || unit != "xray-proxya-sub@mysub.service" {
 		t.Fatalf("sub unit = %q, %v", unit, err)
 	}
 	unit, err = normalizedManagedUnit("xray-proxya-ipv6-rotate")
@@ -113,7 +113,7 @@ func TestManagedServiceUnitCompletionIncludesDefaultSubscription(t *testing.T) {
 	for _, want := range []string{
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
-		"xray-proxya-sub\tsubscription service",
+		"xray-proxya-sub@default\tsubscription instance",
 		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
 	} {
 		if !containsCompletion(units, want) {
@@ -156,11 +156,14 @@ func TestSubscriptionInstanceReadsActiveConfiguration(t *testing.T) {
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
-	defaultConfig, err := subscriptionInstance()
+	defaultConfig, err := subscriptionInstance(defaultSubInstance)
 	if err != nil {
 		t.Fatalf("load subscription instance: %v", err)
 	}
 	if defaultConfig.Port != 18443 {
 		t.Fatalf("port = %d, want 18443", defaultConfig.Port)
+	}
+	if _, err := subscriptionInstance("mysub"); err == nil {
+		t.Fatal("unknown instance was accepted")
 	}
 }
