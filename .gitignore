@@ -29,3 +29,8 @@ v0.2.0.txt
 
 # Private build scripts
 build-fly.sh
+
+# Private probe scripts & outputs
+sni_probe.py
+sni_*.json
+sni_*.csv
