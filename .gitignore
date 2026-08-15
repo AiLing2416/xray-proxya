@@ -34,3 +34,4 @@ build-fly.sh
 sni_probe.py
 sni_*.json
 sni_*.csv
+pass.txt

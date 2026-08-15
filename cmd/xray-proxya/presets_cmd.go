@@ -1,8 +1,6 @@
 package main
 
 import (
-	"context"
-	"crypto/tls"
 	"fmt"
 	"net"
 	"strconv"
@@ -14,14 +12,21 @@ import (
 )
 
 var (
-	presetOff    bool
-	presetOn     bool
-	presetPort   int
-	presetRegen  bool
-	presetSkin   bool
-	presetUnskin bool
-	presetSNI    string
-	presetDest   string
+	presetOff            bool
+	presetOn             bool
+	presetPort           int
+	presetRegen          bool
+	presetSkin           bool
+	presetUnskin         bool
+	presetSkinAWS        bool
+	presetSkinGCP        bool
+	presetSkinAzure      bool
+	presetSkinCloudflare bool
+	presetSkinOracle     bool
+	presetSkinVendor     string
+	presetSkinManual     string
+	presetSNI            string
+	presetDest           string
 )
 
 var presetsCmd = &cobra.Command{
@@ -34,7 +39,7 @@ func supportsSkin(m config.PresetMode) bool {
 }
 
 // configureSkinTarget keeps Reality's fallback indistinguishable from a direct
-// connection to the advertised SNI.  TLS must stay end-to-end with that site;
+// connection to the advertised SNI. TLS must stay end-to-end with that site;
 // terminating it locally would expose a substitute certificate and fingerprint.
 func configureSkinTarget(m *config.ModeInfo, explicitDest bool) error {
 	sni := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), ".")
@@ -58,33 +63,9 @@ func configureSkinTarget(m *config.ModeInfo, explicitDest bool) error {
 	return nil
 }
 
-var checkTargetAvailability = verifyTLSTarget
-
-// verifyTLSTarget verifies DNS resolution, TCP reachability, the TLS
-// handshake, and the certificate name for a manually selected target.
-func verifyTLSTarget(target string) error {
-	host, _, err := net.SplitHostPort(target)
-	if err != nil || host == "" || net.ParseIP(host) != nil {
-		return fmt.Errorf("target must use a domain host:port")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	rawConn, err := (&net.Dialer{}).DialContext(ctx, "tcp", target)
-	if err != nil {
-		return fmt.Errorf("target is unreachable: %w", err)
-	}
-	defer rawConn.Close()
-
-	tlsConn := tls.Client(rawConn, &tls.Config{
-		ServerName: host,
-		MinVersion: tls.VersionTLS12,
-	})
-	if err := tlsConn.HandshakeContext(ctx); err != nil {
-		return fmt.Errorf("target TLS verification failed: %w", err)
-	}
-	return nil
+var checkTargetAvailability = func(target string) error {
+	_, err := config.ValidateSkinTarget(target, 5*time.Second)
+	return err
 }
 
 func validateManualTarget(sni, target string) error {
@@ -140,21 +121,22 @@ TLS-preserving camouflage (Skin) highlights:
   - Proxies authenticated users normally.
   - Sends unauthenticated Reality fallbacks directly to the advertised site.
   - Preserves the target site's certificate, TLS fingerprint, and live response.
-  - Uses SNI:443 as the fallback unless --dest is explicitly supplied.
-  - Verifies every manually supplied SNI with a trusted TLS handshake before saving.
+  - Auto-detects server cloud provider (AWS, GCP, Azure, Cloudflare, Oracle) and selects the lowest-latency matching domain.
+  - Supports manual domain selection with mandatory TLS 1.3 and certificate qualification.
 `),
 	Example: strings.TrimSpace(`
-  # Enable slot 1 and set port to 443
-  xray-proxya presets set 1 --on --port 443
+  # Enable slot 1 and auto-select best skin domain based on cloud/latency
+  xray-proxya presets set 1 --on --port 443 --skin
 
-  # Enable web camouflage (Skin) for slot 1
-  xray-proxya presets set 1 --skin
+  # Benchmark and select best domain from GCP or AWS cloud pool
+  xray-proxya presets set 1 --skin-gcp
+  xray-proxya presets set 1 --skin-aws
 
-  # Manually override the camouflage target site
-  xray-proxya presets set 1 --sni www.intel.com --dest www.intel.com:443
+  # Manually set arbitrary skin domain with validation
+  xray-proxya presets set 1 --skin-manual cdnjs.cloudflare.com
 
-  # Reset/Regenerate secrets for slot 2
-  xray-proxya presets set 2 --regen
+  # Disable camouflage
+  xray-proxya presets set 1 --unskin
 `),
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -183,46 +165,104 @@ TLS-preserving camouflage (Skin) highlights:
 		if presetRegen {
 			m.RegenFlag = true
 		}
-		wasSkin := m.Skin
-		if presetSNI != "" {
-			m.SNI = presetSNI
-			if presetDest == "" && supportsSkin(m.Mode) {
-				m.Dest = net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSNI)), "."), "443")
-			}
-		}
-		if presetDest != "" {
-			m.Dest = presetDest
-		}
 
-		desiredSkin := m.Skin
-		if presetSkin {
-			desiredSkin = true
-		}
-		if presetUnskin {
-			desiredSkin = false
-		}
-		if desiredSkin && !supportsSkin(m.Mode) {
+		hasSkinReq := presetSkin || presetSkinAWS || presetSkinGCP || presetSkinAzure ||
+			presetSkinCloudflare || presetSkinOracle || presetSkinVendor != "" ||
+			presetSkinManual != "" || presetSNI != ""
+
+		if hasSkinReq && !supportsSkin(m.Mode) {
 			fmt.Printf("❌ Error: Mode [%s] does not support TLS-preserving camouflage (requires VLESS Reality or Vision).\n", m.Mode)
 			return
 		}
-		if desiredSkin && (presetSkin || wasSkin && (presetSNI != "" || presetDest != "")) {
+
+		// 1. Manual Skin mode
+		if presetSkinManual != "" || presetSNI != "" {
+			manualDomain := presetSkinManual
+			if manualDomain == "" {
+				manualDomain = presetSNI
+			}
+			manualDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(manualDomain)), ".")
+			dest := presetDest
+			if dest == "" {
+				dest = net.JoinHostPort(manualDomain, "443")
+			}
+
+			fmt.Printf("🔍 Validating manual skin target %s (%s)...\n", manualDomain, dest)
+			if err := validateManualTarget(manualDomain, dest); err != nil {
+				fmt.Printf("❌ Error: Target %s failed qualification: %v\n", dest, err)
+				return
+			}
+			m.Skin = true
+			m.SNI = manualDomain
+			m.Dest = dest
+			fmt.Printf("🎯 Validated manual skin target: %s (%s)\n", manualDomain, dest)
+		} else if presetSkinAWS || presetSkinGCP || presetSkinAzure || presetSkinCloudflare || presetSkinOracle || presetSkinVendor != "" {
+			// 2. Specific Cloud Vendor Pool
+			vendor := config.VendorAWS
+			if presetSkinGCP {
+				vendor = config.VendorGCP
+			} else if presetSkinAzure {
+				vendor = config.VendorAzure
+			} else if presetSkinCloudflare {
+				vendor = config.VendorCloudflare
+			} else if presetSkinOracle {
+				vendor = config.VendorOracle
+			} else if presetSkinVendor != "" {
+				vendor = config.NormalizeVendor(presetSkinVendor)
+			}
+
+			domains := config.GetCloudVendorDomains(vendor)
+			fmt.Printf("🔍 Probing and benchmarking [%s] candidate pool (%d domains)...\n", vendor, len(domains))
+			bestDomain, rtt, err := config.BenchmarkDomains(domains, 3*time.Second)
+			if err != nil {
+				fmt.Printf("❌ Error benchmarking [%s] domains: %v\n", vendor, err)
+				return
+			}
+			m.Skin = true
+			m.SNI = bestDomain
+			m.Dest = net.JoinHostPort(bestDomain, "443")
+			fmt.Printf("🎯 Selected [%s] skin target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
+		} else if presetSkin {
+			// 3. Auto-detected Cloud Provider / Latency Benchmark
+			fmt.Printf("🔍 Auto-detecting cloud provider for server...\n")
+			detectedVendor := config.DetectCloudVendor()
+			var domains []string
+			label := detectedVendor
+			if detectedVendor != "" {
+				fmt.Printf("☁️  Detected cloud provider: [%s]\n", detectedVendor)
+				domains = config.GetCloudVendorDomains(detectedVendor)
+			} else {
+				fmt.Printf("ℹ️  Cloud provider not recognized or non-cloud IP. Using generic global domain pool.\n")
+				domains = config.GetCloudVendorDomains(config.VendorGeneric)
+				label = "generic"
+			}
+
+			fmt.Printf("🔍 Benchmarking candidate pool (%d domains)...\n", len(domains))
+			bestDomain, rtt, err := config.BenchmarkDomains(domains, 3*time.Second)
+			if err != nil {
+				fmt.Printf("❌ Error benchmarking candidate domains: %v\n", err)
+				return
+			}
+			m.Skin = true
+			m.SNI = bestDomain
+			m.Dest = net.JoinHostPort(bestDomain, "443")
+			fmt.Printf("🎯 Auto-selected [%s] skin target: %s (RTT: %.1fms, TLS 1.3 OK)\n", label, bestDomain, float64(rtt.Microseconds())/1000.0)
+		}
+
+		if presetDest != "" && presetSkinManual == "" && presetSNI == "" {
+			m.Dest = presetDest
+		}
+
+		if presetUnskin {
+			m.Skin = false
+		}
+
+		if m.Skin {
 			if err := configureSkinTarget(m, presetDest != ""); err != nil {
 				fmt.Printf("❌ Error: %v.\n", err)
 				return
 			}
 		}
-
-		if presetSNI != "" || desiredSkin && (presetSkin || presetDest != "") {
-			target := net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), "."), "443")
-			if desiredSkin {
-				target = m.Dest
-			}
-			if err := validateManualTarget(m.SNI, target); err != nil {
-				fmt.Printf("❌ Error: target %s is not usable: %v.\n", target, err)
-				return
-			}
-		}
-		m.Skin = desiredSkin
 
 		cfg.SaveEx(true)
 		status := "OFF"
@@ -236,7 +276,8 @@ TLS-preserving camouflage (Skin) highlights:
 				skinStatus = "ENABLED"
 			}
 		}
-		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, Skin: %s (STAGING)\n", m.Mode, status, m.Port, skinStatus)
+		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, Skin: %s (SNI: %s, Dest: %s) [STAGING]\n",
+			m.Mode, status, m.Port, skinStatus, m.SNI, m.Dest)
 		fmt.Println("🚀 Run 'apply' to commit changes.")
 	},
 }
@@ -258,16 +299,26 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetOn, "on", false, "Enable this mode")
 	presetsSetCmd.Flags().IntVarP(&presetPort, "port", "p", 0, "Set specific port")
 	presetsSetCmd.Flags().BoolVarP(&presetRegen, "regen", "r", false, "Regenerate secrets/paths for this mode on apply")
-	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Enable TLS-preserving camouflage")
+	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Auto-select best camouflage domain based on detected cloud or latency")
 	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Disable TLS-preserving camouflage")
-	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set SNI (e.g., www.intel.com)")
-	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Manually set Destination (e.g., www.intel.com:443)")
+	presetsSetCmd.Flags().BoolVar(&presetSkinAWS, "skin-aws", false, "Benchmark and pick best camouflage domain from AWS pool")
+	presetsSetCmd.Flags().BoolVar(&presetSkinGCP, "skin-gcp", false, "Benchmark and pick best camouflage domain from GCP pool")
+	presetsSetCmd.Flags().BoolVar(&presetSkinAzure, "skin-azure", false, "Benchmark and pick best camouflage domain from Azure pool")
+	presetsSetCmd.Flags().BoolVar(&presetSkinCloudflare, "skin-cloudflare", false, "Benchmark and pick best camouflage domain from Cloudflare pool")
+	presetsSetCmd.Flags().BoolVar(&presetSkinOracle, "skin-oracle", false, "Benchmark and pick best camouflage domain from Oracle Cloud pool")
+	presetsSetCmd.Flags().StringVar(&presetSkinVendor, "skin-vendor", "", "Benchmark and pick best domain from a specific cloud vendor (aws/gcp/azure/cloudflare/oracle/generic)")
+	presetsSetCmd.Flags().StringVar(&presetSkinManual, "skin-manual", "", "Manually set and validate arbitrary camouflage domain")
+	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set SNI (e.g., cdnjs.cloudflare.com)")
+	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Manually set Destination (e.g., cdnjs.cloudflare.com:443)")
 
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}
 
-	// Add completion for --sni from our domain pool
+	presetsSetCmd.RegisterFlagCompletionFunc("skin-vendor", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return config.GetAllCloudVendors(), cobra.ShellCompDirectiveNoFileComp
+	})
+
 	presetsSetCmd.RegisterFlagCompletionFunc("sni", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
 	})
