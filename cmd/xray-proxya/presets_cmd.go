@@ -323,6 +323,10 @@ func init() {
 		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
 	})
 
+	presetsSetCmd.RegisterFlagCompletionFunc("skin-manual", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
+	})
+
 	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd)
 	rootCmd.AddCommand(presetsCmd)
 }

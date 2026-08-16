@@ -191,6 +191,29 @@ func completeSubscriptionInstances(cmd *cobra.Command, args []string, toComplete
 	return res, cobra.ShellCompDirectiveNoFileComp
 }
 
+func completeTargetTypes(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return []string{"direct", "outbound", "guest"}, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeTargetAliases(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var res []string
+	for _, g := range cfg.Guests {
+		res = append(res, g.Alias)
+	}
+	for _, o := range cfg.CustomOutbounds {
+		res = append(res, o.Alias)
+	}
+	return res, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeIPv6Rotations(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	return []string{"default", "none"}, cobra.ShellCompDirectiveNoFileComp
+}
+
 func reconcileSubscriptions(cfg *config.UserConfig) bool {
 	changed := false
 	for i := range cfg.Guests {
@@ -553,14 +576,33 @@ func init() {
 	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "direct, outbound, or guest")
 	subSetCmd.Flags().StringVar(&subTargetAlias, "target", "", "Target alias for outbound or guest")
 	subSetCmd.Flags().StringVar(&subRotation, "ipv6-rotation", "", "IPv6 rotation (e.g. 'default', or 'none')")
+	subSetCmd.ValidArgsFunction = completeSubscriptionInstances
 	subSetCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
 	subSetCmd.RegisterFlagCompletionFunc("instance", completeSubscriptionInstances)
+	subSetCmd.RegisterFlagCompletionFunc("target-type", completeTargetTypes)
+	subSetCmd.RegisterFlagCompletionFunc("target", completeTargetAliases)
+	subSetCmd.RegisterFlagCompletionFunc("ipv6-rotation", completeIPv6Rotations)
+
+	subShowCmd.ValidArgsFunction = completeSubscriptionInstances
 	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Show guest subscription URL(s)")
 	subShowCmd.Flags().StringVarP(&subShowRelay, "relay", "r", "", "Show relay subscription URL(s)")
+	subShowCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
+	subShowCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
+
+	subDelCmd.ValidArgsFunction = completeSubscriptionInstances
+
+	subResetCmd.ValidArgsFunction = completeSubscriptionInstances
 	subResetCmd.Flags().StringVarP(&subResetGuest, "guest", "g", "", "Reset guest token(s)")
 	subResetCmd.Flags().StringVarP(&subResetRelay, "relay", "r", "", "Reset relay token(s)")
+	subResetCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
+	subResetCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
+
+	subRunCmd.ValidArgsFunction = completeSubscriptionInstances
 	subRunCmd.Flags().StringVar(&subInstance, "instance", defaultSubInstance, "subscription instance")
 	subRunCmd.RegisterFlagCompletionFunc("instance", completeSubscriptionInstances)
+
+	subValidateCmd.ValidArgsFunction = completeSubscriptionInstances
+
 	subCmd.AddCommand(subSetCmd, subShowCmd, subDelCmd, subResetCmd, subRunCmd, subValidateCmd)
 	rootCmd.AddCommand(subCmd)
 }

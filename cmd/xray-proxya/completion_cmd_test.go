@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestDoctorCompletionIsRegisteredAndLegacyTopLevelCommandIsRemoved(t *testing.T) {
@@ -140,4 +142,48 @@ func containsCompletion(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestCLIAutocompletionCoverage(t *testing.T) {
+	// 1. Verify doctor subcommands completion
+	doctorSubCmds := make(map[string]bool)
+	for _, c := range doctorCmd.Commands() {
+		doctorSubCmds[c.Name()] = true
+	}
+	for _, want := range []string{"completion", "linger", "selinux"} {
+		if !doctorSubCmds[want] {
+			t.Errorf("doctor missing subcommand %q", want)
+		}
+	}
+
+	// 2. Verify doctor linger subcommands
+	lingerSubCmds := make(map[string]bool)
+	for _, c := range doctorLingerCmd.Commands() {
+		lingerSubCmds[c.Name()] = true
+	}
+	for _, want := range []string{"enable", "disable"} {
+		if !lingerSubCmds[want] {
+			t.Errorf("doctor linger missing subcommand %q", want)
+		}
+	}
+
+	// 3. Verify sub commands have ValidArgsFunction registered
+	for _, subCommand := range []*cobra.Command{subSetCmd, subShowCmd, subDelCmd, subResetCmd} {
+		if subCommand.ValidArgsFunction == nil {
+			t.Errorf("sub command %q missing ValidArgsFunction for positional arg completion", subCommand.Name())
+		}
+	}
+
+	// 4. Verify presets set completion
+	if presetsSetCmd.ValidArgsFunction == nil {
+		t.Error("presets set missing ValidArgsFunction")
+	}
+
+	// 5. Verify service commands completion
+	for _, action := range []string{"start", "stop", "restart", "status", "enable", "disable"} {
+		cmd, _, err := serviceCmd.Find([]string{action})
+		if err != nil || cmd.ValidArgsFunction == nil {
+			t.Errorf("service command %q missing ValidArgsFunction", action)
+		}
+	}
 }
