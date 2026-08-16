@@ -21,7 +21,16 @@ var (
 	subShowGuest, subShowRelay, subResetGuest, subResetRelay                                 string
 )
 
-var subCmd = &cobra.Command{Use: "sub", Short: "Configure subscriptions; systemd controls their lifecycle"}
+var subCmd = &cobra.Command{
+	Use:   "sub",
+	Short: "Configure subscriptions; systemd controls their lifecycle",
+	Long: `Configure multi-instance subscription servers and manage distribution URLs in STAGING.
+Each subscription instance runs on its own port and token, and can distribute direct server nodes,
+guest nodes, or outbound relay chains.
+
+Use 'xray-proxya apply' to commit staged changes, then manage their background
+systemd lifecycle using 'xray-proxya service start/stop xray-proxya-sub@<instance>'.`,
+}
 
 func requireServerSubscription(cfg *config.UserConfig) error {
 	if cfg == nil || cfg.Role != config.RoleServer {
@@ -295,7 +304,22 @@ func validateSubInstance(name ...string) error { _, err := subscriptionInstance(
 var subSetCmd = &cobra.Command{
 	Use:   "set [instance]",
 	Short: "Set subscription instance parameters in STAGING",
-	Args:  cobra.MaximumNArgs(1),
+	Long: `Configure or update subscription instance parameters in the STAGING configuration.
+If [instance] is omitted, it defaults to the 'default' instance.
+
+Supported target types:
+  - direct:   Distribute local server inbounds (default)
+  - outbound: Distribute custom outbound relay nodes (specify with --target <relay-alias>)
+  - guest:    Distribute guest tenant credentials (specify with --target <guest-alias>)`,
+	Example: `  # Configure the default subscription instance on port 18443
+  xray-proxya sub set default --port 18443 --token mytoken
+
+  # Configure a named subscription instance with IPv6 address rotation
+  xray-proxya sub set vip --port 8444 --token viptoken --ipv6-rotation default
+
+  # Configure a subscription instance targeting a specific outbound relay
+  xray-proxya sub set hk-relay --port 8445 --token relaytok --target-type outbound --target hk-node`,
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {

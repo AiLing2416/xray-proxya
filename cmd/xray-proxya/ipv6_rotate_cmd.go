@@ -14,7 +14,15 @@ var rotateInterface, rotateSubnet string
 var rotateMax int
 var rotateNDP bool
 
-var ipv6RotateCmd = &cobra.Command{Use: "ipv6-rotate", Short: "Configure the privileged IPv6 rotation service"}
+var ipv6RotateCmd = &cobra.Command{
+	Use:   "ipv6-rotate",
+	Short: "Configure the privileged IPv6 rotation service",
+	Long: `Configure the root-level IPv6 address rotation allocator in STAGING.
+The rotation service dynamically assigns and retires IPv6 addresses within your allocated subnet,
+providing rotating endpoint IPs to subscription clients and mitigating static IP blacklisting.
+
+Use 'xray-proxya apply' to commit staged changes, then control with 'xray-proxya service start xray-proxya-ipv6-rotate'.`,
+}
 
 func requireRootRotation(cfg *config.UserConfig) error {
 	if err := requireServerSubscription(cfg); err != nil {
@@ -39,7 +47,17 @@ func getActiveRotation(cfg *config.UserConfig) (config.IPv6Config, error) {
 	return config.IPv6Config{}, fmt.Errorf("IPv6 rotation is not configured; use 'ipv6-rotate set', then apply")
 }
 
-var ipv6RotateSetCmd = &cobra.Command{Use: "set", Short: "Set IPv6 rotation parameters in STAGING", RunE: func(cmd *cobra.Command, args []string) error {
+var ipv6RotateSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "Set IPv6 rotation parameters in STAGING",
+	Long: `Configure subnet, network interface, and active address limits for IPv6 rotation.
+If --subnet or --interface are omitted, auto-detection will attempt to infer them from active interfaces.`,
+	Example: `  # Configure IPv6 rotation on eth0 with a /64 pool keeping 6 active addresses
+  xray-proxya ipv6-rotate set --interface eth0 --subnet 2001:db8:1234::/64 --max-addresses 6
+
+  # Auto-detect subnet and interface
+  xray-proxya ipv6-rotate set --max-addresses 4`,
+	RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil {
 		return err

@@ -18,12 +18,17 @@ import (
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Environment diagnostics, completion, and automated tuning tools",
+	Long: `Diagnostic, environment setup, and security helper tools for Xray-Proxya.
+Includes shell autocompletion installer, user session lingering manager,
+and SELinux security policy installer.`,
 }
 
 var doctorSELinuxCmd = &cobra.Command{
 	Use:   "selinux",
 	Short: "Install the reviewed SELinux policy for the root service",
-	Args:  cobra.NoArgs,
+	Long: `Compile, package, and load the dedicated SELinux policy module (xray_proxya.te)
+and set appropriate security contexts for Xray-Proxya binaries, configs, and sockets.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if !utils.IsRoot() {
 			return fmt.Errorf("doctor selinux requires root privileges")

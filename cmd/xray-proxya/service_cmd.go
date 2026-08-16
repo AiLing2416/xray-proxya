@@ -28,6 +28,22 @@ var systemdInstanceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`
 var serviceCmd = &cobra.Command{
 	Use:   "service",
 	Short: "Install and control Xray-Proxya systemd units",
+	Long: `Install, start, stop, restart, enable, disable, and query managed systemd units.
+
+Managed units include:
+  - xray-proxya:               Main Xray-Core proxy service
+  - xray-proxya-pathd:         PathLink ICMP health & latency probe daemon
+  - xray-proxya-ipv6-rotate:   Privileged IPv6 address rotation service
+  - xray-proxya-sub@<inst>:    Subscription server instances (e.g. xray-proxya-sub@default)`,
+	Example: `  # Install unit files for current user or root
+  xray-proxya service install
+
+  # Start the main proxy service and default subscription instance
+  xray-proxya service start xray-proxya
+  xray-proxya service start xray-proxya-sub@default
+
+  # Query status of all managed units
+  xray-proxya service status`,
 }
 
 func userSystemdUnitDir() string {
