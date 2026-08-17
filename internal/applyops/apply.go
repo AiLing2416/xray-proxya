@@ -72,7 +72,40 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	if !opts.Force && validateXray {
 		testOverrides := map[string]int{"gateway-tun-disabled": 1}
 		lines = append(lines, "🔍 Stage 1: Static Validation...")
-		jsonData, _ := xray.GenerateXrayJSON(cfg, testOverrides, "")
+
+		// Invariant and online validation for changed/newly-enabled REALITY presets
+		for _, m := range cfg.Presets {
+			if !m.Enabled {
+				continue
+			}
+			if m.Mode == config.ModeVLESSVision || m.Mode == config.ModeVLESSReality {
+				if _, _, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest); err != nil {
+					return lines, fmt.Errorf("REALITY preset %s configuration invalid: %w", m.Mode, err)
+				}
+				var activeM *config.ModeInfo
+				if activeCfg != nil {
+					for j := range activeCfg.Presets {
+						if activeCfg.Presets[j].Mode == m.Mode {
+							activeM = &activeCfg.Presets[j]
+							break
+						}
+					}
+				}
+				needsOnlineValidation := activeM == nil || !activeM.Enabled || activeM.SNI != m.SNI || activeM.Dest != m.Dest
+				if needsOnlineValidation {
+					lines = append(lines, fmt.Sprintf("🔍 Validating REALITY target for preset %s: %s (%s)...", m.Mode, m.SNI, m.Dest))
+					if _, err := config.ValidateSkinTarget(m.Dest, 5*time.Second); err != nil {
+						return lines, fmt.Errorf("REALITY target %s (%s) validation failed during apply: %w", m.SNI, m.Dest, err)
+					}
+					lines = append(lines, fmt.Sprintf("✅ REALITY target validated for preset %s.", m.Mode))
+				}
+			}
+		}
+
+		jsonData, err := xray.GenerateXrayJSON(cfg, testOverrides, "")
+		if err != nil {
+			return lines, fmt.Errorf("static configuration generation failed: %w", err)
+		}
 		if err := xray.ValidateConfig(jsonData); err != nil {
 			return lines, fmt.Errorf("static validation failed: %w", err)
 		}

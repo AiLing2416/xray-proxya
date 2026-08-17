@@ -205,3 +205,66 @@ func TestGetHomeDir(t *testing.T) {
 		t.Fatalf("GetHomeDir() returned empty string")
 	}
 }
+
+func TestBackfillDefaultsRealitySNIAndDestMigration(t *testing.T) {
+	cfg := &UserConfig{
+		Role: RoleServer,
+		Presets: []ModeInfo{
+			{
+				Mode:    ModeVLESSVision,
+				Enabled: true,
+				SNI:     "SUB.Example.COM.",
+				Dest:    "",
+				Skin:    true,
+			},
+			{
+				Mode:    ModeVLESSReality,
+				Enabled: true,
+				SNI:     "target.org",
+				Dest:    "mismatched.net:443",
+				Skin:    false,
+			},
+		},
+	}
+
+	changes := cfg.BackfillDefaults()
+	if len(changes) == 0 {
+		t.Fatalf("expected changes during BackfillDefaults")
+	}
+
+	// 1. SNI normalized, dest backfilled, legacy Skin cleared
+	if cfg.Presets[0].SNI != "sub.example.com" {
+		t.Errorf("Preset 0 SNI = %q, want sub.example.com", cfg.Presets[0].SNI)
+	}
+	if cfg.Presets[0].Dest != "sub.example.com:443" {
+		t.Errorf("Preset 0 Dest = %q, want sub.example.com:443", cfg.Presets[0].Dest)
+	}
+	if cfg.Presets[0].Skin != false {
+		t.Errorf("Preset 0 Skin = %v, want false", cfg.Presets[0].Skin)
+	}
+
+	// 2. Mismatched dest aligned with SNI even when skin was false
+	if cfg.Presets[1].SNI != "target.org" {
+		t.Errorf("Preset 1 SNI = %q, want target.org", cfg.Presets[1].SNI)
+	}
+	if cfg.Presets[1].Dest != "target.org:443" {
+		t.Errorf("Preset 1 Dest = %q, want target.org:443", cfg.Presets[1].Dest)
+	}
+
+	// 3. Test matching custom port preservation
+	cfgCustom := &UserConfig{
+		Role: RoleServer,
+		Presets: []ModeInfo{
+			{
+				Mode:    ModeVLESSVision,
+				Enabled: true,
+				SNI:     "custom.port.com",
+				Dest:    "custom.port.com:8443",
+			},
+		},
+	}
+	cfgCustom.BackfillDefaults()
+	if cfgCustom.Presets[0].Dest != "custom.port.com:8443" {
+		t.Errorf("Preset Dest = %q, want custom.port.com:8443", cfgCustom.Presets[0].Dest)
+	}
+}

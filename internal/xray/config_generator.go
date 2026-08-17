@@ -328,6 +328,11 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 		switch m.Mode {
 		case config.ModeVLESSVision:
+			normSNI, normDest, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest)
+			if err != nil {
+				return nil, fmt.Errorf("invalid REALITY configuration for preset %s: %w", m.Mode, err)
+			}
+			dest = normDest
 			in["protocol"] = "vless"
 			visionClients := make([]interface{}, 0, len(clients))
 			for _, rawClient := range clients {
@@ -336,11 +341,16 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				visionClients = append(visionClients, client)
 			}
 			in["settings"] = map[string]interface{}{"clients": visionClients, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
+			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{normSNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSReality:
+			normSNI, normDest, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest)
+			if err != nil {
+				return nil, fmt.Errorf("invalid REALITY configuration for preset %s: %w", m.Mode, err)
+			}
+			dest = normDest
 			in["protocol"] = "vless"
 			in["settings"] = map[string]interface{}{"clients": clients, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{m.SNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
+			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{normSNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
 		case config.ModeVLESSXHTTP:
 			in["protocol"] = "vless"
 			decryption := "none"

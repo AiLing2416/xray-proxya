@@ -541,6 +541,26 @@ func TestGenerateXrayJSONSkinPreservesRealityDestination(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONRejectsMismatchedRealityTarget(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "www.intel.com",
+				Dest:    "other.target.com:443",
+			},
+		},
+	}
+
+	_, err := GenerateXrayJSON(cfg, nil, "")
+	if err == nil {
+		t.Fatalf("GenerateXrayJSON with mismatched SNI/dest expected error, got nil")
+	}
+}
+
 func generateAndDecodeXrayConfig(t *testing.T, cfg *config.UserConfig, testTarget string) map[string]interface{} {
 	t.Helper()
 

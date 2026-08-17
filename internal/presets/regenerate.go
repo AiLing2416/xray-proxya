@@ -1,7 +1,6 @@
 package presets
 
 import (
-	"net"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -9,6 +8,7 @@ import (
 
 // RegenerateMarkedModes refreshes secrets or paths for any preset with RegenFlag set.
 // It mutates cfg in place and clears RegenFlag after regeneration succeeds.
+// For REALITY presets (ModeVLESSVision and ModeVLESSReality), existing SNI and Dest are preserved.
 func RegenerateMarkedModes(cfg *config.UserConfig) error {
 	for i := range cfg.Presets {
 		if !cfg.Presets[i].RegenFlag {
@@ -25,8 +25,6 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			mode.Settings.PrivateKey = pk
 			mode.Settings.PublicKey = pub
 			mode.Settings.ShortID = xray.GetRandomShortID()
-			mode.SNI = config.GetRandomRealityDomain()
-			mode.Dest = net.JoinHostPort(mode.SNI, "443")
 
 		case config.ModeVLESSReality:
 			pk, pub, err := xray.GenerateX25519()
@@ -37,8 +35,6 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			mode.Settings.PrivateKey = pk
 			mode.Settings.PublicKey = pub
 			mode.Settings.ShortID = xray.GetRandomShortID()
-			mode.SNI = config.GetRandomRealityDomain()
-			mode.Dest = net.JoinHostPort(mode.SNI, "443")
 
 		case config.ModeVLESSXHTTP:
 			enc, dec, err := xray.GenerateMLKEM()

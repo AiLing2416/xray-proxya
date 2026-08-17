@@ -595,14 +595,28 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	for i := range cfg.Presets {
 		m := &cfg.Presets[i]
 		if m.Mode == ModeVLESSVision || m.Mode == ModeVLESSReality {
+			if m.Skin {
+				m.Skin = false
+				changes = append(changes, "cleared legacy skin flag for preset "+string(m.Mode))
+			}
 			if m.SNI != "" {
-				expectedDest := net.JoinHostPort(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), "."), "443")
-				if m.Dest == "www.google.com:443" && m.SNI != "www.google.com" {
-					m.Dest = expectedDest
-					changes = append(changes, "aligned default dest with SNI for preset "+string(m.Mode))
-				} else if m.Skin && m.Dest != expectedDest {
-					m.Dest = expectedDest
-					changes = append(changes, "aligned skin dest with SNI for preset "+string(m.Mode))
+				normSNI := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), ".")
+				if normSNI != m.SNI {
+					m.SNI = normSNI
+					changes = append(changes, "normalized SNI for preset "+string(m.Mode))
+				}
+				if m.Dest == "" {
+					m.Dest = net.JoinHostPort(normSNI, "443")
+					changes = append(changes, "backfilled default dest for preset "+string(m.Mode))
+				} else {
+					destHost, _, normDest, err := NormalizeRealityTarget(m.Dest)
+					if err != nil || destHost != normSNI {
+						m.Dest = net.JoinHostPort(normSNI, "443")
+						changes = append(changes, "aligned mismatched dest with SNI for preset "+string(m.Mode))
+					} else if normDest != m.Dest {
+						m.Dest = normDest
+						changes = append(changes, "normalized dest for preset "+string(m.Mode))
+					}
 				}
 			}
 		}

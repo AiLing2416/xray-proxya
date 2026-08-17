@@ -6,30 +6,6 @@ import (
 	"xray-proxya/internal/config"
 )
 
-func TestConfigureSkinTargetDefaultsToSNI(t *testing.T) {
-	m := &config.ModeInfo{SNI: "WWW.Intel.COM."}
-	if err := configureSkinTarget(m, false); err != nil {
-		t.Fatalf("configureSkinTarget() error = %v", err)
-	}
-	if m.Dest != "www.intel.com:443" {
-		t.Fatalf("dest = %q, want www.intel.com:443", m.Dest)
-	}
-}
-
-func TestConfigureSkinTargetRejectsDifferentHost(t *testing.T) {
-	m := &config.ModeInfo{SNI: "www.intel.com", Dest: "www.google.com:443"}
-	if err := configureSkinTarget(m, true); err == nil {
-		t.Fatal("configureSkinTarget() succeeded for mismatched SNI and destination")
-	}
-}
-
-func TestConfigureSkinTargetAcceptsMatchingHost(t *testing.T) {
-	m := &config.ModeInfo{SNI: "www.intel.com", Dest: "www.intel.com:8443"}
-	if err := configureSkinTarget(m, true); err != nil {
-		t.Fatalf("configureSkinTarget() error = %v", err)
-	}
-}
-
 func TestValidateManualTargetUsesSNIAndDefaultHTTPSPort(t *testing.T) {
 	originalChecker := checkTargetAvailability
 	t.Cleanup(func() { checkTargetAvailability = originalChecker })
@@ -55,5 +31,23 @@ func TestValidateManualTargetReturnsAvailabilityFailure(t *testing.T) {
 	checkTargetAvailability = func(string) error { return want }
 	if err := validateManualTarget("www.intel.com", "www.intel.com:443"); !errors.Is(err, want) {
 		t.Fatalf("validateManualTarget() error = %v, want %v", err, want)
+	}
+}
+
+func TestSupportsSkin(t *testing.T) {
+	if !supportsSkin(config.ModeVLESSVision) {
+		t.Errorf("expected ModeVLESSVision to support skin")
+	}
+	if !supportsSkin(config.ModeVLESSReality) {
+		t.Errorf("expected ModeVLESSReality to support skin")
+	}
+	if supportsSkin(config.ModeVLESSXHTTP) {
+		t.Errorf("expected ModeVLESSXHTTP not to support skin")
+	}
+	if supportsSkin(config.ModeVMessWS) {
+		t.Errorf("expected ModeVMessWS not to support skin")
+	}
+	if supportsSkin(config.ModeShadowsocksTCP) {
+		t.Errorf("expected ModeShadowsocksTCP not to support skin")
 	}
 }
