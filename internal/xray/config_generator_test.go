@@ -2,6 +2,7 @@ package xray
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"xray-proxya/internal/config"
@@ -835,5 +836,38 @@ func TestGenerateXrayJSONInternalProxy(t *testing.T) {
 	}
 	if !foundHttp {
 		t.Errorf("http inbound not found")
+	}
+}
+
+func TestGenerateXrayJSONInboundPortConflict(t *testing.T) {
+	// Outbound proxy port conflicting with another outbound proxy port
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "relay-1",
+				Enabled:            true,
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10809,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:              "relay-2",
+				Enabled:            true,
+				InternalProxyPort:  10808, // Conflict!
+				InternalHttpPort:   10810,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+
+	_, err := GenerateXrayJSON(cfg, nil, "")
+	if err == nil {
+		t.Fatalf("expected error due to port collision between relay-1 and relay-2")
+	}
+	if !strings.Contains(err.Error(), "inbound port conflict") {
+		t.Fatalf("expected 'inbound port conflict' error, got %v", err)
 	}
 }

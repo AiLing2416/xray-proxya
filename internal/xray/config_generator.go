@@ -2,10 +2,12 @@ package xray
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 )
 
 const DefaultDNSQueryStrategy = "UseIP"
@@ -288,6 +290,8 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		httpPort := co.InternalHttpPort
 		if httpPort <= 0 {
 			httpPort = port + 1
+		} else {
+			httpPort = getPort("outbound-http-"+co.Alias, httpPort)
 		}
 		listenAddr := co.InternalListenAddr
 		if listenAddr == "" {
@@ -370,6 +374,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			},
 			"sniffing": buildSniffingConfig(userCfg),
 		})
+	}
+	if err := validateInboundsPortConflicts(inbounds); err != nil {
+		return nil, err
 	}
 	xc["inbounds"] = inbounds
 
@@ -601,12 +608,74 @@ func guestOutboundTag(alias string) string {
 	return "guest-outbound-" + sanitizeTagComponent(alias)
 }
 
-type XrayConfig struct{}
-type LogConfig struct{}
-type APIConfig struct{}
-type DNSConfig struct{}
-type InboundConfig struct{}
-type StreamSettings struct{}
-type SniffingConfig struct{}
-type RoutingConfig struct{}
-type RoutingRule struct{}
+type inboundListener struct {
+	tag      string
+	protocol string
+	listen   string
+	port     int
+	hasTCP   bool
+	hasUDP   bool
+}
+
+func validateInboundsPortConflicts(inbounds []interface{}) error {
+	listeners := make([]inboundListener, 0, len(inbounds))
+	for _, item := range inbounds {
+		inb, ok := item.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		proto, _ := inb["protocol"].(string)
+		if proto == "tun" {
+			continue
+		}
+		portRaw := 0
+		if p, ok := inb["port"].(int); ok {
+			portRaw = p
+		} else if p, ok := inb["port"].(float64); ok {
+			portRaw = int(p)
+		}
+		if portRaw <= 0 {
+			continue
+		}
+		tag, _ := inb["tag"].(string)
+		listen, _ := inb["listen"].(string)
+		if listen == "" {
+			listen = "0.0.0.0"
+		}
+
+		hasTCP := true
+		hasUDP := false
+		if proto == "socks" {
+			if settings, ok := inb["settings"].(map[string]interface{}); ok {
+				if udp, ok := settings["udp"].(bool); ok && udp {
+					hasUDP = true
+				}
+			}
+		} else if proto == "dokodemo-door" {
+			hasUDP = true
+		}
+
+		current := inboundListener{
+			tag:      tag,
+			protocol: proto,
+			listen:   listen,
+			port:     portRaw,
+			hasTCP:   hasTCP,
+			hasUDP:   hasUDP,
+		}
+
+		for _, prev := range listeners {
+			if prev.port == current.port && utils.ListenAddressesOverlap(prev.listen, current.listen) {
+				conflictTCP := prev.hasTCP && current.hasTCP
+				conflictUDP := prev.hasUDP && current.hasUDP
+				if conflictTCP || conflictUDP {
+					return fmt.Errorf("inbound port conflict: %q (%s:%d/%s) and %q (%s:%d/%s) cannot bind the same port on overlapping addresses",
+						prev.tag, prev.listen, prev.port, prev.protocol,
+						current.tag, current.listen, current.port, current.protocol)
+				}
+			}
+		}
+		listeners = append(listeners, current)
+	}
+	return nil
+}

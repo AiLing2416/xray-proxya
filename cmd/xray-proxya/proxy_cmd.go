@@ -86,6 +86,112 @@ var proxyListCmd = &cobra.Command{
 	},
 }
 
+func checkProxyPortConflict(cfg *config.UserConfig, alias string, listenIP string, socksPort, httpPort int) error {
+	if socksPort == httpPort {
+		return fmt.Errorf("SOCKS port and HTTP port cannot be the same (%d)", socksPort)
+	}
+
+	// 1. Check conflicts with other custom outbounds
+	for _, co := range cfg.CustomOutbounds {
+		if co.Alias == alias || co.InternalProxyPort <= 0 {
+			continue
+		}
+		coSocks := co.InternalProxyPort
+		coHttp := co.InternalHttpPort
+		if coHttp <= 0 {
+			coHttp = coSocks + 1
+		}
+		coListen := co.InternalListenAddr
+		if coListen == "" {
+			coListen = "127.0.0.1"
+		}
+		if utils.ListenAddressesOverlap(listenIP, coListen) {
+			if socksPort == coSocks {
+				return fmt.Errorf("SOCKS port %d conflicts with relay %q SOCKS proxy (%s:%d)", socksPort, co.Alias, coListen, coSocks)
+			}
+			if socksPort == coHttp {
+				return fmt.Errorf("SOCKS port %d conflicts with relay %q HTTP proxy (%s:%d)", socksPort, co.Alias, coListen, coHttp)
+			}
+			if httpPort == coSocks {
+				return fmt.Errorf("HTTP port %d conflicts with relay %q SOCKS proxy (%s:%d)", httpPort, co.Alias, coListen, coSocks)
+			}
+			if httpPort == coHttp {
+				return fmt.Errorf("HTTP port %d conflicts with relay %q HTTP proxy (%s:%d)", httpPort, co.Alias, coListen, coHttp)
+			}
+		}
+	}
+
+	// 2. Check conflicts with presets
+	for _, m := range cfg.Presets {
+		if m.Enabled && m.Port > 0 {
+			if socksPort == m.Port {
+				return fmt.Errorf("SOCKS port %d conflicts with enabled preset %s (port %d)", socksPort, m.Mode, m.Port)
+			}
+			if httpPort == m.Port {
+				return fmt.Errorf("HTTP port %d conflicts with enabled preset %s (port %d)", httpPort, m.Mode, m.Port)
+			}
+		}
+	}
+
+	// 3. Check conflicts with subscriptions
+	if cfg.AdminSub.Port > 0 {
+		if socksPort == cfg.AdminSub.Port {
+			return fmt.Errorf("SOCKS port %d conflicts with Admin Subscription service (port %d)", socksPort, cfg.AdminSub.Port)
+		}
+		if httpPort == cfg.AdminSub.Port {
+			return fmt.Errorf("HTTP port %d conflicts with Admin Subscription service (port %d)", httpPort, cfg.AdminSub.Port)
+		}
+	}
+	if cfg.SubPort > 0 && cfg.SubPort != cfg.AdminSub.Port {
+		if socksPort == cfg.SubPort {
+			return fmt.Errorf("SOCKS port %d conflicts with Subscription service (port %d)", socksPort, cfg.SubPort)
+		}
+		if httpPort == cfg.SubPort {
+			return fmt.Errorf("HTTP port %d conflicts with Subscription service (port %d)", httpPort, cfg.SubPort)
+		}
+	}
+	if cfg.GuestSubPort > 0 {
+		if socksPort == cfg.GuestSubPort {
+			return fmt.Errorf("SOCKS port %d conflicts with Guest Subscription service (port %d)", socksPort, cfg.GuestSubPort)
+		}
+		if httpPort == cfg.GuestSubPort {
+			return fmt.Errorf("HTTP port %d conflicts with Guest Subscription service (port %d)", httpPort, cfg.GuestSubPort)
+		}
+	}
+	if cfg.SubscriptionInstances != nil {
+		for name, inst := range cfg.SubscriptionInstances {
+			if inst.Port > 0 {
+				if socksPort == inst.Port {
+					return fmt.Errorf("SOCKS port %d conflicts with subscription instance %q (port %d)", socksPort, name, inst.Port)
+				}
+				if httpPort == inst.Port {
+					return fmt.Errorf("HTTP port %d conflicts with subscription instance %q (port %d)", httpPort, name, inst.Port)
+				}
+			}
+		}
+	}
+
+	// 4. Check Internal API & Test Inbounds
+	if cfg.APIInbound > 0 && utils.ListenAddressesOverlap(listenIP, "127.0.0.1") {
+		if socksPort == cfg.APIInbound {
+			return fmt.Errorf("SOCKS port %d conflicts with API inbound (port %d)", socksPort, cfg.APIInbound)
+		}
+		if httpPort == cfg.APIInbound {
+			return fmt.Errorf("HTTP port %d conflicts with API inbound (port %d)", httpPort, cfg.APIInbound)
+		}
+	}
+	if cfg.TestInbound > 0 && utils.ListenAddressesOverlap(listenIP, "127.0.0.1") {
+		if socksPort == cfg.TestInbound {
+			return fmt.Errorf("SOCKS port %d conflicts with Test inbound (port %d)", socksPort, cfg.TestInbound)
+		}
+		if httpPort == cfg.TestInbound {
+			return fmt.Errorf("HTTP port %d conflicts with Test inbound (port %d)", httpPort, cfg.TestInbound)
+		}
+	}
+
+	return nil
+}
+
 var proxySetCmd = &cobra.Command{
 	Use:   "set [alias]",
 	Short: "Configure local SOCKS/HTTP proxy for a relay in STAGING",
@@ -111,11 +217,25 @@ var proxySetCmd = &cobra.Command{
 				socksPort := proxySocksPort
 				httpPort := proxyHttpPort
 
+				// Validate IP address format if provided
+				listenIP := proxyListenIP
+				if listenIP != "" {
+					if ip := net.ParseIP(listenIP); ip == nil {
+						fmt.Printf("❌ Invalid listen IP address: %s\n", listenIP)
+						return
+					}
+				} else {
+					listenIP = "127.0.0.1"
+				}
+
 				// Validate SOCKS port selection
 				if socksPort == 0 {
 					for {
 						p, _ := xray.GetFreePort()
-						if utils.IsPortFree(p + 1) {
+						if p > 0 && p < 65535 &&
+							utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
+							utils.IsPortFree(p+1) &&
+							checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
 							socksPort = p
 							break
 						}
@@ -127,24 +247,27 @@ var proxySetCmd = &cobra.Command{
 					httpPort = socksPort + 1
 				}
 
-				if !utils.IsPortFree(socksPort) {
-					fmt.Printf("❌ SOCKS Port %d is in use.\n", socksPort)
+				if socksPort < 1 || socksPort > 65535 {
+					fmt.Printf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)\n", socksPort)
 					return
 				}
-				if !utils.IsPortFree(httpPort) {
-					fmt.Printf("❌ HTTP Port %d is in use.\n", httpPort)
+				if httpPort < 1 || httpPort > 65535 {
+					fmt.Printf("❌ Invalid HTTP port: %d (must be between 1 and 65535)\n", httpPort)
 					return
 				}
 
-				// Validate IP address format if provided
-				listenIP := proxyListenIP
-				if listenIP != "" {
-					if ip := net.ParseIP(listenIP); ip == nil {
-						fmt.Printf("❌ Invalid listen IP address: %s\n", listenIP)
-						return
-					}
-				} else {
-					listenIP = "127.0.0.1"
+				if err := checkProxyPortConflict(cfg, alias, listenIP, socksPort, httpPort); err != nil {
+					fmt.Printf("❌ Port conflict: %v\n", err)
+					return
+				}
+
+				if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
+					fmt.Printf("❌ SOCKS Port %d is in use on the host.\n", socksPort)
+					return
+				}
+				if !utils.IsPortFree(httpPort) {
+					fmt.Printf("❌ HTTP Port %d is in use on the host.\n", httpPort)
+					return
 				}
 
 				cfg.CustomOutbounds[i].InternalProxyPort = socksPort
@@ -247,7 +370,9 @@ var proxyRunCmd = &cobra.Command{
 		if socksPort == 0 {
 			for {
 				p, _ := xray.GetFreePort()
-				if utils.IsPortFree(p + 1) {
+				if p > 0 && p < 65535 &&
+					utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
+					utils.IsPortFree(p+1) {
 					socksPort = p
 					break
 				}
@@ -266,12 +391,25 @@ var proxyRunCmd = &cobra.Command{
 			listenIP = "127.0.0.1"
 		}
 
-		if !utils.IsPortFree(socksPort) {
-			fmt.Printf("❌ SOCKS Port %d is in use.\n", socksPort)
+		if socksPort < 1 || socksPort > 65535 {
+			fmt.Printf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)\n", socksPort)
+			return
+		}
+		if httpPort < 1 || httpPort > 65535 {
+			fmt.Printf("❌ Invalid HTTP port: %d (must be between 1 and 65535)\n", httpPort)
+			return
+		}
+		if socksPort == httpPort {
+			fmt.Printf("❌ SOCKS port and HTTP port cannot be the same (%d).\n", socksPort)
+			return
+		}
+
+		if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
+			fmt.Printf("❌ SOCKS Port %d is in use on the host.\n", socksPort)
 			return
 		}
 		if !utils.IsPortFree(httpPort) {
-			fmt.Printf("❌ HTTP Port %d is in use.\n", httpPort)
+			fmt.Printf("❌ HTTP Port %d is in use on the host.\n", httpPort)
 			return
 		}
 		if ip := net.ParseIP(listenIP); ip == nil {

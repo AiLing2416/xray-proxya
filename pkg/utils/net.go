@@ -22,6 +22,45 @@ func IsPortFree(port int) bool {
 	return true
 }
 
+// IsUDPPortFree checks if a UDP port is available for listening on all interfaces.
+func IsUDPPortFree(port int) bool {
+	conn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", port))
+	if err != nil {
+		return false
+	}
+	conn.Close()
+	return true
+}
+
+// IsWildcardIP reports whether the IP address string represents a wildcard / all-interfaces bind
+// (such as "", "0.0.0.0", "::", "[::]", "*").
+func IsWildcardIP(ip string) bool {
+	trimmed := strings.TrimSpace(ip)
+	if trimmed == "" || trimmed == "0.0.0.0" || trimmed == "::" || trimmed == "[::]" || trimmed == "*" {
+		return true
+	}
+	parsed := net.ParseIP(trimmed)
+	return parsed != nil && parsed.IsUnspecified()
+}
+
+// ListenAddressesOverlap reports whether two listen addresses can bind-conflict on the same host.
+func ListenAddressesOverlap(addr1, addr2 string) bool {
+	a1 := strings.TrimSpace(addr1)
+	a2 := strings.TrimSpace(addr2)
+	if a1 == a2 {
+		return true
+	}
+	if IsWildcardIP(a1) || IsWildcardIP(a2) {
+		return true
+	}
+	ip1 := net.ParseIP(a1)
+	ip2 := net.ParseIP(a2)
+	if ip1 != nil && ip2 != nil && ip1.Equal(ip2) {
+		return true
+	}
+	return false
+}
+
 func GetFreePort() (int, error) {
 	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
 	if err != nil {

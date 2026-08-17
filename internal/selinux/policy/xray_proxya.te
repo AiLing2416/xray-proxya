@@ -111,6 +111,7 @@ corenet_tcp_bind_all_nodes(xray_proxya_t)
 corenet_tcp_bind_all_ports(xray_proxya_t)
 corenet_tcp_sendrecv_all_nodes(xray_proxya_t)
 corenet_udp_bind_all_nodes(xray_proxya_t)
+corenet_udp_bind_all_ports(xray_proxya_t)
 corenet_udp_sendrecv_all_nodes(xray_proxya_t)
 allow xray_proxya_t self:tcp_socket create_stream_socket_perms;
 allow xray_proxya_t self:udp_socket create_socket_perms;

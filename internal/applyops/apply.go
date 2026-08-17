@@ -92,6 +92,10 @@ func applyPendingLocked(opts Options) ([]string, error) {
 			if co.InternalProxyPort > 0 {
 				p, _ := xray.GetFreePort()
 				overrides["outbound-"+co.Alias] = p
+				if co.InternalHttpPort > 0 {
+					hp, _ := xray.GetFreePort()
+					overrides["outbound-http-"+co.Alias] = hp
+				}
 			}
 		}
 		testJSON, _ := xray.GenerateXrayJSON(cfg, overrides, "")

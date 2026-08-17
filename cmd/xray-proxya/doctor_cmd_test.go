@@ -77,3 +77,9 @@ func TestSELinuxPolicyAllowsOnlyGatewayLifecycleSystemActions(t *testing.T) {
 		t.Fatalf("gateway lifecycle system permission is missing: %q", want)
 	}
 }
+
+func TestSELinuxPolicyAllowsUDPPortBinding(t *testing.T) {
+	if !strings.Contains(proxyaSELinux.PolicySource, "corenet_udp_bind_all_ports(xray_proxya_t)") {
+		t.Fatal("policy must permit UDP port binding for local proxies and inbounds")
+	}
+}

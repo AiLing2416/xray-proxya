@@ -2261,17 +2261,34 @@ var setInternalProxyCmd = &cobra.Command{
 		}
 		for i, co := range cfg.CustomOutbounds {
 			if co.Alias == alias {
+				listenIP := co.InternalListenAddr
+				if listenIP == "" {
+					listenIP = "127.0.0.1"
+				}
 				if port == 0 {
 					for {
 						p, _ := xray.GetFreePort()
-						if utils.IsPortFree(p + 1) {
+						if p > 0 && p < 65535 &&
+							utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
+							utils.IsPortFree(p+1) &&
+							checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
 							port = p
 							break
 						}
 					}
-				} else if !utils.IsPortFree(port) || !utils.IsPortFree(port+1) {
-					fmt.Printf("❌ Port %d or %d is in use.\n", port, port+1)
-					return
+				} else {
+					if port < 1 || port >= 65535 {
+						fmt.Printf("❌ Invalid port: %d (must be between 1 and 65534)\n", port)
+						return
+					}
+					if err := checkProxyPortConflict(cfg, alias, listenIP, port, port+1); err != nil {
+						fmt.Printf("❌ Port conflict: %v\n", err)
+						return
+					}
+					if !utils.IsPortFree(port) || !utils.IsUDPPortFree(port) || !utils.IsPortFree(port+1) {
+						fmt.Printf("❌ Port %d or %d is in use on the host.\n", port, port+1)
+						return
+					}
 				}
 				cfg.CustomOutbounds[i].InternalProxyPort = port
 				if err := cfg.SaveEx(true); err == nil {
