@@ -4,16 +4,19 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
-	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/net/http2"
 )
 
 // CloudVendor identifiers
@@ -46,24 +49,12 @@ var cloudVendorDomains = map[string][]string{
 		"cloud.google.com",
 		"golang.org",
 	},
-	VendorAzure: {
-		"portal.azure.com",
-		"spoprod-a.akamaihd.net",
-		"statics-marketingsites-eas-ms-com.akamaized.net",
-		"learn.microsoft.com",
-		"login.microsoftonline.com",
-		"graph.microsoft.com",
-		"res.cdn.office.net",
-		"c.s-microsoft.com",
-		"azure.microsoft.com",
-	},
+	VendorAzure: {},
 	VendorCloudflare: {
 		"cdnjs.cloudflare.com",
 		"www.cloudflare.com",
-		"pages.dev",
 		"community.cloudflare.com",
 		"dash.cloudflare.com",
-		"workers.dev",
 	},
 	VendorOracle: {
 		"docs.oracle.com",
@@ -78,7 +69,6 @@ var cloudVendorDomains = map[string][]string{
 		"www.qualcomm.com",
 		"github.githubassets.com",
 		"api.github.com",
-		"www.github.com",
 		"addons.mozilla.org",
 		"www.debian.org",
 		"www.ubuntu.com",
@@ -86,7 +76,6 @@ var cloudVendorDomains = map[string][]string{
 		"pkg.go.dev",
 		"cdnjs.cloudflare.com",
 		"a0.awsstatic.com",
-		"portal.azure.com",
 		"docs.oracle.com",
 	},
 }
@@ -124,15 +113,30 @@ func GetAllCloudVendors() []string {
 	}
 }
 
-// GetCloudVendorDomains returns domains for a specific vendor.
-func GetCloudVendorDomains(vendor string) []string {
+// IsValidCloudVendor checks if vendor is one of the recognized cloud vendors.
+func IsValidCloudVendor(vendor string) bool {
 	v := NormalizeVendor(vendor)
-	if domains, ok := cloudVendorDomains[v]; ok && len(domains) > 0 {
-		out := make([]string, len(domains))
-		copy(out, domains)
-		return out
+	for _, recognized := range GetAllCloudVendors() {
+		if v == recognized {
+			return true
+		}
 	}
-	return GetCloudVendorDomains(VendorGeneric)
+	return false
+}
+
+// GetCloudVendorDomains returns domains for a specific vendor, or an error if unknown or empty.
+func GetCloudVendorDomains(vendor string) ([]string, error) {
+	v := NormalizeVendor(vendor)
+	domains, ok := cloudVendorDomains[v]
+	if !ok {
+		return nil, fmt.Errorf("unknown cloud vendor %q", vendor)
+	}
+	if len(domains) == 0 {
+		return nil, fmt.Errorf("no candidate domains available for vendor %q", vendor)
+	}
+	out := make([]string, len(domains))
+	copy(out, domains)
+	return out, nil
 }
 
 // GetAllRealityDomains returns all deduplicated domains across all pools.
@@ -153,6 +157,9 @@ func GetAllRealityDomains() []string {
 // GetRandomRealityDomain returns a random domain from the generic pool.
 func GetRandomRealityDomain() string {
 	domains := cloudVendorDomains[VendorGeneric]
+	if len(domains) == 0 {
+		return ""
+	}
 	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(domains))))
 	if err != nil || n.Int64() >= int64(len(domains)) {
 		return domains[0]
@@ -213,43 +220,138 @@ func DetectCloudVendor() string {
 	return ""
 }
 
-// ValidateSkinTarget performs comprehensive qualification for a Reality fallback target:
-// 1. TCP connectivity
-// 2. Mandatory TLS 1.3 protocol negotiation
-// 3. Valid certificate matching hostname
-// 4. Regional redirection (.cn trap) check
-// Returns measured RTT on success.
-func ValidateSkinTarget(target string, timeout time.Duration) (time.Duration, error) {
-	if timeout <= 0 {
-		timeout = 3 * time.Second
+// NormalizeRealityTarget parses, normalizes, and validates a REALITY destination target.
+// Returns normalized host (lowercase, no trailing dot), port, targetAddr (host:port), and any error.
+func NormalizeRealityTarget(target string) (string, int, string, error) {
+	raw := strings.TrimSpace(target)
+	if raw == "" {
+		return "", 0, "", fmt.Errorf("target cannot be empty")
+	}
+	if strings.Contains(raw, "://") || strings.Contains(raw, "/") || strings.Contains(raw, "?") || strings.Contains(raw, "#") {
+		return "", 0, "", fmt.Errorf("target %q must be host or host:port, not a URL or path", target)
 	}
 
-	host, portStr, err := net.SplitHostPort(target)
-	if err != nil {
-		host = strings.TrimSpace(target)
+	var host string
+	var portStr string
+	if strings.Contains(raw, ":") {
+		var err error
+		host, portStr, err = net.SplitHostPort(raw)
+		if err != nil {
+			return "", 0, "", fmt.Errorf("invalid target %q: %w", target, err)
+		}
+	} else {
+		host = raw
 		portStr = "443"
 	}
-	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
-	if host == "" || net.ParseIP(host) != nil {
-		return 0, fmt.Errorf("target %q must be a valid domain name", target)
-	}
-	targetAddr := net.JoinHostPort(host, portStr)
 
-	start := time.Now()
-	dialer := &net.Dialer{Timeout: timeout}
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" {
+		return "", 0, "", fmt.Errorf("target host cannot be empty")
+	}
+	if net.ParseIP(host) != nil {
+		return "", 0, "", fmt.Errorf("target %q must be a domain name, not an IP address literal", target)
+	}
+	if strings.ContainsAny(host, " \t\r\n/\\:*?\"<>|") {
+		return "", 0, "", fmt.Errorf("target host %q contains invalid characters", host)
+	}
+	if !strings.Contains(host, ".") {
+		return "", 0, "", fmt.Errorf("target host %q must be a fully qualified domain name", host)
+	}
+
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return "", 0, "", fmt.Errorf("invalid port %q in target %q", portStr, target)
+	}
+
+	return host, port, net.JoinHostPort(host, strconv.Itoa(port)), nil
+}
+
+// ValidateRealitySNIAndDest ensures that SNI is a normalized domain name and dest is host:port
+// with the host matching SNI exactly. If dest is empty, it defaults to <SNI>:443.
+func ValidateRealitySNIAndDest(sni, dest string) (string, string, error) {
+	normSNI := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(sni)), ".")
+	if normSNI == "" {
+		return "", "", fmt.Errorf("REALITY SNI cannot be empty")
+	}
+	if net.ParseIP(normSNI) != nil {
+		return "", "", fmt.Errorf("REALITY SNI %q cannot be an IP address", sni)
+	}
+	if strings.ContainsAny(normSNI, " \t\r\n/\\:*?\"<>|") || !strings.Contains(normSNI, ".") {
+		return "", "", fmt.Errorf("REALITY SNI %q must be a valid domain name", sni)
+	}
+
+	dest = strings.TrimSpace(dest)
+	if dest == "" {
+		dest = net.JoinHostPort(normSNI, "443")
+	}
+
+	destHost, _, normDest, err := NormalizeRealityTarget(dest)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid REALITY dest %q: %w", dest, err)
+	}
+
+	if destHost != normSNI {
+		return "", "", fmt.Errorf("REALITY dest host %q must match SNI %q", destHost, normSNI)
+	}
+
+	return normSNI, normDest, nil
+}
+
+type targetValidatorOptions struct {
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	rootCAs     *x509.CertPool
+}
+
+var defaultTargetValidatorOpts = targetValidatorOptions{}
+
+// ValidateSkinTarget performs comprehensive qualification for a Reality fallback target:
+// 1. Host/port normalization and rejection of IP literals / invalid targets
+// 2. TCP connectivity
+// 3. Mandatory TLS 1.3 protocol negotiation with X25519 support
+// 4. Valid certificate matching hostname (no InsecureSkipVerify)
+// 5. ALPN negotiation of HTTP/2 ("h2")
+// 6. HTTP/2 GET request to "/" confirming non-redirect (rejects any 3xx) and valid status (2xx, 401, 403, 404; rejects 5xx).
+// Returns measured handshake RTT on success.
+func ValidateSkinTarget(target string, timeout time.Duration) (time.Duration, error) {
+	return validateSkinTargetInternal(target, timeout, defaultTargetValidatorOpts)
+}
+
+func validateSkinTargetInternal(target string, timeout time.Duration, opts targetValidatorOptions) (time.Duration, error) {
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+
+	host, _, targetAddr, err := NormalizeRealityTarget(target)
+	if err != nil {
+		return 0, err
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	rawConn, err := dialer.DialContext(ctx, "tcp", targetAddr)
+	dialFn := opts.dialContext
+	if dialFn == nil {
+		dialer := &net.Dialer{Timeout: timeout}
+		dialFn = dialer.DialContext
+	}
+
+	rawConn, err := dialFn(ctx, "tcp", targetAddr)
 	if err != nil {
-		return 0, fmt.Errorf("TCP connection failed to %s: %w", targetAddr, err)
+		return 0, fmt.Errorf("TCP connection to %s failed: %w", targetAddr, err)
 	}
 	defer rawConn.Close()
 
-	tlsConn := tls.Client(rawConn, &tls.Config{
-		ServerName: host,
-		MinVersion: tls.VersionTLS13,
-	})
+	tlsConfig := &tls.Config{
+		ServerName:       host,
+		MinVersion:       tls.VersionTLS13,
+		MaxVersion:       tls.VersionTLS13,
+		NextProtos:       []string{"h2"},
+		CurvePreferences: []tls.CurveID{tls.X25519},
+		RootCAs:          opts.rootCAs,
+	}
+
+	tlsConn := tls.Client(rawConn, tlsConfig)
+	start := time.Now()
 	if err := tlsConn.HandshakeContext(ctx); err != nil {
 		return 0, fmt.Errorf("TLS 1.3 handshake failed for %s: %w", host, err)
 	}
@@ -257,74 +359,76 @@ func ValidateSkinTarget(target string, timeout time.Duration) (time.Duration, er
 
 	state := tlsConn.ConnectionState()
 	if state.Version != tls.VersionTLS13 {
-		return 0, fmt.Errorf("server did not negotiate TLS 1.3 (negotiated 0x%04x)", state.Version)
+		return 0, fmt.Errorf("server %s negotiated TLS version 0x%04x (TLS 1.3 required)", host, state.Version)
+	}
+	if state.NegotiatedProtocol != "h2" {
+		return 0, fmt.Errorf("server %s negotiated ALPN protocol %q (h2 required)", host, state.NegotiatedProtocol)
 	}
 	if len(state.PeerCertificates) == 0 {
 		return 0, fmt.Errorf("no peer certificate presented by %s", host)
 	}
 	if err := state.PeerCertificates[0].VerifyHostname(host); err != nil {
-		return 0, fmt.Errorf("certificate does not cover %s: %w", host, err)
+		return 0, fmt.Errorf("certificate does not match %s: %w", host, err)
 	}
 
-	// Regional redirect trap check
-	checkRedirectTrap(ctx, host, targetAddr, timeout)
+	t := &http2.Transport{}
+	clientConn, err := t.NewClientConn(tlsConn)
+	if err != nil {
+		return 0, fmt.Errorf("HTTP/2 client init failed for %s: %w", host, err)
+	}
+	defer clientConn.Close()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+targetAddr+"/", nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create HTTP/2 request: %w", err)
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+	resp, err := clientConn.RoundTrip(req)
+	if err != nil {
+		return 0, fmt.Errorf("HTTP/2 request failed for %s: %w", host, err)
+	}
+	defer resp.Body.Close()
+
+	// Read limited body to release stream properly
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+
+	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
+		return 0, fmt.Errorf("target %s returned HTTP redirect (%d), expected non-redirect response", host, resp.StatusCode)
+	}
+	if resp.StatusCode >= 500 {
+		return 0, fmt.Errorf("target %s returned server error (%d)", host, resp.StatusCode)
+	}
+	if !((resp.StatusCode >= 200 && resp.StatusCode < 300) ||
+		resp.StatusCode == http.StatusUnauthorized ||
+		resp.StatusCode == http.StatusForbidden ||
+		resp.StatusCode == http.StatusNotFound) {
+		return 0, fmt.Errorf("target %s returned unexpected HTTP status %d (expected 2xx, 401, 403, or 404)", host, resp.StatusCode)
+	}
 
 	return rtt, nil
 }
 
-func checkRedirectTrap(ctx context.Context, host, targetAddr string, timeout time.Duration) {
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://"+targetAddr+"/", nil)
-	if err != nil {
-		return
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
-	req.Header.Set("Range", "bytes=0-0")
-
-	httpClient := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				ServerName: host,
-				MinVersion: tls.VersionTLS13,
-			},
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Timeout: timeout,
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		loc := resp.Header.Get("Location")
-		if loc != "" {
-			if u, err := url.Parse(loc); err == nil && u.Hostname() != "" {
-				locHost := strings.ToLower(u.Hostname())
-				if strings.HasSuffix(locHost, ".cn") && !strings.HasSuffix(host, ".cn") {
-					// Warning logged if needed, or non-fatal
-				}
-			}
-		}
-	}
-}
-
-type probeResult struct {
-	domain string
-	rtt    time.Duration
-	err    error
-}
-
 // BenchmarkDomains probes candidate domains concurrently and returns the fastest valid candidate.
 func BenchmarkDomains(domains []string, timeout time.Duration) (string, time.Duration, error) {
+	return benchmarkDomainsInternal(domains, timeout, defaultTargetValidatorOpts)
+}
+
+func benchmarkDomainsInternal(domains []string, timeout time.Duration, opts targetValidatorOptions) (string, time.Duration, error) {
 	if len(domains) == 0 {
 		return "", 0, fmt.Errorf("no candidate domains provided")
 	}
 	if timeout <= 0 {
-		timeout = 3 * time.Second
+		timeout = 5 * time.Second
+	}
+
+	const maxWorkers = 8
+	sem := make(chan struct{}, maxWorkers)
+
+	type probeResult struct {
+		domain string
+		rtt    time.Duration
+		err    error
 	}
 
 	results := make(chan probeResult, len(domains))
@@ -335,7 +439,10 @@ func BenchmarkDomains(domains []string, timeout time.Duration) (string, time.Dur
 		wg.Add(1)
 		go func(dom string) {
 			defer wg.Done()
-			rtt, err := ValidateSkinTarget(dom, timeout)
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			rtt, err := validateSkinTargetInternal(dom, timeout, opts)
 			results <- probeResult{domain: dom, rtt: rtt, err: err}
 		}(domain)
 	}
@@ -359,7 +466,7 @@ func BenchmarkDomains(domains []string, timeout time.Duration) (string, time.Dur
 	}
 
 	if bestDomain == "" {
-		return "", 0, fmt.Errorf("no candidate domains reached/validated (%s)", strings.Join(allErrs, "; "))
+		return "", 0, fmt.Errorf("no candidate domains qualified (%s)", strings.Join(allErrs, "; "))
 	}
 	return bestDomain, bestRTT, nil
 }

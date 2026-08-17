@@ -211,7 +211,11 @@ TLS-preserving camouflage (Skin) highlights:
 				vendor = config.NormalizeVendor(presetSkinVendor)
 			}
 
-			domains := config.GetCloudVendorDomains(vendor)
+			domains, err := config.GetCloudVendorDomains(vendor)
+			if err != nil {
+				fmt.Printf("❌ Error obtaining [%s] domain pool: %v\n", vendor, err)
+				return
+			}
 			fmt.Printf("🔍 Probing and benchmarking [%s] candidate pool (%d domains)...\n", vendor, len(domains))
 			bestDomain, rtt, err := config.BenchmarkDomains(domains, 3*time.Second)
 			if err != nil {
@@ -230,10 +234,16 @@ TLS-preserving camouflage (Skin) highlights:
 			label := detectedVendor
 			if detectedVendor != "" {
 				fmt.Printf("☁️  Detected cloud provider: [%s]\n", detectedVendor)
-				domains = config.GetCloudVendorDomains(detectedVendor)
+				var err error
+				domains, err = config.GetCloudVendorDomains(detectedVendor)
+				if err != nil || len(domains) == 0 {
+					fmt.Printf("⚠️  No candidate domains available for detected provider [%s]. Falling back to generic pool.\n", detectedVendor)
+					domains, _ = config.GetCloudVendorDomains(config.VendorGeneric)
+					label = "generic"
+				}
 			} else {
 				fmt.Printf("ℹ️  Cloud provider not recognized or non-cloud IP. Using generic global domain pool.\n")
-				domains = config.GetCloudVendorDomains(config.VendorGeneric)
+				domains, _ = config.GetCloudVendorDomains(config.VendorGeneric)
 				label = "generic"
 			}
 
