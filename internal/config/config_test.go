@@ -268,3 +268,51 @@ func TestBackfillDefaultsRealitySNIAndDestMigration(t *testing.T) {
 		t.Errorf("Preset Dest = %q, want custom.port.com:8443", cfgCustom.Presets[0].Dest)
 	}
 }
+
+func TestRealityFingerprintAllowlist(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		fp, err := GetRandomRealityFingerprint()
+		if err != nil {
+			t.Fatalf("GetRandomRealityFingerprint failed: %v", err)
+		}
+		if !IsAllowedRealityFingerprint(fp) {
+			t.Errorf("generated fingerprint %q not in allowlist", fp)
+		}
+	}
+
+	if IsAllowedRealityFingerprint("random") || IsAllowedRealityFingerprint("randomized") || IsAllowedRealityFingerprint("") {
+		t.Errorf("IsAllowedRealityFingerprint accepted forbidden fingerprint")
+	}
+}
+
+func TestBackfillDefaultsFingerprintIdempotent(t *testing.T) {
+	cfg := &UserConfig{
+		Role: RoleServer,
+		Presets: []ModeInfo{
+			{
+				Mode:    ModeVLESSVision,
+				Enabled: true,
+				SNI:     "test.domain.com",
+				Dest:    "test.domain.com:443",
+			},
+		},
+	}
+
+	cfg.BackfillDefaults()
+	fp1 := cfg.Presets[0].Fingerprint
+	if fp1 == "" || !IsAllowedRealityFingerprint(fp1) {
+		t.Fatalf("expected valid initial fingerprint, got %q", fp1)
+	}
+
+	// Repeat backfill - must preserve fp1
+	changes2 := cfg.BackfillDefaults()
+	fp2 := cfg.Presets[0].Fingerprint
+	if fp2 != fp1 {
+		t.Errorf("fingerprint mutated on second backfill: %q != %q", fp2, fp1)
+	}
+	for _, c := range changes2 {
+		if c == "backfilled reality fingerprint for preset "+string(ModeVLESSVision) {
+			t.Errorf("redundant fingerprint backfill change reported")
+		}
+	}
+}

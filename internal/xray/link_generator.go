@@ -63,14 +63,22 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 
 		switch mode.Mode {
 		case config.ModeVLESSReality:
+			fp := mode.Fingerprint
+			if fp == "" {
+				fp = "chrome"
+			}
 			ps := fmt.Sprintf("VLess-XHTTP-Reality-%d%s", mode.Port, psSuffix)
-			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=chrome&type=xhttp&serviceName=&path=%s&sni=%s&sid=%s&spx=%%2F#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(mode.Path), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
+			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=%s&type=xhttp&serviceName=&path=%s&sni=%s&sid=%s&spx=%%2F#%s",
+				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(fp), url.QueryEscape(mode.Path), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
 
 		case config.ModeVLESSVision:
+			fp := mode.Fingerprint
+			if fp == "" {
+				fp = "chrome"
+			}
 			ps := fmt.Sprintf("VLess-Vision-Reality-%d%s", mode.Port, psSuffix)
-			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=%s&sid=%s#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
+			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=%s&type=tcp&flow=xtls-rprx-vision&sni=%s&sid=%s#%s",
+				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(fp), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
 
 		case config.ModeVLESSXHTTP:
 			ps := fmt.Sprintf("VLess-XHTTP-KEM768-%d%s", mode.Port, psSuffix)

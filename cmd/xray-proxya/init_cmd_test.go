@@ -96,9 +96,16 @@ func TestServerInitSelectsOneRealityTargetAndEnablesOnlyPreset1(t *testing.T) {
 		t.Errorf("Vision target = (%q, %q), want (selected.test.domain, selected.test.domain:443)",
 			visionMode.SNI, visionMode.Dest)
 	}
+	if !config.IsAllowedRealityFingerprint(visionMode.Fingerprint) {
+		t.Errorf("Vision fingerprint %q not in allowlist", visionMode.Fingerprint)
+	}
+
 	if realityMode.SNI != "selected.test.domain" || realityMode.Dest != "selected.test.domain:443" {
 		t.Errorf("Reality target = (%q, %q), want (selected.test.domain, selected.test.domain:443)",
 			realityMode.SNI, realityMode.Dest)
+	}
+	if !config.IsAllowedRealityFingerprint(realityMode.Fingerprint) {
+		t.Errorf("Reality fingerprint %q not in allowlist", realityMode.Fingerprint)
 	}
 }
 

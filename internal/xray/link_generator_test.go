@@ -64,3 +64,61 @@ func TestGenerateAllLinksURLEscapesVLESSXHTTPPassword(t *testing.T) {
 	}
 }
 
+func TestGenerateLinksOutputsConfiguredFingerprintAndStable(t *testing.T) {
+	cfg := &config.UserConfig{
+		UUID: "12345678-1234-1234-1234-123456789012",
+		Presets: []config.ModeInfo{
+			{
+				Mode:        config.ModeVLESSVision,
+				Enabled:     true,
+				Port:        443,
+				SNI:         "vision.domain.com",
+				Dest:        "vision.domain.com:443",
+				Fingerprint: "firefox",
+				Settings: config.Settings{
+					PublicKey: "pubkey-vision",
+					ShortID:   "sid1",
+				},
+			},
+			{
+				Mode:        config.ModeVLESSReality,
+				Enabled:     true,
+				Port:        8443,
+				SNI:         "reality.domain.com",
+				Dest:        "reality.domain.com:443",
+				Path:        "/xhttp-path",
+				Fingerprint: "safari",
+				Settings: config.Settings{
+					PublicKey: "pubkey-reality",
+					ShortID:   "sid2",
+				},
+			},
+		},
+	}
+
+	links1 := GenerateLinks(cfg, "1.2.3.4")
+	if len(links1) != 2 {
+		t.Fatalf("expected 2 links, got %d", len(links1))
+	}
+
+	// Vision link (links1[0]) should have fp=firefox
+	if !strings.Contains(links1[0], "fp=firefox") {
+		t.Errorf("Vision link %q does not contain fp=firefox", links1[0])
+	}
+	if strings.Contains(links1[0], "fp=chrome") {
+		t.Errorf("Vision link %q unexpectedly contains fp=chrome", links1[0])
+	}
+
+	// Reality link (links1[1]) should have fp=safari
+	if !strings.Contains(links1[1], "fp=safari") {
+		t.Errorf("Reality link %q does not contain fp=safari", links1[1])
+	}
+
+	// Multiple calls produce identical results (no jitter/randomization on each show)
+	links2 := GenerateLinks(cfg, "1.2.3.4")
+	for i := range links1 {
+		if links1[i] != links2[i] {
+			t.Errorf("link %d mutated on second call: %q != %q", i, links1[i], links2[i])
+		}
+	}
+}

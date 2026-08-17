@@ -341,7 +341,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				visionClients = append(visionClients, client)
 			}
 			in["settings"] = map[string]interface{}{"clients": visionClients, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{normSNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
+			in["streamSettings"] = map[string]interface{}{"network": "tcp", "security": "reality", "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{normSNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}, "minClientVer": config.MinRealityClientVersion}}
 		case config.ModeVLESSReality:
 			normSNI, normDest, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest)
 			if err != nil {
@@ -350,7 +350,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			dest = normDest
 			in["protocol"] = "vless"
 			in["settings"] = map[string]interface{}{"clients": clients, "decryption": "none"}
-			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{normSNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}}}
+			in["streamSettings"] = map[string]interface{}{"network": "xhttp", "security": "reality", "xhttpSettings": map[string]interface{}{"path": m.Path}, "realitySettings": map[string]interface{}{"dest": dest, "serverNames": []string{normSNI}, "privateKey": m.Settings.PrivateKey, "shortIds": []string{m.Settings.ShortID}, "minClientVer": config.MinRealityClientVersion}}
 		case config.ModeVLESSXHTTP:
 			in["protocol"] = "vless"
 			decryption := "none"

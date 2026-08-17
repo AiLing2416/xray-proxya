@@ -561,6 +561,64 @@ func TestGenerateXrayJSONRejectsMismatchedRealityTarget(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONIncludesMinClientVerForReality(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "www.intel.com",
+				Dest:    "www.intel.com:443",
+			},
+			{
+				Mode:    config.ModeVLESSReality,
+				Enabled: true,
+				Port:    8443,
+				SNI:     "www.intel.com",
+				Dest:    "www.intel.com:443",
+				Path:    "/xhttp",
+			},
+			{
+				Mode:    config.ModeVLESSXHTTP,
+				Enabled: true,
+				Port:    8080,
+				Path:    "/xhttp-direct",
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds := parsed["inbounds"].([]interface{})
+
+	for _, rawIn := range inbounds {
+		in := rawIn.(map[string]interface{})
+		tag := in["tag"].(string)
+		if tag == string(config.ModeVLESSVision) || tag == string(config.ModeVLESSReality) {
+			ss, ok := in["streamSettings"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("inbound %s missing streamSettings", tag)
+			}
+			rs, ok := ss["realitySettings"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("inbound %s missing realitySettings", tag)
+			}
+			ver, ok := rs["minClientVer"].(string)
+			if !ok || ver != "26.2.6" {
+				t.Errorf("inbound %s minClientVer = %q, want 26.2.6", tag, ver)
+			}
+		} else if tag == string(config.ModeVLESSXHTTP) {
+			ss, ok := in["streamSettings"].(map[string]interface{})
+			if ok {
+				if rs, ok := ss["realitySettings"].(map[string]interface{}); ok {
+					t.Errorf("non-reality inbound %s has realitySettings: %v", tag, rs)
+				}
+			}
+		}
+	}
+}
+
 func generateAndDecodeXrayConfig(t *testing.T, cfg *config.UserConfig, testTarget string) map[string]interface{} {
 	t.Helper()
 

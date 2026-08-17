@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -26,6 +28,37 @@ const (
 	ModeVMessWS        PresetMode = "vmess-ws"
 	ModeShadowsocksTCP PresetMode = "shadowsocks-tcp"
 )
+
+const (
+	MinRealityClientVersion = "26.2.6"
+)
+
+var AllowedRealityFingerprints = []string{
+	"chrome",
+	"firefox",
+	"safari",
+	"ios",
+	"edge",
+}
+
+// GetRandomRealityFingerprint picks a random browser fingerprint from AllowedRealityFingerprints using crypto/rand.
+func GetRandomRealityFingerprint() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(AllowedRealityFingerprints))))
+	if err != nil {
+		return "", fmt.Errorf("failed to generate random reality fingerprint: %w", err)
+	}
+	return AllowedRealityFingerprints[n.Int64()], nil
+}
+
+// IsAllowedRealityFingerprint checks whether a fingerprint is within the allowed browser fingerprint list.
+func IsAllowedRealityFingerprint(fp string) bool {
+	for _, allowed := range AllowedRealityFingerprints {
+		if fp == allowed {
+			return true
+		}
+	}
+	return false
+}
 
 var PresetOrder = []PresetMode{
 	ModeVLESSVision,
@@ -252,15 +285,16 @@ type CustomOutbound struct {
 }
 
 type ModeInfo struct {
-	Mode      PresetMode `json:"mode"`
-	Enabled   bool       `json:"enabled"`
-	Port      int        `json:"port"`
-	SNI       string     `json:"sni,omitempty"`
-	Dest      string     `json:"dest,omitempty"`
-	Path      string     `json:"path,omitempty"`
-	Settings  Settings   `json:"settings"`
-	Skin      bool       `json:"skin,omitempty"`
-	RegenFlag bool       `json:"regen_flag,omitempty"`
+	Mode        PresetMode `json:"mode"`
+	Enabled     bool       `json:"enabled"`
+	Port        int        `json:"port"`
+	SNI         string     `json:"sni,omitempty"`
+	Dest        string     `json:"dest,omitempty"`
+	Path        string     `json:"path,omitempty"`
+	Fingerprint string     `json:"fingerprint,omitempty"`
+	Settings    Settings   `json:"settings"`
+	Skin        bool       `json:"skin,omitempty"`
+	RegenFlag   bool       `json:"regen_flag,omitempty"`
 }
 
 type Settings struct {
@@ -598,6 +632,14 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			if m.Skin {
 				m.Skin = false
 				changes = append(changes, "cleared legacy skin flag for preset "+string(m.Mode))
+			}
+			if m.Fingerprint == "" || !IsAllowedRealityFingerprint(m.Fingerprint) {
+				fp, err := GetRandomRealityFingerprint()
+				if err != nil {
+					fp = "chrome"
+				}
+				m.Fingerprint = fp
+				changes = append(changes, "backfilled reality fingerprint for preset "+string(m.Mode))
 			}
 			if m.SNI != "" {
 				normSNI := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), ".")

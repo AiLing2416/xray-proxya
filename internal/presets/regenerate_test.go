@@ -63,6 +63,9 @@ func TestRegenerateMarkedModesPreservesRealitySNIAndDest(t *testing.T) {
 	if v.Settings.ShortID == "old-id" || v.Settings.ShortID == "" {
 		t.Errorf("Vision ShortID was not regenerated")
 	}
+	if !config.IsAllowedRealityFingerprint(v.Fingerprint) {
+		t.Errorf("Vision Fingerprint %q not in allowlist", v.Fingerprint)
+	}
 
 	// Reality checks
 	r := cfg.Presets[1]
@@ -80,5 +83,8 @@ func TestRegenerateMarkedModesPreservesRealitySNIAndDest(t *testing.T) {
 	}
 	if r.Settings.PrivateKey == "old-priv2" || r.Settings.PrivateKey == "" {
 		t.Errorf("Reality PrivateKey was not regenerated")
+	}
+	if !config.IsAllowedRealityFingerprint(r.Fingerprint) {
+		t.Errorf("Reality Fingerprint %q not in allowlist", r.Fingerprint)
 	}
 }

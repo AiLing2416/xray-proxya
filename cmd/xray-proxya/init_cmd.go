@@ -161,11 +161,25 @@ func runInit(cmd *cobra.Command, args []string) error {
 		case config.ModeVLESSVision:
 			m.SNI = selectedSNI
 			m.Dest = selectedDest
+			if role == config.RoleServer {
+				fp, err := config.GetRandomRealityFingerprint()
+				if err != nil {
+					return fmt.Errorf("generate reality fingerprint: %w", err)
+				}
+				m.Fingerprint = fp
+			}
 			m.Settings.PrivateKey, m.Settings.PublicKey, m.Settings.ShortID = pk, pub, utils.GenerateRandomString(4)
 		case config.ModeVLESSReality:
 			m.SNI = selectedSNI
 			m.Dest = selectedDest
 			m.Path = "/" + utils.GenerateRandomString(8)
+			if role == config.RoleServer {
+				fp, err := config.GetRandomRealityFingerprint()
+				if err != nil {
+					return fmt.Errorf("generate reality fingerprint: %w", err)
+				}
+				m.Fingerprint = fp
+			}
 			m.Settings.PrivateKey, m.Settings.PublicKey, m.Settings.ShortID = pk, pub, utils.GenerateRandomString(4)
 		case config.ModeVLESSXHTTP:
 			m.Path = "/" + utils.GenerateRandomString(8)

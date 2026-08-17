@@ -6,7 +6,7 @@ import (
 	"xray-proxya/pkg/utils"
 )
 
-// RegenerateMarkedModes refreshes secrets or paths for any preset with RegenFlag set.
+// RegenerateMarkedModes refreshes secrets, paths, and fingerprints for any preset with RegenFlag set.
 // It mutates cfg in place and clears RegenFlag after regeneration succeeds.
 // For REALITY presets (ModeVLESSVision and ModeVLESSReality), existing SNI and Dest are preserved.
 func RegenerateMarkedModes(cfg *config.UserConfig) error {
@@ -22,12 +22,21 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			if err != nil {
 				return err
 			}
+			fp, err := config.GetRandomRealityFingerprint()
+			if err != nil {
+				return err
+			}
 			mode.Settings.PrivateKey = pk
 			mode.Settings.PublicKey = pub
 			mode.Settings.ShortID = xray.GetRandomShortID()
+			mode.Fingerprint = fp
 
 		case config.ModeVLESSReality:
 			pk, pub, err := xray.GenerateX25519()
+			if err != nil {
+				return err
+			}
+			fp, err := config.GetRandomRealityFingerprint()
 			if err != nil {
 				return err
 			}
@@ -35,6 +44,7 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			mode.Settings.PrivateKey = pk
 			mode.Settings.PublicKey = pub
 			mode.Settings.ShortID = xray.GetRandomShortID()
+			mode.Fingerprint = fp
 
 		case config.ModeVLESSXHTTP:
 			enc, dec, err := xray.GenerateMLKEM()
