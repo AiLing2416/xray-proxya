@@ -15,6 +15,21 @@ func TestIsMissingKernelObject(t *testing.T) {
 	if !isMissingKernelObject(errors.New("command failed"), []byte("Error: FIB table does not exist.")) {
 		t.Fatal("missing policy-routing table should be treated as an idempotent cleanup")
 	}
+	if !isMissingKernelObject(errors.New("command failed"), []byte("iptables: Bad rule (does a matching rule exist in that chain?).")) {
+		t.Fatal("missing iptables rule should be treated as an idempotent cleanup")
+	}
+	if !isMissingKernelObject(errors.New("command failed"), []byte("ip6tables: Bad rule (does a matching rule exist in that chain?).")) {
+		t.Fatal("missing ip6tables rule should be treated as an idempotent cleanup")
+	}
+	if !isMissingKernelObject(errors.New("command failed"), []byte("iptables: No chain/target/match by that name.")) {
+		t.Fatal("missing iptables target or match should be treated as an idempotent cleanup")
+	}
+	if !isMissingKernelObject(errors.New("command failed"), []byte("ip6tables: Protocol not available")) {
+		t.Fatal("disabled IPv6 stack should be treated as an idempotent cleanup")
+	}
+	if !isMissingKernelObject(errors.New("command failed"), []byte("iptables: No such device")) {
+		t.Fatal("removed/renamed network interface should be treated as an idempotent cleanup")
+	}
 	if isMissingKernelObject(errors.New("command failed"), []byte("permission denied")) {
 		t.Fatal("permission errors must not be treated as missing objects")
 	}

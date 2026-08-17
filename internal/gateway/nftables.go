@@ -1092,6 +1092,12 @@ func isMissingKernelObject(err error, output []byte) bool {
 		"no such rule",
 		"no rule",
 		"does not exist",
+		"bad rule",
+		"does a matching rule exist",
+		"no chain/target/match",
+		"protocol not available",
+		"address family not supported",
+		"no such device",
 	} {
 		if strings.Contains(text, marker) {
 			return true
