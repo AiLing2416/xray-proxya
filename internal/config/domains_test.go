@@ -45,14 +45,14 @@ func TestNormalizeVendor(t *testing.T) {
 }
 
 func TestIsValidCloudVendor(t *testing.T) {
-	valid := []string{"aws", "AWS", "gcp", "GCP", "azure", "cloudflare", "oracle", "generic"}
+	valid := []string{"aws", "AWS", "gcp", "GCP", "oracle", "generic"}
 	for _, v := range valid {
 		if !IsValidCloudVendor(v) {
 			t.Errorf("IsValidCloudVendor(%q) = false; want true", v)
 		}
 	}
 
-	invalid := []string{"", "unknown", "alibaba", "tencent", "digitalocean"}
+	invalid := []string{"", "unknown", "azure", "cloudflare", "alibaba", "tencent", "digitalocean"}
 	for _, v := range invalid {
 		if IsValidCloudVendor(v) {
 			t.Errorf("IsValidCloudVendor(%q) = true; want false", v)
@@ -71,9 +71,15 @@ func TestGetCloudVendorDomains(t *testing.T) {
 		t.Fatalf("expected GCP domains, got err=%v, len=%d", err, len(gcpDomains))
 	}
 
-	cfDomains, err := GetCloudVendorDomains(VendorCloudflare)
-	if err != nil || len(cfDomains) == 0 {
-		t.Fatalf("expected Cloudflare domains, got err=%v, len=%d", err, len(cfDomains))
+	oracleDomains, err := GetCloudVendorDomains(VendorOracle)
+	if err != nil || len(oracleDomains) == 0 {
+		t.Fatalf("expected Oracle domains, got err=%v, len=%d", err, len(oracleDomains))
+	}
+
+	// Cloudflare pool must be prohibited and return an error
+	_, err = GetCloudVendorDomains(VendorCloudflare)
+	if err == nil {
+		t.Errorf("expected error for Cloudflare pool due to relay risk, got nil")
 	}
 
 	// Azure pool must be empty and return an error
@@ -88,9 +94,19 @@ func TestGetCloudVendorDomains(t *testing.T) {
 		t.Errorf("expected error for unknown vendor, got nil")
 	}
 
-	// Check exclusion of redirect and forbidden domains
+	// Check exclusion of redirect, CDN relay, and unstable domains
 	forbiddenDomains := []string{
+		"cloud.google.com",
+		"www.ubuntu.com",
+		"cdn.jsdelivr.net",
+		"cdnjs.cloudflare.com",
+		"www.cloudflare.com",
+		"community.cloudflare.com",
+		"dash.cloudflare.com",
+		"d2gxp3ikbh7bpx.cloudfront.net",
 		"www.github.com",
+		"api.github.com",
+		"github.githubassets.com",
 		"pages.dev",
 		"workers.dev",
 		"portal.azure.com",
@@ -106,14 +122,79 @@ func TestGetCloudVendorDomains(t *testing.T) {
 		"www.nvidia.com",
 		"www.intel.com",
 		"www.icloud.com",
+		"canvas.instructure.com",
 	}
 
 	allDomains := GetAllRealityDomains()
 	for _, d := range allDomains {
+		if d == "cloud.google.com" {
+			t.Errorf("cloud.google.com must not be present in candidate pools")
+		}
 		for _, forbidden := range forbiddenDomains {
 			if strings.EqualFold(d, forbidden) {
 				t.Errorf("forbidden domain %q found in candidate pool", d)
 			}
+		}
+	}
+}
+
+func TestInspectRealityDomainRisk(t *testing.T) {
+	riskyCases := []struct {
+		target   string
+		contains string
+	}{
+		{"cdn.jsdelivr.net", "Multi-tenant"},
+		{"cdn.jsdelivr.net:443", "Multi-tenant"},
+		{"cdnjs.cloudflare.com", "Multi-tenant"},
+		{"www.cloudflare.com", "Multi-tenant"},
+		{"test.workers.dev", "Multi-tenant"},
+		{"d123.cloudfront.net", "Multi-tenant"},
+		{"static.fastly.net", "Multi-tenant"},
+		{"site.akamaized.net", "Multi-tenant"},
+		{"www.apple.com", "China-dedicated"},
+		{"gateway.icloud.com", "China-dedicated"},
+		{"canvas.instructure.com", "China-dedicated"},
+		{"portal.azure.com", "China-dedicated"},
+		{"login.microsoft.com", "China-dedicated"},
+		{"api.github.com", "Public service infrastructure"},
+		{"github.githubassets.com", "Public service infrastructure"},
+		{"104.16.132.229:443", "Cloudflare"},
+	}
+
+	for _, tc := range riskyCases {
+		isRisky, reason := InspectRealityDomainRisk(tc.target)
+		if !isRisky {
+			t.Errorf("InspectRealityDomainRisk(%q) expected true, got false", tc.target)
+		}
+		if !strings.Contains(reason, tc.contains) {
+			t.Errorf("InspectRealityDomainRisk(%q) reason %q does not contain %q", tc.target, reason, tc.contains)
+		}
+	}
+
+	safeCases := []string{
+		"pkg.go.dev",
+		"pkg.go.dev:443",
+		"www.kernel.org",
+		"www.debian.org",
+		"www.ubuntu.com",
+		"yum.oracle.com",
+		"docs.oracle.com",
+		"a0.awsstatic.com",
+		"dl.google.com",
+		"storage.googleapis.com",
+	}
+
+	for _, target := range safeCases {
+		isRisky, reason := InspectRealityDomainRisk(target)
+		if isRisky {
+			t.Errorf("InspectRealityDomainRisk(%q) expected false, got true with reason: %s", target, reason)
+		}
+	}
+
+	// Ensure all domains in all pools are safe
+	for _, domain := range GetAllRealityDomains() {
+		if isRisky, reason := InspectRealityDomainRisk(domain); isRisky {
+			t.Errorf("GetAllRealityDomains contains risky domain %q: %s", domain, reason)
 		}
 	}
 }

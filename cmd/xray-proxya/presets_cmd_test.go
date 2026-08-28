@@ -51,3 +51,135 @@ func TestSupportsSkin(t *testing.T) {
 		t.Errorf("expected ModeShadowsocksTCP not to support skin")
 	}
 }
+
+func TestPresetsSetRiskyTargetInteractiveReject(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Enabled: true, Port: 443, SNI: "pkg.go.dev", Dest: "pkg.go.dev:443"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	origPrompt := promptConfirmFunc
+	origChecker := checkTargetAvailability
+	t.Cleanup(func() {
+		promptConfirmFunc = origPrompt
+		checkTargetAvailability = origChecker
+		presetSkinManual = ""
+		presetSNI = ""
+		presetDest = ""
+		presetSkinManualForce = false
+	})
+
+	promptCalls := 0
+	promptConfirmFunc = func(prompt string) bool {
+		promptCalls++
+		return false // reject
+	}
+	checkTargetAvailability = func(string) error { return nil }
+
+	presetSkinManual = "cdn.jsdelivr.net"
+	presetSkinManualForce = false
+
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	if promptCalls != 1 {
+		t.Errorf("promptCalls = %d, want 1", promptCalls)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	if loaded.Presets[0].SNI != "pkg.go.dev" {
+		t.Errorf("SNI = %q, want pkg.go.dev (unchanged)", loaded.Presets[0].SNI)
+	}
+}
+
+func TestPresetsSetRiskyTargetInteractiveConfirm(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Enabled: true, Port: 443, SNI: "pkg.go.dev", Dest: "pkg.go.dev:443"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	origPrompt := promptConfirmFunc
+	origChecker := checkTargetAvailability
+	t.Cleanup(func() {
+		promptConfirmFunc = origPrompt
+		checkTargetAvailability = origChecker
+		presetSkinManual = ""
+		presetSNI = ""
+		presetDest = ""
+		presetSkinManualForce = false
+	})
+
+	promptCalls := 0
+	promptConfirmFunc = func(prompt string) bool {
+		promptCalls++
+		return true // confirm
+	}
+	checkTargetAvailability = func(string) error { return nil }
+
+	presetSkinManual = "cdn.jsdelivr.net"
+	presetSkinManualForce = false
+
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	if promptCalls != 1 {
+		t.Errorf("promptCalls = %d, want 1", promptCalls)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	if loaded.Presets[0].SNI != "cdn.jsdelivr.net" {
+		t.Errorf("SNI = %q, want cdn.jsdelivr.net", loaded.Presets[0].SNI)
+	}
+}
+
+func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Enabled: true, Port: 443, SNI: "pkg.go.dev", Dest: "pkg.go.dev:443"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	origPrompt := promptConfirmFunc
+	origChecker := checkTargetAvailability
+	t.Cleanup(func() {
+		promptConfirmFunc = origPrompt
+		checkTargetAvailability = origChecker
+		presetSkinManual = ""
+		presetSNI = ""
+		presetDest = ""
+		presetSkinManualForce = false
+	})
+
+	promptCalls := 0
+	promptConfirmFunc = func(prompt string) bool {
+		promptCalls++
+		return false
+	}
+	checkTargetAvailability = func(string) error { return nil }
+
+	presetSkinManual = "cdn.jsdelivr.net"
+	presetSkinManualForce = true
+
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	if promptCalls != 0 {
+		t.Errorf("promptCalls = %d, want 0 when forced", promptCalls)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	if loaded.Presets[0].SNI != "cdn.jsdelivr.net" {
+		t.Errorf("SNI = %q, want cdn.jsdelivr.net", loaded.Presets[0].SNI)
+	}
+}

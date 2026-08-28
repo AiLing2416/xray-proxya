@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -12,22 +14,32 @@ import (
 )
 
 var (
-	presetOff            bool
-	presetOn             bool
-	presetPort           int
-	presetRegen          bool
-	presetSkin           bool
-	presetUnskin         bool
-	presetSkinAWS        bool
-	presetSkinGCP        bool
-	presetSkinAzure      bool
-	presetSkinCloudflare bool
-	presetSkinOracle     bool
-	presetSkinVendor     string
-	presetSkinManual     string
-	presetSNI            string
-	presetDest           string
+	presetOff               bool
+	presetOn                bool
+	presetPort              int
+	presetRegen             bool
+	presetSkin              bool
+	presetUnskin            bool
+	presetSkinAWS           bool
+	presetSkinGCP           bool
+	presetSkinOracle        bool
+	presetSkinVendor        string
+	presetSkinManual        string
+	presetSkinManualForce   bool
+	presetSNI               string
+	presetDest              string
 )
+
+var promptConfirmFunc = func(prompt string) bool {
+	fmt.Print(prompt)
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return false
+	}
+	line = strings.TrimSpace(strings.ToLower(line))
+	return line == "y" || line == "yes"
+}
 
 var presetsCmd = &cobra.Command{
 	Use:   "presets",
@@ -94,8 +106,8 @@ select or validate REALITY destination SNI and targets.
 REALITY target selection highlights:
   - REALITY requires a qualified destination site matching the advertised SNI.
   - Candidate targets must pass strict TLS 1.3, X25519, HTTP/2, certificate, and non-redirect validation.
-  - Select candidate targets from specific cloud vendor pools (AWS, GCP, Azure, Cloudflare, Oracle).
-  - Supports manual domain selection with mandatory online validation.
+  - Select candidate targets from safe cloud vendor pools (AWS, GCP, Oracle).
+  - Supports manual domain selection with mandatory online validation and risk safety checks.
 `),
 	Example: strings.TrimSpace(`
   # Enable slot 1 and validate current REALITY target
@@ -106,7 +118,7 @@ REALITY target selection highlights:
   xray-proxya presets set 1 --skin-aws
 
   # Manually set arbitrary REALITY domain with validation
-  xray-proxya presets set 1 --skin-manual cdnjs.cloudflare.com
+  xray-proxya presets set 1 --skin-manual pkg.go.dev
 `),
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -133,12 +145,6 @@ REALITY target selection highlights:
 			selectors++
 		}
 		if presetSkinGCP {
-			selectors++
-		}
-		if presetSkinAzure {
-			selectors++
-		}
-		if presetSkinCloudflare {
 			selectors++
 		}
 		if presetSkinOracle {
@@ -202,6 +208,21 @@ REALITY target selection highlights:
 				dest = normDest
 			}
 
+			// Security risk inspection
+			if isRisky, reason := config.InspectRealityDomainRisk(normHost); isRisky {
+				fmt.Printf("⚠️  WARNING: Target domain %q is flagged as risky:\n    -> %s\n", normHost, reason)
+				if !presetSkinManualForce {
+					confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", normHost))
+					if !confirmed {
+						fmt.Printf("❌ Target configuration aborted. Use '--skin-manual-force' to bypass this safety check.\n")
+						return
+					}
+					fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
+				} else {
+					fmt.Println("⚠️  Bypassing safety check via '--skin-manual-force'.")
+				}
+			}
+
 			fmt.Printf("🔍 Validating manual REALITY target %s (%s)...\n", normHost, dest)
 			if err := validateManualTarget(normHost, dest); err != nil {
 				fmt.Printf("❌ Error: Target %s failed qualification: %v\n", dest, err)
@@ -215,10 +236,6 @@ REALITY target selection highlights:
 			vendor := config.VendorAWS
 			if presetSkinGCP {
 				vendor = config.VendorGCP
-			} else if presetSkinAzure {
-				vendor = config.VendorAzure
-			} else if presetSkinCloudflare {
-				vendor = config.VendorCloudflare
 			} else if presetSkinOracle {
 				vendor = config.VendorOracle
 			} else if presetSkinVendor != "" {
@@ -259,6 +276,21 @@ REALITY target selection highlights:
 				fmt.Printf("❌ Error: --dest host (%s) must match current SNI (%s)\n", destHost, m.SNI)
 				return
 			}
+
+			if isRisky, reason := config.InspectRealityDomainRisk(destHost); isRisky {
+				fmt.Printf("⚠️  WARNING: Target destination %q is flagged as risky:\n    -> %s\n", destHost, reason)
+				if !presetSkinManualForce {
+					confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", destHost))
+					if !confirmed {
+						fmt.Printf("❌ Target configuration aborted. Use '--skin-manual-force' to bypass this safety check.\n")
+						return
+					}
+					fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
+				} else {
+					fmt.Println("⚠️  Bypassing safety check via '--skin-manual-force'.")
+				}
+			}
+
 			fmt.Printf("🔍 Validating REALITY destination %s...\n", normDest)
 			if err := checkTargetAvailability(normDest); err != nil {
 				fmt.Printf("❌ Error: Target %s failed qualification: %v\n", normDest, err)
@@ -317,11 +349,10 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Deprecated: REALITY target cannot be disabled")
 	presetsSetCmd.Flags().BoolVar(&presetSkinAWS, "skin-aws", false, "Benchmark and select qualified target from AWS pool")
 	presetsSetCmd.Flags().BoolVar(&presetSkinGCP, "skin-gcp", false, "Benchmark and select qualified target from GCP pool")
-	presetsSetCmd.Flags().BoolVar(&presetSkinAzure, "skin-azure", false, "Benchmark and select qualified target from Azure pool")
-	presetsSetCmd.Flags().BoolVar(&presetSkinCloudflare, "skin-cloudflare", false, "Benchmark and select qualified target from Cloudflare pool")
 	presetsSetCmd.Flags().BoolVar(&presetSkinOracle, "skin-oracle", false, "Benchmark and select qualified target from Oracle Cloud pool")
 	presetsSetCmd.Flags().StringVar(&presetSkinVendor, "skin-vendor", "", "Benchmark and select qualified target from a specific cloud vendor")
 	presetsSetCmd.Flags().StringVar(&presetSkinManual, "skin-manual", "", "Manually set and validate arbitrary REALITY target domain")
+	presetsSetCmd.Flags().BoolVar(&presetSkinManualForce, "skin-manual-force", false, "Force using a risky REALITY target without interactive confirmation")
 	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set and validate REALITY SNI domain")
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Set REALITY destination host:port (host must match SNI)")
 

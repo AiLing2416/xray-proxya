@@ -29,54 +29,72 @@ const (
 	VendorGeneric    = "generic"
 )
 
+// ==============================================================================
+// REALITY Target Selection Principles and Exclusion Rules:
+//
+// 1. Multi-Tenant Shared CDNs (CRITICAL RELAY RISK - STRICTLY PROHIBITED):
+//    - Prohibited: Cloudflare (cdn.jsdelivr.net, cdnjs.cloudflare.com, www.cloudflare.com,
+//                  *.workers.dev, *.pages.dev), AWS CloudFront (*.cloudfront.net),
+//                  Fastly (*.fastly.net), Akamai multi-tenant clusters.
+//    - Rationale: REALITY performs raw L4 TCP/TLS fallback upon unauthenticated probes.
+//      Multi-tenant Anycast CDNs share edge IPs across millions of independent customers
+//      (including OpenAI, financial portals, and API gateways). Unauthenticated scanners
+//      exploit this to use the VPS as an open proxy relay, hammering OpenAI/Cloudflare.
+//      This results in massive resource theft/abuse complaints and hoster VM suspension.
+//
+// 2. Region-Dedicated / China-Specific Geo-Split CDNs (CROSS-BORDER INSTABILITY):
+//    - Excluded: Microsoft (*.microsoft.com, *.azure.com, *.live.com, *.office.com, *.windows.com, *.bing.com),
+//                Apple (*.apple.com, *.icloud.com, *.itunes.apple.com, *.mzstatic.com),
+//                Canvas LMS (*.instructure.com, *.canvaslms.com).
+//    - Rationale: These global services maintain segregated domestic infrastructure
+//      (e.g., 21Vianet for Microsoft, local CDNs for Apple/Canvas). Geo-DNS and cross-border
+//      routing differences induce SNI mismatches, handshake anomalies, and unstable links.
+//
+// 3. Microsoft-Managed Public Infrastructure with High Handshake Failure Rates:
+//    - Excluded: GitHub (*.github.com, *.github.io, *.githubassets.com, *.githubusercontent.com, api.github.com).
+//    - Rationale: Public endpoints frequently suffer from cross-border TCP resets, SNI filtering,
+//      and high TLS handshake failure rates.
+//
+// 4. Approved Safe Targets (Single-Tenant / Dedicated Infrastructure):
+//    - Approved: Linux distro & kernel mirrors (kernel.org, ubuntu.com),
+//                Google dedicated developer infrastructure (pkg.go.dev, fonts.gstatic.com),
+//                Oracle dedicated Linux repos (yum.oracle.com, docs.oracle.com, apex.oracle.com, cloud.oracle.com),
+//                AWS dedicated official portals (a0.awsstatic.com, aws.amazon.com, d1.awsstatic.com, images-na.ssl-images-amazon.com, slack-imgs.com).
+// ==============================================================================
+
 var cloudVendorDomains = map[string][]string{
 	VendorAWS: {
 		"a0.awsstatic.com",
-		"signin.aws.amazon.com",
 		"aws.amazon.com",
 		"images-na.ssl-images-amazon.com",
 		"www.imdb.com",
-		"unroll.me",
 		"slack-imgs.com",
 		"d1.awsstatic.com",
-		"d2gxp3ikbh7bpx.cloudfront.net",
 	},
 	VendorGCP: {
 		"pkg.go.dev",
-		"storage.googleapis.com",
 		"fonts.gstatic.com",
-		"dl.google.com",
-		"cloud.google.com",
-		"golang.org",
 	},
-	VendorAzure: {},
-	VendorCloudflare: {
-		"cdnjs.cloudflare.com",
-		"www.cloudflare.com",
-		"community.cloudflare.com",
-		"dash.cloudflare.com",
-	},
+	VendorAzure:      {}, // Empty - Excluded due to region-split routing and cross-border handshake instability
+	VendorCloudflare: {}, // Empty - Prohibited due to multi-tenant open proxy relay abuse vulnerability
 	VendorOracle: {
 		"docs.oracle.com",
-		"yum.oracle.com",
-		"edelivery.oracle.com",
 		"apex.oracle.com",
 		"cloud.oracle.com",
 		"www.oracle.com",
 	},
 	VendorGeneric: {
-		"cdn.jsdelivr.net",
-		"www.qualcomm.com",
-		"github.githubassets.com",
-		"api.github.com",
-		"addons.mozilla.org",
 		"www.debian.org",
-		"www.ubuntu.com",
 		"www.kernel.org",
+		"kernel.org",
+		"ubuntu.com",
 		"pkg.go.dev",
-		"cdnjs.cloudflare.com",
-		"a0.awsstatic.com",
 		"docs.oracle.com",
+		"a0.awsstatic.com",
+		"aws.amazon.com",
+		"fonts.gstatic.com",
+		"www.imdb.com",
+		"cloud.oracle.com",
 	},
 }
 
@@ -101,13 +119,11 @@ func NormalizeVendor(raw string) string {
 	}
 }
 
-// GetAllCloudVendors returns all recognized vendor names.
+// GetAllCloudVendors returns all supported vendor names for candidate target selection.
 func GetAllCloudVendors() []string {
 	return []string{
 		VendorAWS,
 		VendorGCP,
-		VendorAzure,
-		VendorCloudflare,
 		VendorOracle,
 		VendorGeneric,
 	}
@@ -127,6 +143,13 @@ func IsValidCloudVendor(vendor string) bool {
 // GetCloudVendorDomains returns domains for a specific vendor, or an error if unknown or empty.
 func GetCloudVendorDomains(vendor string) ([]string, error) {
 	v := NormalizeVendor(vendor)
+	if v == VendorCloudflare {
+		return nil, fmt.Errorf("Cloudflare is a multi-tenant shared CDN and is strictly prohibited as a REALITY target due to open proxy relay abuse risks (e.g. DMIT/OpenAI abuse incident)")
+	}
+	if v == VendorAzure {
+		return nil, fmt.Errorf("Azure/Microsoft domains are excluded due to China-dedicated region-split routing and cross-border TLS handshake instability")
+	}
+
 	domains, ok := cloudVendorDomains[v]
 	if !ok {
 		return nil, fmt.Errorf("unknown cloud vendor %q", vendor)
@@ -469,4 +492,148 @@ func benchmarkDomainsInternal(domains []string, timeout time.Duration, opts targ
 		return "", 0, fmt.Errorf("no candidate domains qualified (%s)", strings.Join(allErrs, "; "))
 	}
 	return bestDomain, bestRTT, nil
+}
+
+var cloudflareCIDRs = []string{
+	// Cloudflare IPv4
+	"173.245.48.0/20",
+	"103.21.244.0/22",
+	"103.22.200.0/22",
+	"103.31.4.0/22",
+	"141.101.64.0/18",
+	"108.162.192.0/18",
+	"190.93.240.0/20",
+	"188.114.96.0/20",
+	"197.234.240.0/22",
+	"198.41.128.0/17",
+	"162.158.0.0/15",
+	"104.16.0.0/13",
+	"104.24.0.0/14",
+	"172.64.0.0/13",
+	"131.0.72.0/22",
+	// Cloudflare IPv6
+	"2606:4700::/32",
+	"2803:f800::/32",
+	"2405:b500::/32",
+	"2405:8100::/32",
+	"2a06:98c0::/29",
+	"2c0f:f248::/32",
+}
+
+var parsedCloudflareIPNets []*net.IPNet
+
+func init() {
+	for _, cidr := range cloudflareCIDRs {
+		_, ipnet, err := net.ParseCIDR(cidr)
+		if err == nil {
+			parsedCloudflareIPNets = append(parsedCloudflareIPNets, ipnet)
+		}
+	}
+}
+
+func matchDomainSuffix(host, pattern string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	if host == pattern {
+		return true
+	}
+	if strings.HasSuffix(host, "."+pattern) {
+		return true
+	}
+	return false
+}
+
+// InspectRealityDomainRisk evaluates a target hostname or address against known high-risk categories.
+// Returns (isRisky, riskReason).
+func InspectRealityDomainRisk(target string) (bool, string) {
+	normHost, _, _, err := NormalizeRealityTarget(target)
+	if err != nil {
+		normHost = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(target)), ".")
+		if strings.Contains(normHost, ":") {
+			if h, _, e := net.SplitHostPort(normHost); e == nil {
+				normHost = h
+			}
+		}
+	}
+	if normHost == "" {
+		return false, ""
+	}
+
+	// 1. Multi-Tenant Shared CDNs (Critical Open Relay / Proxy Abuse Risk)
+	multiTenantPatterns := []string{
+		"cloudflare.com",
+		"cloudflare.net",
+		"workers.dev",
+		"pages.dev",
+		"jsdelivr.net",
+		"cloudfront.net",
+		"fastly.net",
+		"fastlylb.net",
+		"akamaized.net",
+		"akamaihd.net",
+		"akamai.net",
+		"edgekey.net",
+		"edgesuite.net",
+		"edgecastcdn.net",
+		"hwcdn.net",
+	}
+	for _, p := range multiTenantPatterns {
+		if matchDomainSuffix(normHost, p) {
+			return true, fmt.Sprintf("Multi-tenant shared CDN (%s) detected. REALITY fallback will expose your VPS as an open proxy relay, causing abuse complaints and provider suspension (e.g. DMIT/OpenAI abuse incident).", p)
+		}
+	}
+
+	// 2. Region-Dedicated / China-Specific Geo-Split CDNs
+	chinaGeoSplitPatterns := []string{
+		"apple.com",
+		"icloud.com",
+		"itunes.apple.com",
+		"mzstatic.com",
+		"aaplimg.com",
+		"instructure.com",
+		"canvaslms.com",
+		"microsoft.com",
+		"azure.com",
+		"live.com",
+		"office.com",
+		"windows.com",
+		"bing.com",
+		"microsoftonline.com",
+		"msn.com",
+	}
+	for _, p := range chinaGeoSplitPatterns {
+		if matchDomainSuffix(normHost, p) {
+			return true, fmt.Sprintf("Domain belongs to service with China-dedicated / region-split CDN infrastructure (%s). Geo-DNS and cross-border routing induce SNI mismatches and connection instability.", p)
+		}
+	}
+
+	// 3. Microsoft-managed public infrastructure with high handshake failure rates
+	msPublicPatterns := []string{
+		"github.com",
+		"github.io",
+		"githubassets.com",
+		"githubusercontent.com",
+	}
+	for _, p := range msPublicPatterns {
+		if matchDomainSuffix(normHost, p) {
+			return true, fmt.Sprintf("Public service infrastructure (%s) experiences frequent cross-border TCP resets and TLS handshake failures.", p)
+		}
+	}
+
+	// 4. IP-based Cloudflare detection (in case domain uses custom CNAME / Cloudflare proxy)
+	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer cancel()
+	var resolver net.Resolver
+	ips, err := resolver.LookupIP(ctx, "ip", normHost)
+	if err == nil {
+		for _, ip := range ips {
+			for _, ipnet := range parsedCloudflareIPNets {
+				if ipnet.Contains(ip) {
+					return true, fmt.Sprintf("Target resolves to Cloudflare Anycast IP (%s). Multi-tenant CDN fallback creates an open proxy relay vulnerability.", ip.String())
+				}
+			}
+		}
+	}
+
+	return false, ""
 }
