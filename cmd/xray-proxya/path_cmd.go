@@ -646,11 +646,26 @@ func init() {
 	pathSetCmd.Flags().StringVarP(&pathToken, "token", "t", "", "shared PathLink token")
 	pathSetCmd.Flags().IntVar(&pathIdle, "idle", 20, "Pathd connection idle timeout in seconds")
 	pathSetCmd.Flags().BoolVar(&pathGenerate, "generate-token", false, "generate a new Server Pathd token")
+	pathSetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
+
 	pathUnsetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay whose PathLink credentials to remove (Gateway only)")
+	pathUnsetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
+
+	noFileComp := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
+	pathPingCmd.ValidArgsFunction = noFileComp
 	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
+	pathTraceCmd.ValidArgsFunction = noFileComp
 	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
 	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "largest IP packet MTU to probe")
+	pathMTUCmd.ValidArgsFunction = noFileComp
+
 	pathCmd.AddCommand(pathSetCmd, pathUnsetCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
 	rootCmd.AddCommand(pathCmd)
 }

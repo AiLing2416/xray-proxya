@@ -42,6 +42,13 @@ func getGuestAliases() []string {
 	return aliases
 }
 
+func completeGuestAliasesArg(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
+}
+
 func findGuest(cfg *config.UserConfig, alias string) (int, *config.GuestConfig) {
 	if cfg == nil {
 		return -1, nil
@@ -195,9 +202,7 @@ var guestsDelCmd = &cobra.Command{
 	Use:   "del [alias]",
 	Short: "Remove a guest user (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -228,9 +233,7 @@ var guestsSetCmd = &cobra.Command{
 	Use:   "set [alias]",
 	Short: "Configure guest parameters (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -312,9 +315,7 @@ var guestsPauseCmd = &cobra.Command{
 	Use:   "pause [alias]",
 	Short: "Pause a guest manually (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		idx, guest := findGuest(cfg, args[0])
@@ -335,9 +336,7 @@ var guestsResumeCmd = &cobra.Command{
 	Use:   "resume [alias]",
 	Short: "Resume a paused guest (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		idx, guest := findGuest(cfg, args[0])
@@ -362,9 +361,7 @@ var guestsInfoCmd = &cobra.Command{
 	Use:   "info [alias]",
 	Short: "Show detailed guest runtime state",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
 		_, guest := findGuest(cfg, args[0])
@@ -433,9 +430,7 @@ var guestsShowCmd = &cobra.Command{
 	Use:   "show [alias]",
 	Short: "Show sharing links for a guest",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, err := config.LoadConfig()
@@ -484,9 +479,7 @@ var guestsSubEnableCmd = &cobra.Command{
 	Use:   "enable [alias]",
 	Short: "Enable self-service subscription for a guest (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		idx, guest := findGuest(cfg, args[0])
@@ -510,9 +503,7 @@ var guestsSubDisableCmd = &cobra.Command{
 	Use:   "disable [alias]",
 	Short: "Disable self-service subscription for a guest (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		idx, guest := findGuest(cfg, args[0])
@@ -532,9 +523,7 @@ var guestsSubRotateCmd = &cobra.Command{
 	Use:   "rotate [alias]",
 	Short: "Rotate the guest self-service subscription token (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		idx, guest := findGuest(cfg, args[0])
@@ -555,9 +544,7 @@ var guestsSubShowCmd = &cobra.Command{
 	Use:   "show [alias]",
 	Short: "Show a guest self-service subscription link",
 	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		_, guest := findGuest(cfg, args[0])
@@ -592,6 +579,9 @@ func init() {
 	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct' (deprecated)")
 	guestsSetCmd.Flags().MarkHidden("outbound")
 	guestsSetCmd.Flags().IntVarP(&resetDay, "reset", "r", 1, "Monthly reset day (1-31)")
+	guestsSetCmd.RegisterFlagCompletionFunc("quota", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"reset", "-1", "0", "10", "50", "100"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	guestsSetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
 	})

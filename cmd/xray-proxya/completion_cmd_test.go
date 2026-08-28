@@ -168,7 +168,7 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 	}
 
 	// 3. Verify sub commands have ValidArgsFunction registered
-	for _, subCommand := range []*cobra.Command{subSetCmd, subShowCmd, subDelCmd, subResetCmd} {
+	for _, subCommand := range []*cobra.Command{subSetCmd, subShowCmd, subDelCmd, subResetCmd, subRunCmd, subValidateCmd} {
 		if subCommand.ValidArgsFunction == nil {
 			t.Errorf("sub command %q missing ValidArgsFunction for positional arg completion", subCommand.Name())
 		}
@@ -184,6 +184,74 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 		cmd, _, err := serviceCmd.Find([]string{action})
 		if err != nil || cmd.ValidArgsFunction == nil {
 			t.Errorf("service command %q missing ValidArgsFunction", action)
+		}
+	}
+
+	// 6. Verify init command flag completion
+	if fn, ok := initCmd.GetFlagCompletionFunc("role"); !ok || fn == nil {
+		t.Error("init missing --role completion")
+	} else {
+		candidates, directive := fn(initCmd, nil, "")
+		if directive != cobra.ShellCompDirectiveNoFileComp || !containsCompletion(candidates, "server") || !containsCompletion(candidates, "gateway") {
+			t.Errorf("init --role completion unexpected: %v, %v", candidates, directive)
+		}
+	}
+
+	// 7. Verify path commands completions
+	if fn, ok := pathSetCmd.GetFlagCompletionFunc("relay"); !ok || fn == nil {
+		t.Error("path set missing --relay completion")
+	}
+	if fn, ok := pathUnsetCmd.GetFlagCompletionFunc("relay"); !ok || fn == nil {
+		t.Error("path unset missing --relay completion")
+	}
+	for _, pathCmd := range []*cobra.Command{pathPingCmd, pathTraceCmd, pathMTUCmd} {
+		if pathCmd.ValidArgsFunction == nil {
+			t.Errorf("path command %q missing ValidArgsFunction", pathCmd.Name())
+		}
+	}
+
+	// 8. Verify guests commands completion
+	for _, guestCommand := range []*cobra.Command{
+		guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsShowCmd,
+		guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd,
+	} {
+		if guestCommand.ValidArgsFunction == nil {
+			t.Errorf("guest command %q missing ValidArgsFunction", guestCommand.Name())
+		}
+	}
+	if fn, ok := guestsSetCmd.GetFlagCompletionFunc("quota"); !ok || fn == nil {
+		t.Error("guests set missing --quota completion")
+	}
+
+	// 9. Verify proxy commands completion
+	for _, proxyCommand := range []*cobra.Command{proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd} {
+		if proxyCommand.ValidArgsFunction == nil {
+			t.Errorf("proxy command %q missing ValidArgsFunction", proxyCommand.Name())
+		}
+	}
+
+	// 10. Verify relay/outbound commands completion
+	for _, relayCommand := range []*cobra.Command{
+		testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd,
+		bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, setInternalProxyCmd,
+		probeLocalOutboundCmd, resolveOutboundCmd,
+	} {
+		if relayCommand.ValidArgsFunction == nil {
+			t.Errorf("relay command %q missing ValidArgsFunction", relayCommand.Name())
+		}
+	}
+
+	// 11. Verify tune commands completion
+	for _, tuneCommand := range []*cobra.Command{tuneDiffCmd, tuneUseCmd, tuneVerifyCmd} {
+		if tuneCommand.ValidArgsFunction == nil {
+			t.Errorf("tune command %q missing ValidArgsFunction", tuneCommand.Name())
+		}
+	}
+
+	// 12. Verify gateway set flag completions
+	for _, flag := range []string{"relay", "lan", "state", "bypass-countries"} {
+		if fn, ok := gatewaySetCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+			t.Errorf("gateway set missing --%s completion", flag)
 		}
 	}
 }

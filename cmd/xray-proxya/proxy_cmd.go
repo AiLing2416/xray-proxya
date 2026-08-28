@@ -200,10 +200,8 @@ var proxySetCmd = &cobra.Command{
 
   # Configure custom SOCKS and HTTP ports with LAN sharing
   xray-proxya proxy set node-hk --socks-port 10810 --http-port 10811 --listen 0.0.0.0`,
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 
@@ -294,10 +292,8 @@ var proxyUnsetCmd = &cobra.Command{
 	Example: `  # Disable local proxy for a relay in STAGING
   xray-proxya proxy unset node-us
   xray-proxya apply`,
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -332,10 +328,8 @@ var proxyRunCmd = &cobra.Command{
 
   # Run temporary proxy with LAN sharing
   xray-proxya proxy run node-us -p 20808 -l 0.0.0.0`,
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -470,10 +464,8 @@ var proxyTestCmd = &cobra.Command{
 	Short: "Test connectivity of a configured local proxy",
 	Example: `  # Test connectivity of configured local proxy
   xray-proxya proxy test node-us`,
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -537,11 +529,13 @@ func init() {
 	proxySetCmd.Flags().IntVar(&proxySocksPort, "socks-port", 0, "Specific SOCKS port")
 	proxySetCmd.Flags().IntVar(&proxyHttpPort, "http-port", 0, "Specific HTTP port")
 	proxySetCmd.Flags().StringVarP(&proxyListenIP, "listen", "l", "127.0.0.1", "IP address to listen on")
+	proxySetCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
 
 	proxyRunCmd.Flags().IntVarP(&proxySocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
 	proxyRunCmd.Flags().IntVar(&proxySocksPort, "socks-port", 0, "Specific SOCKS port")
 	proxyRunCmd.Flags().IntVar(&proxyHttpPort, "http-port", 0, "Specific HTTP port")
 	proxyRunCmd.Flags().StringVarP(&proxyListenIP, "listen", "l", "", "IP address to listen on")
+	proxyRunCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
 
 	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd)
 	rootCmd.AddCommand(proxyCmd)

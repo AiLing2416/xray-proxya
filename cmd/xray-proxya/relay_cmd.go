@@ -102,6 +102,13 @@ func getRelayAliases() []string {
 	return aliases
 }
 
+func completeRelayAliasesArg(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+}
+
 var addOutboundCmd = &cobra.Command{
 	Use:   "add [alias] [link]",
 	Short: "Import a relay node from a link (STAGING)",
@@ -484,11 +491,9 @@ func trimText(value string, limit int) string {
 }
 
 var testOutboundCmd = &cobra.Command{
-	Use:   "test [alias]",
-	Short: "Verify relay node connectivity",
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Use:               "test [alias]",
+	Short:             "Verify relay node connectivity",
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		target := ""
 		if len(args) > 0 {
@@ -514,12 +519,10 @@ var testOutboundCmd = &cobra.Command{
 }
 
 var infoOutboundCmd = &cobra.Command{
-	Use:   "info [alias]",
-	Short: "Fetch detailed landing profile and media unlock status",
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Use:               "info [alias]",
+	Short:             "Fetch detailed landing profile and media unlock status",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -1153,12 +1156,10 @@ func testClaude(client *http.Client) string {
 }
 
 var probeLocalOutboundCmd = &cobra.Command{
-	Use:   "probe-local [alias]",
-	Short: "Probe a relay's bound local socks/http listeners",
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Use:               "probe-local [alias]",
+	Short:             "Probe a relay's bound local socks/http listeners",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -1301,12 +1302,10 @@ without changing the running service.
 }
 
 var speedOutboundCmd = &cobra.Command{
-	Use:   "speed [alias]",
-	Short: "Measure relay throughput, latency under load, and packet loss",
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Use:               "speed [alias]",
+	Short:             "Measure relay throughput, latency under load, and packet loss",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -2057,12 +2056,10 @@ func formatDurationMetric(d time.Duration) string {
 }
 
 var deleteOutboundCmd = &cobra.Command{
-	Use:   "delete [alias]",
-	Short: "Remove a relay node from STAGING",
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Use:               "delete [alias]",
+	Short:             "Remove a relay node from STAGING",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
@@ -2143,10 +2140,8 @@ back to the global default DNS behavior generated from the active config.
   xray-proxya outbound set-dns test1 --strategy UseIP --servers https://dns.google/dns-query
   xray-proxya outbound set-dns test1 --reset
 `),
-	Args: cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		strategy, _ := cmd.Flags().GetString("strategy")
@@ -2203,7 +2198,10 @@ service through this relay, such as a remote PathLink agent on 127.0.0.1.
 		if len(args) == 0 {
 			return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 		}
-		return []string{"true", "false"}, cobra.ShellCompDirectiveNoFileComp
+		if len(args) == 1 {
+			return []string{"true", "false"}, cobra.ShellCompDirectiveNoFileComp
+		}
+		return nil, cobra.ShellCompDirectiveNoFileComp
 	},
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
@@ -2248,10 +2246,8 @@ var setInternalProxyCmd = &cobra.Command{
 	Use:        "set-internal-proxy [alias]",
 	Deprecated: "Use 'xray-proxya proxy set [alias]' instead",
 	Short:      "Provide local unauthenticated socks/http proxy for a relay (STAGING)",
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
-	},
+	Args:       cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		alias := args[0]
 		port, _ := cmd.Flags().GetInt("port")

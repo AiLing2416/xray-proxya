@@ -237,5 +237,9 @@ func prepareFreshInit() {
 func init() {
 	initCmd.Flags().StringVarP(&roleStr, "role", "r", "server", "Application role: server or gateway")
 	initCmd.Flags().BoolVar(&forceInit, "force", false, "Force initialization (overwrites existing config)")
+	initCmd.RegisterFlagCompletionFunc("role", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"server", "gateway"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	rootCmd.AddCommand(initCmd)
 }
+

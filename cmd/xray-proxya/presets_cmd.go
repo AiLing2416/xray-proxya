@@ -334,8 +334,13 @@ func getPresetIDs() []string {
 		return nil
 	}
 	ids := make([]string, 0, len(cfg.Presets))
-	for i := range cfg.Presets {
-		ids = append(ids, strconv.Itoa(i+1))
+	for i, m := range cfg.Presets {
+		desc := string(m.Mode)
+		if desc != "" {
+			ids = append(ids, fmt.Sprintf("%d\t%s", i+1, desc))
+		} else {
+			ids = append(ids, strconv.Itoa(i+1))
+		}
 	}
 	return ids
 }
@@ -357,6 +362,9 @@ func init() {
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Set REALITY destination host:port (host must match SNI)")
 
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}
 
