@@ -30,8 +30,8 @@ var doctorSELinuxCmd = &cobra.Command{
 and set appropriate security contexts for Xray-Proxya binaries, configs, and sockets.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if !utils.IsRoot() {
-			return fmt.Errorf("doctor selinux requires root privileges")
+		if err := utils.RequireRootShell("doctor selinux"); err != nil {
+			return err
 		}
 		if err := installSELinuxPolicy(); err != nil {
 			return fmt.Errorf("SELinux policy installation failed: %w", err)

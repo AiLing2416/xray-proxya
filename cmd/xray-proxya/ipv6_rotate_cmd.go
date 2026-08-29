@@ -28,10 +28,7 @@ func requireRootRotation(cfg *config.UserConfig) error {
 	if err := requireServerSubscription(cfg); err != nil {
 		return err
 	}
-	if !utils.IsRoot() {
-		return fmt.Errorf("IPv6 rotation must be configured from a direct root shell")
-	}
-	return nil
+	return utils.RequireRootShell("IPv6 rotation")
 }
 
 func getActiveRotation(cfg *config.UserConfig) (config.IPv6Config, error) {

@@ -8,18 +8,21 @@ import (
 
 func TestPathRequiresDirectRootShell(t *testing.T) {
 	for _, test := range []struct {
-		name              string
-		euid              int
-		sudoUser, sudoUID string
-		wantError         bool
+		name                           string
+		euid                           int
+		sudoUser, sudoUID, sudoCommand string
+		wantError                      bool
 	}{
 		{name: "direct root", euid: 0},
 		{name: "ordinary user", euid: 1000, wantError: true},
-		{name: "sudo user marker", euid: 0, sudoUser: "ailing", wantError: true},
-		{name: "sudo uid marker", euid: 0, sudoUID: "1000", wantError: true},
+		{name: "sudo -i bash", euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/bash", wantError: false},
+		{name: "sudo -i zsh", euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/zsh", wantError: false},
+		{name: "sudo su", euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/su", wantError: false},
+		{name: "sudo user marker without shell", euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/root/.local/bin/xray-proxya path token", wantError: true},
+		{name: "sudo uid marker without shell", euid: 0, sudoUID: "1000", wantError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			err := pathRootOnlyError(test.euid, test.sudoUser, test.sudoUID)
+			err := pathRootOnlyError(test.euid, test.sudoUser, test.sudoUID, test.sudoCommand)
 			if (err != nil) != test.wantError {
 				t.Fatalf("pathRootOnlyError() error = %v, want error %t", err, test.wantError)
 			}

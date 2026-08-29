@@ -132,6 +132,8 @@ func TestDirectRootServiceAllowsSudoLoginShellButRejectsDirectSudo(t *testing.T)
 		{euid: 1000, wantError: true},
 		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/bash"},
 		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/zsh"},
+		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/bin/su"},
+		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/usr/bin/su -"},
 		{euid: 0, sudoUser: "ailing", sudoUID: "1000", sudoCommand: "/root/.local/bin/xray-proxya service install", wantError: true},
 		{euid: 0, sudoUser: "ailing", sudoUID: "1000", wantError: true},
 	} {

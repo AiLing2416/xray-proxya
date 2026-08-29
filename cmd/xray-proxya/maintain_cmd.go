@@ -8,6 +8,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -30,8 +31,11 @@ var updateCmd = &cobra.Command{
 
 var purgeCmd = &cobra.Command{
 	Use:   "purge",
-	Short: "Completely remove xray-proxya, services, and all data (requires sudo)",
-	Run: func(cmd *cobra.Command, args []string) {
+	Short: "Completely remove xray-proxya, services, and all data (requires root shell)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := utils.RequireRootShell("purge"); err != nil {
+			return err
+		}
 		fmt.Println("🧨 STARTING FULL PURGE...")
 		bringGatewayDown()
 		exec.Command(xray.GetXrayProxyaPath(), "service", "uninstall").Run()
@@ -40,6 +44,7 @@ var purgeCmd = &cobra.Command{
 		confDir := filepath.Join(home, ".config", "xray-proxya")
 		os.RemoveAll(confDir)
 		fmt.Printf("✨ Purge complete. Manually remove the binary to finish.\n")
+		return nil
 	},
 }
 

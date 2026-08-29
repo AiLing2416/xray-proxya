@@ -22,8 +22,8 @@ var gatewayCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = cmd.Help()
 	},
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		utils.EnsureRoot()
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return utils.RequireRootShell("gateway")
 	},
 }
 

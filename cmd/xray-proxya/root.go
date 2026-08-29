@@ -13,6 +13,8 @@ var Version = buildinfo.Version
 var rootCmd = &cobra.Command{
 	Use:               "xray-proxya",
 	Short:             "Xray-Proxya: A modern, role-based proxy manager and transparent gateway",
+	SilenceUsage:      true,
+	SilenceErrors:     true,
 	CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 	Long:              "Xray-Proxya is a Go-based successor to the archive bash scripts.\nIt features a staging-based configuration system with mandatory normalization.",
 }

@@ -12,6 +12,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -64,30 +65,11 @@ func directRootServiceError() error {
 }
 
 func directRootServiceErrorFor(euid int, sudoUser, sudoUID, sudoCommand string) error {
-	if euid != 0 {
-		return fmt.Errorf("system service operation requires a root shell")
-	}
-	// sudo -i keeps SUDO_USER and SUDO_UID in the root login shell. The service
-	// code already resolves all paths from the effective root user, so accepting
-	// that shell cannot mix user and root configuration. Keep rejecting a direct
-	// `sudo xray-proxya service ...` invocation: it has not entered a root shell.
-	if (sudoUser != "" || sudoUID != "") && !isRootShellCommand(sudoCommand) {
-		return fmt.Errorf("system service operation requires a root shell; use sudo -i, su -, or a direct root login")
-	}
-	return nil
+	return utils.RequireRootShellFor(euid, sudoUser, sudoUID, sudoCommand, "system service")
 }
 
 func isRootShellCommand(command string) bool {
-	fields := strings.Fields(command)
-	if len(fields) == 0 {
-		return false
-	}
-	switch filepath.Base(fields[0]) {
-	case "bash", "sh", "zsh", "fish", "dash", "ksh":
-		return true
-	default:
-		return false
-	}
+	return utils.IsRootShellCommand(command)
 }
 
 func validateRootManagerBinary() (string, error) {

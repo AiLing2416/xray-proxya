@@ -13,6 +13,7 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -118,7 +119,7 @@ func writePathdConfig(cfg *config.UserConfig) error {
 }
 
 var pathCmd = &cobra.Command{Use: "path", Short: "Manage the root-only loopback PathLink ICMP agent", PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-	if err := pathRootOnlyError(os.Geteuid(), os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID")); err != nil {
+	if err := pathRootOnlyError(os.Geteuid(), os.Getenv("SUDO_USER"), os.Getenv("SUDO_UID"), os.Getenv("SUDO_COMMAND")); err != nil {
 		return err
 	}
 	if _, err := os.Stat(config.GetConfigPath()); err != nil {
@@ -128,16 +129,10 @@ var pathCmd = &cobra.Command{Use: "path", Short: "Manage the root-only loopback 
 }}
 
 // PathLink has one root-owned configuration and service lifecycle. Rejecting
-// sudo prevents a caller from accidentally mixing an unprivileged shell's
+// single-command sudo prevents a caller from accidentally mixing an unprivileged shell's
 // configuration expectations with root's system service.
-func pathRootOnlyError(euid int, sudoUser, sudoUID string) error {
-	if sudoUser != "" || sudoUID != "" {
-		return fmt.Errorf("path commands must run from a direct root shell; sudo is not supported (use 'su -' or log in as root)")
-	}
-	if euid != 0 {
-		return fmt.Errorf("path commands require a direct root shell (use 'su -' or log in as root)")
-	}
-	return nil
+func pathRootOnlyError(euid int, sudoUser, sudoUID, sudoCommand string) error {
+	return utils.RequireRootShellFor(euid, sudoUser, sudoUID, sudoCommand, "path")
 }
 
 func setPathEndpoint(cmd *cobra.Command, endpoint *config.PathConfig, requireToken bool) (string, error) {

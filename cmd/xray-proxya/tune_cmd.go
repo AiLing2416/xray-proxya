@@ -2,16 +2,16 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"xray-proxya/internal/tune"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
 
 func requireRoot() bool {
-	if os.Geteuid() != 0 {
-		fmt.Println("❌ This command requires root.")
+	if err := utils.RequireRootOnly("tune"); err != nil {
+		fmt.Println(err)
 		return false
 	}
 	return true
