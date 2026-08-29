@@ -18,16 +18,6 @@ var maintainCmd = &cobra.Command{
 	Short: "System maintenance and cleanup tasks",
 }
 
-var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update Xray core binary to the pinned tested version",
-	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println("🔄 Checking for Xray core updates...")
-		xrayPath := xray.GetXrayBinaryPath()
-		os.Rename(xrayPath, xrayPath+".bak")
-		fmt.Println("✅ Update command initialized. Run 'init' or 'apply' to trigger auto-download.")
-	},
-}
 
 var purgeCmd = &cobra.Command{
 	Use:   "purge",
@@ -82,5 +72,5 @@ func bringGatewayDown() {
 }
 
 func init() {
-	rootCmd.AddCommand(updateCmd, purgeCmd, resetCmd)
+	rootCmd.AddCommand(purgeCmd, resetCmd)
 }

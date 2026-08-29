@@ -19,7 +19,6 @@ var (
 	presetPort              int
 	presetRegen             bool
 	presetSkin              bool
-	presetUnskin            bool
 	presetSkinAWS           bool
 	presetSkinGCP           bool
 	presetSkinOracle        bool
@@ -134,11 +133,6 @@ REALITY target selection highlights:
 
 		idx := id - 1
 		m := &cfg.Presets[idx]
-
-		if presetUnskin {
-			fmt.Println("❌ Error: REALITY target cannot be disabled; select another SNI or disable the preset.")
-			return
-		}
 
 		selectors := 0
 		if presetSkinAWS {
@@ -351,7 +345,6 @@ func init() {
 	presetsSetCmd.Flags().IntVarP(&presetPort, "port", "p", 0, "Set specific port")
 	presetsSetCmd.Flags().BoolVarP(&presetRegen, "regen", "r", false, "Regenerate secrets/paths for this mode on apply")
 	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Validate current REALITY target without changing SNI")
-	presetsSetCmd.Flags().BoolVar(&presetUnskin, "unskin", false, "Deprecated: REALITY target cannot be disabled")
 	presetsSetCmd.Flags().BoolVar(&presetSkinAWS, "skin-aws", false, "Benchmark and select qualified target from AWS pool")
 	presetsSetCmd.Flags().BoolVar(&presetSkinGCP, "skin-gcp", false, "Benchmark and select qualified target from GCP pool")
 	presetsSetCmd.Flags().BoolVar(&presetSkinOracle, "skin-oracle", false, "Benchmark and select qualified target from Oracle Cloud pool")

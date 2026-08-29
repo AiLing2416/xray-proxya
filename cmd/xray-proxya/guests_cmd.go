@@ -426,50 +426,6 @@ var guestsCheckCmd = &cobra.Command{
 	},
 }
 
-var guestsShowCmd = &cobra.Command{
-	Use:   "show [alias]",
-	Short: "Show sharing links for a guest",
-	Args:  cobra.ExactArgs(1),
-	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		alias := args[0]
-		cfg, err := config.LoadConfig()
-		if err != nil || cfg == nil {
-			fmt.Println("❌ Error: Failed to load config.")
-			return
-		}
-		var target *config.GuestConfig
-		for i := range cfg.Guests {
-			if cfg.Guests[i].Alias == alias {
-				target = &cfg.Guests[i]
-				break
-			}
-		}
-		if target == nil {
-			fmt.Printf("❌ Guest '%s' not found.\n", alias)
-			return
-		}
-
-		allIPs, _ := cmd.Flags().GetBool("all")
-		var ips []string
-		if allIPs {
-			ips = append(ips, utils.GetLocalIP())
-		} else {
-			ips = append(ips, utils.GetLocalIP())
-		}
-
-		fmt.Printf("\n🚀 GUEST LINKS for [%s] (UUID: %s)\n", alias, target.UUID)
-		fmt.Println("============================================================")
-		for _, ip := range ips {
-			links := xray.GenerateGuestLinks(cfg, ip, target.UUID, target.Alias)
-			for _, l := range links {
-				fmt.Println(l)
-			}
-		}
-		fmt.Println()
-	},
-}
-
 var guestsSubCmd = &cobra.Command{
 	Use:   "sub",
 	Short: "Manage guest self-service subscription links (STAGING)",
@@ -589,12 +545,9 @@ func init() {
 		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	guestsShowCmd.Flags().BoolP("ipv4", "4", true, "Use IPv4")
-	guestsShowCmd.Flags().BoolP("ipv6", "6", false, "Use IPv6")
-	guestsShowCmd.Flags().BoolP("all", "a", false, "Show all available IPs")
 	guestsSubShowCmd.Flags().StringVarP(&guestSubShowAddr, "address", "a", "", "Override the host used when printing the guest sub URL")
 
 	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd)
-	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsShowCmd, guestsSubCmd)
+	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)
 }

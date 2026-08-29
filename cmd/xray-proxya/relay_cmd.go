@@ -1171,7 +1171,7 @@ var probeLocalOutboundCmd = &cobra.Command{
 				continue
 			}
 			if co.InternalProxyPort <= 0 {
-				fmt.Printf("❌ Relay '%s' has no bound local proxy. Use 'outbound set-internal-proxy %s'.\n", alias, alias)
+				fmt.Printf("❌ Relay '%s' has no bound local proxy. Use 'proxy set %s'.\n", alias, alias)
 				return
 			}
 			printProxyProbe(alias, "SOCKS", probeBoundProxy("socks5h://127.0.0.1:"+fmt.Sprint(co.InternalProxyPort)))
@@ -2242,62 +2242,6 @@ func setRelayPrivateTargets(cfg *config.UserConfig, alias string, allow bool) bo
 	return false
 }
 
-var setInternalProxyCmd = &cobra.Command{
-	Use:        "set-internal-proxy [alias]",
-	Deprecated: "Use 'xray-proxya proxy set [alias]' instead",
-	Short:      "Provide local unauthenticated socks/http proxy for a relay (STAGING)",
-	Args:       cobra.ExactArgs(1),
-	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		alias := args[0]
-		port, _ := cmd.Flags().GetInt("port")
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		for i, co := range cfg.CustomOutbounds {
-			if co.Alias == alias {
-				listenIP := co.InternalListenAddr
-				if listenIP == "" {
-					listenIP = "127.0.0.1"
-				}
-				if port == 0 {
-					for {
-						p, _ := xray.GetFreePort()
-						if p > 0 && p < 65535 &&
-							utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
-							utils.IsPortFree(p+1) &&
-							checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
-							port = p
-							break
-						}
-					}
-				} else {
-					if port < 1 || port >= 65535 {
-						fmt.Printf("❌ Invalid port: %d (must be between 1 and 65534)\n", port)
-						return
-					}
-					if err := checkProxyPortConflict(cfg, alias, listenIP, port, port+1); err != nil {
-						fmt.Printf("❌ Port conflict: %v\n", err)
-						return
-					}
-					if !utils.IsPortFree(port) || !utils.IsUDPPortFree(port) || !utils.IsPortFree(port+1) {
-						fmt.Printf("❌ Port %d or %d is in use on the host.\n", port, port+1)
-						return
-					}
-				}
-				cfg.CustomOutbounds[i].InternalProxyPort = port
-				if err := cfg.SaveEx(true); err == nil {
-					fmt.Printf("✅ Internal proxy for '%s' in STAGING -> Socks:%d, HTTP:%d\n", alias, port, port+1)
-					fmt.Println("🚀 Run 'apply' to commit.")
-				}
-				return
-			}
-		}
-		fmt.Printf("❌ Relay '%s' not found.\n", alias)
-	},
-}
-
 func buildDNSProbeQuery() []byte {
 	return []byte{
 		0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -2432,7 +2376,6 @@ func init() {
 	setDNSRelayCmd.Flags().StringP("strategy", "s", "", "DNS query strategy: UseIP, UseIPv4, or UseIPv6")
 	setDNSRelayCmd.Flags().StringSliceP("servers", "v", []string{}, "DNS servers for this relay, e.g. https://dns.google/dns-query or 1.1.1.1")
 	setDNSRelayCmd.Flags().BoolP("reset", "r", false, "Clear relay-specific DNS overrides and return to the default DNS config")
-	setInternalProxyCmd.Flags().IntP("port", "p", 0, "Base port (0 for random)")
 	testOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	testOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	infoOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
@@ -2470,6 +2413,6 @@ func init() {
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
-	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, setInternalProxyCmd, probeLocalOutboundCmd, resolveOutboundCmd)
+	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }
