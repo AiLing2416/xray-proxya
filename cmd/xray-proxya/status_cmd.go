@@ -44,9 +44,9 @@ var statusCmd = &cobra.Command{
 			user := currentLingerUser()
 			enabled, err := checkLingerStatus(user)
 			if err == nil && enabled {
-				fmt.Printf("   👤 User Session Lingering:      [Enabled]  (User: %s)\n", user)
+				fmt.Printf("   👤 User Session Lingering:      [Enabled]  (User: %s, linger is enabled)\n", user)
 			} else {
-				fmt.Printf("   👤 User Session Lingering:      [Disabled] (User: %s, hint: doctor linger enable)\n", user)
+				fmt.Printf("   👤 User Session Lingering:      [Disabled] (User: %s, linger is disabled)\n", user)
 			}
 		}
 
@@ -154,7 +154,7 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 	// Main service
 	mainRootOnly := (cfg.Role == config.RoleGateway)
 	if !isRoot && mainRootOnly {
-		fmt.Printf("   ● %-30s 不可用 (root only)\n", xray.MainServiceUnit)
+		fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", xray.MainServiceUnit)
 	} else {
 		active, pid, status := querySystemdUnitState(xray.MainServiceUnit)
 		icon := "●"
@@ -170,7 +170,7 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 
 	// Pathd service
 	if !isRoot {
-		fmt.Printf("   ● %-30s 不可用 (root only)\n", pathdServiceUnit)
+		fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", pathdServiceUnit)
 	} else if cfg.Role != config.RoleServer {
 		fmt.Printf("   ○ %-30s [N/A] (Server role only)\n", pathdServiceUnit)
 	} else {
@@ -207,7 +207,7 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 			unitName := fmt.Sprintf("xray-proxya-sub@%s.service", inst)
 			subRootOnly := (entry.IPv6Rotation != "" || entry.Port <= 1024)
 			if !isRoot && subRootOnly {
-				fmt.Printf("   ● %-30s 不可用 (root only)\n", unitName)
+				fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", unitName)
 			} else {
 				active, pid, status := querySystemdUnitState(unitName)
 				icon := "●"
@@ -225,7 +225,7 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 
 	// IPv6 rotate service
 	if !isRoot {
-		fmt.Printf("   ● %-30s 不可用 (root only)\n", rotateServiceUnit)
+		fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", rotateServiceUnit)
 	} else {
 		hasIPv6Config := cfg.IPv6Rotation.Subnet != "" || (cfg.IPv6Rotations != nil && cfg.IPv6Rotations["default"].Subnet != "")
 		if !hasIPv6Config {
