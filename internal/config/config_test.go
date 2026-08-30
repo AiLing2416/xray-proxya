@@ -316,3 +316,52 @@ func TestBackfillDefaultsFingerprintIdempotent(t *testing.T) {
 		}
 	}
 }
+
+func TestNormalizeMinClientVersion(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"26.3.27", "26.3.27", false},
+		{"v26.3.27", "26.3.27", false},
+		{"V26.3.27", "26.3.27", false},
+		{"26.3", "26.3.0", false},
+		{"26", "26.0.0", false},
+		{"0", "0.0.0", false},
+		{"0.0.0", "0.0.0", false},
+		{"1.8.0", "1.8.0", false},
+		{"", "", true},
+		{"   ", "", true},
+		{"invalid", "", true},
+		{"1.2.3.4", "", true},
+		{"1.-2.3", "", true},
+	}
+
+	for _, tt := range tests {
+		got, err := NormalizeMinClientVersion(tt.input)
+		if (err != nil) != tt.wantErr {
+			t.Errorf("NormalizeMinClientVersion(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			continue
+		}
+		if got != tt.want {
+			t.Errorf("NormalizeMinClientVersion(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
+func TestResolveMinClientVersion(t *testing.T) {
+	if got := ResolveMinClientVersion(nil); got != MinRealityClientVersion {
+		t.Errorf("ResolveMinClientVersion(nil) = %q, want %q", got, MinRealityClientVersion)
+	}
+
+	mDefault := &ModeInfo{Mode: ModeVLESSVision}
+	if got := ResolveMinClientVersion(mDefault); got != MinRealityClientVersion {
+		t.Errorf("ResolveMinClientVersion(mDefault) = %q, want %q", got, MinRealityClientVersion)
+	}
+
+	mCustom := &ModeInfo{Mode: ModeVLESSVision, MinClientVer: "0.0.0"}
+	if got := ResolveMinClientVersion(mCustom); got != "0.0.0" {
+		t.Errorf("ResolveMinClientVersion(mCustom) = %q, want 0.0.0", got)
+	}
+}

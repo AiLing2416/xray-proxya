@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -30,7 +32,7 @@ const (
 )
 
 const (
-	MinRealityClientVersion = "26.2.6"
+	MinRealityClientVersion = "26.3.27"
 )
 
 var AllowedRealityFingerprints = []string{
@@ -58,6 +60,49 @@ func IsAllowedRealityFingerprint(fp string) bool {
 		}
 	}
 	return false
+}
+
+// NormalizeMinClientVersion normalizes and validates a minimum client version string.
+// It accepts formats like "26.3.27", "26.3", "0", "0.0.0", or "v26.3.27" and strips leading 'v'/'V'.
+// A single "0" or "0.0.0" is normalized to "0.0.0".
+func NormalizeMinClientVersion(ver string) (string, error) {
+	ver = strings.TrimSpace(ver)
+	ver = strings.TrimPrefix(ver, "v")
+	ver = strings.TrimPrefix(ver, "V")
+	if ver == "" {
+		return "", errors.New("minimum client version cannot be empty")
+	}
+	if ver == "0" || ver == "0.0.0" {
+		return "0.0.0", nil
+	}
+	parts := strings.Split(ver, ".")
+	if len(parts) < 1 || len(parts) > 3 {
+		return "", fmt.Errorf("invalid version format %q, expected x.y.z or 0.0.0", ver)
+	}
+	for _, part := range parts {
+		if part == "" {
+			return "", fmt.Errorf("invalid version format %q", ver)
+		}
+		num, err := strconv.Atoi(part)
+		if err != nil || num < 0 {
+			return "", fmt.Errorf("invalid version component %q in %q", part, ver)
+		}
+	}
+	for len(parts) < 3 {
+		parts = append(parts, "0")
+	}
+	return strings.Join(parts, "."), nil
+}
+
+// ResolveMinClientVersion returns the effective minimum client version for a preset mode.
+func ResolveMinClientVersion(m *ModeInfo) string {
+	if m == nil {
+		return MinRealityClientVersion
+	}
+	if m.MinClientVer != "" {
+		return m.MinClientVer
+	}
+	return MinRealityClientVersion
 }
 
 var PresetOrder = []PresetMode{
@@ -285,16 +330,17 @@ type CustomOutbound struct {
 }
 
 type ModeInfo struct {
-	Mode        PresetMode `json:"mode"`
-	Enabled     bool       `json:"enabled"`
-	Port        int        `json:"port"`
-	SNI         string     `json:"sni,omitempty"`
-	Dest        string     `json:"dest,omitempty"`
-	Path        string     `json:"path,omitempty"`
-	Fingerprint string     `json:"fingerprint,omitempty"`
-	Settings    Settings   `json:"settings"`
-	Skin        bool       `json:"skin,omitempty"`
-	RegenFlag   bool       `json:"regen_flag,omitempty"`
+	Mode         PresetMode `json:"mode"`
+	Enabled      bool       `json:"enabled"`
+	Port         int        `json:"port"`
+	SNI          string     `json:"sni,omitempty"`
+	Dest         string     `json:"dest,omitempty"`
+	Path         string     `json:"path,omitempty"`
+	Fingerprint  string     `json:"fingerprint,omitempty"`
+	MinClientVer string     `json:"min_client_ver,omitempty"`
+	Settings     Settings   `json:"settings"`
+	Skin         bool       `json:"skin,omitempty"`
+	RegenFlag    bool       `json:"regen_flag,omitempty"`
 }
 
 type Settings struct {

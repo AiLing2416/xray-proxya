@@ -183,3 +183,65 @@ func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
 		t.Errorf("SNI = %q, want cdn.jsdelivr.net", loaded.Presets[0].SNI)
 	}
 }
+
+func TestPresetsSetMinVer(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Enabled: true, Port: 443, SNI: "pkg.go.dev", Dest: "pkg.go.dev:443"},
+			{Mode: config.ModeVMessWS, Enabled: true, Port: 8080, Path: "/vmess"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	t.Cleanup(func() {
+		presetMinVer = ""
+		_ = presetsSetCmd.Flags().Set("min-ver", "")
+	})
+
+	// 1. Valid min-ver for VLESSVision
+	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.3.27"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ := config.LoadConfigEx(true)
+	if loaded.Presets[0].MinClientVer != "26.3.27" {
+		t.Errorf("MinClientVer = %q, want 26.3.27", loaded.Presets[0].MinClientVer)
+	}
+
+	// 2. Set min-ver to 0.0.0 (compatible mode)
+	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "0.0.0"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Presets[0].MinClientVer != "0.0.0" {
+		t.Errorf("MinClientVer = %q, want 0.0.0", loaded.Presets[0].MinClientVer)
+	}
+
+	// 3. Invalid min-ver format - should reject and keep previous
+	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "invalid.version"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Presets[0].MinClientVer != "0.0.0" {
+		t.Errorf("MinClientVer mutated on invalid input: got %q, want 0.0.0", loaded.Presets[0].MinClientVer)
+	}
+
+	// 4. Unsupported mode (VMessWS is slot 4)
+	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.3.27"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"4"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Presets[3].MinClientVer != "" {
+		t.Errorf("unsupported mode got MinClientVer = %q, want empty", loaded.Presets[3].MinClientVer)
+	}
+}

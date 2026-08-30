@@ -27,6 +27,7 @@ var (
 	presetSkinManualForce   bool
 	presetSNI               string
 	presetDest              string
+	presetMinVer            string
 )
 
 var promptConfirmFunc = func(prompt string) bool {
@@ -70,8 +71,8 @@ var presetsListCmd = &cobra.Command{
 			return
 		}
 
-		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-30s | %-s\n", "ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "DEST / PATH")
-		fmt.Println("------------------------------------------------------------------------------------------------")
+		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-30s | %-12s | %-s\n", "ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "MIN VER", "DEST / PATH")
+		fmt.Println("----------------------------------------------------------------------------------------------------------------")
 		for i, mode := range cfg.Presets {
 			status := "OFF"
 			if mode.Enabled {
@@ -81,13 +82,17 @@ var presetsListCmd = &cobra.Command{
 			if mode.SNI != "" {
 				sni = mode.SNI
 			}
+			minVer := "-"
+			if supportsSkin(mode.Mode) {
+				minVer = config.ResolveMinClientVersion(&mode)
+			}
 			destOrPath := "-"
 			if mode.Dest != "" {
 				destOrPath = mode.Dest
 			} else if mode.Path != "" {
 				destOrPath = mode.Path
 			}
-			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-30s | %-s\n", i+1, mode.Mode, status, mode.Port, sni, destOrPath)
+			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-30s | %-12s | %-s\n", i+1, mode.Mode, status, mode.Port, sni, minVer, destOrPath)
 		}
 		fmt.Println()
 	},
@@ -311,13 +316,30 @@ REALITY target selection highlights:
 			fmt.Printf("🎯 Validated current REALITY target: %s (%s)\n", m.SNI, target)
 		}
 
+		if cmd.Flags().Changed("min-ver") {
+			if !supportsSkin(m.Mode) {
+				fmt.Printf("❌ Error: Mode [%s] does not support REALITY min-ver configuration (requires VLESS Reality or Vision).\n", m.Mode)
+				return
+			}
+			normVer, err := config.NormalizeMinClientVersion(presetMinVer)
+			if err != nil {
+				fmt.Printf("❌ Error: Invalid --min-ver %q: %v\n", presetMinVer, err)
+				return
+			}
+			m.MinClientVer = normVer
+		}
+
 		cfg.SaveEx(true)
 		status := "OFF"
 		if m.Enabled {
 			status = "ON"
 		}
-		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s [STAGING]\n",
-			m.Mode, status, m.Port, m.SNI, m.Dest)
+		extraInfo := ""
+		if supportsSkin(m.Mode) {
+			extraInfo = fmt.Sprintf(", MinVer: %s", config.ResolveMinClientVersion(m))
+		}
+		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s [STAGING]\n",
+			m.Mode, status, m.Port, m.SNI, m.Dest, extraInfo)
 		fmt.Println("🚀 Run 'apply' to commit changes.")
 	},
 }
@@ -353,6 +375,7 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetSkinManualForce, "skin-manual-force", false, "Force using a risky REALITY target without interactive confirmation")
 	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set and validate REALITY SNI domain")
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Set REALITY destination host:port (host must match SNI)")
+	presetsSetCmd.Flags().StringVar(&presetMinVer, "min-ver", "", "Set minimum Xray client version required for REALITY (e.g. 26.3.27, or 0.0.0 to disable)")
 
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) != 0 {
@@ -371,6 +394,14 @@ func init() {
 
 	presetsSetCmd.RegisterFlagCompletionFunc("skin-manual", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
+	})
+
+	presetsSetCmd.RegisterFlagCompletionFunc("min-ver", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{
+			"26.3.27\tShadowrocket latest & Xray default",
+			"0.0.0\tDisable check (Sing-Box/Clash compatible)",
+			"1.8.0\tLegacy compatibility",
+		}, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd)

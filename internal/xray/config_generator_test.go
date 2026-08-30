@@ -573,12 +573,13 @@ func TestGenerateXrayJSONIncludesMinClientVerForReality(t *testing.T) {
 				Dest:    "www.intel.com:443",
 			},
 			{
-				Mode:    config.ModeVLESSReality,
-				Enabled: true,
-				Port:    8443,
-				SNI:     "www.intel.com",
-				Dest:    "www.intel.com:443",
-				Path:    "/xhttp",
+				Mode:         config.ModeVLESSReality,
+				Enabled:      true,
+				Port:         8443,
+				SNI:          "www.intel.com",
+				Dest:         "www.intel.com:443",
+				Path:         "/xhttp",
+				MinClientVer: "0.0.0",
 			},
 			{
 				Mode:    config.ModeVLESSXHTTP,
@@ -595,7 +596,7 @@ func TestGenerateXrayJSONIncludesMinClientVerForReality(t *testing.T) {
 	for _, rawIn := range inbounds {
 		in := rawIn.(map[string]interface{})
 		tag := in["tag"].(string)
-		if tag == string(config.ModeVLESSVision) || tag == string(config.ModeVLESSReality) {
+		if tag == string(config.ModeVLESSVision) {
 			ss, ok := in["streamSettings"].(map[string]interface{})
 			if !ok {
 				t.Fatalf("inbound %s missing streamSettings", tag)
@@ -605,8 +606,21 @@ func TestGenerateXrayJSONIncludesMinClientVerForReality(t *testing.T) {
 				t.Fatalf("inbound %s missing realitySettings", tag)
 			}
 			ver, ok := rs["minClientVer"].(string)
-			if !ok || ver != "26.2.6" {
-				t.Errorf("inbound %s minClientVer = %q, want 26.2.6", tag, ver)
+			if !ok || ver != config.MinRealityClientVersion {
+				t.Errorf("inbound %s minClientVer = %q, want %s", tag, ver, config.MinRealityClientVersion)
+			}
+		} else if tag == string(config.ModeVLESSReality) {
+			ss, ok := in["streamSettings"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("inbound %s missing streamSettings", tag)
+			}
+			rs, ok := ss["realitySettings"].(map[string]interface{})
+			if !ok {
+				t.Fatalf("inbound %s missing realitySettings", tag)
+			}
+			ver, ok := rs["minClientVer"].(string)
+			if !ok || ver != "0.0.0" {
+				t.Errorf("inbound %s minClientVer = %q, want 0.0.0", tag, ver)
 			}
 		} else if tag == string(config.ModeVLESSXHTTP) {
 			ss, ok := in["streamSettings"].(map[string]interface{})
