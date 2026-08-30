@@ -88,66 +88,6 @@ var gatewayDisableCmd = &cobra.Command{
 	},
 }
 
-var gatewayLocalEnableCmd = &cobra.Command{
-	Use:    "local-enable",
-	Short:  "Enable local machine transparent proxy in staging",
-	Hidden: true,
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.LocalEnabled = true
-		cfg.SaveEx(true)
-		fmt.Println("✅ Local transparent proxy ENABLED in STAGING.")
-	},
-}
-
-var gatewayLocalDisableCmd = &cobra.Command{
-	Use:    "local-disable",
-	Short:  "Disable local machine transparent proxy in staging",
-	Hidden: true,
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.LocalEnabled = false
-		cfg.SaveEx(true)
-		fmt.Println("✅ Local transparent proxy DISABLED in STAGING.")
-	},
-}
-
-var gatewayLANEnableCmd = &cobra.Command{
-	Use:    "lan-enable",
-	Short:  "Enable LAN gateway (IP forwarding) in staging",
-	Hidden: true,
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.LANEnabled = true
-		cfg.SaveEx(true)
-		fmt.Println("✅ LAN gateway ENABLED in STAGING.")
-	},
-}
-
-var gatewayLANDisableCmd = &cobra.Command{
-	Use:    "lan-disable",
-	Short:  "Disable LAN gateway in staging",
-	Hidden: true,
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.LANEnabled = false
-		cfg.SaveEx(true)
-		fmt.Println("✅ LAN gateway DISABLED in STAGING.")
-	},
-}
-
 var gatewaySetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Configure gateway parameters in STAGING",
@@ -155,6 +95,20 @@ var gatewaySetCmd = &cobra.Command{
 		relay, _ := cmd.Flags().GetString("relay")
 		lan, _ := cmd.Flags().GetString("lan")
 		state, _ := cmd.Flags().GetString("state")
+		lanEnable, _ := cmd.Flags().GetBool("lan-enable")
+		lanDisable, _ := cmd.Flags().GetBool("lan-disable")
+		localEnable, _ := cmd.Flags().GetBool("local-enable")
+		localDisable, _ := cmd.Flags().GetBool("local-disable")
+
+		if lanEnable && lanDisable {
+			fmt.Println("❌ Cannot specify both --lan-enable and --lan-disable")
+			return
+		}
+		if localEnable && localDisable {
+			fmt.Println("❌ Cannot specify both --local-enable and --local-disable")
+			return
+		}
+
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
 			return
@@ -184,6 +138,16 @@ var gatewaySetCmd = &cobra.Command{
 			if stateLower == "forward-only" {
 				fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
 			}
+		}
+		if cmd.Flags().Changed("lan-enable") {
+			cfg.Gateway.LANEnabled = true
+		} else if cmd.Flags().Changed("lan-disable") {
+			cfg.Gateway.LANEnabled = false
+		}
+		if cmd.Flags().Changed("local-enable") {
+			cfg.Gateway.LocalEnabled = true
+		} else if cmd.Flags().Changed("local-disable") {
+			cfg.Gateway.LocalEnabled = false
 		}
 		if cmd.Flags().Changed("bypass-dns") {
 			bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
@@ -224,19 +188,6 @@ var gatewaySystemUpCmd = &cobra.Command{
 	},
 }
 
-var gatewayApplyCompatCmd = &cobra.Command{
-	Use:    "apply",
-	Short:  "Apply gateway runtime rules",
-	Hidden: true,
-	RunE:   gatewayUpCmd.RunE,
-}
-
-var gatewaySyncFirewallCompatCmd = &cobra.Command{
-	Use:    "sync-firewall",
-	Short:  "Regenerate and apply gateway runtime rules",
-	Hidden: true,
-	RunE:   gatewayUpCmd.RunE,
-}
 
 var gatewayDiffCmd = &cobra.Command{
 	Use:   "diff",
@@ -282,12 +233,6 @@ var gatewayCheckCmd = &cobra.Command{
 	},
 }
 
-var gatewayVerifyCompatCmd = &cobra.Command{
-	Use:    "verify",
-	Short:  "Verify gateway runtime state",
-	Hidden: true,
-	Run:    gatewayCheckCmd.Run,
-}
 
 var gatewayDownCmd = &cobra.Command{
 	Use:   "down",
@@ -425,19 +370,16 @@ var gatewayTestCmd = &cobra.Command{
 	},
 }
 
-var gatewayRollbackCompatCmd = &cobra.Command{
-	Use:    "rollback",
-	Short:  "Remove xray-proxya gateway runtime rules",
-	Hidden: true,
-	RunE:   gatewayDownCmd.RunE,
-}
-
 func init() {
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
 	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
+	gatewaySetCmd.Flags().Bool("lan-enable", false, "Enable LAN gateway (IP forwarding) in staging")
+	gatewaySetCmd.Flags().Bool("lan-disable", false, "Disable LAN gateway in staging")
+	gatewaySetCmd.Flags().Bool("local-enable", false, "Enable local machine transparent proxy in staging")
+	gatewaySetCmd.Flags().Bool("local-disable", false, "Disable local machine transparent proxy in staging")
 
 	gatewaySetCmd.RegisterFlagCompletionFunc("state", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"disabled", "forward-only", "proxy"}, cobra.ShellCompDirectiveNoFileComp
@@ -477,22 +419,14 @@ func init() {
 		gatewayStatusCmd,
 		gatewayEnableCmd,
 		gatewayDisableCmd,
-		gatewayLocalEnableCmd,
-		gatewayLocalDisableCmd,
-		gatewayLANEnableCmd,
-		gatewayLANDisableCmd,
 		gatewaySetCmd,
 		gatewayUpCmd,
 		gatewaySystemUpCmd,
-		gatewayApplyCompatCmd,
-		gatewaySyncFirewallCompatCmd,
 		gatewayDownCmd,
 		gatewaySystemDownCmd,
 		gatewaySystemSyncCmd,
 		gatewaySystemRestoreCmd,
-		gatewayRollbackCompatCmd,
 		gatewayCheckCmd,
-		gatewayVerifyCompatCmd,
 		gatewayDiffCmd,
 		gatewayTestCmd,
 	)
