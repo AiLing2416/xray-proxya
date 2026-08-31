@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/xray"
-	"xray-proxya/pkg/utils"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -27,14 +27,6 @@ import (
 type Profile struct {
 	IP, IPv4, IPv6, ASN, Org, City, Region, Country, Timezone, LocalTime string
 	ASNType, Privacy                                                     string
-}
-
-type ProbeResult struct {
-	TCP  string
-	UDP  string
-	DNS  string
-	IPv4 string
-	IPv6 string
 }
 
 type SpeedResult struct {
@@ -61,16 +53,19 @@ const (
 )
 
 var (
-	outboundIPv4 bool
-	outboundIPv6 bool
-	speedLink    string
-	speedUploadLink string
-	speedDownloadLink string
-	speedTime    int
-	speedSize    string
-	speedUpload  bool
-	speedDownload bool
-	speedBoth    bool
+	relayTestFull        bool
+	relayTestJSON        bool
+	relayTestConcurrency int
+	outboundIPv4         bool
+	outboundIPv6         bool
+	speedLink            string
+	speedUploadLink      string
+	speedDownloadLink    string
+	speedTime            int
+	speedSize            string
+	speedUpload          bool
+	speedDownload        bool
+	speedBoth            bool
 )
 
 const (
@@ -133,8 +128,13 @@ var addOutboundCmd = &cobra.Command{
 		newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
 		cfg.CustomOutbounds = append(cfg.CustomOutbounds, newCO)
 		fmt.Printf("🔍 Testing node '%s' connectivity...\n", alias)
-		results := runIsolatedTest(cfg, newCO)
-		printProbeResults(alias, results)
+		res, err := relaytest.RunTest(context.Background(), cfg, alias, relaytest.ModeSimple)
+		if err != nil || res == nil {
+			fmt.Printf("❌ Test failed: %v\n", err)
+		} else {
+			fmt.Print(relaytest.RenderTerminal([]*relaytest.TestResult{res}))
+			fmt.Println()
+		}
 		if err := cfg.SaveEx(true); err == nil {
 			fmt.Println("✅ Added to STAGING. Run 'apply' to commit.")
 		}
@@ -492,28 +492,71 @@ func trimText(value string, limit int) string {
 
 var testOutboundCmd = &cobra.Command{
 	Use:               "test [alias]",
-	Short:             "Verify relay node connectivity",
+	Short:             "Verify relay node connectivity and protocol health",
 	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
-		target := ""
-		if len(args) > 0 {
-			target = args[0]
-		}
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
 			return
 		}
-		found := false
-		for _, co := range cfg.CustomOutbounds {
-			if target != "" && co.Alias != target {
-				continue
-			}
-			found = true
-			results := runIsolatedTest(cfg, co)
-			printProbeResults(co.Alias, results)
+
+		mode := relaytest.ModeSimple
+		if relayTestFull {
+			mode = relaytest.ModeFull
 		}
-		if target != "" && !found {
-			fmt.Printf("❌ Relay '%s' not found.\n", target)
+
+		ctx := context.Background()
+
+		if len(args) > 0 {
+			target := args[0]
+			found := false
+			for _, co := range cfg.CustomOutbounds {
+				if co.Alias == target {
+					found = true
+					break
+				}
+			}
+			if !found {
+				fmt.Printf("❌ Relay '%s' not found.\n", target)
+				return
+			}
+
+			res, err := relaytest.RunTest(ctx, cfg, target, mode)
+			if err != nil {
+				fmt.Printf("❌ Error: %v\n", err)
+				return
+			}
+			if relayTestJSON {
+				out, _ := relaytest.RenderJSON(res)
+				fmt.Println(out)
+			} else {
+				fmt.Print(relaytest.RenderTerminal([]*relaytest.TestResult{res}))
+				fmt.Println()
+			}
+			return
+		}
+
+		if len(cfg.CustomOutbounds) == 0 {
+			fmt.Println("No custom relay nodes configured.")
+			return
+		}
+
+		var aliases []string
+		for _, co := range cfg.CustomOutbounds {
+			aliases = append(aliases, co.Alias)
+		}
+
+		results, err := relaytest.RunTests(ctx, cfg, aliases, mode, relayTestConcurrency)
+		if err != nil {
+			fmt.Printf("❌ Error: %v\n", err)
+			return
+		}
+
+		if relayTestJSON {
+			out, _ := relaytest.RenderJSON(results)
+			fmt.Println(out)
+		} else {
+			fmt.Print(relaytest.RenderTerminal(results))
 		}
 	},
 }
@@ -541,67 +584,16 @@ var infoOutboundCmd = &cobra.Command{
 			return
 		}
 		fmt.Printf("🔍 Querying profile for [%s]...\n", alias)
-		bin := xray.GetXrayBinaryPath()
-		if _, err := os.Stat(bin); os.IsNotExist(err) {
-			fmt.Println("⬇️ Xray core missing, downloading for test...")
-			if err := xray.DownloadXray(); err != nil {
-				fmt.Printf("❌ Failed to download Xray: %v\n", err)
-				return
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-		testSocksPort, err := xray.GetFreePort()
-		if err != nil {
-			fmt.Printf("❌ Failed to allocate port: %v\n", err)
-			return
-		}
-		apiPort, err := xray.GetFreePort()
-		if err != nil {
-			fmt.Printf("❌ Failed to allocate port: %v\n", err)
-			return
-		}
-
-		testCfg := *cfg
-		testCfg.Role = config.RoleServer
-		testCfg.Gateway = config.GatewayConfig{}
-
-		// v0.2.4: Randomize all active presets to avoid "device busy" during info test
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-		for _, m := range testCfg.Presets {
-			if m.Enabled {
-				p, err := xray.GetFreePort()
-				if err != nil {
-					fmt.Printf("❌ Failed to allocate port: %v\n", err)
-					return
-				}
-				overrides[string(m.Mode)] = p
-			}
-		}
-
-		jsonData, _ := xray.GenerateXrayJSON(&testCfg, overrides, alias)
-		_, cleanup, err := xray.StartXrayTemp(jsonData)
+		session, err := relaytest.StartTestSession(context.Background(), cfg, alias)
 		if err != nil {
 			fmt.Printf("❌ Error: %v\n", err)
 			return
 		}
-		defer cleanup()
+		defer session.Close()
 
-		// Wait for Xray to bind
-		socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-		if err := waitForLocalTCPPort(socksAddr, 5*time.Second); err != nil {
-			fmt.Printf("❌ Test listener did not become ready: %v\n", err)
-			cleanup()
-			return
-		}
-
-		dialer, err := utils.NewSOCKS5Dialer(socksAddr)
-		if err != nil {
-			fmt.Printf("❌ Failed to build SOCKS5 dialer: %v\n", err)
-			return
-		}
 		httpClient := &http.Client{
 			Transport: &http.Transport{
-				Dial:                  dialer.Dial,
+				Dial:                  session.Dialer.Dial,
 				TLSHandshakeTimeout:   10 * time.Second,
 				ResponseHeaderTimeout: 10 * time.Second,
 			},
@@ -1455,10 +1447,6 @@ func printProxyProbe(alias, proto string, results map[string]string) {
 	fmt.Printf("[%s/%s] -> IPv4: %s | IPv6: %s\n", alias, proto, results["IPv4"], results["IPv6"])
 }
 
-func printProbeResults(alias string, results ProbeResult) {
-	fmt.Printf("[%s] -> TCP: %s | UDP: %s | DNS: %s | IPv4: %s | IPv6: %s\n", alias, results.TCP, results.UDP, results.DNS, results.IPv4, results.IPv6)
-}
-
 func printSpeedResults(alias string, result SpeedResult) {
 	fmt.Printf("\n[%s] %s Speed Test\n", alias, result.Direction)
 	fmt.Printf("  Link: %s\n", result.Link)
@@ -1505,60 +1493,11 @@ func valueOrNA(v string) string {
 }
 
 func startIsolatedOutboundInstance(cfg *config.UserConfig, alias string) (*http.Client, string, func(), error) {
-	testSocksPort, err := xray.GetFreePort()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to allocate port: %w", err)
-	}
-	apiPort, err := xray.GetFreePort()
-	if err != nil {
-		return nil, "", nil, fmt.Errorf("failed to allocate port: %w", err)
-	}
-
-	testCfg := *cfg
-	testCfg.Role = config.RoleServer
-	testCfg.Gateway = config.GatewayConfig{}
-
-	overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort}
-	for _, m := range testCfg.Presets {
-		if m.Enabled {
-			p, err := xray.GetFreePort()
-			if err != nil {
-				return nil, "", nil, fmt.Errorf("failed to allocate port: %w", err)
-			}
-			overrides[string(m.Mode)] = p
-		}
-	}
-
-	jsonData, err := xray.GenerateXrayJSON(&testCfg, overrides, alias)
+	session, err := relaytest.StartTestSession(context.Background(), cfg, alias)
 	if err != nil {
 		return nil, "", nil, err
 	}
-
-	_, cleanup, err := xray.StartXrayTemp(jsonData)
-	if err != nil {
-		return nil, "", nil, err
-	}
-
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", testSocksPort)
-	if err := waitForLocalTCPPort(socksAddr, 5*time.Second); err != nil {
-		cleanup()
-		return nil, "", nil, err
-	}
-
-	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
-	if err != nil {
-		cleanup()
-		return nil, "", nil, err
-	}
-
-	transport := &http.Transport{
-		Dial:                  dialer.Dial,
-		DisableCompression:    true,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
-	}
-	client := &http.Client{Transport: transport, Timeout: 0}
-	return client, socksAddr, cleanup, nil
+	return session.HTTPClient, session.SOCKSAddr, session.Close, nil
 }
 
 func parseSize(s string) (int64, error) {
@@ -2249,135 +2188,14 @@ func buildDNSProbeQuery() []byte {
 	}
 }
 
-func probeDNSViaTCP(dialer *utils.SOCKS5Dialer, servers []string) (time.Duration, error) {
-	target := "8.8.8.8:53"
-	for _, s := range servers {
-		s = strings.TrimSpace(s)
-		if s == "" {
-			continue
-		}
-		host := s
-		if strings.Contains(s, "://") {
-			if u, err := url.Parse(s); err == nil {
-				host = u.Hostname()
-			}
-		} else if h, _, err := net.SplitHostPort(s); err == nil {
-			host = h
-		}
-		if host != "" {
-			target = net.JoinHostPort(host, "53")
-			break
-		}
-	}
-
-	conn, err := dialer.Dial("tcp", target)
-	if err != nil {
-		return 0, fmt.Errorf("tcp connect: %w", err)
-	}
-	defer conn.Close()
-	conn.SetDeadline(time.Now().Add(5 * time.Second))
-
-	query := buildDNSProbeQuery()
-	// TCP DNS: 2-byte length prefix + query
-	frame := make([]byte, 2+len(query))
-	frame[0] = byte(len(query) >> 8)
-	frame[1] = byte(len(query))
-	copy(frame[2:], query)
-
-	start := time.Now()
-	if _, err := conn.Write(frame); err != nil {
-		return 0, fmt.Errorf("write: %w", err)
-	}
-
-	// Read 2-byte response length
-	header := make([]byte, 2)
-	if _, err := io.ReadFull(conn, header); err != nil {
-		return 0, fmt.Errorf("read length: %w", err)
-	}
-	respLen := int(header[0])<<8 | int(header[1])
-	if respLen < 12 {
-		return 0, fmt.Errorf("response too short: %d bytes", respLen)
-	}
-	resp := make([]byte, respLen)
-	if _, err := io.ReadFull(conn, resp); err != nil {
-		return 0, fmt.Errorf("read body: %w", err)
-	}
-	duration := time.Since(start)
-
-	// Check ANCOUNT > 0 (bytes 6-7 of DNS response)
-	ancount := int(resp[6])<<8 | int(resp[7])
-	if ancount == 0 {
-		return duration, fmt.Errorf("no answers in DNS response")
-	}
-	return duration, nil
-}
-
-func runIsolatedTest(cfg *config.UserConfig, co config.CustomOutbound) ProbeResult {
-	results := ProbeResult{TCP: "FAIL", UDP: "FAIL", DNS: "FAIL", IPv4: "N/A", IPv6: "N/A"}
-	client, socksAddr, cleanup, err := startIsolatedOutboundInstance(cfg, co.Alias)
-	if err != nil {
-		return results
-	}
-	defer cleanup()
-
-	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
-	if err != nil {
-		return results
-	}
-	httpClient := client
-
-	// 1. Direct TCP Test (Bypass DNS)
-	if conn, err := dialer.Dial("tcp", "8.8.8.8:443"); err == nil {
-		results.TCP = "OK"
-		conn.Close()
-	} else {
-		results.TCP = fmt.Sprintf("FAIL(443:%v)", err)
-	}
-
-	if results.TCP == "OK" {
-		if conn, err := dialer.Dial("tcp", "8.8.8.8:80"); err == nil {
-			conn.Close()
-		} else {
-			results.TCP = fmt.Sprintf("OK(443),FAIL(80:%v)", err)
-		}
-	}
-
-	// 2. Fetch Exit IPs
-	if wantIPv4() {
-		if ip := fetchFamilyIP(httpClient, "4"); ip != "" {
-			results.IPv4 = ip
-		}
-	}
-	if wantIPv6() {
-		if ip := fetchFamilyIP(httpClient, "6"); ip != "" {
-			results.IPv6 = ip
-		}
-	}
-
-	// 3. DNS Test (actual resolution via TCP)
-	dnsDuration, dnsErr := probeDNSViaTCP(dialer, co.DNSServers)
-	if dnsErr == nil {
-		results.DNS = fmt.Sprintf("OK(%dms)", dnsDuration.Milliseconds())
-	} else {
-		results.DNS = fmt.Sprintf("FAIL(%v)", dnsErr)
-	}
-	udpDuration, udpErr := xray.TestUDP(socksAddr, "user-"+co.Alias, "test")
-	if udpErr == nil {
-		results.UDP = fmt.Sprintf("OK(%dms)", udpDuration.Milliseconds())
-	} else {
-		results.UDP = fmt.Sprintf("FAIL(%v)", udpErr)
-	}
-
-	return results
-}
-
 func init() {
 	bindInterfaceCmd.Flags().StringP("addr", "a", "", "Specific IP address to bind")
 	setDNSRelayCmd.Flags().StringP("strategy", "s", "", "DNS query strategy: UseIP, UseIPv4, or UseIPv6")
 	setDNSRelayCmd.Flags().StringSliceP("servers", "v", []string{}, "DNS servers for this relay, e.g. https://dns.google/dns-query or 1.1.1.1")
 	setDNSRelayCmd.Flags().BoolP("reset", "r", false, "Clear relay-specific DNS overrides and return to the default DNS config")
-	testOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
-	testOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
+	testOutboundCmd.Flags().BoolVarP(&relayTestFull, "full", "f", false, "Run complete diagnostic mode including modern web protocols and UDP stack")
+	testOutboundCmd.Flags().BoolVar(&relayTestJSON, "json", false, "Output test results in JSON format")
+	testOutboundCmd.Flags().IntVar(&relayTestConcurrency, "concurrency", 4, "Number of concurrent relay tests")
 	infoOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	infoOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")

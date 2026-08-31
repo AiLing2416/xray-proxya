@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -1701,14 +1702,60 @@ func parseRelayDetailOutput(alias string, raw string) relayDetailData {
 }
 
 func parseRelayTestSummary(alias string, raw string) relayTestMsg {
-	result := relayTestMsg{alias: alias, tcp: "FAIL", udp: "FAIL", dns: "FAIL", ipv4: "N/A", ipv6: "N/A"}
+	result := relayTestMsg{alias: alias, tcp: "FAIL", udp: "FAIL", dns: "OK", ipv4: "N/A", ipv6: "N/A"}
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return result
+	}
+
+	var jsonRes struct {
+		Transport struct {
+			TCPStatus string `json:"tcp_status"`
+			TCPRTTMs  int64  `json:"tcp_rtt_ms"`
+			UDPStatus string `json:"udp_status"`
+			UDPRTTMs  int64  `json:"udp_rtt_ms"`
+		} `json:"transport"`
+		ExitIP struct {
+			IPv4 string `json:"ipv4"`
+			IPv6 string `json:"ipv6"`
+		} `json:"exit_ip"`
+	}
+	if err := json.Unmarshal([]byte(raw), &jsonRes); err == nil && (jsonRes.Transport.TCPStatus != "" || jsonRes.ExitIP.IPv4 != "") {
+		if jsonRes.Transport.TCPStatus == "PASS" {
+			result.tcp = fmt.Sprintf("%dms", jsonRes.Transport.TCPRTTMs)
+		} else {
+			result.tcp = "FAIL"
+		}
+		if jsonRes.Transport.UDPStatus == "PASS" {
+			result.udp = fmt.Sprintf("%dms", jsonRes.Transport.UDPRTTMs)
+		} else {
+			result.udp = "FAIL"
+		}
+		result.dns = "OK"
+		if jsonRes.ExitIP.IPv4 != "" {
+			result.ipv4 = jsonRes.ExitIP.IPv4
+		}
+		if jsonRes.ExitIP.IPv6 != "" {
+			result.ipv6 = jsonRes.ExitIP.IPv6
+		}
+		return result
+	}
+
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, "->") {
+		if line == "" {
 			continue
 		}
-		parts := strings.SplitN(line, "->", 2)
-		for _, segment := range strings.Split(parts[1], "|") {
+		if strings.Contains(line, "->") {
+			parts := strings.SplitN(line, "->", 2)
+			line = strings.TrimSpace(parts[1])
+		}
+		if line == "FAIL" {
+			result.ipv4 = "FAIL"
+			result.ipv6 = "FAIL"
+			continue
+		}
+		for _, segment := range strings.Split(line, "|") {
 			segment = strings.TrimSpace(segment)
 			idx := strings.Index(segment, ":")
 			if idx <= 0 {
@@ -1716,16 +1763,16 @@ func parseRelayTestSummary(alias string, raw string) relayTestMsg {
 			}
 			key := strings.TrimSpace(segment[:idx])
 			val := strings.TrimSpace(segment[idx+1:])
-			switch key {
+			switch strings.ToUpper(key) {
 			case "TCP":
 				result.tcp = summarizeRelayTestValue(val)
 			case "UDP":
 				result.udp = summarizeRelayTestValue(val)
 			case "DNS":
 				result.dns = summarizeRelayTestValue(val)
-			case "IPv4":
+			case "IPV4":
 				result.ipv4 = val
-			case "IPv6":
+			case "IPV6":
 				result.ipv6 = val
 			}
 		}
@@ -1765,42 +1812,25 @@ func parseRelayProbeOutput(alias string, raw string) relayDetailData {
 }
 
 func parseRelayTestOutput(alias string, raw string) relayDetailData {
-	detail := relayTestMsg{alias: alias, tcp: "FAIL", udp: "FAIL", dns: "FAIL", ipv4: "N/A", ipv6: "N/A"}
+	summary := parseRelayTestSummary(alias, raw)
+	fields := []detailField{
+		{label: "TCP", value: summary.tcp},
+		{label: "UDP", value: summary.udp},
+		{label: "IPv4", value: summary.ipv4},
+		{label: "IPv6", value: summary.ipv6},
+	}
+
 	for _, line := range strings.Split(raw, "\n") {
 		line = strings.TrimSpace(line)
-		if line == "" || !strings.Contains(line, "->") {
-			continue
-		}
-		parts := strings.SplitN(line, "->", 2)
-		for _, segment := range strings.Split(parts[1], "|") {
-			segment = strings.TrimSpace(segment)
-			idx := strings.Index(segment, ":")
-			if idx <= 0 {
-				continue
-			}
-			key := strings.TrimSpace(segment[:idx])
-			val := strings.TrimSpace(segment[idx+1:])
-			switch key {
-			case "TCP":
-				detail.tcp = val
-			case "UDP":
-				detail.udp = val
-			case "DNS":
-				detail.dns = val
-			case "IPv4":
-				detail.ipv4 = val
-			case "IPv6":
-				detail.ipv6 = val
-			}
+		if strings.HasPrefix(line, "Modern Web:") {
+			fields = append(fields, detailField{label: "Modern Web", value: strings.TrimSpace(strings.TrimPrefix(line, "Modern Web:"))})
+		} else if strings.HasPrefix(line, "UDP Stack :") || strings.HasPrefix(line, "UDP Stack:") {
+			val := strings.TrimPrefix(line, "UDP Stack :")
+			val = strings.TrimPrefix(val, "UDP Stack:")
+			fields = append(fields, detailField{label: "UDP Stack", value: strings.TrimSpace(val)})
 		}
 	}
-	fields := []detailField{
-		{label: "TCP", value: detail.tcp},
-		{label: "UDP", value: detail.udp},
-		{label: "DNS", value: detail.dns},
-		{label: "IPv4", value: detail.ipv4},
-		{label: "IPv6", value: detail.ipv6},
-	}
+
 	return relayDetailData{title: alias + " test", fields: fields}
 }
 
