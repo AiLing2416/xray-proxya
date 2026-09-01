@@ -1,11 +1,7 @@
 package main
 
 import (
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
-	"time"
 
 	"xray-proxya/internal/config"
 )
@@ -103,55 +99,6 @@ func TestApplyDNSConfigUpdatePreservesUntouchedFields(t *testing.T) {
 	}
 }
 
-func TestLowPercentileAverageUsesBottomTwentyPercent(t *testing.T) {
-	samples := []float64{100, 200, 300, 400, 500}
-	got := lowPercentileAverage(samples, 0.20)
-	if got != 100 {
-		t.Fatalf("lowPercentileAverage() = %v, want 100", got)
-	}
-}
-
-func TestWorstPercentileAverageUsesTopFivePercentLatency(t *testing.T) {
-	values := []time.Duration{
-		10 * time.Millisecond,
-		20 * time.Millisecond,
-		30 * time.Millisecond,
-		40 * time.Millisecond,
-		250 * time.Millisecond,
-	}
-	got := worstPercentileAverage(values, 0.05)
-	if got != 250*time.Millisecond {
-		t.Fatalf("worstPercentileAverage() = %v, want 250ms", got)
-	}
-}
-
-func TestFormatBitrateUsesMegabits(t *testing.T) {
-	got := formatBitrate(125000)
-	if got != "1.00 Mb/s" {
-		t.Fatalf("formatBitrate() = %q, want %q", got, "1.00 Mb/s")
-	}
-}
-
-func TestFormatDecimalBytesUsesReadableUnits(t *testing.T) {
-	got := formatDecimalBytes(2_000_000)
-	if got != "2.00 MB" {
-		t.Fatalf("formatDecimalBytes() = %q, want %q", got, "2.00 MB")
-	}
-}
-
-func TestIsSuccessfulSpeedStatus(t *testing.T) {
-	for _, statusCode := range []int{200, 206, 302} {
-		if !isSuccessfulSpeedStatus(statusCode) {
-			t.Fatalf("isSuccessfulSpeedStatus(%d) = false, want true", statusCode)
-		}
-	}
-	for _, statusCode := range []int{199, 400, 404, 500} {
-		if isSuccessfulSpeedStatus(statusCode) {
-			t.Fatalf("isSuccessfulSpeedStatus(%d) = true, want false", statusCode)
-		}
-	}
-}
-
 func TestProbeDNSViaTCPQueryFormat(t *testing.T) {
 	// Verify the DNS query payload is well-formed
 	query := buildDNSProbeQuery()
@@ -162,131 +109,5 @@ func TestProbeDNSViaTCPQueryFormat(t *testing.T) {
 	qdcount := int(query[4])<<8 | int(query[5])
 	if qdcount != 1 {
 		t.Fatalf("QDCOUNT = %d, want 1", qdcount)
-	}
-}
-
-func TestParseSize(t *testing.T) {
-	tests := []struct {
-		input   string
-		want    int64
-		wantErr bool
-	}{
-		{"100", 100, false},
-		{"100B", 100, false},
-		{"100b", 100, false},
-		{"10K", 10_000, false},
-		{"10KB", 10_000, false},
-		{"10kb", 10_000, false},
-		{"10Ki", 10_240, false},
-		{"10KiB", 10_240, false},
-		{"1.5M", 1_500_000, false},
-		{"1.5MB", 1_500_000, false},
-		{"1.5mb", 1_500_000, false},
-		{"2Mi", 2_097_152, false},
-		{"2MiB", 2_097_152, false},
-		{"1G", 1_000_000_000, false},
-		{"1GB", 1_000_000_000, false},
-		{"1GiB", 1_073_741_824, false},
-		{"", 0, true},
-		{"   ", 0, true},
-		{"MB", 0, true},
-		{"-10M", 0, true},
-		{"abc", 0, true},
-		{"10Mabc", 0, true},
-	}
-
-	for _, tt := range tests {
-		got, err := parseSize(tt.input)
-		if (err != nil) != tt.wantErr {
-			t.Errorf("parseSize(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
-			continue
-		}
-		if !tt.wantErr && got != tt.want {
-			t.Errorf("parseSize(%q) = %d, want %d", tt.input, got, tt.want)
-		}
-	}
-}
-
-func TestRunSpeedPassTruncation(t *testing.T) {
-	// Start a local test server that serves a large stream of dummy data
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.WriteHeader(http.StatusOK)
-
-		// Write 1MB of dummy data
-		dummy := make([]byte, 1024)
-		for i := 0; i < 1024; i++ {
-			if _, err := w.Write(dummy); err != nil {
-				return
-			}
-		}
-	}))
-	defer server.Close()
-
-	client := server.Client()
-	var totalBytes int64
-	var samples []float64
-	maxBytes := int64(50 * 1024) // 50KB
-
-	err := runSpeedPass(client, server.URL, time.Time{}, &totalBytes, &samples, maxBytes)
-	if err != nil {
-		t.Fatalf("runSpeedPass failed: %v", err)
-	}
-
-	if totalBytes != maxBytes {
-		t.Errorf("totalBytes = %d, want %d", totalBytes, maxBytes)
-	}
-}
-
-func TestRunUploadPassStreamsConfiguredLimit(t *testing.T) {
-	var received int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
-		}
-		var err error
-		received, err = io.Copy(io.Discard, r.Body)
-		if err != nil {
-			t.Errorf("copy request body: %v", err)
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	defer server.Close()
-
-	var totalBytes int64
-	var samples []float64
-	const maxBytes = int64(64 * 1024)
-	err := runUploadPass(server.Client(), server.URL, time.Now().Add(time.Second), &totalBytes, &samples, maxBytes)
-	if err != nil {
-		t.Fatalf("runUploadPass() error = %v", err)
-	}
-	if totalBytes != maxBytes || received != maxBytes {
-		t.Fatalf("uploaded=%d received=%d, want %d", totalBytes, received, maxBytes)
-	}
-}
-
-func TestResolveSpeedTestLinkUsesDirectionSpecificOverride(t *testing.T) {
-	originalLink, originalUpload, originalDownload := speedLink, speedUploadLink, speedDownloadLink
-	t.Cleanup(func() {
-		speedLink, speedUploadLink, speedDownloadLink = originalLink, originalUpload, originalDownload
-	})
-	speedLink = "https://shared.example.test/test"
-	speedUploadLink = "https://upload.example.test/ingest"
-	speedDownloadLink = "https://download.example.test/data"
-
-	uploadLink, err := resolveSpeedTestLink(speedTestUpload, defaultSpeedTestSize)
-	if err != nil || uploadLink != speedUploadLink {
-		t.Fatalf("upload link = %q, %v", uploadLink, err)
-	}
-	downloadLink, err := resolveSpeedTestLink(speedTestDownload, defaultSpeedTestSize)
-	if err != nil || downloadLink != speedDownloadLink {
-		t.Fatalf("download link = %q, %v", downloadLink, err)
-	}
-}
-
-func TestSpeedLatencyLinkUsesCloudflareDownloadForUpload(t *testing.T) {
-	got := speedLatencyLink(speedTestUpload, defaultUploadTestLink)
-	if got != "https://speed.cloudflare.com/__down?bytes=1" {
-		t.Fatalf("speedLatencyLink() = %q", got)
 	}
 }
