@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -182,5 +183,27 @@ func TestServiceHasStagedChanges(t *testing.T) {
 	staging.Path.Token = "new-token"
 	if !serviceHasStagedChanges(active, staging, pathdItem) {
 		t.Errorf("expected staged changes detected after token modification")
+	}
+}
+
+func TestRenderVerticalChoiceList(t *testing.T) {
+	choices := []string{"disabled", "forward-only", "proxy"}
+
+	// Test full rendering
+	lines := RenderVerticalChoiceList(choices, 1, 0)
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d", len(lines))
+	}
+	if !strings.Contains(lines[1], "forward-only") || !strings.Contains(lines[1], ">") {
+		t.Errorf("expected selected indicator on line 1, got %q", lines[1])
+	}
+	if strings.Contains(lines[0], ">") {
+		t.Errorf("line 0 should not have selected indicator, got %q", lines[0])
+	}
+
+	// Test scrolling window
+	lines = RenderVerticalChoiceList(choices, 2, 2)
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 windowed lines, got %d", len(lines))
 	}
 }

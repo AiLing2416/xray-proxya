@@ -509,3 +509,46 @@ func boolToString(b bool) string {
 	}
 	return "Off"
 }
+
+// RenderVerticalChoiceList renders a vertical list of choices with cursor indicator and windowed viewport.
+func RenderVerticalChoiceList(choices []string, selectedIdx int, maxVisible int) []string {
+	if len(choices) == 0 {
+		return nil
+	}
+	if maxVisible <= 0 || maxVisible >= len(choices) {
+		lines := make([]string, 0, len(choices))
+		for i, c := range choices {
+			if i == selectedIdx {
+				lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("> "+c))
+			} else {
+				lines = append(lines, "  "+c)
+			}
+		}
+		return lines
+	}
+
+	// Calculate scrolling window
+	start := selectedIdx - maxVisible/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + maxVisible
+	if end > len(choices) {
+		end = len(choices)
+		start = end - maxVisible
+		if start < 0 {
+			start = 0
+		}
+	}
+
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		c := choices[i]
+		if i == selectedIdx {
+			lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("> "+c))
+		} else {
+			lines = append(lines, "  "+c)
+		}
+	}
+	return lines
+}

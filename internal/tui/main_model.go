@@ -187,6 +187,7 @@ type Model struct {
 	// In-bar input mode
 	inputMode          inputMode
 	textInput          textinput.Model
+	inputValidationError string
 
 	// In-bar selection mode
 	infoSelectMode     bool
@@ -570,14 +571,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch s {
 			case "esc":
 				m.inputMode = inputNone
+				m.inputValidationError = ""
 				m.textInput.Blur()
 				return m, nil
 			case "enter":
 				return m.submitInput()
+			default:
+				if m.inputValidationError != "" {
+					m.inputValidationError = ""
+				}
+				var cmd tea.Cmd
+				m.textInput, cmd = m.textInput.Update(msg)
+				return m, cmd
 			}
-			var cmd tea.Cmd
-			m.textInput, cmd = m.textInput.Update(msg)
-			return m, cmd
 		}
 
 		// -------------------------------------------------------------
@@ -588,12 +594,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.infoSelectMode = false
 				return m, nil
-			case "left", "h":
+			case "up", "k", "left", "h":
 				if len(m.infoSelectChoices) > 0 {
 					m.infoSelectIdx = (m.infoSelectIdx - 1 + len(m.infoSelectChoices)) % len(m.infoSelectChoices)
 				}
 				return m, nil
-			case "right", "l":
+			case "down", "j", "right", "l":
 				if len(m.infoSelectChoices) > 0 {
 					m.infoSelectIdx = (m.infoSelectIdx + 1) % len(m.infoSelectChoices)
 				}
@@ -646,12 +652,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.servicePropEdit = false
 						m.serviceValidationError = ""
 						return m, nil
-					case "left", "h":
+					case "up", "k", "left", "h":
 						if len(m.serviceChoiceOptions) > 0 {
 							m.serviceChoiceIdx = (m.serviceChoiceIdx - 1 + len(m.serviceChoiceOptions)) % len(m.serviceChoiceOptions)
 						}
 						return m, nil
-					case "right", "l":
+					case "down", "j", "right", "l":
 						if len(m.serviceChoiceOptions) > 0 {
 							m.serviceChoiceIdx = (m.serviceChoiceIdx + 1) % len(m.serviceChoiceOptions)
 						}
@@ -1236,12 +1242,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
-					return m, m.setNotice("Local proxy toggled")
+					return m, nil
 				} else if m.cursor == 3 && m.staging != nil {
 					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
-					return m, m.setNotice("LAN gateway toggled")
+					return m, nil
 				}
 				return m, nil
 
@@ -1358,10 +1364,13 @@ func (m *Model) prevTab() {
 
 func (m *Model) startInput(mode inputMode, title string, defaultVal string) {
 	m.inputMode = mode
+	m.inputValidationError = ""
 	m.textInput.SetValue(defaultVal)
 	m.textInput.Focus()
 	m.infoShowLogs = false
 	m.infoSelectMode = false
+	m.transientMsg = ""
+	m.transientUntil = time.Time{}
 	m.overrideMsg = ""
 }
 
@@ -1482,20 +1491,19 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 		m.inputMode = inputNone
 
 	case inputBypassCountries:
+		codes, err := validateCountryCodes(val)
+		if err != nil {
+			m.inputValidationError = err.Error()
+			return m, nil
+		}
 		if m.staging != nil {
-			var list []string
-			for _, part := range strings.Split(val, ",") {
-				if t := strings.TrimSpace(part); t != "" {
-					list = append(list, strings.ToUpper(t))
-				}
-			}
-			m.staging.Gateway.BypassCountries = list
+			m.staging.Gateway.BypassCountries = codes
 			m.staging.SaveEx(true)
-			m.inputMode = inputNone
-			m.overrideMsg = ""
-			return m, m.setNotice("bypass countries updated")
 		}
 		m.inputMode = inputNone
+		m.inputValidationError = ""
+		m.overrideMsg = ""
+		return m, nil
 
 	default:
 		m.inputMode = inputNone
@@ -1529,7 +1537,6 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 		if m.staging != nil {
 			m.staging.Gateway.State = choice
 			m.staging.SaveEx(true)
-			noticeText = fmt.Sprintf("gateway state => %s", choice)
 		}
 	case "gw-iface":
 		if m.staging != nil {
@@ -1538,7 +1545,6 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 			}
 			m.staging.Gateway.LANInterface = choice
 			m.staging.SaveEx(true)
-			noticeText = fmt.Sprintf("LAN interface => %s", choice)
 		}
 	case "gw-relay":
 		if m.staging != nil {
@@ -1547,7 +1553,6 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 			}
 			m.staging.Gateway.RelayAlias = choice
 			m.staging.SaveEx(true)
-			noticeText = fmt.Sprintf("gateway relay => %s", choice)
 		}
 	}
 
@@ -1747,6 +1752,9 @@ func (m Model) getSelectedDetailContent() string {
 		}
 		return strings.TrimSpace(b.String())
 	}
+	if m.currentTab == tabGateway && m.staging != nil && m.cursor >= 0 && m.cursor <= 6 {
+		return BuildGatewayReport(m.active, m.staging, m.cursor, m.gwNftables, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
+	}
 	return ""
 }
 
@@ -1764,16 +1772,7 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	isFollowTitle := false
 	isErrorTitle := false
 
-	if m.inputMode != inputNone {
-		title = " " + m.inputTitle() + " "
-		isPromptTitle = true
-	} else if m.infoSelectMode {
-		title = " Select " + m.infoSelectTitle + " "
-		isPromptTitle = true
-	} else if m.serviceFollow {
-		title = " LOGS (FOLLOWING) "
-		isFollowTitle = true
-	} else if m.servicePropEdit {
+	if m.servicePropEdit {
 		if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
 			prop := m.serviceProps[m.servicePropIndex]
 			if m.serviceValidationError != "" {
@@ -1787,6 +1786,20 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	} else if m.servicePropMode {
 		title = " Select " + m.serviceConfigItem.DisplayName + " "
 		isPromptTitle = true
+	} else if m.inputMode != inputNone {
+		if m.inputValidationError != "" {
+			title = " [" + m.inputValidationError + "] Setting " + m.inputTitle() + " "
+			isErrorTitle = true
+		} else {
+			title = " Setting " + m.inputTitle() + " "
+			isPromptTitle = true
+		}
+	} else if m.infoSelectMode {
+		title = " Setting " + m.infoSelectTitle + " "
+		isPromptTitle = true
+	} else if m.serviceFollow {
+		title = " LOGS (FOLLOWING) "
+		isFollowTitle = true
 	}
 
 	var header string
@@ -1810,45 +1823,24 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 			prop := m.serviceProps[m.servicePropIndex]
 			if prop.Type == PropInput {
 				rawLines = append(rawLines, "  "+m.textInput.View())
-				rawLines = append(rawLines, "  [Enter] Confirm  [Esc] Cancel")
 			} else if prop.Type == PropChoice {
-				var badges []string
-				for i, c := range m.serviceChoiceOptions {
-					if i == m.serviceChoiceIdx {
-						badges = append(badges, lipgloss.NewStyle().Reverse(true).Render(" "+c+" "))
-					} else {
-						badges = append(badges, " "+c+" ")
-					}
-				}
-				rawLines = append(rawLines, "  "+strings.Join(badges, "  "))
-				rawLines = append(rawLines, "  [←/→] Select  [Enter] Confirm  [Esc] Cancel")
+				rawLines = append(rawLines, RenderVerticalChoiceList(m.serviceChoiceOptions, m.serviceChoiceIdx, height-1)...)
 			}
 		}
 	} else if m.servicePropMode {
 		if len(m.serviceProps) == 0 {
 			rawLines = append(rawLines, "  Core service configuration is managed in PRESETS / GATEWAY / GUESTS.")
-			rawLines = append(rawLines, "  Press [Esc] to return to service list.")
 		} else {
 			rawLines = append(rawLines, RenderServicePropertyList(m.serviceProps, m.servicePropIndex, lineWidth)...)
 		}
+	} else if m.inputMode != inputNone {
+		rawLines = append(rawLines, "  "+m.textInput.View())
+	} else if m.infoSelectMode {
+		rawLines = append(rawLines, RenderVerticalChoiceList(m.infoSelectChoices, m.infoSelectIdx, height-1)...)
 	} else if time.Now().Before(m.transientUntil) && m.transientMsg != "" {
 		for _, l := range strings.Split(strings.TrimSpace(m.transientMsg), "\n") {
 			rawLines = append(rawLines, "  "+l)
 		}
-	} else if m.inputMode != inputNone {
-		rawLines = append(rawLines, "  "+m.textInput.View())
-		rawLines = append(rawLines, "  [Enter] Confirm  [Esc] Cancel")
-	} else if m.infoSelectMode {
-		var badges []string
-		for i, c := range m.infoSelectChoices {
-			if i == m.infoSelectIdx {
-				badges = append(badges, lipgloss.NewStyle().Reverse(true).Render(" "+c+" "))
-			} else {
-				badges = append(badges, " "+c+" ")
-			}
-		}
-		rawLines = append(rawLines, "  "+strings.Join(badges, "  "))
-		rawLines = append(rawLines, "  [←/→] Select  [Enter] Confirm  [Esc] Cancel")
 	} else if m.infoShowLogs {
 		logLines := strings.Split(strings.TrimSpace(m.serviceLogs), "\n")
 		maxLines := height - 1
@@ -1949,7 +1941,7 @@ func (m Model) renderFooter() string {
 		if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
 			prop := m.serviceProps[m.servicePropIndex]
 			if prop.Type == PropChoice {
-				badges = []string{"[←/→] Select", "[Enter] Confirm", "[Esc] Cancel"}
+				badges = []string{"[↑/↓] Select", "[Enter] Confirm", "[Esc] Cancel"}
 			} else {
 				badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
 			}
@@ -1960,6 +1952,10 @@ func (m Model) renderFooter() string {
 		} else {
 			badges = []string{"[↑/↓] Select", "[Enter] Edit", "[Space] Toggle", "[Esc] Back"}
 		}
+	} else if m.infoSelectMode {
+		badges = []string{"[↑/↓] Select", "[Enter] Confirm", "[Esc] Cancel"}
+	} else if m.inputMode != inputNone {
+		badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
 	} else {
 		badges = append(badges, "[Tab] Switch")
 
@@ -1977,14 +1973,27 @@ func (m Model) renderFooter() string {
 				badges = append(badges, "[Enter] Config", "[Space/S] Toggle", "[R] Restart", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
 			}
 		case tabPresets:
-		badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
-	case tabRelays:
-		badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
-	case tabGuests:
-		badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
-	case tabGateway:
-		badges = append(badges, "[Space] Toggle", "[Enter] Select", "[T] Test Route", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
-	}
+			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+		case tabRelays:
+			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+		case tabGuests:
+			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+		case tabGateway:
+			hasStaged := HasGatewayStagedChanges(m.active, m.staging)
+			var actBadges []string
+			if m.cursor == 1 {
+				actBadges = append(actBadges, "[Space] Toggle Rules")
+			} else if m.cursor == 2 || m.cursor == 3 {
+				actBadges = append(actBadges, "[Space] Toggle", "[T] Test Route")
+			} else {
+				actBadges = append(actBadges, "[Enter] Edit")
+			}
+			if hasStaged {
+				actBadges = append(actBadges, "[A] Apply", "[U] Undo")
+			}
+			actBadges = append(actBadges, "[+/-] Height", "[Q] Quit")
+			badges = append(badges, actBadges...)
+		}
 	}
 
 	var formattedBadges []string
