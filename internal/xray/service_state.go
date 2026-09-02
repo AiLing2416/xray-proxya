@@ -79,6 +79,18 @@ func ReadLogTail(lines int) (string, error) {
 	return JournalTail(MainServiceUnit, lines)
 }
 
+// IsServiceActive reports whether the main xray-proxya systemd service is active/running.
+func IsServiceActive() bool {
+	active, _ := getSystemdState(serviceUnitName)
+	return active
+}
+
+// IsUnitActive reports whether the specified systemd unit is active/running.
+func IsUnitActive(name string) bool {
+	active, _ := getSystemdState(name)
+	return active
+}
+
 func findSystemdServiceFile(unit string) string {
 	if os.Geteuid() != 0 {
 		path := filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", unit)

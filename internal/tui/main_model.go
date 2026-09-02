@@ -621,7 +621,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.currentTab == tabStatus || m.currentTab == tabService {
 				return m, nil
 			}
-			return m, m.performApply(m.currentTab == tabGateway)
+			return m, m.performApply()
 
 		case "u", "U":
 			if m.currentTab == tabStatus || m.currentTab == tabService {
@@ -1830,16 +1830,13 @@ func runUnitServiceAction(action, unit string) tea.Cmd {
 	}
 }
 
-func (m Model) performApply(withGateway bool) tea.Cmd {
+func (m Model) performApply() tea.Cmd {
 	return func() tea.Msg {
 		exe, err := os.Executable()
 		if err != nil {
 			return applyResultMsg{err: err}
 		}
 		args := []string{"apply", "--force"}
-		if withGateway {
-			args = append(args, "--with-gateway")
-		}
 		cmd := exec.Command(exe, args...)
 		out, err := cmd.CombinedOutput()
 		lines := strings.Split(strings.TrimSpace(string(out)), "\n")

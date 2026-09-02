@@ -158,22 +158,34 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		lines = append(lines, fmt.Sprintf("ℹ️  Changed sections: %v", impact.ChangedSections))
 	}
 	if impact.PathdConfigChanged {
+		pathdWasActive := IsPathdServiceActive()
 		if err := syncPathdConfig(cfg); err != nil {
 			return lines, fmt.Errorf("synchronize Pathd configuration: %w", err)
 		}
-		lines = append(lines, "✅ Pathd configuration synchronized.")
+		if pathdWasActive {
+			lines = append(lines, "✅ Pathd configuration synchronized and active service restarted.")
+		} else {
+			lines = append(lines, "✅ Pathd configuration synchronized (service is stopped; skipping restart).")
+		}
 	}
 	if impact.IPv6RotationChanged {
-		if err := RestartIPv6RotateServiceIfInstalled(); err != nil {
-			lines = append(lines, fmt.Sprintf("❌ Error reloading IPv6 rotation service: %v", err))
+		if IsIPv6RotateServiceActive() {
+			if err := RestartIPv6RotateServiceIfInstalled(); err != nil {
+				lines = append(lines, fmt.Sprintf("❌ Error reloading IPv6 rotation service: %v", err))
+			} else {
+				lines = append(lines, "🔄 IPv6 rotation service reloaded.")
+			}
 		} else {
-			lines = append(lines, "🔄 IPv6 rotation service reloaded if active.")
+			lines = append(lines, "ℹ️  IPv6 rotation service is stopped; skipping reload.")
 		}
 	}
 
+	xrayActive := xray.IsServiceActive()
 	xrayRestarted := false
 	if opts.Full || impact.XrayConfigChanged {
-		if gatewaySyncRequired {
+		if !xrayActive {
+			lines = append(lines, "ℹ️  Xray service is stopped; skipping restart.")
+		} else if gatewaySyncRequired {
 			lines = append(lines, "🔄 Restarting Xray and synchronizing Gateway runtime...")
 		} else {
 			lines = append(lines, "🔄 Restarting Xray service...")
@@ -191,11 +203,18 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		lines = append(lines, "ℹ️  Xray restart skipped: no Xray-facing changes detected.")
 	}
 
+	subRestarted := false
 	if opts.Full || impact.SubListenerChanged {
 		if HasSubServiceInstalled() {
-			lines = append(lines, "🔄 Restarting subscription service...")
-			if err := RestartSubServiceIfInstalled(); err != nil {
-				lines = append(lines, fmt.Sprintf("❌ Error restarting subscription service: %v", err))
+			if AnySubServiceActive() {
+				lines = append(lines, "🔄 Restarting active subscription service...")
+				if err := RestartSubServiceIfInstalled(); err != nil {
+					lines = append(lines, fmt.Sprintf("❌ Error restarting subscription service: %v", err))
+				} else {
+					subRestarted = true
+				}
+			} else {
+				lines = append(lines, "ℹ️  Subscription service is stopped; skipping restart.")
 			}
 		} else if impact.SubListenerChanged {
 			lines = append(lines, "ℹ️  Subscription listener changed, but no installed subscription service was found.")
@@ -205,7 +224,9 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	}
 
 	if gatewaySyncRequired {
-		if err := gateway.SyncDesiredLocked(cfg); err != nil {
+		if !xrayActive {
+			lines = append(lines, "ℹ️  Gateway runtime synchronization skipped: Xray service is stopped.")
+		} else if err := gateway.SyncDesiredLocked(cfg); err != nil {
 			lines = append(lines, fmt.Sprintf("❌ Failed to synchronize gateway runtime: %v", err))
 			return lines, fmt.Errorf("failed to synchronize gateway runtime: %w", err)
 		} else {
@@ -213,7 +234,7 @@ func applyPendingLocked(opts Options) ([]string, error) {
 			lines = append(lines, "✅ Gateway runtime synchronized with active configuration.")
 		}
 	}
-	if !xrayRestarted && !(opts.Full || impact.SubListenerChanged) {
+	if !xrayRestarted && !subRestarted {
 		lines = append(lines, "✅ Changes committed without service restart.")
 	} else {
 		lines = append(lines, "✅ All changes applied.")
@@ -495,6 +516,54 @@ func RestartIPv6RotateServiceIfInstalled() error {
 		return nil
 	}
 	return exec.Command("systemctl", "try-restart", "xray-proxya-ipv6-rotate.service").Run()
+}
+
+func AnySubServiceActive() bool {
+	if !HasSubServiceInstalled() {
+		return false
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return false
+	}
+	instances := []string{"default"}
+	if cfg.SubscriptionInstances != nil {
+		for inst := range cfg.SubscriptionInstances {
+			if inst != "default" {
+				instances = append(instances, inst)
+			}
+		}
+	}
+	for _, inst := range instances {
+		args := append(xray.SystemdScopeArgs(), "is-active", "--quiet", fmt.Sprintf("xray-proxya-sub@%s.service", inst))
+		if exec.Command("systemctl", args...).Run() == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func IsIPv6RotateServiceActive() bool {
+	if os.Geteuid() != 0 || !fileExists(ipv6RotateServicePath()) {
+		return false
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	return exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-ipv6-rotate.service").Run() == nil
+}
+
+func IsPathdServiceActive() bool {
+	if os.Geteuid() != 0 {
+		return false
+	}
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	return exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-pathd.service").Run() == nil
 }
 
 func fileExists(path string) bool {
