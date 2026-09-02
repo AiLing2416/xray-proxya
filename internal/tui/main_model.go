@@ -198,6 +198,16 @@ type Model struct {
 	// Logs in info bar
 	infoShowLogs       bool
 
+	// Service configuration management (two-tier in-bar tree)
+	servicePropMode        bool
+	servicePropEdit        bool
+	serviceConfigItem      ManagedServiceItem
+	serviceProps           []ServiceProperty
+	servicePropIndex       int
+	serviceChoiceOptions   []string
+	serviceChoiceIdx       int
+	serviceValidationError string
+
 	// Gateway runtime flags
 	gwNftables         bool
 	gwTun              bool
@@ -595,6 +605,157 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// -------------------------------------------------------------
+		// 2b. SERVICE PROPERTY EDIT MODE (Level 2)
+		// -------------------------------------------------------------
+		if m.servicePropEdit {
+			if s == "ctrl+c" {
+				return m, tea.Quit
+			}
+			if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
+				prop := m.serviceProps[m.servicePropIndex]
+				if prop.Type == PropInput {
+					switch s {
+					case "esc":
+						m.servicePropEdit = false
+						m.serviceValidationError = ""
+						m.textInput.Blur()
+						return m, nil
+					case "enter":
+						val := m.textInput.Value()
+						if err := validateAndApplyServiceProp(m.staging, m.serviceConfigItem, prop, val); err != nil {
+							m.serviceValidationError = err.Error()
+							return m, nil
+						}
+						_ = m.staging.SaveEx(true)
+						m.servicePropEdit = false
+						m.serviceValidationError = ""
+						m.textInput.Blur()
+						m.serviceProps = loadServiceProperties(m.staging, m.serviceConfigItem)
+						return m, nil
+					default:
+						if m.serviceValidationError != "" {
+							m.serviceValidationError = ""
+						}
+						var cmd tea.Cmd
+						m.textInput, cmd = m.textInput.Update(msg)
+						return m, cmd
+					}
+				} else if prop.Type == PropChoice {
+					switch s {
+					case "esc":
+						m.servicePropEdit = false
+						m.serviceValidationError = ""
+						return m, nil
+					case "left", "h":
+						if len(m.serviceChoiceOptions) > 0 {
+							m.serviceChoiceIdx = (m.serviceChoiceIdx - 1 + len(m.serviceChoiceOptions)) % len(m.serviceChoiceOptions)
+						}
+						return m, nil
+					case "right", "l":
+						if len(m.serviceChoiceOptions) > 0 {
+							m.serviceChoiceIdx = (m.serviceChoiceIdx + 1) % len(m.serviceChoiceOptions)
+						}
+						return m, nil
+					case "enter":
+						if len(m.serviceChoiceOptions) > 0 {
+							val := m.serviceChoiceOptions[m.serviceChoiceIdx]
+							if err := validateAndApplyServiceProp(m.staging, m.serviceConfigItem, prop, val); err != nil {
+								m.serviceValidationError = err.Error()
+								return m, nil
+							}
+							_ = m.staging.SaveEx(true)
+							m.servicePropEdit = false
+							m.serviceValidationError = ""
+							m.serviceProps = loadServiceProperties(m.staging, m.serviceConfigItem)
+							return m, nil
+						}
+						m.servicePropEdit = false
+						return m, nil
+					}
+					return m, nil
+				}
+			}
+			m.servicePropEdit = false
+			return m, nil
+		}
+
+		// -------------------------------------------------------------
+		// 2c. SERVICE PROPERTY LIST MODE (Level 1)
+		// -------------------------------------------------------------
+		if m.servicePropMode {
+			if s == "ctrl+c" {
+				return m, tea.Quit
+			}
+			switch s {
+			case "esc":
+				m.servicePropMode = false
+				m.serviceValidationError = ""
+				return m, nil
+			case "up", "k":
+				if m.servicePropIndex > 0 {
+					m.servicePropIndex--
+				}
+				return m, nil
+			case "down", "j":
+				if m.servicePropIndex < len(m.serviceProps)-1 {
+					m.servicePropIndex++
+				}
+				return m, nil
+			case " ":
+				if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
+					prop := m.serviceProps[m.servicePropIndex]
+					if prop.Type == PropBool {
+						newBool := !prop.BoolVal
+						_ = validateAndApplyServiceProp(m.staging, m.serviceConfigItem, prop, boolToString(newBool))
+						_ = m.staging.SaveEx(true)
+						m.serviceProps = loadServiceProperties(m.staging, m.serviceConfigItem)
+						return m, nil
+					}
+				}
+				return m, nil
+			case "enter":
+				if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
+					prop := m.serviceProps[m.servicePropIndex]
+					if prop.Type == PropBool {
+						newBool := !prop.BoolVal
+						_ = validateAndApplyServiceProp(m.staging, m.serviceConfigItem, prop, boolToString(newBool))
+						_ = m.staging.SaveEx(true)
+						m.serviceProps = loadServiceProperties(m.staging, m.serviceConfigItem)
+						return m, nil
+					}
+					if prop.Type == PropInput {
+						m.servicePropEdit = true
+						m.serviceValidationError = ""
+						m.textInput.SetValue(prop.Value)
+						m.textInput.Focus()
+						return m, nil
+					}
+					if prop.Type == PropChoice {
+						m.servicePropEdit = true
+						m.serviceValidationError = ""
+						m.serviceChoiceOptions = prop.Choices
+						m.serviceChoiceIdx = 0
+						for i, c := range prop.Choices {
+							if c == prop.Value {
+								m.serviceChoiceIdx = i
+								break
+							}
+						}
+						return m, nil
+					}
+				}
+				return m, nil
+			case "+", "=":
+				m.largeInfo = true
+				return m, nil
+			case "-":
+				m.largeInfo = false
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// -------------------------------------------------------------
 		// 3. GLOBAL SHORTCUTS
 		// -------------------------------------------------------------
 		switch s {
@@ -618,14 +779,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "a", "A":
-			if m.currentTab == tabStatus || m.currentTab == tabService {
+			if m.currentTab == tabStatus {
 				return m, nil
+			}
+			if m.currentTab == tabService {
+				if m.servicePropMode || m.servicePropEdit {
+					return m, nil
+				}
+				if !hasAnyServiceStagedChanges(m.active, m.staging, m.managedServices) {
+					return m, nil
+				}
 			}
 			return m, m.performApply()
 
 		case "u", "U":
-			if m.currentTab == tabStatus || m.currentTab == tabService {
+			if m.currentTab == tabStatus {
 				return m, nil
+			}
+			if m.currentTab == tabService {
+				if m.servicePropMode || m.servicePropEdit {
+					return m, nil
+				}
+				if !hasAnyServiceStagedChanges(m.active, m.staging, m.managedServices) {
+					return m, nil
+				}
 			}
 			_ = applyops.ClearPending()
 			m.active, _ = config.LoadConfig()
@@ -707,9 +884,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 
+			case "enter":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					m.servicePropMode = true
+					m.servicePropEdit = false
+					m.serviceValidationError = ""
+					m.serviceConfigItem = item
+					m.servicePropIndex = 0
+					m.serviceProps = loadServiceProperties(m.staging, item)
+					m.infoShowLogs = false
+					m.serviceFollow = false
+					m.transientMsg = ""
+					m.transientUntil = time.Time{}
+					m.overrideMsg = ""
+					return m, nil
+				}
+				return m, nil
+
 			case " ", "s", "S":
 				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
 					item := m.managedServices[m.cursor]
+					if serviceHasStagedChanges(m.active, m.staging, item) {
+						return m, m.setNotice("pending changes: press [A] to apply first")
+					}
 					action := "start"
 					if item.Active {
 						action = "stop"
@@ -735,6 +933,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "r", "R":
 				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
 					item := m.managedServices[m.cursor]
+					if serviceHasStagedChanges(m.active, m.staging, item) {
+						return m, m.setNotice("pending changes: press [A] to apply first")
+					}
 					noticeCmd := m.setNotice(fmt.Sprintf("restarting %s...", item.DisplayName))
 					return m, tea.Batch(runUnitServiceAction("restart", item.UnitName), noticeCmd)
 				}
@@ -1128,6 +1329,9 @@ func (m *Model) nextTab() {
 			m.infoShowLogs = false
 			m.serviceFollow = false
 			m.infoSelectMode = false
+			m.servicePropMode = false
+			m.servicePropEdit = false
+			m.serviceValidationError = ""
 			m.overrideMsg = ""
 			return
 		}
@@ -1143,6 +1347,9 @@ func (m *Model) prevTab() {
 			m.infoShowLogs = false
 			m.serviceFollow = false
 			m.infoSelectMode = false
+			m.servicePropMode = false
+			m.servicePropEdit = false
+			m.serviceValidationError = ""
 			m.overrideMsg = ""
 			return
 		}
@@ -1555,6 +1762,7 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	}
 	isPromptTitle := false
 	isFollowTitle := false
+	isErrorTitle := false
 
 	if m.inputMode != inputNone {
 		title = " " + m.inputTitle() + " "
@@ -1565,10 +1773,27 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	} else if m.serviceFollow {
 		title = " LOGS (FOLLOWING) "
 		isFollowTitle = true
+	} else if m.servicePropEdit {
+		if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
+			prop := m.serviceProps[m.servicePropIndex]
+			if m.serviceValidationError != "" {
+				title = " [" + m.serviceValidationError + "] Setting " + prop.Label + " "
+				isErrorTitle = true
+			} else {
+				title = " Setting " + prop.Label + " "
+				isPromptTitle = true
+			}
+		}
+	} else if m.servicePropMode {
+		title = " Select " + m.serviceConfigItem.DisplayName + " "
+		isPromptTitle = true
 	}
 
 	var header string
-	if isPromptTitle {
+	if isErrorTitle {
+		redTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(title)
+		header = detailPaneCustomHeader(redTitle, title, lineWidth)
+	} else if isPromptTitle {
 		blueTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(title)
 		header = detailPaneCustomHeader(blueTitle, title, lineWidth)
 	} else if isFollowTitle {
@@ -1580,8 +1805,33 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 
 	var rawLines []string
 
-	// 1. Transient overlay message (highest priority for 1 second)
-	if time.Now().Before(m.transientUntil) && m.transientMsg != "" {
+	if m.servicePropEdit {
+		if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
+			prop := m.serviceProps[m.servicePropIndex]
+			if prop.Type == PropInput {
+				rawLines = append(rawLines, "  "+m.textInput.View())
+				rawLines = append(rawLines, "  [Enter] Confirm  [Esc] Cancel")
+			} else if prop.Type == PropChoice {
+				var badges []string
+				for i, c := range m.serviceChoiceOptions {
+					if i == m.serviceChoiceIdx {
+						badges = append(badges, lipgloss.NewStyle().Reverse(true).Render(" "+c+" "))
+					} else {
+						badges = append(badges, " "+c+" ")
+					}
+				}
+				rawLines = append(rawLines, "  "+strings.Join(badges, "  "))
+				rawLines = append(rawLines, "  [←/→] Select  [Enter] Confirm  [Esc] Cancel")
+			}
+		}
+	} else if m.servicePropMode {
+		if len(m.serviceProps) == 0 {
+			rawLines = append(rawLines, "  Core service configuration is managed in PRESETS / GATEWAY / GUESTS.")
+			rawLines = append(rawLines, "  Press [Esc] to return to service list.")
+		} else {
+			rawLines = append(rawLines, RenderServicePropertyList(m.serviceProps, m.servicePropIndex, lineWidth)...)
+		}
+	} else if time.Now().Before(m.transientUntil) && m.transientMsg != "" {
 		for _, l := range strings.Split(strings.TrimSpace(m.transientMsg), "\n") {
 			rawLines = append(rawLines, "  "+l)
 		}
@@ -1692,17 +1942,41 @@ func detailPaneCustomHeader(styledTitle, rawTitle string, width int) string {
 
 func (m Model) renderFooter() string {
 	var badges []string
-	badges = append(badges, "[Tab] Switch")
-
 	isCopied := time.Now().Before(m.copyFeedbackUntil)
 	copyLink := m.getSelectedLink()
 
-	switch m.currentTab {
-	case tabStatus:
-		badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
-	case tabService:
-		badges = append(badges, "[Space/S] Toggle", "[E] Enable", "[D] Disable", "[R] Restart", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
-	case tabPresets:
+	if m.servicePropEdit {
+		if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
+			prop := m.serviceProps[m.servicePropIndex]
+			if prop.Type == PropChoice {
+				badges = []string{"[←/→] Select", "[Enter] Confirm", "[Esc] Cancel"}
+			} else {
+				badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
+			}
+		}
+	} else if m.servicePropMode {
+		if len(m.serviceProps) == 0 {
+			badges = []string{"[Esc] Back"}
+		} else {
+			badges = []string{"[↑/↓] Select", "[Enter] Edit", "[Space] Toggle", "[Esc] Back"}
+		}
+	} else {
+		badges = append(badges, "[Tab] Switch")
+
+		switch m.currentTab {
+		case tabStatus:
+			badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
+		case tabService:
+			hasStaged := false
+			if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+				hasStaged = serviceHasStagedChanges(m.active, m.staging, m.managedServices[m.cursor])
+			}
+			if hasStaged {
+				badges = append(badges, "[Enter] Config", "[A] Apply", "[U] Undo", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
+			} else {
+				badges = append(badges, "[Enter] Config", "[Space/S] Toggle", "[R] Restart", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
+			}
+		case tabPresets:
 		badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 	case tabRelays:
 		badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
@@ -1710,6 +1984,7 @@ func (m Model) renderFooter() string {
 		badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 	case tabGateway:
 		badges = append(badges, "[Space] Toggle", "[Enter] Select", "[T] Test Route", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+	}
 	}
 
 	var formattedBadges []string
