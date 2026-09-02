@@ -1625,7 +1625,7 @@ func (m Model) View() string {
 	case tabStatus:
 		content = RenderStatus(m.active, m.serviceState, m.lastStats)
 	case tabService:
-		content = RenderServiceList(m.managedServices, m.cursor, cWidth)
+		content = RenderServiceList(m.active, m.staging, m.managedServices, m.cursor, cWidth)
 	case tabPresets:
 		content = RenderPresets(m.active, m.staging, m.cursor, cWidth)
 	case tabRelays:

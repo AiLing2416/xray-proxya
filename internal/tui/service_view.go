@@ -123,7 +123,7 @@ func QueryManagedServices(cfg *config.UserConfig) []ManagedServiceItem {
 }
 
 // RenderServiceList renders the list table of managed services with simplified names.
-func RenderServiceList(services []ManagedServiceItem, selectedIdx int, width int) string {
+func RenderServiceList(active *config.UserConfig, staging *config.UserConfig, services []ManagedServiceItem, selectedIdx int, width int) string {
 	if len(services) == 0 {
 		return "No managed services found."
 	}
@@ -132,6 +132,10 @@ func RenderServiceList(services []ManagedServiceItem, selectedIdx int, width int
 	rows := make([][]string, 0, len(services))
 
 	for _, s := range services {
+		indicator := "   "
+		if serviceHasStagedChanges(active, staging, s) {
+			indicator = "[*]"
+		}
 		pidStr := "--"
 		if s.PID > 0 {
 			pidStr = fmt.Sprintf("%d", s.PID)
@@ -142,7 +146,7 @@ func RenderServiceList(services []ManagedServiceItem, selectedIdx int, width int
 		}
 
 		rows = append(rows, []string{
-			"   ",
+			indicator,
 			s.DisplayName,
 			s.Status,
 			pidStr,

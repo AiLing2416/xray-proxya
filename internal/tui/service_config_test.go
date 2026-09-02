@@ -207,3 +207,32 @@ func TestRenderVerticalChoiceList(t *testing.T) {
 		t.Fatalf("expected 2 windowed lines, got %d", len(lines))
 	}
 }
+
+func TestRenderServiceListStagedIndicator(t *testing.T) {
+	active := &config.UserConfig{
+		Role: config.RoleServer,
+		Path: config.PathConfig{Listen: "127.0.0.1:2828", Token: "orig-token", IdleSeconds: 20},
+	}
+	staging := &config.UserConfig{
+		Role: config.RoleServer,
+		Path: config.PathConfig{Listen: "127.0.0.1:2828", Token: "orig-token", IdleSeconds: 20},
+	}
+
+	services := []ManagedServiceItem{
+		{DisplayName: "Core", UnitName: "xray-proxya.service", Status: "Running", Active: true},
+		{DisplayName: "Pathd", UnitName: "xray-proxya-pathd.service", Status: "Stopped", Active: false},
+	}
+
+	// Initially, no staged changes
+	out := RenderServiceList(active, staging, services, 0, 80)
+	if strings.Contains(out, "[*]") {
+		t.Errorf("expected no [*] indicator when staging matches active, got:\n%s", out)
+	}
+
+	// Modify staging for Pathd
+	staging.Path.Token = "new-token"
+	out = RenderServiceList(active, staging, services, 0, 80)
+	if !strings.Contains(out, "[*]") {
+		t.Errorf("expected [*] indicator for Pathd when staging differs from active, got:\n%s", out)
+	}
+}
