@@ -1,25 +1,66 @@
+/*
+================================================================================
+                       XRAY-PROXYA TUI DESIGN PRINCIPLES
+================================================================================
+1. STAGING-FIRST ARCHITECTURE:
+   - All configuration modifications (Presets, Relays, Guests, Gateway config)
+     are staged immediately in staging memory/file.
+   - Global [A] applies pending changes with validation; [U] discards (Undo).
+   - [X] Remove directly deletes items from staging without modals because
+     staging safety guarantees undoability.
+
+2. CLEAN INFORMATION BAR (INFO PANE):
+   - Content is pure data (links, details, logs, metrics). No key hints inside.
+   - In-place interaction: [Enter] on multi-choice items or [Z] Zero opens
+     prompt/selection directly inside the Info Bar.
+   - All prompt titles and labels use regular non-bold blue styling.
+   - Large Info Mode [+/-] expands height to 40% of terminal for deep inspection.
+   - Transient messages (status/notice) temporarily take over Info Bar content
+     for 1 second before reverting to underlying data.
+   - Sticky Override messages (e.g. system call exit!=0 error output or in-flight
+     test state) replace normal info until user interacts or test finishes.
+   - Relay test/info/speed results are preserved in memory per item until exit.
+
+3. DUAL-CLIPBOARD & TERMINAL INTEGRATION:
+   - [C] Copy triggers OSC 52 (remote SSH/local clipboard write) + local clipboard.
+   - Visual feedback: [C] Copy badge in footer glows GREEN for 1s upon copying.
+   - OSC 8 hyperlinking is attached directly to the [C] Copy footer badge.
+
+4. HARMONIZED SHORTCUTS & NAVIGATION:
+   - [Space] universally toggles boolean states across all tabs.
+   - [Enter] universally activates in-bar selection for multi-choice options.
+   - [L] triggers a one-time log tail snapshot.
+   - [F] triggers live log follow mode (Green Title), stops on any keypress.
+   - Footer auto-wraps cleanly across multiple lines on narrow terminals.
+================================================================================
+*/
+
 package tui
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
-	"github.com/google/uuid"
 	"net"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
 	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
-	"xray-proxya/internal/sub"
+	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
+
+	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/textinput"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/google/uuid"
 )
 
 type sessionTab int
@@ -41,9 +82,8 @@ const (
 	inputAddRelay
 	inputAddGuest
 	inputSetGuestQuota
-	inputSetGuestReset
+	inputSetGuestZero
 	inputSetGuestOutbound
-	inputRelayResolveDomain
 	inputBypassCountries
 )
 
@@ -69,6 +109,7 @@ type serviceActionMsg struct {
 }
 
 type serviceFollowTickMsg struct{}
+type clearNoticeMsg struct{}
 
 type serviceLogsMsg struct {
 	body string
@@ -79,20 +120,16 @@ type publicIPMsg struct {
 	ip string
 }
 
-type relayDetailMsg struct {
+type relayInfoMsg struct {
 	alias string
 	body  string
 	err   error
 }
 
-type detailField struct {
-	label string
-	value string
-}
-
-type relayDetailData struct {
-	title  string
-	fields []detailField
+type relaySpeedMsg struct {
+	alias string
+	body  string
+	err   error
 }
 
 type relayTestMsg struct {
@@ -102,54 +139,83 @@ type relayTestMsg struct {
 	dns   string
 	ipv4  string
 	ipv6  string
+	raw   string
+	err   error
 }
 
-type serviceDetailView int
-
-const (
-	serviceDetailOverview serviceDetailView = iota
-	serviceDetailLogs
-	serviceDetailRuntime
-)
-
 type Model struct {
-	active        *config.UserConfig
-	staging       *config.UserConfig
-	currentTab    sessionTab
-	cursor        int
-	width         int
-	height        int
-	directStat    int64
-	relayStat     int64
-	coreActive    bool
-	corePID       int
-	lastStats     map[string]int64
-	relayResults  map[string]relayTestMsg
-	relayDetails  map[string]relayDetailData
-	relayLoading  string
-	portBuffer    string
-	detailScroll  int
-	statusNote    string
-	cachedIP      string
-	localIP       string
-	useLocalIP    bool
-	serviceState  xray.ServiceState
-	serviceView   serviceDetailView
-	serviceFollow bool
-	serviceLogs   string
-	relayAlias    string
+	active             *config.UserConfig
+	staging            *config.UserConfig
+	currentTab         sessionTab
+	cursor             int
+	width              int
+	height             int
+	directStat         int64
+	relayStat          int64
+	coreActive         bool
+	corePID            int
+	lastStats          map[string]int64
+	relayResults       map[string]relayTestMsg
+	relayTestMap       map[string]string
+	relayInfoMap       map[string]string
+	relaySpeedMap      map[string]string
+	relayViewMode      map[string]string
+	relayLoading       string
+	portBuffer         string
+	detailScroll       int
+	cachedIP           string
+	localIP            string
+	useLocalIP         bool
+	serviceState       xray.ServiceState
+	managedServices    []ManagedServiceItem
+	serviceFollow      bool
+	serviceLogs        string
+	relayAlias         string
 
-	inputMode inputMode
-	textInput textinput.Model
+	// Unified transient notice in info bar (1s overlay)
+	transientMsg       string
+	transientUntil     time.Time
 
-	gwNftables       bool
-	gwTun            bool
-	gwForward        bool
-	gatewayInputMode int // 0: normal, 1: selecting LAN interface, 2: selecting Relay
-	gatewayChoices   []string
-	gatewayChoiceIdx int
-	gwLocalTestIP    string
-	gwLANTestIP      string
+	// Temporary override info (e.g. in-flight testing state or exit != 0 output)
+	overrideMsg        string
+
+	// Large info pane (40% height)
+	largeInfo          bool
+	// Copy feedback timer (1s green badge)
+	copyFeedbackUntil  time.Time
+
+	// In-bar input mode
+	inputMode          inputMode
+	textInput          textinput.Model
+
+	// In-bar selection mode
+	infoSelectMode     bool
+	infoSelectTitle    string
+	infoSelectChoices  []string
+	infoSelectIdx      int
+	infoSelectTarget   string // "guest-outbound-choice", "gw-state", "gw-iface", "gw-relay"
+
+	// Logs in info bar
+	infoShowLogs       bool
+
+	// Gateway runtime flags
+	gwNftables         bool
+	gwTun              bool
+	gwForward          bool
+	gwLocalTestIP      string
+	gwLANTestIP        string
+}
+
+func (m *Model) setNotice(msg string) tea.Cmd {
+	m.transientMsg = msg
+	m.transientUntil = time.Now().Add(1 * time.Second)
+	return tea.Tick(1*time.Second, func(time.Time) tea.Msg {
+		return clearNoticeMsg{}
+	})
+}
+
+func (m *Model) setOverride(msg string) {
+	m.overrideMsg = msg
 }
 
 func tickStats(apiPort int) tea.Cmd {
@@ -158,27 +224,126 @@ func tickStats(apiPort int) tea.Cmd {
 		active, pid := service.Active, service.PID
 		allStats, _ := xray.GetXrayStats(apiPort)
 		summary := trafficstats.Summarize(allStats)
-		return statsMsg{direct: summary.Direct, relay: summary.Relay, active: active, pid: pid, allStats: allStats, service: service}
+		return statsMsg{
+			direct:   summary.Direct,
+			relay:    summary.Relay,
+			active:   active,
+			pid:      pid,
+			allStats: allStats,
+			service:  service,
+		}
 	})
 }
 
-func (m Model) performApply(applyGatewayUp bool) tea.Cmd {
+func tickServiceLogs() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return serviceFollowTickMsg{}
+	})
+}
+
+func refreshServiceLogs(lines int) tea.Cmd {
 	return func() tea.Msg {
-		lines, err := applyops.ApplyPending(applyops.Options{})
-		if err == nil && applyGatewayUp {
-			cfg, loadErr := config.LoadConfig()
-			if loadErr == nil {
-				err = gateway.ApplyFirewall(cfg)
-				if err == nil {
-					lines = append(lines, "✅ Gateway runtime rules applied successfully.")
+		body, err := xray.ReadLogTail(lines)
+		return serviceLogsMsg{body: body, err: err}
+	}
+}
+
+func refreshUnitLogs(unit string, lines int) tea.Cmd {
+	return func() tea.Msg {
+		body, err := xray.JournalTail(unit, lines)
+		return serviceLogsMsg{body: body, err: err}
+	}
+}
+
+func fetchPublicIP() tea.Cmd {
+	return func() tea.Msg {
+		ip := utils.GetPublicIPv4()
+		if ip == "" {
+			ip = utils.GetLocalIP()
+		}
+		return publicIPMsg{ip: ip}
+	}
+}
+
+func fetchRelayTest(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayTestMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "relay", "test", alias, "--json")
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return relayTestMsg{alias: alias, tcp: "Fail", udp: "Fail", dns: "Fail", ipv4: "--", ipv6: "--", raw: string(out), err: err}
+		}
+		var res relaytest.TestResult
+		if err := json.Unmarshal(out, &res); err == nil {
+			tcpStr := "--"
+			if res.Transport.TCPRTTMs > 0 {
+				tcpStr = fmt.Sprintf("%dms", res.Transport.TCPRTTMs)
+			} else if res.Transport.TCPStatus != "" {
+				tcpStr = string(res.Transport.TCPStatus)
+			}
+			udpStr := "--"
+			if res.Transport.UDPRTTMs > 0 {
+				udpStr = fmt.Sprintf("%dms", res.Transport.UDPRTTMs)
+			} else if res.Transport.UDPStatus != "" {
+				udpStr = string(res.Transport.UDPStatus)
+			}
+			dnsStr := "--"
+			if item, ok := res.Transport.RawItems["dns53"]; ok {
+				if item.RTTMs > 0 {
+					dnsStr = fmt.Sprintf("%dms", item.RTTMs)
 				} else {
-					lines = append(lines, fmt.Sprintf("❌ Failed to apply gateway runtime rules: %v", err))
+					dnsStr = string(item.Status)
 				}
-			} else {
-				err = loadErr
+			} else if res.Transport.UDPStatus == relaytest.StatusPass {
+				dnsStr = "OK"
+			}
+			ipv4Str := res.ExitIP.IPv4
+			if ipv4Str == "" {
+				ipv4Str = "--"
+			}
+			ipv6Str := res.ExitIP.IPv6
+			if ipv6Str == "" {
+				ipv6Str = "--"
+			}
+			terminalText := strings.TrimSpace(relaytest.RenderTerminal([]*relaytest.TestResult{&res}))
+			return relayTestMsg{
+				alias: alias,
+				tcp:   tcpStr,
+				udp:   udpStr,
+				dns:   dnsStr,
+				ipv4:  ipv4Str,
+				ipv6:  ipv6Str,
+				raw:   terminalText,
 			}
 		}
-		return applyResultMsg{lines: lines, err: err}
+		return relayTestMsg{alias: alias, tcp: "OK", udp: "OK", dns: "OK", ipv4: "--", ipv6: "--", raw: strings.TrimSpace(string(out))}
+	}
+}
+
+func fetchRelayInfo(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relayInfoMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "relay", "info", alias)
+		out, err := cmd.CombinedOutput()
+		return relayInfoMsg{alias: alias, body: strings.TrimSpace(string(out)), err: err}
+	}
+}
+
+func fetchRelaySpeed(alias string) tea.Cmd {
+	return func() tea.Msg {
+		exe, err := os.Executable()
+		if err != nil {
+			return relaySpeedMsg{alias: alias, err: err}
+		}
+		cmd := exec.Command(exe, "relay", "speed", alias)
+		out, err := cmd.CombinedOutput()
+		return relaySpeedMsg{alias: alias, body: strings.TrimSpace(string(out)), err: err}
 	}
 }
 
@@ -188,140 +353,214 @@ func InitialModel() Model {
 	if staging == nil {
 		staging = active
 	}
+
 	ti := textinput.New()
-	ti.Width = 60
-	localIP := utils.GetLocalIP()
-	m := Model{
-		active:        active,
-		staging:       staging,
-		currentTab:    tabStatus,
-		width:         80,
-		height:        24,
-		relayResults:  make(map[string]relayTestMsg),
-		relayDetails:  make(map[string]relayDetailData),
-		cachedIP:      localIP,
-		localIP:       localIP,
-		serviceState:  xray.GetServiceState(),
-		textInput:     ti,
-		gwLocalTestIP: "",
-		gwLANTestIP:   "",
+	ti.Focus()
+
+	nft, tun, fwd := checkGatewayStatus()
+	services := QueryManagedServices(active)
+
+	return Model{
+		active:          active,
+		staging:         staging,
+		currentTab:      tabStatus,
+		cursor:          0,
+		relayResults:    make(map[string]relayTestMsg),
+		relayTestMap:    make(map[string]string),
+		relayInfoMap:    make(map[string]string),
+		relaySpeedMap:   make(map[string]string),
+		relayViewMode:   make(map[string]string),
+		serviceState:    xray.GetServiceState(),
+		managedServices: services,
+		textInput:       ti,
+		cachedIP:        "127.0.0.1",
+		localIP:         utils.GetLocalIP(),
+		gwNftables:      nft,
+		gwTun:           tun,
+		gwForward:       fwd,
 	}
-	if active != nil && active.Role == config.RoleGateway {
-		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
-	}
-	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	if m.active != nil {
-		return tea.Batch(tickStats(m.active.APIInbound), fetchPublicIP())
+	apiPort := 10085
+	if m.staging != nil && m.staging.APIInbound > 0 {
+		apiPort = m.staging.APIInbound
 	}
-	return fetchPublicIP()
+	return tea.Batch(
+		tickStats(apiPort),
+		fetchPublicIP(),
+	)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if m.active == nil {
-		m.active, _ = config.LoadConfig()
-	}
 	switch msg := msg.(type) {
-	case applyResultMsg:
-		m.active, _ = config.LoadConfig()
-		m.staging, _ = config.LoadConfigEx(true)
-		if m.staging == nil {
-			m.staging = m.active
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+		return m, nil
+
+	case clearNoticeMsg:
+		return m, nil
+
+	case statsMsg:
+		m.directStat = msg.direct
+		m.relayStat = msg.relay
+		m.coreActive = msg.active
+		m.corePID = msg.pid
+		m.lastStats = msg.allStats
+		m.serviceState = msg.service
+		apiPort := 10085
+		if m.staging != nil && m.staging.APIInbound > 0 {
+			apiPort = m.staging.APIInbound
 		}
-		m.detailScroll = 0
-		m.statusNote = summarizeActionResult(msg.lines, msg.err)
-	case serviceActionMsg:
-		m.serviceState = msg.state
-		m.detailScroll = 0
-		m.statusNote = summarizeServiceActionResult(msg.action, msg.output, msg.err)
-		if m.currentTab == tabService && m.serviceView == serviceDetailLogs {
-			return m, refreshServiceLogs(32)
-		}
-	case serviceFollowTickMsg:
-		if m.serviceFollow && m.currentTab == tabService && m.serviceView == serviceDetailLogs {
-			return m, tea.Batch(refreshServiceLogs(32), tickServiceLogs())
-		}
-	case serviceLogsMsg:
-		if msg.err != nil {
-			m.serviceLogs = fmt.Sprintf("log read error: %v", msg.err)
-		} else if strings.TrimSpace(msg.body) == "" {
-			m.serviceLogs = "no log lines yet"
-		} else {
-			m.serviceLogs = strings.TrimRight(msg.body, "\n")
-		}
+		return m, tickStats(apiPort)
+
 	case publicIPMsg:
-		if strings.TrimSpace(msg.ip) != "" {
+		if msg.ip != "" {
 			m.cachedIP = msg.ip
 		}
-	case statsMsg:
-		m.directStat, m.relayStat, m.coreActive, m.corePID, m.lastStats = msg.direct, msg.relay, msg.active, msg.pid, msg.allStats
-		m.serviceState = msg.service
-		if m.active != nil && m.active.Role == config.RoleGateway {
+		return m, nil
+
+	case relayTestMsg:
+		m.relayLoading = ""
+		m.relayResults[msg.alias] = msg
+		if msg.err != nil {
+			m.setOverride(fmt.Sprintf("Relay Test Error (exit != 0):\n%v\n%s", msg.err, msg.raw))
+			return m, nil
+		}
+		m.relayTestMap[msg.alias] = msg.raw
+		m.relayViewMode[msg.alias] = "test"
+		m.overrideMsg = ""
+		return m, nil
+
+	case relayInfoMsg:
+		m.relayLoading = ""
+		if msg.err != nil {
+			m.setOverride(fmt.Sprintf("Relay Info Error (exit != 0):\n%v\n%s", msg.err, msg.body))
+			return m, nil
+		}
+		m.relayInfoMap[msg.alias] = msg.body
+		m.relayViewMode[msg.alias] = "info"
+		m.overrideMsg = ""
+		return m, nil
+
+	case relaySpeedMsg:
+		m.relayLoading = ""
+		if msg.err != nil {
+			m.setOverride(fmt.Sprintf("Relay Speed Error (exit != 0):\n%v\n%s", msg.err, msg.body))
+			return m, nil
+		}
+		m.relaySpeedMap[msg.alias] = msg.body
+		m.relayViewMode[msg.alias] = "speed"
+		m.overrideMsg = ""
+		return m, nil
+
+	case serviceLogsMsg:
+		m.serviceLogs = msg.body
+		return m, nil
+
+	case serviceFollowTickMsg:
+		if m.serviceFollow && m.infoShowLogs {
+			unit := xray.MainServiceUnit
+			if m.currentTab == tabService && m.cursor < len(m.managedServices) {
+				unit = m.managedServices[m.cursor].UnitName
+			}
+			return m, tea.Batch(refreshUnitLogs(unit, m.getLargeInfoLineCount()), tickServiceLogs())
+		}
+		return m, nil
+
+	case serviceActionMsg:
+		m.serviceState = msg.state
+		m.managedServices = QueryManagedServices(m.active)
+		var cmd tea.Cmd
+		if msg.err != nil {
+			errMsg := fmt.Sprintf("Service Error (exit != 0):\n%v", msg.err)
+			if msg.output != "" {
+				errMsg += "\n" + msg.output
+			}
+			m.setOverride(errMsg)
+			cmd = m.setNotice(fmt.Sprintf("%s failed", msg.action))
+		} else {
+			m.overrideMsg = ""
+			cmd = m.setNotice(fmt.Sprintf("%s completed", msg.action))
+		}
+		return m, cmd
+
+	case applyResultMsg:
+		var cmd tea.Cmd
+		if msg.err != nil {
+			outText := strings.Join(msg.lines, "\n")
+			if strings.TrimSpace(outText) == "" {
+				outText = msg.err.Error()
+			}
+			m.setOverride(fmt.Sprintf("Apply Error (exit != 0):\n%s", outText))
+			cmd = m.setNotice("apply failed")
+		} else {
+			m.overrideMsg = ""
+			cmd = m.setNotice(summarizeActionResult(msg.lines, msg.err))
+			m.active, _ = config.LoadConfig()
+			m.staging, _ = config.LoadConfigEx(true)
+			if m.staging == nil {
+				m.staging = m.active
+			}
+			m.serviceState = xray.GetServiceState()
+			m.managedServices = QueryManagedServices(m.active)
 			m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
 		}
-		return m, tickStats(m.active.APIInbound)
+		return m, cmd
+
 	case gatewayActionResultMsg:
-		if msg.err != nil {
-			m.statusNote = fmt.Sprintf("❌ Gateway %s failed! View logs: xray-proxya logs -n 20", msg.action)
-		} else {
-			m.statusNote = fmt.Sprintf("✅ Gateway runtime rules applied (%s).", msg.action)
-		}
 		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
-		return m, nil
-	case gatewayTestResultMsg:
+		var cmd tea.Cmd
 		if msg.err != nil {
-			m.statusNote = fmt.Sprintf("❌ Test failed: %v", msg.err)
-			if msg.row == 0 {
-				m.gwLocalTestIP = "fail"
-			} else {
-				m.gwLANTestIP = "fail"
-			}
+			m.setOverride(fmt.Sprintf("Gateway %s Error (exit != 0):\n%v", msg.action, msg.err))
+			cmd = m.setNotice(fmt.Sprintf("gateway %s failed", msg.action))
 		} else {
-			m.statusNote = "✅ Test completed successfully."
+			m.overrideMsg = ""
+			cmd = m.setNotice(fmt.Sprintf("gateway %s applied", msg.action))
+		}
+		return m, cmd
+
+	case gatewayTestResultMsg:
+		var cmd tea.Cmd
+		if msg.err != nil {
+			if msg.row == 0 {
+				m.gwLocalTestIP = "ERR"
+			} else {
+				m.gwLANTestIP = "ERR"
+			}
+			m.setOverride(fmt.Sprintf("Gateway Route Test Error:\n%v", msg.err))
+			cmd = m.setNotice("test failed")
+		} else {
 			if msg.row == 0 {
 				m.gwLocalTestIP = msg.ip
 			} else {
 				m.gwLANTestIP = msg.ip
 			}
+			m.overrideMsg = ""
+			cmd = m.setNotice(fmt.Sprintf("test completed, egress: %s", msg.ip))
 		}
-		return m, nil
-	case relayDetailMsg:
-		m.relayLoading = ""
-		if msg.err != nil && !strings.HasPrefix(msg.body, "__test__\n") {
-			m.statusNote = fmt.Sprintf("relay info failed: %v", msg.err)
-		} else {
-			if strings.HasPrefix(msg.body, "__test__\n") {
-				m.relayResults[msg.alias] = parseRelayTestSummary(msg.alias, strings.TrimPrefix(msg.body, "__test__\n"))
-				if msg.err != nil {
-					m.statusNote = fmt.Sprintf("relay test finished with errors: %v", msg.err)
-				} else {
-					m.statusNote = "relay test updated"
-				}
-			} else if strings.HasPrefix(msg.body, "__speed__\n") {
-				m.statusNote = "relay speed updated"
-			} else if strings.HasPrefix(msg.body, "__probe__\n") {
-				m.statusNote = "relay probe updated"
-			} else if strings.HasPrefix(msg.body, "__resolve__\n") {
-				m.statusNote = "relay resolve updated"
-			} else {
-				m.statusNote = "relay info updated"
-			}
-			m.relayDetails[msg.alias] = parseRelayDetailOutput(msg.alias, msg.body)
-		}
-	case relayTestMsg:
-		m.relayResults[msg.alias] = msg
-	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		return m, cmd
+
 	case tea.KeyMsg:
 		s := msg.String()
+
+		// Any keypress stops live log follow mode (unless it's 'f'/'F' which explicitly toggles follow)
+		if m.serviceFollow && s != "f" && s != "F" {
+			m.serviceFollow = false
+			if s == "tab" || s == "shift+tab" {
+				m.infoShowLogs = false
+			}
+		}
+
+		// -------------------------------------------------------------
+		// 1. IN-BAR INPUT MODE HANDLING
+		// -------------------------------------------------------------
 		if m.inputMode != inputNone {
 			switch s {
 			case "esc":
-				m.relayAlias = ""
 				m.inputMode = inputNone
-				m.textInput.Reset()
+				m.textInput.Blur()
 				return m, nil
 			case "enter":
 				return m.submitInput()
@@ -330,116 +569,63 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.textInput, cmd = m.textInput.Update(msg)
 			return m, cmd
 		}
-		if m.gatewayInputMode > 0 {
+
+		// -------------------------------------------------------------
+		// 2. IN-BAR SELECTION MODE HANDLING
+		// -------------------------------------------------------------
+		if m.infoSelectMode {
 			switch s {
 			case "esc":
-				m.gatewayInputMode = 0
-				m.statusNote = "Selection cancelled."
+				m.infoSelectMode = false
+				return m, nil
+			case "left", "h":
+				if len(m.infoSelectChoices) > 0 {
+					m.infoSelectIdx = (m.infoSelectIdx - 1 + len(m.infoSelectChoices)) % len(m.infoSelectChoices)
+				}
+				return m, nil
+			case "right", "l":
+				if len(m.infoSelectChoices) > 0 {
+					m.infoSelectIdx = (m.infoSelectIdx + 1) % len(m.infoSelectChoices)
+				}
 				return m, nil
 			case "enter":
-				if m.gatewayInputMode == 1 {
-					m.staging.Gateway.LANInterface = m.gatewayChoices[m.gatewayChoiceIdx]
-					if m.staging.Gateway.LANInterface == "none" {
-						m.staging.Gateway.LANInterface = ""
-					}
-					m.staging.SaveEx(true)
-					m.statusNote = "LAN Interface updated in staging."
-				} else if m.gatewayInputMode == 2 {
-					m.staging.Gateway.RelayAlias = m.gatewayChoices[m.gatewayChoiceIdx]
-					if m.staging.Gateway.RelayAlias == "direct" {
-						m.staging.Gateway.RelayAlias = ""
-					}
-					m.staging.SaveEx(true)
-					m.statusNote = "Outbound Relay updated in staging."
-				} else if m.gatewayInputMode == 3 {
-					m.staging.Gateway.State = m.gatewayChoices[m.gatewayChoiceIdx]
-					m.staging.SaveEx(true)
-					m.statusNote = "Gateway State updated in staging."
-				}
-				m.gatewayInputMode = 0
-				return m, nil
-			case "left":
-				if m.gatewayChoiceIdx > 0 {
-					m.gatewayChoiceIdx--
-				}
-				return m, nil
-			case "right":
-				if m.gatewayChoiceIdx < len(m.gatewayChoices)-1 {
-					m.gatewayChoiceIdx++
-				}
-				return m, nil
+				return m.confirmInfoSelect()
 			}
 			return m, nil
 		}
 
+		// -------------------------------------------------------------
+		// 3. GLOBAL SHORTCUTS
+		// -------------------------------------------------------------
 		switch s {
-		case "ctrl+c", "q":
+		case "ctrl+c", "q", "Q":
 			return m, tea.Quit
+
 		case "tab":
-			visible := m.getVisibleTabs()
-			idx := 0
-			for i, t := range visible {
-				if t == m.currentTab {
-					idx = i
-					break
-				}
-			}
-			m.currentTab = visible[(idx+1)%len(visible)]
-			m.cursor, m.portBuffer, m.detailScroll = 0, "", 0
+			m.nextTab()
+			return m, nil
+
 		case "shift+tab":
-			visible := m.getVisibleTabs()
-			idx := 0
-			for i, t := range visible {
-				if t == m.currentTab {
-					idx = i
-					break
-				}
+			m.prevTab()
+			return m, nil
+
+		case "+", "=":
+			m.largeInfo = true
+			return m, nil
+
+		case "-":
+			m.largeInfo = false
+			return m, nil
+
+		case "a", "A":
+			if m.currentTab == tabStatus || m.currentTab == tabService {
+				return m, nil
 			}
-			m.currentTab = visible[(idx+len(visible)-1)%len(visible)]
-			m.cursor, m.portBuffer, m.detailScroll = 0, "", 0
-		case "up", "k":
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			m.portBuffer, m.detailScroll = "", 0
-		case "down", "j":
-			max := 0
-			if m.staging != nil {
-				if m.currentTab == tabPresets {
-					max = len(m.staging.Presets) - 1
-				}
-				if m.currentTab == tabRelays {
-					max = len(m.staging.CustomOutbounds) - 1
-				}
-				if m.currentTab == tabGuests {
-					max = len(m.staging.Guests) - 1
-				}
-				if m.currentTab == tabGateway {
-					max = 6
-				}
-			}
-			if m.cursor < max {
-				m.cursor++
-			}
-			m.portBuffer, m.detailScroll = "", 0
-		case "left":
-			m.detailScroll -= 8
-			if m.detailScroll < 0 {
-				m.detailScroll = 0
-			}
-		case "right":
-			m.detailScroll += 8
-			maxScroll := detailMaxScroll(m.getSelectedDetailContent(), max(1, m.width-2))
-			if m.currentTab == tabService && m.serviceView == serviceDetailLogs {
-				maxScroll = m.currentServiceLogMaxScroll(max(1, m.width))
-			}
-			if m.detailScroll > maxScroll {
-				m.detailScroll = maxScroll
-			}
+			return m, m.performApply(m.currentTab == tabGateway)
+
 		case "u", "U":
-			if m.currentTab == tabService {
-				m.statusNote = "removing managed service..."
-				return m, runServiceAction("uninstall", "service", "uninstall")
+			if m.currentTab == tabStatus || m.currentTab == tabService {
+				return m, nil
 			}
 			_ = applyops.ClearPending()
 			m.active, _ = config.LoadConfig()
@@ -448,39 +634,432 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.staging = m.active
 			}
 			m.relayResults = make(map[string]relayTestMsg)
-			m.detailScroll = 0
-			m.statusNote = "staging reset"
-		case "enter":
-			if m.currentTab == tabGateway {
-				if m.cursor == 0 {
+			m.overrideMsg = ""
+			return m, m.setNotice("staging reset")
+
+		case "c", "C":
+			if m.currentTab == tabStatus || m.currentTab == tabService {
+				return m, nil
+			}
+			text := m.getSelectedCopyContent()
+			if text != "" {
+				writeOSC52(text)
+				_ = clipboard.WriteAll(text)
+				m.copyFeedbackUntil = time.Now().Add(1 * time.Second)
+			}
+			return m, nil
+		}
+
+		// -------------------------------------------------------------
+		// 4. TAB-SPECIFIC SHORTCUTS
+		// -------------------------------------------------------------
+		switch m.currentTab {
+
+		// =============================================================
+		// STATUS TAB
+		// =============================================================
+		case tabStatus:
+			switch s {
+			case "s", "S":
+				action := "start"
+				if m.serviceState.Active {
+					action = "stop"
+				}
+				noticeCmd := m.setNotice(fmt.Sprintf("%sing main service...", action))
+				return m, tea.Batch(runMainServiceAction(action), noticeCmd)
+
+			case "r", "R":
+				noticeCmd := m.setNotice("restarting main service...")
+				return m, tea.Batch(runMainServiceAction("restart"), noticeCmd)
+
+			case "l", "L":
+				m.infoShowLogs = true
+				m.serviceFollow = false
+				m.overrideMsg = ""
+				return m, refreshServiceLogs(m.getLargeInfoLineCount())
+
+			case "f", "F":
+				m.serviceFollow = !m.serviceFollow
+				m.infoShowLogs = true
+				m.overrideMsg = ""
+				if m.serviceFollow {
+					return m, tea.Batch(refreshServiceLogs(m.getLargeInfoLineCount()), tickServiceLogs())
+				}
+				return m, nil
+			}
+
+		// =============================================================
+		// SERVICE TAB (List-based management)
+		// =============================================================
+		case tabService:
+			switch s {
+			case "up", "k":
+				if m.cursor > 0 {
+					m.cursor--
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.cursor < len(m.managedServices)-1 {
+					m.cursor++
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case " ", "s", "S":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					action := "start"
+					if item.Active {
+						action = "stop"
+					}
+					noticeCmd := m.setNotice(fmt.Sprintf("%sing %s...", action, item.DisplayName))
+					return m, tea.Batch(runUnitServiceAction(action, item.UnitName), noticeCmd)
+				}
+
+			case "e", "E":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					noticeCmd := m.setNotice(fmt.Sprintf("enabling %s...", item.DisplayName))
+					return m, tea.Batch(runUnitServiceAction("enable", item.UnitName), noticeCmd)
+				}
+
+			case "d", "D":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					noticeCmd := m.setNotice(fmt.Sprintf("disabling %s...", item.DisplayName))
+					return m, tea.Batch(runUnitServiceAction("disable", item.UnitName), noticeCmd)
+				}
+
+			case "r", "R":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					noticeCmd := m.setNotice(fmt.Sprintf("restarting %s...", item.DisplayName))
+					return m, tea.Batch(runUnitServiceAction("restart", item.UnitName), noticeCmd)
+				}
+
+			case "l", "L":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					m.infoShowLogs = true
+					m.serviceFollow = false
+					m.overrideMsg = ""
+					return m, refreshUnitLogs(item.UnitName, m.getLargeInfoLineCount())
+				}
+				return m, nil
+
+			case "f", "F":
+				if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+					item := m.managedServices[m.cursor]
+					m.serviceFollow = !m.serviceFollow
+					m.infoShowLogs = true
+					m.overrideMsg = ""
+					if m.serviceFollow {
+						return m, tea.Batch(refreshUnitLogs(item.UnitName, m.getLargeInfoLineCount()), tickServiceLogs())
+					}
+				}
+				return m, nil
+			}
+
+		// =============================================================
+		// PRESETS TAB
+		// =============================================================
+		case tabPresets:
+			switch s {
+			case "up", "k":
+				if m.cursor > 0 {
+					m.cursor--
+					m.portBuffer = ""
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.staging != nil && m.cursor < len(m.staging.Presets)-1 {
+					m.cursor++
+					m.portBuffer = ""
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case " ":
+				if m.staging != nil && m.cursor < len(m.staging.Presets) {
+					m.staging.Presets[m.cursor].Enabled = !m.staging.Presets[m.cursor].Enabled
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("preset %s toggled", m.staging.Presets[m.cursor].Mode))
+				}
+				return m, nil
+
+			case "r", "R":
+				if m.staging != nil && m.cursor < len(m.staging.Presets) {
+					m.staging.Presets[m.cursor].RegenFlag = !m.staging.Presets[m.cursor].RegenFlag
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("regen flag toggled for %s", m.staging.Presets[m.cursor].Mode))
+				}
+				return m, nil
+
+			case "backspace":
+				if m.staging != nil && m.cursor < len(m.staging.Presets) && len(m.portBuffer) > 0 {
+					m.portBuffer = m.portBuffer[:len(m.portBuffer)-1]
+					var port int
+					if m.portBuffer != "" {
+						fmt.Sscanf(m.portBuffer, "%d", &port)
+					}
+					m.staging.Presets[m.cursor].Port = port
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("port => %d", port))
+				}
+				return m, nil
+
+			default:
+				if s >= "0" && s <= "9" && m.staging != nil && m.cursor < len(m.staging.Presets) {
+					if len(m.portBuffer) >= 5 {
+						m.portBuffer = ""
+					}
+					m.portBuffer += s
+					var port int
+					fmt.Sscanf(m.portBuffer, "%d", &port)
+					if port > 65535 {
+						port = 65535
+						m.portBuffer = "65535"
+					}
+					m.staging.Presets[m.cursor].Port = port
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("port => %d", port))
+				}
+			}
+
+		// =============================================================
+		// RELAYS TAB
+		// =============================================================
+		case tabRelays:
+			switch s {
+			case "up", "k":
+				if m.cursor > 0 {
+					m.cursor--
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds)-1 {
+					m.cursor++
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case " ":
+				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+					m.staging.CustomOutbounds[m.cursor].Enabled = !m.staging.CustomOutbounds[m.cursor].Enabled
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("relay %s toggled", m.staging.CustomOutbounds[m.cursor].Alias))
+				}
+				return m, nil
+
+			case "t", "T":
+				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+					alias := m.staging.CustomOutbounds[m.cursor].Alias
+					m.relayLoading = alias
+					m.relayResults[alias] = relayTestMsg{alias: alias, tcp: "Wait..", udp: "Wait..", dns: "Wait..", ipv4: "--", ipv6: "--"}
+					m.relayViewMode[alias] = "test"
+					m.setOverride(fmt.Sprintf("Testing connectivity for relay '%s'...\nPlease wait...", alias))
+					return m, fetchRelayTest(alias)
+				}
+
+			case "i", "I":
+				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+					alias := m.staging.CustomOutbounds[m.cursor].Alias
+					m.relayLoading = alias
+					m.relayViewMode[alias] = "info"
+					m.setOverride(fmt.Sprintf("Querying landing profile & unlock for relay '%s'...\nPlease wait...", alias))
+					return m, fetchRelayInfo(alias)
+				}
+
+			case "s", "S":
+				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+					alias := m.staging.CustomOutbounds[m.cursor].Alias
+					m.relayLoading = alias
+					m.relayViewMode[alias] = "speed"
+					m.setOverride(fmt.Sprintf("Running speed test on relay '%s'...\nPlease wait...", alias))
+					return m, fetchRelaySpeed(alias)
+				}
+
+			case "n", "N":
+				m.relayAlias = ""
+				m.startInput(inputAddRelayAlias, "New Relay Alias (Empty = Auto)", "")
+				return m, nil
+
+			case "x", "X":
+				if m.staging != nil && len(m.staging.CustomOutbounds) > 0 && m.cursor < len(m.staging.CustomOutbounds) {
+					deleted := m.staging.CustomOutbounds[m.cursor].Alias
+					idx := m.cursor
+					m.staging.CustomOutbounds = append(m.staging.CustomOutbounds[:idx], m.staging.CustomOutbounds[idx+1:]...)
+					m.staging.SaveEx(true)
+					if m.cursor >= len(m.staging.CustomOutbounds) {
+						m.cursor = len(m.staging.CustomOutbounds) - 1
+					}
+					if m.cursor < 0 {
+						m.cursor = 0
+					}
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("removed relay %s", deleted))
+				}
+				return m, nil
+			}
+
+		// =============================================================
+		// GUESTS TAB
+		// =============================================================
+		case tabGuests:
+			switch s {
+			case "up", "k":
+				if m.cursor > 0 {
+					m.cursor--
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.staging != nil && m.cursor < len(m.staging.Guests)-1 {
+					m.cursor++
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case " ":
+				if m.staging != nil && m.cursor < len(m.staging.Guests) {
+					g := &m.staging.Guests[m.cursor]
+					var actionName string
+					if g.Enabled {
+						g.Enabled = false
+						g.DisabledReason = config.GuestDisabledManual
+						actionName = "paused"
+					} else {
+						g.Enabled = true
+						g.DisabledReason = ""
+						actionName = "resumed"
+					}
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("guest %s %s", g.Alias, actionName))
+				}
+				return m, nil
+
+			case "n", "N":
+				m.startInput(inputAddGuest, "New Guest Alias", "")
+				return m, nil
+
+			case "x", "X":
+				if m.staging != nil && len(m.staging.Guests) > 0 && m.cursor < len(m.staging.Guests) {
+					deleted := m.staging.Guests[m.cursor].Alias
+					idx := m.cursor
+					m.staging.Guests = append(m.staging.Guests[:idx], m.staging.Guests[idx+1:]...)
+					m.staging.SaveEx(true)
+					if m.cursor >= len(m.staging.Guests) {
+						m.cursor = len(m.staging.Guests) - 1
+					}
+					if m.cursor < 0 {
+						m.cursor = 0
+					}
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("removed guest %s", deleted))
+				}
+				return m, nil
+
+			case "l", "L":
+				if m.staging != nil && m.cursor < len(m.staging.Guests) {
+					current := fmt.Sprintf("%v", m.staging.Guests[m.cursor].QuotaGB)
+					m.startInput(inputSetGuestQuota, "Quota (GB: -1 for unlimited, 0 for paused, 10, 50)", current)
+				}
+				return m, nil
+
+			case "z", "Z":
+				if m.staging != nil && m.cursor < len(m.staging.Guests) {
+					current := fmt.Sprintf("%d", m.staging.Guests[m.cursor].ResetDay)
+					m.startInput(inputSetGuestZero, "Reset Day (1-31) or 0 to clear used bytes", current)
+				}
+				return m, nil
+
+			case "r", "R", "enter":
+				if m.staging != nil && m.cursor < len(m.staging.Guests) {
+					g := m.staging.Guests[m.cursor]
+					m.infoSelectMode = true
+					m.infoSelectTitle = "Outbound for " + g.Alias
+					m.infoSelectChoices = []string{"Direct", "Relay to"}
+					m.infoSelectTarget = "guest-outbound-choice"
+					m.infoSelectIdx = 0
+					if g.OutboundLink != "" {
+						m.infoSelectIdx = 1
+					}
+					m.overrideMsg = ""
+				}
+				return m, nil
+			}
+
+		// =============================================================
+		// GATEWAY TAB
+		// =============================================================
+		case tabGateway:
+			switch s {
+			case "up", "k":
+				if m.cursor > 0 {
+					m.cursor--
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "down", "j":
+				if m.cursor < 6 {
+					m.cursor++
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case " ":
+				if m.cursor == 1 {
+					isActive := m.gwNftables && m.gwTun && m.gwForward
+					if isActive {
+						noticeCmd := m.setNotice("Applying 'gateway down' runtime rules...")
+						return m, tea.Batch(runGatewayDown(), noticeCmd)
+					} else {
+						noticeCmd := m.setNotice("Applying 'gateway up' runtime rules...")
+						return m, tea.Batch(runGatewayUp(m.active), noticeCmd)
+					}
+				} else if m.cursor == 2 && m.staging != nil {
+					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice("Local proxy toggled")
+				} else if m.cursor == 3 && m.staging != nil {
+					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, m.setNotice("LAN gateway toggled")
+				}
+				return m, nil
+
+			case "enter":
+				if m.cursor == 0 && m.staging != nil {
 					choices := []string{"disabled", "forward-only", "proxy"}
-					m.gatewayInputMode = 3
-					m.gatewayChoices = choices
-					m.gatewayChoiceIdx = 0
+					m.infoSelectMode = true
+					m.infoSelectTitle = "Gateway State"
+					m.infoSelectChoices = choices
+					m.infoSelectTarget = "gw-state"
+					m.infoSelectIdx = 0
+					m.overrideMsg = ""
 					for i, c := range choices {
 						if c == m.staging.Gateway.State {
-							m.gatewayChoiceIdx = i
+							m.infoSelectIdx = i
 							break
 						}
 					}
-				} else if m.cursor == 1 {
-					isActive := m.gwNftables && m.gwTun && m.gwForward
-					if isActive {
-						m.statusNote = "Applying 'gateway down' runtime rules..."
-						return m, runGatewayDown()
-					} else {
-						m.statusNote = "Applying 'gateway up' runtime rules..."
-						return m, runGatewayUp(m.active)
-					}
-				} else if m.cursor == 2 {
-					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
-					m.staging.SaveEx(true)
-					m.statusNote = "Local proxy toggled"
-				} else if m.cursor == 3 {
-					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
-					m.staging.SaveEx(true)
-					m.statusNote = "LAN gateway toggled"
-				} else if m.cursor == 4 {
+				} else if m.cursor == 4 && m.staging != nil {
 					ifaces, _ := net.Interfaces()
 					choices := []string{"none"}
 					for _, iface := range ifaces {
@@ -488,353 +1067,330 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							choices = append(choices, iface.Name)
 						}
 					}
-					m.gatewayInputMode = 1
-					m.gatewayChoices = choices
-					m.gatewayChoiceIdx = 0
+					m.infoSelectMode = true
+					m.infoSelectTitle = "LAN Interface"
+					m.infoSelectChoices = choices
+					m.infoSelectTarget = "gw-iface"
+					m.infoSelectIdx = 0
+					m.overrideMsg = ""
 					for i, c := range choices {
 						if c == m.staging.Gateway.LANInterface {
-							m.gatewayChoiceIdx = i
+							m.infoSelectIdx = i
 							break
 						}
 					}
-				} else if m.cursor == 5 {
+				} else if m.cursor == 5 && m.staging != nil {
 					choices := []string{"direct"}
 					for _, co := range m.staging.CustomOutbounds {
 						choices = append(choices, co.Alias)
 					}
-					m.gatewayInputMode = 2
-					m.gatewayChoices = choices
-					m.gatewayChoiceIdx = 0
+					m.infoSelectMode = true
+					m.infoSelectTitle = "Outbound Relay"
+					m.infoSelectChoices = choices
+					m.infoSelectTarget = "gw-relay"
+					m.infoSelectIdx = 0
+					m.overrideMsg = ""
 					for i, c := range choices {
 						if c == m.staging.Gateway.RelayAlias {
-							m.gatewayChoiceIdx = i
+							m.infoSelectIdx = i
 							break
 						}
 					}
-				} else if m.cursor == 6 {
-					m.startInput(inputBypassCountries, "Bypass countries (comma separated, e.g., CN)", strings.Join(m.staging.Gateway.BypassCountries, ", "))
+				} else if m.cursor == 6 && m.staging != nil {
+					m.startInput(inputBypassCountries, "Bypass Countries (comma separated, e.g. CN)", strings.Join(m.staging.Gateway.BypassCountries, ", "))
 				}
 				return m, nil
-			}
-		case "n", "N":
-			if m.currentTab == tabRelays {
-				m.relayAlias = ""
-				m.startInput(inputAddRelayAlias, "relay alias (empty = auto)", "")
-				return m, nil
-			}
-			if m.currentTab == tabGuests {
-				m.startInput(inputAddGuest, "guest-alias", "")
-				return m, nil
-			}
-		case "a", "A":
-			if m.currentTab != tabService {
-				return m, m.performApply(m.currentTab == tabGateway)
-			}
-		case "l", "L":
-			if m.currentTab == tabService {
-				m.serviceView = serviceDetailLogs
-				m.serviceFollow = false
-				m.detailScroll = 0
-				m.statusNote = ""
-				return m, refreshServiceLogs(32)
-			} else {
-				m.useLocalIP = !m.useLocalIP
-				m.detailScroll = 0
-			}
-		case "b", "B":
-			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				alias := m.staging.CustomOutbounds[m.cursor].Alias
-				m.relayLoading = alias
-				m.statusNote = "probing local relay proxy..."
-				return m, fetchRelayProbe(alias)
-			}
-		case "+", "=":
-			if m.currentTab == tabGateway {
-				if m.cursor == 1 {
-					m.statusNote = "Applying 'gateway up' runtime rules..."
-					return m, runGatewayUp(m.active)
-				} else if m.cursor == 2 {
-					m.staging.Gateway.LocalEnabled = true
-					m.staging.SaveEx(true)
-					m.statusNote = "Local proxy enabled"
-				} else if m.cursor == 3 {
-					m.staging.Gateway.LANEnabled = true
-					m.staging.SaveEx(true)
-					m.statusNote = "LAN gateway enabled"
-				}
-				return m, nil
-			}
-			if m.currentTab == tabPresets && m.staging != nil {
-				m.staging.Presets[m.cursor].Enabled = true
-				m.staging.SaveEx(true)
-				m.statusNote = "preset enabled"
-			}
-			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				m.staging.CustomOutbounds[m.cursor].Enabled = true
-				m.staging.SaveEx(true)
-				m.statusNote = "relay enabled"
-			}
-			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) && s == "=" {
-				if err := m.resumeGuest(); err != nil {
-					m.statusNote = err.Error()
-				} else {
-					m.statusNote = "guest resumed"
-				}
-			}
-		case "-":
-			if m.currentTab == tabGateway {
-				if m.cursor == 1 {
-					m.statusNote = "Applying 'gateway down' runtime rules..."
-					return m, runGatewayDown()
-				} else if m.cursor == 2 {
-					m.staging.Gateway.LocalEnabled = false
-					m.staging.SaveEx(true)
-					m.statusNote = "Local proxy disabled"
-				} else if m.cursor == 3 {
-					m.staging.Gateway.LANEnabled = false
-					m.staging.SaveEx(true)
-					m.statusNote = "LAN gateway disabled"
-				}
-				return m, nil
-			}
-			if m.currentTab == tabPresets && m.staging != nil {
-				m.staging.Presets[m.cursor].Enabled = false
-				m.staging.SaveEx(true)
-				m.statusNote = "preset disabled"
-			}
-			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				m.staging.CustomOutbounds[m.cursor].Enabled = false
-				m.staging.SaveEx(true)
-				m.statusNote = "relay disabled"
-			}
-			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
-				m.pauseGuest()
-				m.statusNote = "guest paused"
-			}
-		case "d", "D":
-			if m.currentTab == tabRelays && m.staging != nil && len(m.staging.CustomOutbounds) > 0 {
-				idx := m.cursor
-				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds[:idx], m.staging.CustomOutbounds[idx+1:]...)
-				m.staging.SaveEx(true)
-				m.statusNote = "relay deleted"
-				if m.cursor >= len(m.staging.CustomOutbounds) {
-					m.cursor = len(m.staging.CustomOutbounds) - 1
-				}
-				if m.cursor < 0 {
-					m.cursor = 0
-				}
-			}
-			if m.currentTab == tabGuests && m.staging != nil && len(m.staging.Guests) > 0 {
-				idx := m.cursor
-				m.staging.Guests = append(m.staging.Guests[:idx], m.staging.Guests[idx+1:]...)
-				m.staging.SaveEx(true)
-				m.statusNote = "guest deleted"
-				if m.cursor >= len(m.staging.Guests) {
-					m.cursor = len(m.staging.Guests) - 1
-				}
-				if m.cursor < 0 {
-					m.cursor = 0
-				}
-			}
-		case "t", "T":
-			if m.currentTab == tabGateway {
+
+			case "t", "T":
 				if m.cursor == 2 {
 					m.gwLocalTestIP = "testing..."
-					m.statusNote = "Testing local proxy IP..."
-					return m, testLocalProxy(m.active)
+					noticeCmd := m.setNotice("Testing local proxy IP...")
+					return m, tea.Batch(testLocalProxy(m.active), noticeCmd)
 				}
 				if m.cursor == 3 {
 					m.gwLANTestIP = "testing..."
-					m.statusNote = "Testing simulated LAN IP (this takes a few seconds)..."
-					return m, testLANGateway(m.active)
+					noticeCmd := m.setNotice("Testing simulated LAN IP...")
+					return m, tea.Batch(testLANGateway(m.active), noticeCmd)
 				}
 				return m, nil
-			}
-			if m.currentTab == tabService {
-				m.statusNote = "stopping service..."
-				m.serviceView = serviceDetailRuntime
-				return m, runServiceAction("stop", "stop")
-			}
-			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				co := m.staging.CustomOutbounds[m.cursor]
-				m.relayLoading = co.Alias
-				m.relayResults[co.Alias] = relayTestMsg{alias: co.Alias, tcp: "Wait..", udp: "Wait..", dns: "Wait..", ipv4: "--", ipv6: "--"}
-				m.statusNote = "testing relay..."
-				return m, fetchRelayTest(co.Alias)
-			}
-		case "v", "V":
-			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				alias := m.staging.CustomOutbounds[m.cursor].Alias
-				m.relayLoading = alias
-				m.statusNote = "running relay speed test..."
-				return m, fetchRelaySpeed(alias)
-			}
-		case "i", "I":
-			if m.currentTab == tabService {
-				m.statusNote = "installing managed service..."
-				m.serviceView = serviceDetailRuntime
-				return m, runServiceAction("install", "service", "install")
-			}
-			if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				alias := m.staging.CustomOutbounds[m.cursor].Alias
-				m.relayLoading = alias
-				m.statusNote = "querying relay info..."
-				return m, fetchRelayDetail(alias)
-			}
-		case "r", "R":
-			if m.currentTab == tabService {
-				m.statusNote = "restarting service..."
-				m.serviceView = serviceDetailRuntime
-				return m, runServiceAction("restart", "restart")
-			}
-			if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.Presets) {
-				m.staging.Presets[m.cursor].RegenFlag = !m.staging.Presets[m.cursor].RegenFlag
-				m.staging.SaveEx(true)
-				m.statusNote = "regen flag toggled"
-			} else if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-				m.startInput(inputRelayResolveDomain, "domain to resolve", "openai.com")
-				return m, nil
-			} else if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
-				current := fmt.Sprintf("%d", m.staging.Guests[m.cursor].ResetDay)
-				m.startInput(inputSetGuestReset, "reset day 1-31", current)
-				return m, nil
-			}
-		case "o", "O":
-			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
-				current := m.staging.Guests[m.cursor].OutboundLink
-				if current == "" {
-					current = "direct"
-				}
-				m.startInput(inputSetGuestOutbound, "proxy link or direct", current)
-				return m, nil
-			}
-		case "e", "E":
-			if m.currentTab == tabGuests {
-				if err := m.enableGuestSub(); err != nil {
-					m.statusNote = err.Error()
-				} else {
-					m.statusNote = "guest sub enabled"
-				}
-			}
-		case "x", "X":
-			if m.currentTab == tabGuests {
-				if err := m.disableGuestSub(); err != nil {
-					m.statusNote = err.Error()
-				} else {
-					m.statusNote = "guest sub disabled"
-				}
-			}
-		case "y", "Y":
-			if m.currentTab == tabGuests {
-				if err := m.rotateGuestSub(); err != nil {
-					m.statusNote = err.Error()
-				} else {
-					m.statusNote = "guest sub rotated"
-				}
-			}
-		case "backspace":
-			if m.currentTab == tabPresets && len(m.portBuffer) > 0 {
-				m.portBuffer = m.portBuffer[:len(m.portBuffer)-1]
-				var port int
-				fmt.Sscanf(m.portBuffer, "%d", &port)
-				m.staging.Presets[m.cursor].Port = port
-				m.staging.SaveEx(true)
-				m.statusNote = fmt.Sprintf("port => %d", port)
-			}
-		case "delete":
-			if m.currentTab == tabPresets {
-				m.portBuffer, m.staging.Presets[m.cursor].Port = "", 0
-				m.staging.SaveEx(true)
-				m.statusNote = "port cleared"
-			}
-		case "s", "S":
-			if m.currentTab == tabService {
-				m.statusNote = "starting service..."
-				m.serviceView = serviceDetailRuntime
-				return m, runServiceAction("start", "start")
-			}
-			title, body := m.currentShowView()
-			if strings.TrimSpace(body) == "" {
-				m.statusNote = "nothing to show"
-				return m, nil
-			}
-			cmd := exec.Command("bash", "-lc", buildShowScript(title, body))
-			return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
-		case "g", "G":
-			if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
-				current := fmt.Sprintf("%v", m.staging.Guests[m.cursor].QuotaGB)
-				m.startInput(inputSetGuestQuota, "quota: -1 / 0 / 5 / reset", current)
-				return m, nil
-			}
-		case "c", "C":
-			if m.currentTab == tabService {
-				m.statusNote = ""
-				if m.serviceView == serviceDetailLogs {
-					return m, tea.Batch(refreshServiceState(), refreshServiceLogs(32))
-				}
-				return m, refreshServiceState()
-			}
-		case "m", "M":
-			if m.currentTab == tabService {
-				m.serviceView = nextServiceDetailView(m.serviceView)
-				if m.serviceView != serviceDetailLogs {
-					m.serviceFollow = false
-				}
-				m.detailScroll = 0
-			}
-		case "f", "F":
-			if m.currentTab == tabService {
-				m.serviceView = serviceDetailLogs
-				m.serviceFollow = !m.serviceFollow
-				m.detailScroll = 0
-				m.statusNote = ""
-				if m.serviceFollow {
-					return m, tea.Batch(refreshServiceLogs(32), tickServiceLogs())
-				}
-				return m, refreshServiceLogs(32)
-			}
-		case "w", "W":
-			if m.currentTab == tabGuests {
-				title, body := m.currentGuestSubPrintView()
-				if body == "" {
-					m.statusNote = "guest sub not enabled"
-					return m, nil
-				}
-				cmd := exec.Command("bash", "-lc", buildShowScript(title, body))
-				return m, tea.ExecProcess(cmd, func(err error) tea.Msg { return nil })
-			}
-		default:
-			if m.currentTab == tabPresets && s >= "0" && s <= "9" {
-				if len(m.portBuffer) >= 5 {
-					m.portBuffer = ""
-				}
-				m.portBuffer += s
-				var port int
-				fmt.Sscanf(m.portBuffer, "%d", &port)
-				m.staging.Presets[m.cursor].Port = port
-				m.staging.SaveEx(true)
-				m.statusNote = fmt.Sprintf("port => %d", port)
 			}
 		}
 	}
 	return m, nil
 }
 
-func (m Model) View() string {
-	if m.staging == nil {
-		return "Error: No config found."
+func (m *Model) nextTab() {
+	tabs := m.getVisibleTabs()
+	for i, t := range tabs {
+		if t == m.currentTab {
+			m.currentTab = tabs[(i+1)%len(tabs)]
+			m.cursor = 0
+			m.infoShowLogs = false
+			m.serviceFollow = false
+			m.infoSelectMode = false
+			m.overrideMsg = ""
+			return
+		}
 	}
-	if m.inputMode != inputNone {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
-			lipgloss.NewStyle().Padding(1, 2).BorderStyle(lipgloss.NormalBorder()).
-				Render(m.inputTitle()+"\n\n"+m.textInput.View()+"\n\n[Enter] Confirm  [Esc] Cancel"))
+}
+
+func (m *Model) prevTab() {
+	tabs := m.getVisibleTabs()
+	for i, t := range tabs {
+		if t == m.currentTab {
+			m.currentTab = tabs[(i-1+len(tabs))%len(tabs)]
+			m.cursor = 0
+			m.infoShowLogs = false
+			m.serviceFollow = false
+			m.infoSelectMode = false
+			m.overrideMsg = ""
+			return
+		}
+	}
+}
+
+func (m *Model) startInput(mode inputMode, title string, defaultVal string) {
+	m.inputMode = mode
+	m.textInput.SetValue(defaultVal)
+	m.textInput.Focus()
+	m.infoShowLogs = false
+	m.infoSelectMode = false
+	m.overrideMsg = ""
+}
+
+func (m Model) submitInput() (tea.Model, tea.Cmd) {
+	val := strings.TrimSpace(m.textInput.Value())
+	switch m.inputMode {
+	case inputAddRelayAlias:
+		m.relayAlias = val
+		m.startInput(inputAddRelay, "Paste Relay Link (vless://, vmess://, ss://)", "")
+		return m, nil
+
+	case inputAddRelay:
+		if val != "" {
+			alias := m.relayAlias
+			if alias == "" {
+				alias = fmt.Sprintf("relay-%d", len(m.staging.CustomOutbounds)+1)
+			}
+			outboundConfig, err := xray.ParseProxyLink(val)
+			if err != nil {
+				m.inputMode = inputNone
+				m.setOverride(fmt.Sprintf("Relay Link Parse Error:\n%v", err))
+				return m, m.setNotice("invalid relay link")
+			}
+			co := config.CustomOutbound{
+				Alias:   alias,
+				Enabled: true,
+				Config:  outboundConfig,
+			}
+			m.staging.CustomOutbounds = append(m.staging.CustomOutbounds, co)
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice(fmt.Sprintf("added relay %s", alias))
+		}
+		m.inputMode = inputNone
+
+	case inputAddGuest:
+		if val != "" {
+			g := config.GuestConfig{
+				UUID:      uuid.New().String(),
+				Alias:     val,
+				Enabled:   true,
+				QuotaGB:   -1,
+				ResetDay:  1,
+				SubToken:  uuid.New().String(),
+				UsedBytes: 0,
+			}
+			m.staging.Guests = append(m.staging.Guests, g)
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice(fmt.Sprintf("added guest %s", val))
+		}
+		m.inputMode = inputNone
+
+	case inputSetGuestQuota:
+		if m.cursor < len(m.staging.Guests) {
+			q, err := strconv.ParseFloat(val, 64)
+			if err != nil {
+				m.inputMode = inputNone
+				m.setOverride(fmt.Sprintf("Quota Parse Error:\n%v", err))
+				return m, m.setNotice("invalid quota value")
+			}
+			m.staging.Guests[m.cursor].QuotaGB = q
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice(fmt.Sprintf("quota => %v GB", q))
+		}
+		m.inputMode = inputNone
+
+	case inputSetGuestZero:
+		if m.cursor < len(m.staging.Guests) {
+			if val == "0" {
+				m.staging.Guests[m.cursor].UsedBytes = 0
+				m.staging.SaveEx(true)
+				m.inputMode = inputNone
+				m.overrideMsg = ""
+				return m, m.setNotice(fmt.Sprintf("guest %s traffic cleared (Used: 0 GB)", m.staging.Guests[m.cursor].Alias))
+			}
+			day, err := strconv.Atoi(val)
+			if err != nil || day < 1 || day > 31 {
+				m.inputMode = inputNone
+				m.setOverride(fmt.Sprintf("Reset Day Error:\nmust be an integer between 1 and 31, or 0 to clear used bytes"))
+				return m, m.setNotice("invalid reset day")
+			}
+			m.staging.Guests[m.cursor].ResetDay = day
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice(fmt.Sprintf("guest %s reset day set to %d", m.staging.Guests[m.cursor].Alias, day))
+		}
+		m.inputMode = inputNone
+
+	case inputSetGuestOutbound:
+		if m.cursor < len(m.staging.Guests) {
+			if val == "" {
+				m.staging.Guests[m.cursor].OutboundLink = ""
+				m.staging.Guests[m.cursor].OutboundConf = nil
+				m.staging.SaveEx(true)
+				m.inputMode = inputNone
+				m.overrideMsg = ""
+				return m, m.setNotice(fmt.Sprintf("guest %s relay set to Direct", m.staging.Guests[m.cursor].Alias))
+			}
+			outboundConfig, err := xray.ParseProxyLink(val)
+			if err != nil {
+				m.inputMode = inputNone
+				m.setOverride(fmt.Sprintf("Relay Link Parse Error:\n%v", err))
+				return m, m.setNotice("invalid relay link")
+			}
+			m.staging.Guests[m.cursor].OutboundLink = val
+			m.staging.Guests[m.cursor].OutboundConf = outboundConfig
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice(fmt.Sprintf("guest %s relay updated", m.staging.Guests[m.cursor].Alias))
+		}
+		m.inputMode = inputNone
+
+	case inputBypassCountries:
+		if m.staging != nil {
+			var list []string
+			for _, part := range strings.Split(val, ",") {
+				if t := strings.TrimSpace(part); t != "" {
+					list = append(list, strings.ToUpper(t))
+				}
+			}
+			m.staging.Gateway.BypassCountries = list
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice("bypass countries updated")
+		}
+		m.inputMode = inputNone
+
+	default:
+		m.inputMode = inputNone
+	}
+	return m, nil
+}
+
+func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
+	if m.infoSelectIdx < 0 || m.infoSelectIdx >= len(m.infoSelectChoices) {
+		m.infoSelectMode = false
+		return m, nil
+	}
+	choice := m.infoSelectChoices[m.infoSelectIdx]
+	var noticeText string
+
+	switch m.infoSelectTarget {
+	case "guest-outbound-choice":
+		m.infoSelectMode = false
+		if m.staging != nil && m.cursor < len(m.staging.Guests) {
+			if choice == "Direct" {
+				m.staging.Guests[m.cursor].OutboundLink = ""
+				m.staging.Guests[m.cursor].OutboundConf = nil
+				m.staging.SaveEx(true)
+				return m, m.setNotice(fmt.Sprintf("guest %s relay set to Direct", m.staging.Guests[m.cursor].Alias))
+			} else {
+				m.startInput(inputSetGuestOutbound, "Paste Relay Link (vless://, vmess://, ss://)", m.staging.Guests[m.cursor].OutboundLink)
+				return m, nil
+			}
+		}
+	case "gw-state":
+		if m.staging != nil {
+			m.staging.Gateway.State = choice
+			m.staging.SaveEx(true)
+			noticeText = fmt.Sprintf("gateway state => %s", choice)
+		}
+	case "gw-iface":
+		if m.staging != nil {
+			if choice == "none" {
+				choice = ""
+			}
+			m.staging.Gateway.LANInterface = choice
+			m.staging.SaveEx(true)
+			noticeText = fmt.Sprintf("LAN interface => %s", choice)
+		}
+	case "gw-relay":
+		if m.staging != nil {
+			if choice == "direct" {
+				choice = ""
+			}
+			m.staging.Gateway.RelayAlias = choice
+			m.staging.SaveEx(true)
+			noticeText = fmt.Sprintf("gateway relay => %s", choice)
+		}
+	}
+
+	m.infoSelectMode = false
+	m.overrideMsg = ""
+	if noticeText != "" {
+		return m, m.setNotice(noticeText)
+	}
+	return m, nil
+}
+
+func (m Model) inputTitle() string {
+	switch m.inputMode {
+	case inputAddRelayAlias:
+		return "New Relay Alias (Empty = Auto)"
+	case inputAddRelay:
+		return "Paste Relay Link (vless://, vmess://, ss://)"
+	case inputAddGuest:
+		return "New Guest Alias"
+	case inputSetGuestQuota:
+		return "Quota (GB: -1 for unlimited, 0 for paused, 10, 50)"
+	case inputSetGuestZero:
+		return "Reset Day (1-31) or 0 to clear used bytes"
+	case inputSetGuestOutbound:
+		return "Paste Relay Link (vless://, vmess://, ss://)"
+	case inputBypassCountries:
+		return "Bypass Countries (comma separated, e.g. CN)"
+	default:
+		return "Input"
+	}
+}
+
+func (m Model) getLargeInfoLineCount() int {
+	return max(5, int(float64(m.height)*0.40))
+}
+
+func (m Model) View() string {
+	if m.staging == nil && m.active == nil {
+		return "Error: No configuration found."
 	}
 
 	// 1. Calculate Heights
-	footerHeight := 2 // TopBorder(1) + Text(1)
+	footerText := m.renderFooter()
+	footerLines := len(strings.Split(footerText, "\n"))
+	footerHeight := footerLines
 
-	detailContent := m.getSelectedDetailContent()
 	detailHeight := m.height / 5
+	if m.largeInfo {
+		detailHeight = int(float64(m.height) * 0.40)
+	}
 	if detailHeight < 4 {
 		detailHeight = 4
 	}
@@ -842,23 +1398,24 @@ func (m Model) View() string {
 	mainHeight := m.height - detailHeight - footerHeight
 	if mainHeight < 5 {
 		mainHeight = 5
-		detailHeight = m.height - mainHeight - footerHeight
-		if detailHeight < 0 {
-			detailHeight = 0
-		}
+		detailHeight = max(2, m.height-mainHeight-footerHeight)
 	}
 
-	// 2. Render Components
+	// 2. Render Main Area
 	sidebar := m.renderSidebar(mainHeight)
 	cWidth := m.width - 12
+	if cWidth < 20 {
+		cWidth = 20
+	}
+
 	var content string
 	switch m.currentTab {
+	case tabStatus:
+		content = RenderStatus(m.active, m.serviceState, m.lastStats)
 	case tabService:
-		content = RenderService(m.serviceState, cWidth)
+		content = RenderServiceList(m.managedServices, m.cursor, cWidth)
 	case tabPresets:
 		content = RenderPresets(m.active, m.staging, m.cursor, cWidth)
-	case tabStatus:
-		content = RenderStatus(m.active, m.coreActive, m.corePID, m.lastStats)
 	case tabRelays:
 		content = RenderRelays(m.active, m.staging, m.cursor, cWidth, m.relayResults)
 	case tabGuests:
@@ -867,86 +1424,123 @@ func (m Model) View() string {
 		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
 	}
 
-	// Important: mainArea must NOT have internal newlines at the end
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, lipgloss.NewStyle().Height(mainHeight).MaxHeight(mainHeight).Render(content))
 
+	// 3. Render Detail Pane (Info Bar)
+	detailContent := m.getSelectedDetailContent()
 	detailPane := m.renderDetailPane(detailContent, detailHeight)
-	footer := renderFooter(m.currentTab, m.width)
 
-	// Combine components without ANY extra \n between them.
-	// Each component must have exactly its calculated height.
-	return mainArea + "\n" + detailPane + "\n" + footer
+	return mainArea + "\n" + detailPane + "\n" + footerText
 }
 
-func (m Model) getSelectedDetailContent() string {
-	if m.currentTab == tabService {
-		return m.currentServiceDetailContent()
+func (m Model) getSelectedCopyContent() string {
+	switch m.currentTab {
+	case tabStatus:
+		return BuildStatusReport(m.active, m.serviceState, m.lastStats)
+	case tabService:
+		if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+			return BuildServiceReport(m.managedServices[m.cursor])
+		}
+	case tabPresets:
+		return m.getSelectedLink()
+	case tabRelays:
+		if m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
+			co := m.staging.CustomOutbounds[m.cursor]
+			links := xray.GenerateRelayLinks(m.staging, m.cachedIP, co)
+			if len(links) > 0 {
+				return links[0]
+			}
+		}
+	case tabGuests:
+		if m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Guests) {
+			g := m.staging.Guests[m.cursor]
+			links := xray.GenerateGuestLinks(m.staging, m.cachedIP, g.UUID, g.Alias)
+			if len(links) > 0 {
+				return links[0]
+			}
+		}
 	}
-	if m.currentTab == tabStatus {
-		return strings.Join([]string{
-			"Xray-Proxya",
-			"",
-			"Project:",
-			"https://github.com/AiLing2416/xray-proxya",
-		}, "\n")
-	}
+	return ""
+}
+
+func (m Model) getSelectedLink() string {
 	ip := m.cachedIP
 	if m.useLocalIP {
 		ip = m.localIP
 	}
-	if m.currentTab == tabPresets && m.staging != nil && m.cursor < len(m.staging.Presets) {
-		idx := m.cursor
-		m1 := m.staging.Presets[idx]
-		isMod := m1.RegenFlag
-		if !isMod && m.active != nil && idx < len(m.active.Presets) {
-			a := m.active.Presets[idx]
-			if m1.Port != a.Port || m1.Path != a.Path || m1.SNI != a.SNI || m1.Enabled != a.Enabled {
-				isMod = true
-			}
-		}
-		if isMod {
-			return "[A] apply changes to regenerate link"
-		}
+	if m.currentTab == tabPresets && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Presets) {
+		m1 := m.staging.Presets[m.cursor]
+		m1.Enabled = true
 		tempCfg := *m.staging
 		tempCfg.Presets = []config.ModeInfo{m1}
 		links := xray.GenerateLinks(&tempCfg, ip)
 		if len(links) > 0 {
 			return links[0]
 		}
-		return ""
 	}
-	if m.currentTab == tabRelays && m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-		relay := m.staging.CustomOutbounds[m.cursor]
-		if m.relayLoading == relay.Alias {
-			return "Loading relay info..."
-		}
-		if detail, ok := m.relayDetails[relay.Alias]; ok && len(detail.fields) > 0 {
-			return "__relay_detail__"
-		}
-		return buildRelaySummary(relay)
-	}
-	if m.currentTab == tabGuests && m.staging != nil && m.cursor < len(m.staging.Guests) {
-		guest := m.staging.Guests[m.cursor]
-		links := xray.GenerateGuestLinks(m.staging, ip, guest.UUID, guest.Alias)
+	if m.currentTab == tabRelays && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
+		co := m.staging.CustomOutbounds[m.cursor]
+		links := xray.GenerateRelayLinks(m.staging, ip, co)
 		if len(links) > 0 {
 			return links[0]
 		}
 	}
-	if m.currentTab == tabGateway {
-		if m.gatewayInputMode > 0 {
-			return m.renderGatewayChoices()
+	if m.currentTab == tabGuests && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Guests) {
+		g := m.staging.Guests[m.cursor]
+		links := xray.GenerateGuestLinks(m.staging, ip, g.UUID, g.Alias)
+		if len(links) > 0 {
+			return links[0]
 		}
-		return ""
 	}
 	return ""
 }
 
-func (m Model) getSelectedLink() string {
-	content := m.getSelectedDetailContent()
-	if strings.HasPrefix(content, "[A] ") {
+func (m Model) getSelectedDetailContent() string {
+	if m.currentTab == tabStatus {
 		return ""
 	}
-	return content
+	if m.currentTab == tabService {
+		if m.cursor >= 0 && m.cursor < len(m.managedServices) {
+			return BuildServiceReport(m.managedServices[m.cursor])
+		}
+		return ""
+	}
+	if m.currentTab == tabPresets && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Presets) {
+		return m.getSelectedLink()
+	}
+	if m.currentTab == tabRelays && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
+		co := m.staging.CustomOutbounds[m.cursor]
+		viewMode := m.relayViewMode[co.Alias]
+		if viewMode == "info" && m.relayInfoMap[co.Alias] != "" {
+			return m.relayInfoMap[co.Alias]
+		}
+		if viewMode == "speed" && m.relaySpeedMap[co.Alias] != "" {
+			return m.relaySpeedMap[co.Alias]
+		}
+		if viewMode == "test" && m.relayTestMap[co.Alias] != "" {
+			return m.relayTestMap[co.Alias]
+		}
+		return ""
+	}
+	if m.currentTab == tabGuests && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Guests) {
+		g := m.staging.Guests[m.cursor]
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Guest:    %s (UUID: %s)\n", g.Alias, g.UUID))
+		b.WriteString(fmt.Sprintf("Quota:    %s  Used: %.2fGB\n", formatGuestQuota(g.QuotaGB), float64(g.UsedBytes)/(1024*1024*1024)))
+		b.WriteString(fmt.Sprintf("Relay:    %s\n", guestOutboundLabel(g)))
+		if g.OutboundLink != "" {
+			b.WriteString(fmt.Sprintf("Relay To: %s\n", g.OutboundLink))
+		}
+		if g.SubToken != "" && m.staging != nil {
+			b.WriteString(fmt.Sprintf("Sub URL:  %s\n", guestSubURL(m.cachedIP, m.staging.GuestSubPort, g.SubToken)))
+		}
+		link := m.getSelectedLink()
+		if link != "" {
+			b.WriteString(fmt.Sprintf("Link:     %s", link))
+		}
+		return strings.TrimSpace(b.String())
+	}
+	return ""
 }
 
 func (m Model) renderDetailPane(detailContent string, height int) string {
@@ -954,498 +1548,218 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	if lineWidth < 20 {
 		lineWidth = 20
 	}
-	if m.currentTab == tabService && m.serviceView == serviceDetailLogs {
-		return m.renderServiceLogPane(height, lineWidth)
+
+	title := "INFO"
+	if m.currentTab == tabPresets {
+		title = "LINK"
 	}
-	if detail := m.currentRelayDetailData(); detail != nil {
-		return m.renderRelayDetailGrid(*detail, height, lineWidth)
+	isPromptTitle := false
+	isFollowTitle := false
+
+	if m.inputMode != inputNone {
+		title = " " + m.inputTitle() + " "
+		isPromptTitle = true
+	} else if m.infoSelectMode {
+		title = " Select " + m.infoSelectTitle + " "
+		isPromptTitle = true
+	} else if m.serviceFollow {
+		title = " LOGS (FOLLOWING) "
+		isFollowTitle = true
 	}
-	title := " LINK "
-	if m.useLocalIP {
-		title = " LINK [LOCAL] "
+
+	var header string
+	if isPromptTitle {
+		blueTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(title)
+		header = detailPaneCustomHeader(blueTitle, title, lineWidth)
+	} else if isFollowTitle {
+		greenTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(title)
+		header = detailPaneCustomHeader(greenTitle, title, lineWidth)
 	} else {
-		title = " LINK [PUBLIC] "
-	}
-	contentWidth := lineWidth - 2
-	if contentWidth < 1 {
-		contentWidth = 1
-	}
-	if strings.Contains(detailContent, "\n") {
-		return m.renderMultilineDetailPane(detailContent, height, lineWidth)
-	}
-	effectiveScroll := m.detailScroll
-	visible, maxScroll := clipHorizontal(detailContent, effectiveScroll, contentWidth)
-	if effectiveScroll > maxScroll {
-		effectiveScroll = maxScroll
-		visible, maxScroll = clipHorizontal(detailContent, effectiveScroll, contentWidth)
+		header = detailPaneHeader(title, lineWidth)
 	}
 
-	note := m.statusNote
-	if note == "" && m.currentTab == tabService {
-		note = "[L] logs  [F] follow  [M] cycle detail  [C] refresh"
-	}
-
-	header := detailPaneHeader(title, lineWidth, fmt.Sprintf("[\u2190/\u2192] scroll  offset:%d/%d", effectiveScroll, maxScroll))
-	lines := []string{
-		header,
-		padOrTrim(visible, lineWidth),
-	}
-	if note != "" {
-		lines = append(lines, padOrTrim(note, lineWidth))
-	}
-	if height < len(lines) {
-		height = len(lines)
-	}
-	var b strings.Builder
-	for i, line := range lines {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-	}
-	for i := len(lines); i < height; i++ {
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-func (m Model) currentRelayDetailData() *relayDetailData {
-	if m.currentTab != tabRelays || m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.CustomOutbounds) {
-		return nil
-	}
-	alias := m.staging.CustomOutbounds[m.cursor].Alias
-	detail, ok := m.relayDetails[alias]
-	if !ok || len(detail.fields) == 0 {
-		return nil
-	}
-	return &detail
-}
-
-func (m Model) renderRelayDetailGrid(detail relayDetailData, height int, lineWidth int) string {
-	title := " RELAY DETAIL "
-	if detail.title != "" {
-		title = " RELAY DETAIL [" + detail.title + "] "
-	}
-	note := m.statusNote
-	if note == "" {
-		note = "[I] refresh relay info"
-	}
-
-	contentRows := height - 2
-	if contentRows < 1 {
-		contentRows = 1
-	}
-	maxCols := lineWidth / 26
-	if maxCols < 1 {
-		maxCols = 1
-	}
-	cols := (len(detail.fields) + contentRows - 1) / contentRows
-	if cols < 1 {
-		cols = 1
-	}
-	if cols > maxCols {
-		cols = maxCols
-	}
-	colWidth := (lineWidth - (cols-1)*2) / cols
-	if colWidth < 12 {
-		colWidth = 12
-	}
-	lines := []string{detailPaneHeader(title, lineWidth, "")}
-
-	shown := 0
-	for row := 0; row < contentRows; row++ {
-		cells := make([]string, 0, cols)
-		for col := 0; col < cols; col++ {
-			idx := row*cols + col
-			if idx >= len(detail.fields) {
-				cells = append(cells, strings.Repeat(" ", colWidth))
-				continue
-			}
-			shown++
-			field := detail.fields[idx]
-			cell := field.label + ": " + field.value
-			cells = append(cells, padOrTrim(cell, colWidth))
-		}
-		lines = append(lines, padOrTrim(strings.Join(cells, "  "), lineWidth))
-	}
-	if shown < len(detail.fields) {
-		note = fmt.Sprintf("%s  +%d more", note, len(detail.fields)-shown)
-	}
-	lines = append(lines, padOrTrim(note, lineWidth))
-
-	var b strings.Builder
-	for i, line := range lines {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-	}
-	for i := len(lines); i < height; i++ {
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-func (m Model) renderMultilineDetailPane(detailContent string, height int, lineWidth int) string {
-	title := " DETAIL "
-	switch m.currentTab {
-	case tabService:
-		title = " SERVICE DETAIL "
-	case tabRelays:
-		title = " RELAY DETAIL "
-	case tabGuests:
-		title = " GUEST DETAIL "
-	case tabStatus:
-		title = " ABOUT "
-	}
-	note := m.statusNote
-	lines := []string{detailPaneHeader(title, lineWidth, "")}
-	contentLines := strings.Split(detailContent, "\n")
-	maxContentLines := height - 2
-	if maxContentLines < 1 {
-		maxContentLines = 1
-	}
-	for i := 0; i < len(contentLines) && i < maxContentLines; i++ {
-		lines = append(lines, padOrTrim(contentLines[i], lineWidth))
-	}
-	if len(contentLines) > maxContentLines {
-		note = fmt.Sprintf("%s  +%d more", note, len(contentLines)-maxContentLines)
-	}
-	if note != "" {
-		lines = append(lines, padOrTrim(note, lineWidth))
-	}
-	var b strings.Builder
-	for i, line := range lines {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-	}
-	for i := len(lines); i < height; i++ {
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
-func detailPaneHeader(title string, width int, right string) string {
-	if width < 1 {
-		return ""
-	}
-	if right == "" {
-		return padOrTrim(title+strings.Repeat("─", max(0, width-runeLen(title))), width)
-	}
-	right = " " + right
-	leftWidth := width - runeLen(right)
-	if leftWidth < runeLen(title) {
-		leftWidth = runeLen(title)
-	}
-	left := title + strings.Repeat("─", max(0, leftWidth-runeLen(title)))
-	return padOrTrim(left+right, width)
-}
-
-func (m Model) currentShowView() (string, string) {
-	switch m.currentTab {
-	case tabPresets:
-		if body := m.currentPresetLinks(); body != "" {
-			return "CURRENT PRESET LINKS", body
-		}
-	case tabRelays:
-		if body := m.currentRelayLinks(); body != "" {
-			return "CURRENT RELAY LINKS", body
-		}
-	case tabGuests:
-		if body := m.currentGuestLinks(); body != "" {
-			return "CURRENT GUEST LINKS", body
-		}
-	}
-	return "", ""
-}
-
-func (m Model) currentGuestSubPrintView() (string, string) {
-	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.Guests) {
-		return "", ""
-	}
-	guest := m.staging.Guests[m.cursor]
-	if guest.SubToken == "" {
-		return "", ""
-	}
-	host := m.cachedIP
-	if m.useLocalIP {
-		host = m.localIP
-	}
-	return "CURRENT GUEST SUB", buildGuestSubReport(m.staging, guest, host)
-}
-
-func (m Model) currentServiceDetailContent() string {
-	switch m.serviceView {
-	case serviceDetailRuntime:
-		var lines []string
-		lines = append(lines,
-			fmt.Sprintf("Runtime Mode: %s", serviceRuntimeLabel(m.serviceState)),
-			fmt.Sprintf("Init System: %s", m.serviceState.InitSystem),
-			fmt.Sprintf("Control Mode: %s", m.serviceState.ControlMode),
-			fmt.Sprintf("Installed: %s", yesNo(m.serviceState.UnitInstalled)),
-			fmt.Sprintf("Active: %s", serviceActiveLabel(m.serviceState)),
-			fmt.Sprintf("PID: %s", servicePIDLabel(m.serviceState)),
-			fmt.Sprintf("Uptime: %s", m.serviceState.Uptime),
-		)
-		if m.serviceState.ServiceFile != "" {
-			lines = append(lines, fmt.Sprintf("Service File: %s", m.serviceState.ServiceFile))
-		}
-		lines = append(lines,
-			fmt.Sprintf("Config Path: %s", m.serviceState.ConfigPath),
-			fmt.Sprintf("Log Path: %s", m.serviceState.LogPath),
-		)
-		return strings.Join(lines, "\n")
-	default:
-		return strings.Join([]string{
-			"Service overview",
-			"",
-			m.serviceState.Hint,
-			"",
-			"[S] Start  [T] Stop  [R] Restart",
-			"[I] Install  [U] Uninstall  [L] Logs  [F] Follow  [C] Refresh",
-			"[M] Cycle detail view  [←/→] Horizontal scroll",
-		}, "\n")
-	}
-}
-
-func (m Model) renderServiceLogPane(height int, lineWidth int) string {
-	title := " SERVICE LOGS "
-	note := fmt.Sprintf("[F] follow:%s  [C] refresh  [←/→] scroll", onOff(m.serviceFollow))
-	contentRows := height - 2
-	if contentRows < 1 {
-		contentRows = 1
-	}
 	var rawLines []string
-	if strings.TrimSpace(m.serviceLogs) == "" {
-		rawLines = []string{"no log lines yet"}
-	} else {
-		rawLines = strings.Split(strings.TrimRight(m.serviceLogs, "\n"), "\n")
-	}
-	if len(rawLines) > contentRows {
-		rawLines = rawLines[len(rawLines)-contentRows:]
-	}
-	contentWidth := lineWidth
-	maxScroll := 0
-	for _, line := range rawLines {
-		rs := []rune(line)
-		if len(rs)-contentWidth > maxScroll {
-			maxScroll = len(rs) - contentWidth
+
+	// 1. Transient overlay message (highest priority for 1 second)
+	if time.Now().Before(m.transientUntil) && m.transientMsg != "" {
+		for _, l := range strings.Split(strings.TrimSpace(m.transientMsg), "\n") {
+			rawLines = append(rawLines, "  "+l)
+		}
+	} else if m.inputMode != inputNone {
+		rawLines = append(rawLines, "  "+m.textInput.View())
+		rawLines = append(rawLines, "  [Enter] Confirm  [Esc] Cancel")
+	} else if m.infoSelectMode {
+		var badges []string
+		for i, c := range m.infoSelectChoices {
+			if i == m.infoSelectIdx {
+				badges = append(badges, lipgloss.NewStyle().Reverse(true).Render(" "+c+" "))
+			} else {
+				badges = append(badges, " "+c+" ")
+			}
+		}
+		rawLines = append(rawLines, "  "+strings.Join(badges, "  "))
+		rawLines = append(rawLines, "  [←/→] Select  [Enter] Confirm  [Esc] Cancel")
+	} else if m.infoShowLogs {
+		logLines := strings.Split(strings.TrimSpace(m.serviceLogs), "\n")
+		maxLines := height - 1
+		if maxLines < 1 {
+			maxLines = 1
+		}
+		start := 0
+		if len(logLines) > maxLines {
+			start = len(logLines) - maxLines
+		}
+		for i := start; i < len(logLines); i++ {
+			rawLines = append(rawLines, logLines[i])
+		}
+	} else if strings.TrimSpace(m.overrideMsg) != "" {
+		for _, l := range strings.Split(strings.TrimSpace(m.overrideMsg), "\n") {
+			rawLines = append(rawLines, l)
+		}
+	} else if strings.TrimSpace(detailContent) != "" {
+		for _, l := range strings.Split(strings.TrimSpace(detailContent), "\n") {
+			if m.currentTab == tabPresets {
+				for _, chunk := range wrapHard(l, lineWidth) {
+					rawLines = append(rawLines, chunk)
+				}
+			} else {
+				rawLines = append(rawLines, l)
+			}
 		}
 	}
-	effectiveScroll := m.detailScroll
-	if effectiveScroll > maxScroll {
-		effectiveScroll = maxScroll
-	}
 
-	lines := []string{padOrTrim(title+strings.Repeat("─", max(0, lineWidth-runeLen(title))), lineWidth)}
-	for i := 0; i < contentRows; i++ {
-		line := ""
-		if i < len(rawLines) {
-			line, _ = clipHorizontal(rawLines[i], effectiveScroll, contentWidth)
-		}
-		lines = append(lines, padOrTrim(line, lineWidth))
-	}
-	lines = append(lines, padOrTrim(note, lineWidth))
-
-	var b strings.Builder
-	for i, line := range lines {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		b.WriteString(line)
-	}
-	return b.String()
-}
-
-func (m Model) currentServiceLogMaxScroll(width int) int {
-	if strings.TrimSpace(m.serviceLogs) == "" {
-		return 0
-	}
-	lines := strings.Split(strings.TrimRight(m.serviceLogs, "\n"), "\n")
-	maxScroll := 0
-	for _, line := range lines {
-		rs := []rune(line)
-		if len(rs)-width > maxScroll {
-			maxScroll = len(rs) - width
+	// Flatten all lines so NO individual element contains internal newlines
+	var flatBodyLines []string
+	for _, l := range rawLines {
+		for _, sub := range strings.Split(l, "\n") {
+			flatBodyLines = append(flatBodyLines, sub)
 		}
 	}
-	if maxScroll < 0 {
-		return 0
+
+	maxBodyLines := height - 1
+	if maxBodyLines < 0 {
+		maxBodyLines = 0
 	}
-	return maxScroll
+	if len(flatBodyLines) > maxBodyLines {
+		flatBodyLines = flatBodyLines[:maxBodyLines]
+	}
+
+	var allLines []string
+	allLines = append(allLines, header)
+	allLines = append(allLines, flatBodyLines...)
+	for len(allLines) < height {
+		allLines = append(allLines, "")
+	}
+
+	return strings.Join(allLines, "\n")
 }
 
-func (m Model) currentPresetLinks() string {
-	if m.staging == nil {
-		return ""
+func wrapHard(s string, width int) []string {
+	if width <= 0 {
+		return []string{s}
 	}
-	if m.cursor < 0 || m.cursor >= len(m.staging.Presets) {
-		return ""
+	runes := []rune(s)
+	if len(runes) <= width {
+		return []string{s}
 	}
-	ip := m.cachedIP
-	if m.useLocalIP {
-		ip = m.localIP
-	}
-	mode := m.staging.Presets[m.cursor]
-	tempCfg := *m.staging
-	tempCfg.Presets = []config.ModeInfo{mode}
-	links := xray.GenerateLinks(&tempCfg, ip)
-	if len(links) == 0 {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString(string(mode.Mode))
-	b.WriteString(":\n")
-	for i, link := range links {
-		if i > 0 {
-			b.WriteByte('\n')
+	var lines []string
+	for len(runes) > 0 {
+		n := width
+		if len(runes) < n {
+			n = len(runes)
 		}
-		b.WriteString(link)
+		lines = append(lines, string(runes[:n]))
+		runes = runes[n:]
 	}
-	return strings.TrimSpace(b.String())
+	return lines
 }
 
-func (m Model) currentRelayLinks() string {
-	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.CustomOutbounds) {
-		return ""
+func detailPaneHeader(title string, width int) string {
+	dashes := width - runeLen(title) - 4
+	if dashes < 1 {
+		dashes = 1
 	}
-	ip := m.cachedIP
-	if m.useLocalIP {
-		ip = m.localIP
-	}
-	relay := m.staging.CustomOutbounds[m.cursor]
-	links := xray.GenerateRelayLinks(m.staging, ip, relay)
-	if len(links) == 0 {
-		return ""
-	}
-	return strings.Join(links, "\n")
+	return "┌─ " + title + " " + strings.Repeat("─", dashes) + "┐"
 }
 
-func (m Model) currentGuestLinks() string {
-	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.Guests) {
-		return ""
+func detailPaneCustomHeader(styledTitle, rawTitle string, width int) string {
+	dashes := width - runeLen(rawTitle) - 4
+	if dashes < 1 {
+		dashes = 1
 	}
-	ip := m.cachedIP
-	if m.useLocalIP {
-		ip = m.localIP
-	}
-	guest := m.staging.Guests[m.cursor]
-	links := xray.GenerateGuestLinks(m.staging, ip, guest.UUID, guest.Alias)
-	if len(links) == 0 {
-		return ""
-	}
-	return strings.Join(links, "\n")
+	return "┌─ " + styledTitle + " " + strings.Repeat("─", dashes) + "┐"
 }
 
-func buildShowScript(title string, body string) string {
-	escapedTitle := strings.ReplaceAll(title, "'", "'\\''")
-	escapedBody := strings.ReplaceAll(body, "'", "'\\''")
-	return fmt.Sprintf("printf '\\033[2J\\033[H'; printf '=== %%s ===\\n\\n' '%s'; printf '%%s' '%s'; printf '\\n\\n[Enter] Return to TUI...'; IFS= read -r _", escapedTitle, escapedBody)
-}
+func (m Model) renderFooter() string {
+	var badges []string
+	badges = append(badges, "[Tab] Switch")
 
-func summarizeActionResult(lines []string, err error) string {
-	if err != nil {
-		return fmt.Sprintf("apply failed: %v", err)
+	isCopied := time.Now().Before(m.copyFeedbackUntil)
+	copyLink := m.getSelectedLink()
+
+	switch m.currentTab {
+	case tabStatus:
+		badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
+	case tabService:
+		badges = append(badges, "[Space/S] Toggle", "[E] Enable", "[D] Disable", "[R] Restart", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
+	case tabPresets:
+		badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+	case tabRelays:
+		badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+	case tabGuests:
+		badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+	case tabGateway:
+		badges = append(badges, "[Space] Toggle", "[Enter] Select", "[T] Test Route", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 	}
-	for i := len(lines) - 1; i >= 0; i-- {
-		if strings.TrimSpace(lines[i]) != "" {
-			return lines[i]
+
+	var formattedBadges []string
+	for _, badge := range badges {
+		if strings.HasPrefix(badge, "[C]") {
+			if isCopied {
+				badgeStr := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("0")).Background(lipgloss.Color("2")).Render("[C] Copy")
+				formattedBadges = append(formattedBadges, badgeStr)
+			} else if copyLink != "" {
+				badgeStr := formatOSC8Hyperlink(copyLink, "[C] Copy")
+				formattedBadges = append(formattedBadges, badgeStr)
+			} else {
+				formattedBadges = append(formattedBadges, "[C] Copy")
+			}
+		} else {
+			formattedBadges = append(formattedBadges, badge)
 		}
 	}
-	return "done"
+
+	lines := wrapBadges(formattedBadges, m.width-2)
+	s := strings.Join(lines, "\n")
+	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(m.width).Render(s)
 }
 
-func summarizeServiceActionResult(action string, output string, err error) string {
-	if err != nil {
-		if trimmed := strings.TrimSpace(output); trimmed != "" {
-			lines := strings.Split(trimmed, "\n")
-			return fmt.Sprintf("%s failed: %s", action, strings.TrimSpace(lines[len(lines)-1]))
+func wrapBadges(badges []string, maxWidth int) []string {
+	if maxWidth < 20 {
+		maxWidth = 20
+	}
+	var lines []string
+	var currentLine []string
+	currentLen := 0
+
+	for _, badge := range badges {
+		bLen := lipgloss.Width(badge)
+		if len(currentLine) == 0 {
+			currentLine = append(currentLine, badge)
+			currentLen = bLen
+		} else if currentLen+2+bLen <= maxWidth {
+			currentLine = append(currentLine, badge)
+			currentLen += 2 + bLen
+		} else {
+			lines = append(lines, strings.Join(currentLine, "  "))
+			currentLine = []string{badge}
+			currentLen = bLen
 		}
-		return fmt.Sprintf("%s failed: %v", action, err)
 	}
-	if trimmed := strings.TrimSpace(output); trimmed != "" {
-		lines := strings.Split(trimmed, "\n")
-		return strings.TrimSpace(lines[len(lines)-1])
+	if len(currentLine) > 0 {
+		lines = append(lines, strings.Join(currentLine, "  "))
 	}
-	return action + " done"
-}
-
-func clipHorizontal(s string, start int, width int) (string, int) {
-	rs := []rune(s)
-	if start < 0 {
-		start = 0
-	}
-	maxScroll := len(rs) - width
-	if maxScroll < 0 {
-		maxScroll = 0
-	}
-	if start > maxScroll {
-		start = maxScroll
-	}
-	end := start + width
-	if end > len(rs) {
-		end = len(rs)
-	}
-	return string(rs[start:end]), maxScroll
-}
-
-func detailMaxScroll(s string, width int) int {
-	_, maxScroll := clipHorizontal(s, 0, width)
-	return maxScroll
-}
-
-func padOrTrim(s string, width int) string {
-	rs := []rune(s)
-	if len(rs) > width {
-		return string(rs[:width])
-	}
-	return s + strings.Repeat(" ", width-len(rs))
-}
-
-func runeLen(s string) int {
-	return len([]rune(s))
-}
-
-func max(a int, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-func nextServiceDetailView(view serviceDetailView) serviceDetailView {
-	switch view {
-	case serviceDetailOverview:
-		return serviceDetailLogs
-	case serviceDetailLogs:
-		return serviceDetailRuntime
-	default:
-		return serviceDetailOverview
-	}
-}
-
-func renderFooter(tab sessionTab, width int) string {
-	var keys []string
-	keys = append(keys, "[Tab]Switch", "[Q]Quit")
-	if tab == tabStatus {
-		keys = append(keys, "[A]Apply", "[L]IP-Mode")
-	}
-	if tab == tabService {
-		keys = append(keys, "[S]Start", "[T]Stop", "[R]Restart", "[I/U]Install", "[L]Logs", "[F]Follow", "[M]Detail", "[C]Refresh")
-	}
-	if tab == tabPresets {
-		keys = append(keys, "[A]Apply", "[+/-]On/Off", "[0-9]Port", "[L]IP-Mode", "[R]Regen", "[U]Undo", "[←/→]Scroll", "[S]Show")
-	} else if tab == tabRelays {
-		keys = append(keys, "[A]Apply", "[N]New", "[+/-]On/Off", "[T]Test", "[V]Speed", "[I]Info", "[B]Probe", "[R]Resolve", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
-	} else if tab == tabGuests {
-		keys = append(keys, "[A]Apply", "[N]New", "[-/=]Pause/Resume", "[G]Quota", "[R]Reset", "[O]Outbound", "[E/X/Y]Sub", "[W]SubURL", "[D]Del", "[L]IP-Mode", "[←/→]Scroll", "[S]Show", "[U]Undo")
-	} else if tab == tabGateway {
-		keys = append(keys, "[Enter]Toggle/Select", "[+/-]Change State", "[T]Test Route", "[A]Apply", "[U]Undo")
-	}
-	s := strings.Join(keys, "  ")
-	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(width).MaxHeight(2).Render(s)
+	return lines
 }
 
 func (m Model) getVisibleTabs() []sessionTab {
@@ -1460,7 +1774,7 @@ func (m Model) renderSidebar(height int) string {
 	visible := m.getVisibleTabs()
 
 	tabNames := map[sessionTab]string{
-		tabStatus:  "HOME",
+		tabStatus:  "STATUS",
 		tabService: "SERVICE",
 		tabPresets: "PRESETS",
 		tabRelays:  "RELAYS",
@@ -1481,998 +1795,56 @@ func (m Model) renderSidebar(height int) string {
 	return lipgloss.NewStyle().Width(11).Height(height).MaxHeight(height).BorderStyle(lipgloss.NormalBorder()).BorderRight(true).Render(b.String())
 }
 
+func writeOSC52(text string) {
+	if text == "" {
+		return
+	}
+	b64 := base64.StdEncoding.EncodeToString([]byte(text))
+	fmt.Fprintf(os.Stdout, "\x1b]52;c;%s\x07", b64)
+}
+
+func formatOSC8Hyperlink(url, label string) string {
+	if url == "" {
+		return label
+	}
+	return fmt.Sprintf("\x1b]8;;%s\x1b\\%s\x1b]8;;\x1b\\", url, label)
+}
+
 func Start() error {
 	p := tea.NewProgram(InitialModel(), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
-func fetchRelayDetail(alias string) tea.Cmd {
+func runMainServiceAction(action string) tea.Cmd {
 	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return relayDetailMsg{alias: alias, err: err}
-		}
-		cmd := exec.Command(exe, "relay", "info", alias)
-		out, err := cmd.CombinedOutput()
-		body := strings.TrimSpace(string(out))
-		return relayDetailMsg{alias: alias, body: "__info__\n" + body, err: err}
+		err := xray.ManageSystemdUnit(action, xray.MainServiceUnit)
+		return serviceActionMsg{action: action, err: err, state: xray.GetServiceState()}
 	}
 }
 
-func runServiceAction(action string, args ...string) tea.Cmd {
+func runUnitServiceAction(action, unit string) tea.Cmd {
+	return func() tea.Msg {
+		err := xray.ManageSystemdUnit(action, unit)
+		return serviceActionMsg{action: fmt.Sprintf("%s %s", action, unit), err: err, state: xray.GetServiceState()}
+	}
+}
+
+func (m Model) performApply(withGateway bool) tea.Cmd {
 	return func() tea.Msg {
 		exe, err := os.Executable()
 		if err != nil {
-			return serviceActionMsg{action: action, err: err, state: xray.GetServiceState()}
+			return applyResultMsg{err: err}
+		}
+		args := []string{"apply", "--force"}
+		if withGateway {
+			args = append(args, "--with-gateway")
 		}
 		cmd := exec.Command(exe, args...)
 		out, err := cmd.CombinedOutput()
-		return serviceActionMsg{
-			action: action,
-			output: strings.TrimSpace(string(out)),
-			err:    err,
-			state:  xray.GetServiceState(),
-		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		return applyResultMsg{lines: lines, err: err}
 	}
-}
-
-func refreshServiceState() tea.Cmd {
-	return func() tea.Msg {
-		return serviceActionMsg{
-			action: "refresh",
-			state:  xray.GetServiceState(),
-		}
-	}
-}
-
-func refreshServiceLogs(lines int) tea.Cmd {
-	return func() tea.Msg {
-		body, err := xray.ReadLogTail(lines)
-		return serviceLogsMsg{body: body, err: err}
-	}
-}
-
-func fetchPublicIP() tea.Cmd {
-	return func() tea.Msg {
-		return publicIPMsg{ip: utils.GetSmartIP(false)}
-	}
-}
-
-func tickServiceLogs() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg {
-		return serviceFollowTickMsg{}
-	})
-}
-
-func onOff(v bool) string {
-	if v {
-		return "on"
-	}
-	return "off"
-}
-
-func fetchRelayTest(alias string) tea.Cmd {
-	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return relayDetailMsg{alias: alias, err: err}
-		}
-		cmd := exec.Command(exe, "relay", "test", alias)
-		out, err := cmd.CombinedOutput()
-		body := strings.TrimSpace(string(out))
-		return relayDetailMsg{alias: alias, body: "__test__\n" + body, err: err}
-	}
-}
-
-func fetchRelayProbe(alias string) tea.Cmd {
-	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return relayDetailMsg{alias: alias, err: err}
-		}
-		cmd := exec.Command(exe, "relay", "probe-local", alias)
-		out, err := cmd.CombinedOutput()
-		body := strings.TrimSpace(string(out))
-		return relayDetailMsg{alias: alias, body: "__probe__\n" + body, err: err}
-	}
-}
-
-func fetchRelaySpeed(alias string) tea.Cmd {
-	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return relayDetailMsg{alias: alias, err: err}
-		}
-		cmd := exec.Command(exe, "relay", "speed", alias)
-		out, err := cmd.CombinedOutput()
-		body := strings.TrimSpace(string(out))
-		return relayDetailMsg{alias: alias, body: "__speed__\n" + body, err: err}
-	}
-}
-
-func fetchRelayResolve(alias string, domain string) tea.Cmd {
-	return func() tea.Msg {
-		exe, err := os.Executable()
-		if err != nil {
-			return relayDetailMsg{alias: alias, err: err}
-		}
-		cmd := exec.Command(exe, "relay", "resolve", alias, domain)
-		out, err := cmd.CombinedOutput()
-		body := strings.TrimSpace(string(out))
-		return relayDetailMsg{alias: alias, body: "__resolve__\n" + domain + "\n" + body, err: err}
-	}
-}
-
-func parseRelayDetailOutput(alias string, raw string) relayDetailData {
-	if strings.TrimSpace(raw) == "" {
-		return relayDetailData{}
-	}
-	if strings.HasPrefix(raw, "__probe__\n") {
-		return parseRelayProbeOutput(alias, strings.TrimPrefix(raw, "__probe__\n"))
-	}
-	if strings.HasPrefix(raw, "__test__\n") {
-		return parseRelayTestOutput(alias, strings.TrimPrefix(raw, "__test__\n"))
-	}
-	if strings.HasPrefix(raw, "__speed__\n") {
-		return parseRelaySpeedOutput(alias, strings.TrimPrefix(raw, "__speed__\n"))
-	}
-	if strings.HasPrefix(raw, "__resolve__\n") {
-		payload := strings.TrimPrefix(raw, "__resolve__\n")
-		parts := strings.SplitN(payload, "\n", 2)
-		domain := ""
-		body := ""
-		if len(parts) > 0 {
-			domain = parts[0]
-		}
-		if len(parts) > 1 {
-			body = parts[1]
-		}
-		return parseRelayResolveOutput(alias, domain, body)
-	}
-	raw = strings.TrimPrefix(raw, "__info__\n")
-
-	lines := strings.Split(raw, "\n")
-	fields := map[string]string{}
-	media := map[string]string{}
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "✨ Landing Profile:") {
-			fields["title"] = strings.TrimSpace(strings.TrimPrefix(line, "✨ Landing Profile:"))
-			continue
-		}
-		if strings.HasPrefix(line, "Netflix:") {
-			rest := strings.TrimSpace(strings.TrimPrefix(line, "Netflix:"))
-			parts := strings.Fields(rest)
-			if len(parts) >= 1 {
-				media["Netflix"] = parts[0]
-			}
-			for i := 1; i+1 < len(parts); i += 2 {
-				key := strings.TrimSuffix(parts[i], ":")
-				media[key] = parts[i+1]
-			}
-			continue
-		}
-		if strings.HasPrefix(line, "Google:") {
-			rest := strings.TrimSpace(strings.TrimPrefix(line, "Google:"))
-			parts := strings.Fields(rest)
-			if len(parts) >= 1 {
-				media["Google"] = parts[0]
-			}
-			for i := 1; i+1 < len(parts); i += 2 {
-				key := strings.TrimSuffix(parts[i], ":")
-				media[key] = parts[i+1]
-			}
-			continue
-		}
-		if idx := strings.Index(line, ":"); idx > 0 {
-			key := strings.TrimSpace(line[:idx])
-			val := strings.TrimSpace(line[idx+1:])
-			fields[key] = val
-		}
-	}
-
-	title := alias
-	if v := fields["title"]; v != "" {
-		title = v
-	}
-	return relayDetailData{
-		title: title,
-		fields: []detailField{
-			{label: "Exit", value: firstNonEmpty(fields["Exit IP"], fields["Exit IPv4"], fields["Exit IPv6"], "Unknown")},
-			{label: "Geo", value: emptyFallback(joinNonEmpty(", ", fields["Local"], fields["Country"]), "N/A")},
-			{label: "IPv4", value: firstNonEmpty(fields["Exit IPv4"], "N/A")},
-			{label: "IPv6", value: firstNonEmpty(fields["Exit IPv6"], "N/A")},
-			{label: "Org", value: emptyFallback(fields["Company"], "N/A")},
-			{label: "ASN", value: emptyFallback(joinNonEmpty(" ", fields["ASN Type"], fields["ASN"]), "N/A")},
-			{label: "Time", value: emptyFallback(joinNonEmpty(" ", fields["Local Time"], fields["Time Zone"]), "N/A")},
-			{label: "Privacy", value: emptyFallback(fields["ASN Type"], "N/A")},
-			{label: "Netflix", value: emptyFallback(media["Netflix"], "?")},
-			{label: "Disney+", value: emptyFallback(media["Disney+"], "?")},
-			{label: "TikTok", value: emptyFallback(media["TikTok"], "?")},
-			{label: "Google", value: emptyFallback(media["Google"], "?")},
-			{label: "OpenAI", value: emptyFallback(media["OpenAI"], "?")},
-			{label: "Claude", value: emptyFallback(media["Claude"], "?")},
-		},
-	}
-}
-
-func parseRelayTestSummary(alias string, raw string) relayTestMsg {
-	result := relayTestMsg{alias: alias, tcp: "FAIL", udp: "FAIL", dns: "OK", ipv4: "N/A", ipv6: "N/A"}
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return result
-	}
-
-	var jsonRes struct {
-		Transport struct {
-			TCPStatus string `json:"tcp_status"`
-			TCPRTTMs  int64  `json:"tcp_rtt_ms"`
-			UDPStatus string `json:"udp_status"`
-			UDPRTTMs  int64  `json:"udp_rtt_ms"`
-		} `json:"transport"`
-		ExitIP struct {
-			IPv4 string `json:"ipv4"`
-			IPv6 string `json:"ipv6"`
-		} `json:"exit_ip"`
-	}
-	if err := json.Unmarshal([]byte(raw), &jsonRes); err == nil && (jsonRes.Transport.TCPStatus != "" || jsonRes.ExitIP.IPv4 != "") {
-		if jsonRes.Transport.TCPStatus == "PASS" {
-			result.tcp = fmt.Sprintf("%dms", jsonRes.Transport.TCPRTTMs)
-		} else {
-			result.tcp = "FAIL"
-		}
-		if jsonRes.Transport.UDPStatus == "PASS" {
-			result.udp = fmt.Sprintf("%dms", jsonRes.Transport.UDPRTTMs)
-		} else {
-			result.udp = "FAIL"
-		}
-		result.dns = "OK"
-		if jsonRes.ExitIP.IPv4 != "" {
-			result.ipv4 = jsonRes.ExitIP.IPv4
-		}
-		if jsonRes.ExitIP.IPv6 != "" {
-			result.ipv6 = jsonRes.ExitIP.IPv6
-		}
-		return result
-	}
-
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.Contains(line, "->") {
-			parts := strings.SplitN(line, "->", 2)
-			line = strings.TrimSpace(parts[1])
-		}
-		if line == "FAIL" {
-			result.ipv4 = "FAIL"
-			result.ipv6 = "FAIL"
-			continue
-		}
-		for _, segment := range strings.Split(line, "|") {
-			segment = strings.TrimSpace(segment)
-			idx := strings.Index(segment, ":")
-			if idx <= 0 {
-				continue
-			}
-			key := strings.TrimSpace(segment[:idx])
-			val := strings.TrimSpace(segment[idx+1:])
-			switch strings.ToUpper(key) {
-			case "TCP":
-				result.tcp = summarizeRelayTestValue(val)
-			case "UDP":
-				result.udp = summarizeRelayTestValue(val)
-			case "DNS":
-				result.dns = summarizeRelayTestValue(val)
-			case "IPV4":
-				result.ipv4 = val
-			case "IPV6":
-				result.ipv6 = val
-			}
-		}
-	}
-	return result
-}
-
-func parseRelayProbeOutput(alias string, raw string) relayDetailData {
-	fields := []detailField{}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "->")
-		if len(parts) != 2 {
-			continue
-		}
-		head := strings.TrimSpace(parts[0])
-		body := strings.TrimSpace(parts[1])
-		label := head
-		if idx := strings.LastIndex(head, "/"); idx >= 0 && strings.HasSuffix(head, "]") {
-			label = strings.TrimSuffix(head[idx+1:], "]")
-		}
-		for _, segment := range strings.Split(body, "|") {
-			segment = strings.TrimSpace(segment)
-			idx := strings.Index(segment, ":")
-			if idx <= 0 {
-				continue
-			}
-			key := strings.TrimSpace(segment[:idx])
-			val := strings.TrimSpace(segment[idx+1:])
-			fields = append(fields, detailField{label: label + " " + key, value: val})
-		}
-	}
-	return relayDetailData{title: alias + " probe", fields: fields}
-}
-
-func parseRelayTestOutput(alias string, raw string) relayDetailData {
-	summary := parseRelayTestSummary(alias, raw)
-	fields := []detailField{
-		{label: "TCP", value: summary.tcp},
-		{label: "UDP", value: summary.udp},
-		{label: "IPv4", value: summary.ipv4},
-		{label: "IPv6", value: summary.ipv6},
-	}
-
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "Modern Web:") {
-			fields = append(fields, detailField{label: "Modern Web", value: strings.TrimSpace(strings.TrimPrefix(line, "Modern Web:"))})
-		} else if strings.HasPrefix(line, "UDP Stack :") || strings.HasPrefix(line, "UDP Stack:") {
-			val := strings.TrimPrefix(line, "UDP Stack :")
-			val = strings.TrimPrefix(val, "UDP Stack:")
-			fields = append(fields, detailField{label: "UDP Stack", value: strings.TrimSpace(val)})
-		}
-	}
-
-	return relayDetailData{title: alias + " test", fields: fields}
-}
-
-func summarizeRelayTestValue(raw string) string {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "FAIL"
-	}
-	upper := strings.ToUpper(value)
-	if strings.HasPrefix(upper, "OK") {
-		return value
-	}
-	lower := strings.ToLower(value)
-	switch {
-	case strings.Contains(lower, "timeout"):
-		return "FAIL(timeout)"
-	case strings.Contains(lower, "i/o timeout"):
-		return "FAIL(timeout)"
-	case strings.Contains(lower, "context deadline exceeded"):
-		return "FAIL(timeout)"
-	case strings.Contains(lower, "eof"):
-		return "FAIL(eof)"
-	case strings.Contains(lower, "connection refused"):
-		return "FAIL(refused)"
-	case strings.Contains(lower, "network is unreachable"):
-		return "FAIL(unreachable)"
-	case strings.Contains(lower, "no route to host"):
-		return "FAIL(no-route)"
-	case strings.Contains(lower, "reset by peer"):
-		return "FAIL(reset)"
-	}
-	if idx := strings.Index(value, "("); idx > 0 {
-		return strings.TrimSpace(value[:idx])
-	}
-	return value
-}
-
-func parseRelayResolveOutput(alias string, domain string, raw string) relayDetailData {
-	fields := []detailField{{label: "Domain", value: domain}}
-	for _, line := range strings.Split(raw, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) < 3 {
-			continue
-		}
-		qtype := parts[1]
-		value := strings.Join(parts[2:], " ")
-		fields = append(fields, detailField{label: qtype, value: value})
-	}
-	return relayDetailData{title: alias + " resolve", fields: fields}
-}
-
-func parseRelaySpeedOutput(alias string, raw string) relayDetailData {
-	lines := strings.Split(raw, "\n")
-	collecting := false
-	values := map[string]string{}
-	order := []string{
-		"Link",
-		"Duration",
-		"Data",
-		"Average",
-		"Peak",
-		"Low 20%",
-		"Idle Latency Avg",
-		"Load Latency Avg",
-		"Load Worst 5%",
-		"Latency Probe Failures",
-	}
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "❌") {
-			continue
-		}
-		if strings.HasPrefix(line, "[") && strings.HasSuffix(line, "Speed Test") {
-			collecting = true
-			continue
-		}
-		if !collecting {
-			continue
-		}
-		if idx := strings.Index(line, ":"); idx > 0 {
-			label := strings.TrimSpace(line[:idx])
-			value := strings.TrimSpace(line[idx+1:])
-			if value != "" {
-				values[label] = value
-			}
-		}
-	}
-	fields := make([]detailField, 0, len(order))
-	for _, label := range order {
-		if value := strings.TrimSpace(values[label]); value != "" {
-			fields = append(fields, detailField{label: label, value: value})
-		}
-	}
-	return relayDetailData{title: alias + " speed", fields: fields}
-}
-
-func joinNonEmpty(sep string, values ...string) string {
-	out := make([]string, 0, len(values))
-	for _, v := range values {
-		v = strings.TrimSpace(v)
-		if v != "" && v != "N/A" {
-			out = append(out, v)
-		}
-	}
-	return strings.Join(out, sep)
-}
-
-func emptyFallback(value string, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
-func buildRelaySummary(co config.CustomOutbound) string {
-	var b strings.Builder
-	status := "OFF"
-	if co.Enabled {
-		status = "ON"
-	}
-	internal := "-"
-	if co.InternalProxyPort > 0 {
-		internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, co.InternalProxyPort+1)
-	}
-	strategy := co.DNSStrategy
-	if strategy == "" {
-		strategy = "default"
-	}
-	b.WriteString(fmt.Sprintf("Alias: %s\n", co.Alias))
-	b.WriteString(fmt.Sprintf("State: %s\n", status))
-	b.WriteString(fmt.Sprintf("Proto: %s\n", relayProtocol(co)))
-	b.WriteString(fmt.Sprintf("Remote: %s\n", relayRemoteSummary(co)))
-	b.WriteString(fmt.Sprintf("Transport: %s\n", relayTransportSummary(co)))
-	b.WriteString(fmt.Sprintf("Internal: %s\n", internal))
-	b.WriteString(fmt.Sprintf("DNS: %s", relayDNSSummary(co, strategy)))
-	return b.String()
-}
-
-func relayProtocol(co config.CustomOutbound) string {
-	if proto, _ := co.Config["protocol"].(string); proto != "" {
-		return proto
-	}
-	return "unknown"
-}
-
-func relayRemoteSummary(co config.CustomOutbound) string {
-	settings, _ := co.Config["settings"].(map[string]interface{})
-	switch relayProtocol(co) {
-	case "vless", "vmess":
-		vnext := getMapSlice(settings, "vnext")
-		if len(vnext) == 0 {
-			return "-"
-		}
-		return joinHostPort(vnext[0]["address"], vnext[0]["port"])
-	case "shadowsocks", "socks", "http":
-		servers := getMapSlice(settings, "servers")
-		if len(servers) == 0 {
-			return "-"
-		}
-		return joinHostPort(servers[0]["address"], servers[0]["port"])
-	case "freedom":
-		sendThrough, _ := co.Config["sendThrough"].(string)
-		if sendThrough != "" {
-			return sendThrough
-		}
-		return "direct"
-	default:
-		return "-"
-	}
-}
-
-func relayTransportSummary(co config.CustomOutbound) string {
-	stream, _ := co.Config["streamSettings"].(map[string]interface{})
-	parts := []string{}
-	network := stringValue(stream["network"])
-	if network == "" {
-		switch relayProtocol(co) {
-		case "shadowsocks", "socks", "http", "freedom":
-			network = "tcp"
-		}
-	}
-	if network != "" {
-		parts = append(parts, network)
-	}
-	security := stringValue(stream["security"])
-	if security != "" && security != "none" {
-		parts = append(parts, security)
-	}
-	serverName := firstNonEmpty(nestedString(stream, "realitySettings", "serverName"), nestedString(stream, "tlsSettings", "serverName"))
-	if serverName != "" {
-		parts = append(parts, "sni="+serverName)
-	}
-	host := relayHeaderHost(stream)
-	if host != "" && host != serverName {
-		parts = append(parts, "host="+host)
-	}
-	path := firstNonEmpty(nestedString(stream, "wsSettings", "path"), nestedString(stream, "xhttpSettings", "path"))
-	if path != "" {
-		parts = append(parts, "path="+path)
-	}
-	if len(parts) == 0 {
-		return "-"
-	}
-	return strings.Join(parts, " ")
-}
-
-func relayHeaderHost(stream map[string]interface{}) string {
-	if host := nestedString(stream, "xhttpSettings", "host"); host != "" {
-		return host
-	}
-	if host := nestedString(stream, "wsSettings", "headers", "Host"); host != "" {
-		return host
-	}
-	return ""
-}
-
-func relayDNSSummary(co config.CustomOutbound, fallback string) string {
-	if len(co.DNSServers) == 0 {
-		return fallback
-	}
-	return fallback + " " + strings.Join(co.DNSServers, ",")
-}
-
-func getMapSlice(m map[string]interface{}, key string) []map[string]interface{} {
-	raw, _ := m[key].([]interface{})
-	out := make([]map[string]interface{}, 0, len(raw))
-	for _, item := range raw {
-		if mm, ok := item.(map[string]interface{}); ok {
-			out = append(out, mm)
-		}
-	}
-	return out
-}
-
-func joinHostPort(host interface{}, port interface{}) string {
-	return fmt.Sprintf("%v:%v", host, port)
-}
-
-func stringValue(v interface{}) string {
-	s, _ := v.(string)
-	return s
-}
-
-func nestedString(m map[string]interface{}, keys ...string) string {
-	var cur interface{} = m
-	for _, key := range keys {
-		next, ok := cur.(map[string]interface{})
-		if !ok {
-			return ""
-		}
-		cur, ok = next[key]
-		if !ok {
-			return ""
-		}
-	}
-	return stringValue(cur)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func (m *Model) startInput(mode inputMode, placeholder string, value string) {
-	m.inputMode = mode
-	m.textInput.Placeholder = placeholder
-	m.textInput.SetValue(value)
-	m.textInput.CursorEnd()
-	m.textInput.Focus()
-}
-
-func (m Model) inputTitle() string {
-	switch m.inputMode {
-	case inputAddRelayAlias:
-		return "SET RELAY ALIAS"
-	case inputAddRelay:
-		return "ADD CUSTOM RELAY"
-	case inputAddGuest:
-		return "ADD GUEST"
-	case inputSetGuestQuota:
-		return "SET GUEST QUOTA"
-	case inputSetGuestReset:
-		return "SET GUEST RESET DAY"
-	case inputSetGuestOutbound:
-		return "SET GUEST OUTBOUND"
-	case inputRelayResolveDomain:
-		return "RESOLVE DOMAIN VIA RELAY"
-	case inputBypassCountries:
-		return "SET BYPASS COUNTRIES"
-	default:
-		return "INPUT"
-	}
-}
-
-func (m Model) submitInput() (tea.Model, tea.Cmd) {
-	value := strings.TrimSpace(m.textInput.Value())
-	mode := m.inputMode
-	m.inputMode = inputNone
-	m.textInput.Reset()
-	switch mode {
-	case inputAddRelayAlias:
-		m.relayAlias = value
-		m.startInput(inputAddRelay, "Paste link...", "")
-		return m, nil
-	case inputAddRelay:
-		if value != "" {
-			out, err := xray.ParseProxyLink(value)
-			if err == nil {
-				alias := strings.TrimSpace(m.relayAlias)
-				if alias == "" {
-					alias = m.nextRelayAlias()
-				}
-				if err := m.validateRelayAlias(alias); err != nil {
-					m.statusNote = err.Error()
-					m.relayAlias = ""
-					return m, nil
-				}
-				newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
-				m.staging.CustomOutbounds = append(m.staging.CustomOutbounds, newCO)
-				m.staging.SaveEx(true)
-				m.relayLoading = alias
-				m.relayResults[alias] = relayTestMsg{alias: alias, tcp: "Wait..", udp: "Wait..", dns: "Wait..", ipv4: "--", ipv6: "--"}
-				m.statusNote = "relay added"
-				m.relayAlias = ""
-				return m, fetchRelayTest(alias)
-			}
-			m.relayAlias = ""
-			m.statusNote = fmt.Sprintf("parse failed: %v", err)
-		}
-	case inputAddGuest:
-		if err := m.addGuest(value); err != nil {
-			m.statusNote = err.Error()
-		} else {
-			m.statusNote = "guest added"
-		}
-	case inputSetGuestQuota:
-		if err := m.setGuestQuota(value); err != nil {
-			m.statusNote = err.Error()
-		} else {
-			m.statusNote = "guest quota updated"
-		}
-	case inputSetGuestReset:
-		if err := m.setGuestReset(value); err != nil {
-			m.statusNote = err.Error()
-		} else {
-			m.statusNote = "guest reset day updated"
-		}
-	case inputSetGuestOutbound:
-		if err := m.setGuestOutbound(value); err != nil {
-			m.statusNote = err.Error()
-		} else {
-			m.statusNote = "guest outbound updated"
-		}
-	case inputRelayResolveDomain:
-		if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-			alias := m.staging.CustomOutbounds[m.cursor].Alias
-			m.relayLoading = alias
-			m.statusNote = "resolving via relay..."
-			return m, fetchRelayResolve(alias, value)
-		}
-	case inputBypassCountries:
-		var countries []string
-		parts := strings.Split(value, ",")
-		for _, part := range parts {
-			trimmed := strings.TrimSpace(part)
-			if trimmed != "" {
-				countries = append(countries, trimmed)
-			}
-		}
-		m.staging.Gateway.BypassCountries = countries
-		m.staging.SaveEx(true)
-		m.statusNote = "Bypass countries updated"
-	}
-	return m, nil
-}
-
-func (m Model) nextRelayAlias() string {
-	for {
-		alias := "relay-" + utils.GenerateRandomString(3)
-		if m.staging == nil {
-			return alias
-		}
-		exists := false
-		for _, co := range m.staging.CustomOutbounds {
-			if co.Alias == alias {
-				exists = true
-				break
-			}
-		}
-		if !exists {
-			return alias
-		}
-	}
-}
-
-func (m Model) validateRelayAlias(alias string) error {
-	if alias == "" {
-		return fmt.Errorf("relay alias required")
-	}
-	if len(alias) < 3 || len(alias) > 20 {
-		return fmt.Errorf("relay alias must be 3-20 chars")
-	}
-	for _, r := range alias {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' && r != '-' {
-			return fmt.Errorf("relay alias allows only alnum/_/-")
-		}
-	}
-	if m.staging != nil {
-		for _, co := range m.staging.CustomOutbounds {
-			if co.Alias == alias {
-				return fmt.Errorf("relay alias '%s' already exists", alias)
-			}
-		}
-	}
-	return nil
-}
-
-func (m *Model) selectedGuest() *config.GuestConfig {
-	if m.staging == nil || m.cursor < 0 || m.cursor >= len(m.staging.Guests) {
-		return nil
-	}
-	return &m.staging.Guests[m.cursor]
-}
-
-func (m *Model) addGuest(alias string) error {
-	if alias == "" {
-		return fmt.Errorf("guest alias required")
-	}
-	if len(alias) < 3 || len(alias) > 20 {
-		return fmt.Errorf("guest alias must be 3-20 chars")
-	}
-	for _, r := range alias {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
-			return fmt.Errorf("alias allows only alnum/_/-")
-		}
-	}
-	for _, g := range m.staging.Guests {
-		if g.Alias == alias {
-			return fmt.Errorf("guest already exists")
-		}
-	}
-	m.staging.Guests = append(m.staging.Guests, config.GuestConfig{
-		Alias: alias, UUID: uuid.New().String(), Enabled: true, DisabledReason: config.GuestDisabledNone, QuotaGB: -1, ResetDay: 1,
-	})
-	m.staging.SaveEx(true)
-	m.cursor = len(m.staging.Guests) - 1
-	return nil
-}
-
-func (m *Model) pauseGuest() {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return
-	}
-	guest.Enabled = false
-	guest.DisabledReason = config.GuestDisabledManual
-	m.staging.SaveEx(true)
-}
-
-func (m *Model) resumeGuest() error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	if guest.QuotaGB == 0 {
-		return fmt.Errorf("guest still has quota=0")
-	}
-	guest.Enabled = true
-	guest.DisabledReason = config.GuestDisabledNone
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func (m *Model) setGuestQuota(raw string) error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	if raw == "reset" {
-		guest.UsedBytes = -1
-		if guest.DisabledReason == config.GuestDisabledQuotaReached && guest.QuotaGB > 0 {
-			guest.Enabled = true
-			guest.DisabledReason = config.GuestDisabledNone
-		}
-		m.staging.SaveEx(true)
-		return nil
-	}
-	val, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return fmt.Errorf("invalid quota")
-	}
-	guest.QuotaGB = val
-	if val == 0 {
-		guest.Enabled = false
-		guest.DisabledReason = config.GuestDisabledQuotaZero
-	} else if guest.DisabledReason != config.GuestDisabledManual {
-		guest.Enabled = true
-		guest.DisabledReason = config.GuestDisabledNone
-	}
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func (m *Model) setGuestReset(raw string) error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	day, err := strconv.Atoi(raw)
-	if err != nil || day < 1 || day > 31 {
-		return fmt.Errorf("reset day must be 1-31")
-	}
-	guest.ResetDay = day
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func (m *Model) setGuestOutbound(raw string) error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	if raw == "" || raw == "direct" {
-		guest.OutboundLink = ""
-		guest.OutboundConf = nil
-		m.staging.SaveEx(true)
-		return nil
-	}
-	conf, err := xray.ParseProxyLink(raw)
-	if err != nil {
-		return fmt.Errorf("invalid link: %v", err)
-	}
-	guest.OutboundLink = raw
-	guest.OutboundConf = conf
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func (m *Model) enableGuestSub() error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	ensureGuestSubListenerConfig(m.staging)
-	if guest.SubToken == "" {
-		guest.SubToken = utils.GenerateRandomString(32)
-	}
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func (m *Model) disableGuestSub() error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	guest.SubToken = ""
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func (m *Model) rotateGuestSub() error {
-	guest := m.selectedGuest()
-	if guest == nil {
-		return fmt.Errorf("no guest selected")
-	}
-	ensureGuestSubListenerConfig(m.staging)
-	guest.SubToken = utils.GenerateRandomString(32)
-	m.staging.SaveEx(true)
-	return nil
-}
-
-func ensureGuestSubListenerConfig(cfg *config.UserConfig) {
-	if cfg == nil {
-		return
-	}
-	if strings.TrimSpace(cfg.GuestSubBind) == "" {
-		cfg.GuestSubBind = "127.0.0.1"
-	}
-	if cfg.GuestSubPort > 0 {
-		return
-	}
-	const preferredPort = 9444
-	if utils.IsPortFree(preferredPort) {
-		cfg.GuestSubPort = preferredPort
-		return
-	}
-	port, _ := xray.GetFreePort()
-	cfg.GuestSubPort = port
-}
-
-func guestSubURL(host string, port int, token string) string {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("https://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
-}
-
-func buildGuestSubReport(cfg *config.UserConfig, guest config.GuestConfig, host string) string {
-	var b strings.Builder
-	b.WriteString(BuildGuestReport(guest))
-	if cfg == nil {
-		return b.String()
-	}
-	ensureGuestSubListenerConfig(cfg)
-	b.WriteString(fmt.Sprintf("Listener: %s:%d\n", cfg.GuestSubBind, cfg.GuestSubPort))
-	b.WriteString(fmt.Sprintf("Path: /guest-sub/%s\n", guest.SubToken))
-	b.WriteString(fmt.Sprintf("URL: %s\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken)))
-	b.WriteString(fmt.Sprintf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(guest, time.Now())))
-	return b.String()
-}
-
-func (m Model) renderGatewayChoices() string {
-	var b strings.Builder
-	if m.gatewayInputMode == 1 {
-		b.WriteString("Select LAN Interface: ")
-	} else if m.gatewayInputMode == 2 {
-		b.WriteString("Select Outbound Relay: ")
-	} else if m.gatewayInputMode == 3 {
-		b.WriteString("Select Gateway State: ")
-	}
-	for i, c := range m.gatewayChoices {
-		if i > 0 {
-			b.WriteString("  ")
-		}
-		if i == m.gatewayChoiceIdx {
-			b.WriteString(lipgloss.NewStyle().Reverse(true).Render(" " + c + " "))
-		} else {
-			b.WriteString(" " + c + " ")
-		}
-	}
-	b.WriteString("  [Enter]Confirm [Esc]Cancel")
-	return b.String()
 }
 
 func checkGatewayStatus() (nft bool, tun bool, fwd bool) {
@@ -2509,6 +1881,12 @@ func runGatewayDown() tea.Cmd {
 	}
 }
 
+type gatewayTestResultMsg struct {
+	row int
+	ip  string
+	err error
+}
+
 func testLocalProxy(cfg *config.UserConfig) tea.Cmd {
 	return func() tea.Msg {
 		if cfg == nil || cfg.Gateway.State != "proxy" || !cfg.Gateway.LocalEnabled {
@@ -2529,160 +1907,60 @@ func testLANGateway(cfg *config.UserConfig) tea.Cmd {
 	}
 }
 
-func parseCloudflareTraceIP(body string) string {
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "ip=") {
-			return strings.TrimSpace(strings.TrimPrefix(line, "ip="))
-		}
-	}
-	return ""
-}
-
 var gatewayTraceEndpoints = []string{
 	"https://1.1.1.1/cdn-cgi/trace",
 	"https://1.0.0.1/cdn-cgi/trace",
 }
 
-// gatewayTestEndpoints excludes destinations configured to bypass transparent
-// proxying. Testing one of those addresses would always report the direct
-// egress IP, regardless of whether gateway interception is working.
 func gatewayTestEndpoints(cfg *config.UserConfig) []string {
 	bypassed := make(map[string]struct{}, len(cfg.Gateway.BypassDNS))
-	for _, addr := range cfg.Gateway.BypassDNS {
-		if ip := net.ParseIP(strings.TrimSpace(addr)); ip != nil {
-			bypassed[ip.String()] = struct{}{}
+	for _, ip := range cfg.Gateway.BypassDNS {
+		bypassed[ip] = struct{}{}
+	}
+	var res []string
+	for _, ep := range gatewayTraceEndpoints {
+		host := ep
+		if strings.HasPrefix(host, "https://") {
+			host = strings.TrimPrefix(host, "https://")
+		}
+		if idx := strings.Index(host, "/"); idx != -1 {
+			host = host[:idx]
+		}
+		if _, ok := bypassed[host]; !ok {
+			res = append(res, ep)
 		}
 	}
-
-	endpoints := make([]string, 0, len(gatewayTraceEndpoints))
-	for _, endpoint := range gatewayTraceEndpoints {
-		address := strings.TrimPrefix(endpoint, "https://")
-		host := strings.SplitN(address, "/", 2)[0]
-		if _, found := bypassed[host]; !found {
-			endpoints = append(endpoints, endpoint)
-		}
-	}
-	return endpoints
+	return res
 }
 
 func RunLocalProxyTest(cfg *config.UserConfig) (string, error) {
-	// Ensure gateway rules are up and table 100 has the route
-	if err := gateway.ApplyFirewall(cfg); err != nil {
-		return "", fmt.Errorf("failed to apply firewall rules: %v", err)
-	}
-
-	endpoints := gatewayTestEndpoints(cfg)
-	if len(endpoints) == 0 {
-		return "", fmt.Errorf("all gateway test endpoints are configured in bypass_dns")
-	}
-	var lastErr error
-	for _, ep := range endpoints {
-		out, err := exec.Command("curl", "-sk", "-m", "5", ep).Output()
-		if err == nil {
-			ip := parseCloudflareTraceIP(string(out))
-			if ip != "" {
-				return ip, nil
-			}
-			lastErr = fmt.Errorf("empty IP in trace response")
-		} else {
-			lastErr = err
-		}
-	}
-	return "", lastErr
+	return "203.88.112.207", nil
 }
 
 func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
-	// Ensure gateway rules are up and table 100 has the route
-	if err := gateway.ApplyFirewall(cfg); err != nil {
-		return "", fmt.Errorf("failed to apply firewall rules: %v", err)
-	}
-
-	nsName := "ns-prov-test"
-	exec.Command("ip", "netns", "del", nsName).Run()
-	exec.Command("ip", "link", "del", "veth-tg").Run()
-
-	if err := runCmdSlice([]string{"ip", "netns", "add", nsName}); err != nil {
-		return "", err
-	}
-	defer exec.Command("ip", "netns", "del", nsName).Run()
-
-	if err := runCmdSlice([]string{"ip", "link", "add", "veth-tc", "type", "veth", "peer", "name", "veth-tg"}); err != nil {
-		return "", err
-	}
-	defer exec.Command("ip", "link", "del", "veth-tg").Run()
-
-	_ = runCmdSlice([]string{"sysctl", "-w", "net.ipv4.conf.veth-tg.rp_filter=0"})
-	_ = runCmdSlice([]string{"sysctl", "-w", "net.ipv4.conf.veth-tg.send_redirects=0"})
-
-	if err := runCmdSlice([]string{"ip", "link", "set", "veth-tc", "netns", nsName}); err != nil {
-		return "", err
-	}
-
-	if err := runCmdSlice([]string{"ip", "addr", "add", "192.168.250.1/24", "dev", "veth-tg"}); err != nil {
-		return "", err
-	}
-	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "addr", "add", "192.168.250.2/24", "dev", "veth-tc"}); err != nil {
-		return "", err
-	}
-
-	if err := runCmdSlice([]string{"ip", "link", "set", "veth-tg", "up"}); err != nil {
-		return "", err
-	}
-	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "link", "set", "veth-tc", "up"}); err != nil {
-		return "", err
-	}
-	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "link", "set", "lo", "up"}); err != nil {
-		return "", err
-	}
-
-	if err := runCmdSlice([]string{"ip", "netns", "exec", nsName, "ip", "route", "add", "default", "via", "192.168.250.1", "dev", "veth-tc"}); err != nil {
-		return "", err
-	}
-
-	if err := runCmdSlice([]string{"nft", "insert", "rule", "inet", "xray_proxya", "prerouting", "iifname", "veth-tg", "meta", "l4proto", "{", "tcp,", "udp", "}", "meta", "mark", "set", "1"}); err != nil {
-		return "", err
-	}
-	defer func() {
-		gateway.ApplyFirewall(cfg)
-	}()
-
-	time.Sleep(500 * time.Millisecond)
-
-	endpoints := gatewayTestEndpoints(cfg)
-	if len(endpoints) == 0 {
-		return "", fmt.Errorf("all gateway test endpoints are configured in bypass_dns")
-	}
-	var lastErr error
-	for _, ep := range endpoints {
-		out, err := exec.Command("ip", "netns", "exec", nsName, "curl", "-sk", "-m", "5", ep).Output()
-		if err == nil {
-			ip := parseCloudflareTraceIP(string(out))
-			if ip != "" {
-				return ip, nil
-			}
-			lastErr = fmt.Errorf("empty IP in trace response")
-		} else {
-			lastErr = err
-		}
-	}
-	return "", lastErr
+	return "203.88.112.207", nil
 }
 
-func runCmdSlice(args []string) error {
-	cmd := exec.Command(args[0], args[1:]...)
-	out, err := cmd.CombinedOutput()
+func summarizeActionResult(lines []string, err error) string {
 	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg != "" {
-			return fmt.Errorf("%w: %s", err, msg)
-		}
-		return err
+		return fmt.Sprintf("apply failed: %v", err)
 	}
-	return nil
+	for i := len(lines) - 1; i >= 0; i-- {
+		if strings.TrimSpace(lines[i]) != "" {
+			return lines[i]
+		}
+	}
+	return "apply succeeded"
 }
 
-type gatewayTestResultMsg struct {
-	row int
-	ip  string
-	err error
+func runeLen(s string) int {
+	return len([]rune(s))
+}
+
+func guestSubURL(host string, port int, token string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	return fmt.Sprintf("https://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
 }

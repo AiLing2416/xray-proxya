@@ -131,7 +131,7 @@ func guestReasonLabel(guest config.GuestConfig) string {
 
 func guestOutboundLabel(guest config.GuestConfig) string {
 	if guest.OutboundLink != "" {
-		return "custom-link"
+		return "relay"
 	}
 	return "direct"
 }

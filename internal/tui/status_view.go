@@ -7,6 +7,7 @@ import (
 	"xray-proxya/internal/buildinfo"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/trafficstats"
+	"xray-proxya/internal/xray"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -16,79 +17,103 @@ type namedStatRow struct {
 	value int64
 }
 
-func RenderStatus(cfg *config.UserConfig, active bool, pid int, allStats map[string]int64) string {
-	statusStr := "Inactive"
-	uptimeStr := "-"
+// RenderStatus renders the optimized STATUS home view, combining the ASCII banner,
+// core service runtime status, and real-time cumulative traffic analytics.
+func RenderStatus(cfg *config.UserConfig, state xray.ServiceState, allStats map[string]int64) string {
+	statusStr := "Inactive (Stopped)"
 	statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
-	if active {
-		statusStr = fmt.Sprintf("Active (PID: %d)", pid)
+	if state.Active {
+		if state.PID > 0 {
+			statusStr = fmt.Sprintf("Active (PID: %d)", state.PID)
+		} else {
+			statusStr = "Active"
+		}
 		statusStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("2"))
-		uptimeStr = "managed by systemd"
 	}
 
 	summary := trafficstats.Summarize(allStats)
 	var b strings.Builder
+
+	// 1. ASCII Banner & Version
 	b.WriteString(renderHomeTitle())
 	b.WriteString("\n\n")
-	b.WriteString("Proxy control surface\n")
-	b.WriteString(strings.Repeat("─", 24))
-	b.WriteString("\n\n")
 
-	rows := [][]string{
-		{"Core", statusStyle.Render(statusStr)},
-		{"Uptime", uptimeStr},
+	// 2. Core Service Runtime & System Information
+	roleName := "Server"
+	if cfg != nil && cfg.Role == config.RoleGateway {
+		roleName = "Gateway"
+	}
+
+	controlMode := state.ControlMode
+	if controlMode == "" {
+		controlMode = state.InitSystem
+	}
+	if controlMode == "systemd" {
+		if state.IsRoot {
+			controlMode = "Systemd (Root)"
+		} else {
+			controlMode = "Systemd (User)"
+		}
+	} else if controlMode == "nohup" {
+		controlMode = "Nohup (Fallback)"
+	}
+
+	coreRows := [][]string{
+		{"Core Service", statusStyle.Render(statusStr)},
+		{"Control Mode", controlMode},
+		{"Role", roleName},
 		{"Direct Traffic", HumanizeBytes(summary.Direct)},
 		{"Relay Traffic", HumanizeBytes(summary.Relay)},
 	}
 	if cfg != nil {
-		rows = append(rows,
+		coreRows = append(coreRows,
 			[]string{"Global UUID", cfg.UUID},
 			[]string{"API Inbound", fmt.Sprintf("127.0.0.1:%d", cfg.APIInbound)},
-			[]string{"Test Inbound", fmt.Sprintf("127.0.0.1:%d", cfg.TestInbound)},
-			[]string{"Config Path", config.GetConfigPath()},
 		)
 	}
 
-	for _, r := range rows {
+	for _, r := range coreRows {
 		b.WriteString(fmt.Sprintf("%-16s %s\n", r[0]+":", r[1]))
 	}
 
-	appendOrderedInboundStats(&b, "\nInbound Usage", cfg, summary.InboundStats)
-	appendNamedStats(&b, "\nService Usage", summary.ServiceStats)
-	appendNamedStats(&b, "\nRelay Usage", summary.RelayStats)
-	appendNamedStats(&b, "\nGuest Usage", summary.GuestStats)
+	// 3. Traffic Usage Breakdowns
+	appendOrderedInboundStats(&b, "\nInbound Presets Traffic", cfg, summary.InboundStats)
+	appendNamedStats(&b, "\nOutbound Relays Traffic", summary.RelayStats)
+	appendNamedStats(&b, "\nGuests Traffic", summary.GuestStats)
 
-	return lipgloss.NewStyle().Padding(1, 2).Render(b.String())
+	return lipgloss.NewStyle().Padding(0, 1).Render(b.String())
 }
 
-func buildStatusReport(cfg *config.UserConfig, active bool, pid int, allStats map[string]int64) string {
-	statusStr := "Inactive"
-	uptimeStr := "-"
-	if active {
-		statusStr = fmt.Sprintf("Active (PID %d)", pid)
-		uptimeStr = "managed by systemd"
+// BuildStatusReport generates a clean plain-text status report for clipboard copying.
+func BuildStatusReport(cfg *config.UserConfig, state xray.ServiceState, allStats map[string]int64) string {
+	statusStr := "Inactive (Stopped)"
+	if state.Active {
+		if state.PID > 0 {
+			statusStr = fmt.Sprintf("Active (PID: %d)", state.PID)
+		} else {
+			statusStr = "Active"
+		}
 	}
 
 	summary := trafficstats.Summarize(allStats)
 	var b strings.Builder
-	b.WriteString("proxya\n")
-	b.WriteString(fmt.Sprintf("version %s\n", buildinfo.Version))
-	b.WriteString("============\n")
-	b.WriteString(fmt.Sprintf("Xray Core: %s\n", statusStr))
-	b.WriteString(fmt.Sprintf("UpTime: %s\n", uptimeStr))
-	b.WriteString(fmt.Sprintf("Direct Outbound: %s\n", HumanizeBytes(summary.Direct)))
-	b.WriteString(fmt.Sprintf("Relay Outbound: %s\n", HumanizeBytes(summary.Relay)))
+	b.WriteString(fmt.Sprintf("Xray-Proxya v%s Status Report\n", buildinfo.Version))
+	b.WriteString("=====================================\n")
+	b.WriteString(fmt.Sprintf("Main Service:     %s\n", statusStr))
+	b.WriteString(fmt.Sprintf("Control Mode:     %s\n", state.ControlMode))
 	if cfg != nil {
-		b.WriteString(fmt.Sprintf("Global UUID: %s\n", cfg.UUID))
-		b.WriteString(fmt.Sprintf("API Inbound: 127.0.0.1:%d\n", cfg.APIInbound))
-		b.WriteString(fmt.Sprintf("Test Inbound: 127.0.0.1:%d\n", cfg.TestInbound))
-		b.WriteString(fmt.Sprintf("Config Path: %s\n", config.GetConfigPath()))
+		b.WriteString(fmt.Sprintf("Role:             %s\n", cfg.Role))
+		b.WriteString(fmt.Sprintf("Global UUID:      %s\n", cfg.UUID))
+		b.WriteString(fmt.Sprintf("API Inbound:      127.0.0.1:%d\n", cfg.APIInbound))
+		b.WriteString(fmt.Sprintf("Config Path:      %s\n", config.GetConfigPath()))
 	}
+	b.WriteString(fmt.Sprintf("Direct Outbound:  %s\n", HumanizeBytes(summary.Direct)))
+	b.WriteString(fmt.Sprintf("Relay Outbound:   %s\n", HumanizeBytes(summary.Relay)))
+
 	appendOrderedPlainInboundStats(&b, "\nInbound Usage:", cfg, summary.InboundStats)
-	appendPlainNamedStats(&b, "\nService Usage:", summary.ServiceStats)
 	appendPlainNamedStats(&b, "\nRelay Usage:", summary.RelayStats)
 	appendPlainNamedStats(&b, "\nGuest Usage:", summary.GuestStats)
-	return b.String()
+	return strings.TrimSpace(b.String())
 }
 
 func appendOrderedInboundStats(b *strings.Builder, title string, cfg *config.UserConfig, stats map[string]int64) {
@@ -125,7 +150,7 @@ func renderHomeTitle() string {
 		" \\  /| '__/ _` | | | |/ /_)/ '__/ _ \\ \\/ / | | |/ _` |",
 		" /  \\| | | (_| | |_| / ___/| | | (_) >  <| |_| | (_| |",
 		"/_/\\_\\_|  \\__,_|\\__, \\/    |_|  \\___/_/\\_\\\\__, |\\__,_|",
-		"                |___/                     |___/       " + lipgloss.NewStyle().Bold(true).Render("v"+buildinfo.Version),
+		"                |___/                     |___/       " + lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Render("v"+buildinfo.Version),
 	}
 	return strings.Join(lines, "\n")
 }
