@@ -39,6 +39,11 @@ func (fi *flexInt) UnmarshalJSON(b []byte) error {
 }
 
 func ParseProxyLink(link string) (map[string]interface{}, error) {
+	out, _, err := ParseProxyLinkWithRemark(link)
+	return out, err
+}
+
+func ParseProxyLinkWithRemark(link string) (map[string]interface{}, string, error) {
 	// Sanity check for shell truncation
 	if strings.Contains(link, "?") && !strings.Contains(link, "&") {
 		// Most complex links (VLESS/VMess) should have multiple params
@@ -58,20 +63,20 @@ func ParseProxyLink(link string) (map[string]interface{}, error) {
 	} else if strings.HasPrefix(link, "http://") || strings.HasPrefix(link, "https://") {
 		return parseHTTP(link)
 	}
-	return nil, fmt.Errorf("unsupported or malformed proxy link")
+	return nil, "", fmt.Errorf("unsupported or malformed proxy link")
 }
 
-func parseVLESS(link string) (map[string]interface{}, error) {
+func parseVLESS(link string) (map[string]interface{}, string, error) {
 	// Standard: vless://uuid@host:port?params#tag
 	u, err := url.Parse(link)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	raw := strings.TrimPrefix(link, "vless://")
 	atIdx := strings.Index(raw, "@")
 	if atIdx == -1 {
-		return nil, fmt.Errorf("invalid vless link: missing @")
+		return nil, "", fmt.Errorf("invalid vless link: missing @")
 	}
 	uuid := raw[:atIdx]
 	rest := raw[atIdx+1:]
@@ -93,6 +98,16 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 		portStr = "443"
 	}
 	port, _ := strconv.Atoi(portStr)
+
+	remark := u.Fragment
+	if remark == "" {
+		if hashIdx := strings.Index(link, "#"); hashIdx != -1 {
+			remark = link[hashIdx+1:]
+		}
+	}
+	if unescaped, err := url.QueryUnescape(remark); err == nil && unescaped != "" {
+		remark = unescaped
+	}
 
 	query := u.Query()
 	security := query.Get("security")
@@ -142,7 +157,7 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 	if security == "reality" {
 		pbk := query.Get("pbk")
 		if pbk == "" {
-			return nil, fmt.Errorf("invalid reality link: missing 'pbk' parameter")
+			return nil, "", fmt.Errorf("invalid reality link: missing 'pbk' parameter")
 		}
 		realitySettings := map[string]interface{}{
 			"serverName":  query.Get("sni"),
@@ -203,43 +218,40 @@ func parseVLESS(link string) (map[string]interface{}, error) {
 		out["streamSettings"].(map[string]interface{})["httpSettings"] = httpSettings
 	}
 
-	return out, nil
+	return out, remark, nil
 }
 
-func parseSS(link string) (map[string]interface{}, error) {
+func parseSS(link string) (map[string]interface{}, string, error) {
 	raw := strings.TrimPrefix(link, "ss://")
+	var remark string
 	if hashIdx := strings.Index(raw, "#"); hashIdx != -1 {
+		remark = raw[hashIdx+1:]
 		raw = raw[:hashIdx]
+		if unescaped, err := url.QueryUnescape(remark); err == nil && unescaped != "" {
+			remark = unescaped
+		}
 	}
 
 	parts := strings.Split(raw, "@")
 	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid shadowsocks link format")
+		return nil, "", fmt.Errorf("invalid shadowsocks link format")
 	}
 
 	auth := parts[0]
 	hostPortPart := parts[1]
 
-	decoded, err := base64.RawURLEncoding.DecodeString(auth)
+	decoded, err := decodeBase64Flexible(auth)
 	if err != nil {
-		decoded, err = base64.StdEncoding.DecodeString(auth)
-		if err != nil {
-			if !strings.HasSuffix(auth, "=") {
-				decoded, err = base64.StdEncoding.DecodeString(auth + "==")
-			}
-			if err != nil {
-				if strings.Contains(auth, ":") {
-					decoded = []byte(auth)
-				} else {
-					return nil, fmt.Errorf("failed to decode ss auth: %v", err)
-				}
-			}
+		if strings.Contains(auth, ":") {
+			decoded = []byte(auth)
+		} else {
+			return nil, "", fmt.Errorf("failed to decode ss auth: %v", err)
 		}
 	}
 
 	authParts := strings.SplitN(string(decoded), ":", 2)
 	if len(authParts) < 2 {
-		return nil, fmt.Errorf("invalid ss auth info")
+		return nil, "", fmt.Errorf("invalid ss auth info")
 	}
 
 	var host string
@@ -267,14 +279,23 @@ func parseSS(link string) (map[string]interface{}, error) {
 				},
 			},
 		},
-	}, nil
+	}, remark, nil
 }
 
-func parseVMess(link string) (map[string]interface{}, error) {
-	b64 := strings.TrimPrefix(link, "vmess://")
-	decoded, err := base64.StdEncoding.DecodeString(b64)
+func parseVMess(link string) (map[string]interface{}, string, error) {
+	raw := strings.TrimPrefix(link, "vmess://")
+	var remark string
+	if hashIdx := strings.Index(raw, "#"); hashIdx != -1 {
+		remark = raw[hashIdx+1:]
+		raw = raw[:hashIdx]
+		if unescaped, err := url.QueryUnescape(remark); err == nil && unescaped != "" {
+			remark = unescaped
+		}
+	}
+
+	decoded, err := decodeBase64Flexible(raw)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	var vcfg struct {
 		Add  string  `json:"add"`
@@ -283,10 +304,15 @@ func parseVMess(link string) (map[string]interface{}, error) {
 		Net  string  `json:"net"`
 		Path string  `json:"path"`
 		TLS  string  `json:"tls"`
+		Ps   string  `json:"ps"`
 	}
 	if err := json.Unmarshal(decoded, &vcfg); err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	if remark == "" && vcfg.Ps != "" {
+		remark = vcfg.Ps
+	}
+
 	out := map[string]interface{}{
 		"protocol": "vmess",
 		"settings": map[string]interface{}{
@@ -309,14 +335,19 @@ func parseVMess(link string) (map[string]interface{}, error) {
 			},
 		}
 	}
-	return out, nil
+	return out, remark, nil
 }
 
-func parseSocks(link string) (map[string]interface{}, error) {
+func parseSocks(link string) (map[string]interface{}, string, error) {
 	raw := strings.TrimPrefix(link, "socks://")
 	raw = strings.TrimPrefix(raw, "socks5://")
+	var remark string
 	if hashIdx := strings.Index(raw, "#"); hashIdx != -1 {
+		remark = raw[hashIdx+1:]
 		raw = raw[:hashIdx]
+		if unescaped, err := url.QueryUnescape(remark); err == nil && unescaped != "" {
+			remark = unescaped
+		}
 	}
 
 	parts := strings.Split(raw, "@")
@@ -326,13 +357,7 @@ func parseSocks(link string) (map[string]interface{}, error) {
 		auth := parts[0]
 		hostPort = parts[1]
 		// Try Base64 decode
-		decoded, err := base64.StdEncoding.DecodeString(auth)
-		if err != nil {
-			if !strings.HasSuffix(auth, "=") {
-				decoded, err = base64.StdEncoding.DecodeString(auth + "==")
-			}
-		}
-
+		decoded, err := decodeBase64Flexible(auth)
 		if err == nil && strings.Contains(string(decoded), ":") {
 			authParts := strings.SplitN(string(decoded), ":", 2)
 			user, pass = authParts[0], authParts[1]
@@ -368,13 +393,17 @@ func parseSocks(link string) (map[string]interface{}, error) {
 			"servers": []interface{}{srv},
 			"udp":     true,
 		},
-	}, nil
+	}, remark, nil
 }
 
-func parseHTTP(link string) (map[string]interface{}, error) {
+func parseHTTP(link string) (map[string]interface{}, string, error) {
 	u, err := url.Parse(link)
 	if err != nil {
-		return nil, err
+		return nil, "", err
+	}
+	remark := u.Fragment
+	if unescaped, err := url.QueryUnescape(remark); err == nil && unescaped != "" {
+		remark = unescaped
 	}
 	pass, _ := u.User.Password()
 	port, _ := strconv.Atoi(u.Port())
@@ -390,7 +419,39 @@ func parseHTTP(link string) (map[string]interface{}, error) {
 		"settings": map[string]interface{}{
 			"servers": []interface{}{srv},
 		},
-	}, nil
+	}, remark, nil
+}
+
+func decodeBase64Flexible(s string) ([]byte, error) {
+	s = strings.TrimSpace(s)
+	// Try standard
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	// Try URL
+	if b, err := base64.URLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	// Try raw URL
+	if b, err := base64.RawURLEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	// Try raw Std
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	// Pad with == and try again
+	padLen := (4 - len(s)%4) % 4
+	if padLen > 0 {
+		padded := s + strings.Repeat("=", padLen)
+		if b, err := base64.StdEncoding.DecodeString(padded); err == nil {
+			return b, nil
+		}
+		if b, err := base64.URLEncoding.DecodeString(padded); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("failed to decode base64")
 }
 
 func ParseInterfaceBind(iface string, bindAddr string) (map[string]interface{}, error) {

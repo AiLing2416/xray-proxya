@@ -120,6 +120,7 @@ type UserConfig struct {
 	TestInbound     int              `json:"test_inbound"`
 	Presets         []ModeInfo       `json:"presets"`
 	CustomOutbounds []CustomOutbound `json:"custom_outbounds"`
+	RelaySubs       map[string]string `json:"relay_subs,omitempty"`
 	Guests          []GuestConfig    `json:"guests"`
 	Gateway         GatewayConfig    `json:"gateway"`
 	// Path is the local Pathd daemon endpoint. It is meaningful only on a
