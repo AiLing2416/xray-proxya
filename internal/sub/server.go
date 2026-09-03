@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -194,8 +195,25 @@ func httpGuestSubHandler() http.HandlerFunc {
 			http.Error(w, "No links generated for this guest", http.StatusInternalServerError)
 			return
 		}
-		remark := formatGuestSubRemark(*targetGuest, time.Now())
-		links = xray.WithPrimaryRemark(links, remark)
+
+		notifyMode := targetGuest.NormalizedNotifyMode()
+		now := time.Now()
+
+		if notifyMode == config.GuestNotifyHeader || notifyMode == config.GuestNotifyAll {
+			totalBytes := targetGuest.EffectiveLimitBytes()
+			if totalBytes < 0 {
+				totalBytes = 0
+			}
+			expire := targetGuest.NextResetTimestamp(now)
+			w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d", targetGuest.UsedBytes, totalBytes, expire))
+			w.Header().Set("Profile-Update-Interval", "12")
+			w.Header().Set("Profile-Title", fmt.Sprintf("Guest-%s", targetGuest.Alias))
+		}
+
+		if notifyMode == config.GuestNotifyRemark || notifyMode == config.GuestNotifyAll {
+			memorialNode := GenerateMemorialShadowsocksNode(*targetGuest, now)
+			links = append([]string{memorialNode}, links...)
+		}
 
 		encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -252,58 +270,41 @@ func validatePrivateBindAddress(bind string) error {
 	return errors.New("guest subscription bind address must be loopback or private")
 }
 
+const (
+	MemorialSSCipher   = "aes-256-gcm"
+	MemorialSSPassword = "jun-04-1989"
+	MemorialSSAddress  = "127.0.0.1:0"
+)
+
+func GenerateMemorialShadowsocksNode(guest config.GuestConfig, now time.Time) string {
+	auth := base64.StdEncoding.EncodeToString([]byte(MemorialSSCipher + ":" + MemorialSSPassword))
+	remark := formatGuestSubRemark(guest, now)
+	return fmt.Sprintf("ss://%s@%s#%s", auth, MemorialSSAddress, url.QueryEscape(remark))
+}
+
 func formatGuestSubRemark(guest config.GuestConfig, now time.Time) string {
-	return fmt.Sprintf("%s/%s/%dd", formatGuestUsedCompact(guest.UsedBytes), formatGuestQuotaCompact(guest.QuotaGB), daysUntilReset(guest.ResetDay, now))
+	days := guest.DaysUntilReset(now)
+	limitBytes := guest.EffectiveLimitBytes()
+	usedGB := float64(guest.UsedBytes) / float64(config.GigaByte)
+	limitGB := float64(limitBytes) / float64(config.GigaByte)
+	if !guest.Enabled {
+		if guest.DisabledReason == config.GuestDisabledQuotaReached {
+			return fmt.Sprintf("EXPIRED: Quota Exceeded (%.2fGB / %.2fGB) | Reset in %dd", usedGB, limitGB, days)
+		}
+		return "PAUSED: Account Disabled"
+	}
+	return fmt.Sprintf("TRAFFIC: %.2fGB / %.2fGB | RESET: %dd", usedGB, limitGB, days)
 }
 
 func FormatGuestSubRemarkForDisplay(guest config.GuestConfig, now time.Time) string {
 	return formatGuestSubRemark(guest, now)
 }
 
-func formatGuestUsedCompact(bytes int64) string {
-	return formatCompactGiB(float64(bytes) / (1024 * 1024 * 1024))
-}
-
-func formatGuestQuotaCompact(quota float64) string {
-	if quota < 0 {
-		return "inf"
-	}
-	return formatCompactGiB(quota)
-}
-
-func formatCompactGiB(value float64) string {
-	switch {
-	case value >= 10:
-		return fmt.Sprintf("%.1fGB", value)
-	case value >= 1:
-		return fmt.Sprintf("%.2fGB", value)
-	default:
-		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", value), "0"), ".") + "GB"
-	}
-}
-
 func daysUntilReset(resetDay int, now time.Time) int {
-	if resetDay < 1 {
-		resetDay = 1
-	}
-	location := now.Location()
-	year, month, day := now.Date()
-	targetYear, targetMonth := year, month
-	targetDay := clampResetDay(resetDay, targetYear, targetMonth, location)
-	if day > targetDay {
-		nextMonth := now.AddDate(0, 1, 0)
-		targetYear, targetMonth, _ = nextMonth.Date()
-		targetDay = clampResetDay(resetDay, targetYear, targetMonth, location)
-	}
-	start := time.Date(year, month, day, 0, 0, 0, 0, location)
-	target := time.Date(targetYear, targetMonth, targetDay, 0, 0, 0, 0, location)
-	return int(target.Sub(start).Hours() / 24)
+	g := config.GuestConfig{ResetDay: resetDay}
+	return g.DaysUntilReset(now)
 }
 
 func clampResetDay(resetDay int, year int, month time.Month, location *time.Location) int {
-	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, location).Day()
-	if resetDay > lastDay {
-		return lastDay
-	}
-	return resetDay
+	return config.ClampResetDay(resetDay, year, month, location)
 }

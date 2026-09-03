@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type AppRole string
@@ -285,18 +287,99 @@ const (
 	GuestDisabledQuotaZero    GuestDisabledReason = "quota_zero"
 )
 
+type GuestNotifyMode string
+
+const (
+	GuestNotifyOff    GuestNotifyMode = "off"
+	GuestNotifyHeader GuestNotifyMode = "header"
+	GuestNotifyRemark GuestNotifyMode = "remark"
+	GuestNotifyAll    GuestNotifyMode = "all"
+)
+
 type GuestConfig struct {
 	Alias          string                 `json:"alias"`
 	UUID           string                 `json:"uuid"`
 	Enabled        bool                   `json:"enabled"`
 	DisabledReason GuestDisabledReason    `json:"disabled_reason,omitempty"`
-	QuotaGB        float64                `json:"quota_gb"` // -1 for unlimited, 0 for paused
-	UsedBytes      int64                  `json:"used_bytes"`
-	ResetDay       int                    `json:"reset_day"`               // 1-31
-	LastResetYM    string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
-	SubToken       string                 `json:"sub_token,omitempty"`
-	OutboundLink   string                 `json:"outbound_link,omitempty"` // For custom routing
-	OutboundConf   map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
+	QuotaGB         float64                `json:"quota_gb"` // -1 for unlimited, 0 for paused
+	LimitBytes      int64                  `json:"limit_bytes,omitempty"`
+	UsedBytes       int64                  `json:"used_bytes"`
+	ResetDay        int                    `json:"reset_day"`               // 1-31
+	LastResetYM     string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
+	SubToken        string                 `json:"sub_token,omitempty"`
+	OutboundLink    string                 `json:"outbound_link,omitempty"` // For custom routing
+	OutboundConf    map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
+	Notify          GuestNotifyMode        `json:"notify,omitempty"`
+	NotifyWebhook   string                 `json:"notify_webhook,omitempty"`
+	NotifyTrigger   []string               `json:"notify_trigger,omitempty"`
+	AlertedTriggers []string               `json:"alerted_triggers,omitempty"`
+	AlertedYM       string                 `json:"alerted_ym,omitempty"`
+}
+
+func (g GuestConfig) EffectiveLimitBytes() int64 {
+	if g.LimitBytes > 0 {
+		return g.LimitBytes
+	}
+	if g.QuotaGB > 0 {
+		return int64(math.Round(g.QuotaGB * float64(GigaByte)))
+	}
+	if g.QuotaGB == 0 || (g.LimitBytes == 0 && g.DisabledReason == GuestDisabledQuotaZero) {
+		return 0
+	}
+	return -1
+}
+
+func (g GuestConfig) NormalizedNotifyMode() GuestNotifyMode {
+	switch g.Notify {
+	case GuestNotifyHeader, GuestNotifyRemark, GuestNotifyAll:
+		return g.Notify
+	default:
+		return GuestNotifyOff
+	}
+}
+
+func (g GuestConfig) DaysUntilReset(now time.Time) int {
+	resetDay := g.ResetDay
+	if resetDay < 1 {
+		resetDay = 1
+	}
+	location := now.Location()
+	year, month, day := now.Date()
+	targetYear, targetMonth := year, month
+	targetDay := ClampResetDay(resetDay, targetYear, targetMonth, location)
+	if day > targetDay {
+		nextMonth := now.AddDate(0, 1, 0)
+		targetYear, targetMonth, _ = nextMonth.Date()
+		targetDay = ClampResetDay(resetDay, targetYear, targetMonth, location)
+	}
+	start := time.Date(year, month, day, 0, 0, 0, 0, location)
+	target := time.Date(targetYear, targetMonth, targetDay, 0, 0, 0, 0, location)
+	return int(target.Sub(start).Hours() / 24)
+}
+
+func (g GuestConfig) NextResetTimestamp(now time.Time) int64 {
+	resetDay := g.ResetDay
+	if resetDay < 1 {
+		resetDay = 1
+	}
+	location := now.Location()
+	year, month, day := now.Date()
+	targetYear, targetMonth := year, month
+	targetDay := ClampResetDay(resetDay, targetYear, targetMonth, location)
+	if day >= targetDay {
+		nextMonth := now.AddDate(0, 1, 0)
+		targetYear, targetMonth, _ = nextMonth.Date()
+		targetDay = ClampResetDay(resetDay, targetYear, targetMonth, location)
+	}
+	return time.Date(targetYear, targetMonth, targetDay, 0, 0, 0, 0, location).Unix()
+}
+
+func ClampResetDay(resetDay int, year int, month time.Month, location *time.Location) int {
+	lastDay := time.Date(year, month+1, 0, 0, 0, 0, 0, location).Day()
+	if resetDay > lastDay {
+		return lastDay
+	}
+	return resetDay
 }
 
 type GatewayConfig struct {
@@ -958,9 +1041,15 @@ func CommitStaging() error {
 			// 1. Merge UsedBytes and LastResetYM (unless explicitly reset to -1 by admin)
 			if sg.UsedBytes < 0 {
 				sg.UsedBytes = 0
+				sg.AlertedYM = ""
+				sg.AlertedTriggers = nil
 			} else {
 				sg.UsedBytes = activeG.UsedBytes
 				sg.LastResetYM = activeG.LastResetYM
+				if sg.NotifyWebhook == activeG.NotifyWebhook {
+					sg.AlertedYM = activeG.AlertedYM
+					sg.AlertedTriggers = activeG.AlertedTriggers
+				}
 			}
 
 			// 2. Merge Enabled and DisabledReason (unless explicitly changed by admin)

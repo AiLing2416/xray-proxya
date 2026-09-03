@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/notify"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/sub"
 	"xray-proxya/internal/xray"
@@ -17,11 +18,15 @@ import (
 )
 
 var (
+	limitStr         string
 	quotaStr         string
 	relayStr         string
 	outboundStr      string
 	resetDay         int
 	guestSubShowAddr string
+	notifyStr        string
+	notifyWebhookStr string
+	notifyTriggerStr string
 )
 
 var guestsCmd = &cobra.Command{
@@ -147,8 +152,8 @@ var guestsListCmd = &cobra.Command{
 		fmt.Println("----------------------------------------------------------------------------------------------------------------")
 		for _, g := range cfg.Guests {
 			state := guestStateLabel(g)
-			limit := formatGuestQuota(g.QuotaGB)
-			used := fmt.Sprintf("%.2fGB", float64(g.UsedBytes)/(1024*1024*1024))
+			limit := config.FormatByteSize(g.EffectiveLimitBytes())
+			used := config.FormatByteSize(g.UsedBytes)
 			out := "direct"
 			if g.OutboundLink != "" {
 				out = "custom-link"
@@ -188,7 +193,8 @@ var guestsAddCmd = &cobra.Command{
 			}
 		}
 		newG := config.GuestConfig{
-			Alias: alias, UUID: uuid.New().String(), Enabled: true, DisabledReason: config.GuestDisabledNone, QuotaGB: -1, ResetDay: 1,
+			Alias: alias, UUID: uuid.New().String(), Enabled: true, DisabledReason: config.GuestDisabledNone, QuotaGB: -1, LimitBytes: -1, ResetDay: 1,
+			Notify: config.GuestNotifyOff,
 		}
 		cfg.Guests = append(cfg.Guests, newG)
 		if err := cfg.SaveEx(true); err == nil {
@@ -247,10 +253,17 @@ var guestsSetCmd = &cobra.Command{
 		}
 
 		success := false
-		if quotaStr != "" {
-			if quotaStr == "reset" {
+		effectiveLimitInput := limitStr
+		if effectiveLimitInput == "" && quotaStr != "" {
+			effectiveLimitInput = quotaStr
+		}
+
+		if effectiveLimitInput != "" {
+			if strings.EqualFold(effectiveLimitInput, "reset") {
 				cfg.Guests[idx].UsedBytes = -1
-				if cfg.Guests[idx].DisabledReason == config.GuestDisabledQuotaReached && cfg.Guests[idx].QuotaGB > 0 {
+				cfg.Guests[idx].AlertedYM = ""
+				cfg.Guests[idx].AlertedTriggers = nil
+				if cfg.Guests[idx].DisabledReason == config.GuestDisabledQuotaReached && cfg.Guests[idx].EffectiveLimitBytes() > 0 {
 					cfg.Guests[idx].Enabled = true
 					cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
 					fmt.Printf("✅ Guest '%s' re-enabled after usage reset.\n", alias)
@@ -258,22 +271,46 @@ var guestsSetCmd = &cobra.Command{
 				fmt.Printf("✅ Usage for '%s' reset to 0.\n", alias)
 				success = true
 			} else {
-				val, err := strconv.ParseFloat(quotaStr, 64)
-				if err == nil {
-					cfg.Guests[idx].QuotaGB = val
-					if val == 0 {
-						cfg.Guests[idx].Enabled = false
-						cfg.Guests[idx].DisabledReason = config.GuestDisabledQuotaZero
-					} else {
-						if cfg.Guests[idx].DisabledReason != config.GuestDisabledManual {
-							cfg.Guests[idx].Enabled = true
-							cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
-						}
-					}
-					fmt.Printf("✅ Quota for '%s' set to %s.\n", alias, formatGuestQuota(val))
-					success = true
+				byteVal, err := config.ParseByteSize(effectiveLimitInput)
+				if err != nil {
+					fmt.Printf("❌ Invalid limit value %q: %v\n", effectiveLimitInput, err)
+					return
 				}
+				cfg.Guests[idx].LimitBytes = byteVal
+				if byteVal > 0 {
+					cfg.Guests[idx].QuotaGB = float64(byteVal) / float64(config.GigaByte)
+				} else {
+					cfg.Guests[idx].QuotaGB = float64(byteVal)
+				}
+
+				if byteVal == 0 {
+					cfg.Guests[idx].Enabled = false
+					cfg.Guests[idx].DisabledReason = config.GuestDisabledQuotaZero
+				} else {
+					if cfg.Guests[idx].DisabledReason != config.GuestDisabledManual {
+						cfg.Guests[idx].Enabled = true
+						cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
+					}
+				}
+				fmt.Printf("✅ Limit for '%s' set to %s.\n", alias, config.FormatByteSize(byteVal))
+				success = true
 			}
+		}
+
+		if cmd.Flags().Changed("notify-trigger") {
+			currLimitBytes := cfg.Guests[idx].EffectiveLimitBytes()
+			normalizedTriggers, _, err := config.ParseTriggers(notifyTriggerStr, currLimitBytes)
+			if err != nil {
+				fmt.Printf("❌ %v\n", err)
+				return
+			}
+			cfg.Guests[idx].NotifyTrigger = normalizedTriggers
+			if len(normalizedTriggers) == 0 {
+				fmt.Printf("✅ Notify triggers for '%s' cleared.\n", alias)
+			} else {
+				fmt.Printf("✅ Notify triggers for '%s' set to [%s].\n", alias, strings.Join(normalizedTriggers, ", "))
+			}
+			success = true
 		}
 		targetRelay := relayStr
 		if targetRelay == "" {
@@ -303,6 +340,27 @@ var guestsSetCmd = &cobra.Command{
 				fmt.Printf("✅ Reset day for '%s' set to %d.\n", alias, resetDay)
 				success = true
 			}
+		}
+		if cmd.Flags().Changed("notify") {
+			mode := config.GuestNotifyMode(strings.ToLower(strings.TrimSpace(notifyStr)))
+			switch mode {
+			case config.GuestNotifyOff, config.GuestNotifyHeader, config.GuestNotifyRemark, config.GuestNotifyAll:
+				cfg.Guests[idx].Notify = mode
+				fmt.Printf("✅ Notify mode for '%s' set to '%s'.\n", alias, mode)
+				success = true
+			default:
+				fmt.Printf("❌ Invalid notify mode '%s'. Valid options: off, header, remark, all\n", notifyStr)
+			}
+		}
+		if cmd.Flags().Changed("notify-webhook") {
+			webhook := strings.TrimSpace(notifyWebhookStr)
+			cfg.Guests[idx].NotifyWebhook = webhook
+			if webhook == "" {
+				fmt.Printf("✅ Notify webhook for '%s' cleared.\n", alias)
+			} else {
+				fmt.Printf("✅ Notify webhook for '%s' set to %s.\n", alias, webhook)
+			}
+			success = true
 		}
 		if success {
 			cfg.SaveEx(true)
@@ -377,14 +435,30 @@ var guestsInfoCmd = &cobra.Command{
 		if lastReset == "" {
 			lastReset = "-"
 		}
+		webhook := guest.NotifyWebhook
+		if webhook == "" {
+			webhook = "-"
+		}
+		triggers := "-"
+		if len(guest.NotifyTrigger) > 0 {
+			triggers = strings.Join(guest.NotifyTrigger, ", ")
+		}
+		alerted := "-"
+		if len(guest.AlertedTriggers) > 0 {
+			alerted = strings.Join(guest.AlertedTriggers, ", ")
+		}
 		fmt.Printf("\nGuest: %s\n", guest.Alias)
 		fmt.Printf("UUID: %s\n", guest.UUID)
 		fmt.Printf("State: %s\n", guestStateLabel(*guest))
 		fmt.Printf("Reason: %s\n", guestReasonLabel(*guest))
-		fmt.Printf("Quota: %s\n", formatGuestQuota(guest.QuotaGB))
-		fmt.Printf("Used: %.2fGB\n", float64(guest.UsedBytes)/(1024*1024*1024))
+		fmt.Printf("Limit: %s\n", config.FormatByteSize(guest.EffectiveLimitBytes()))
+		fmt.Printf("Used: %s\n", config.FormatByteSize(guest.UsedBytes))
 		fmt.Printf("Reset Day: %d\n", guest.ResetDay)
 		fmt.Printf("Last Reset Month: %s\n", lastReset)
+		fmt.Printf("Notify: %s\n", guest.NormalizedNotifyMode())
+		fmt.Printf("Notify Webhook: %s\n", webhook)
+		fmt.Printf("Notify Trigger: %s\n", triggers)
+		fmt.Printf("Alerted Triggers: %s\n", alerted)
 		fmt.Printf("Relay: %s\n\n", out)
 	},
 }
@@ -422,6 +496,7 @@ var guestsCheckCmd = &cobra.Command{
 				return
 			}
 		}
+		notify.Wait()
 		fmt.Println("✅ Guest state check completed.")
 	},
 }
@@ -519,10 +594,13 @@ var guestsSubShowCmd = &cobra.Command{
 		}
 		fmt.Printf("\nGuest: %s\n", guest.Alias)
 		fmt.Printf("State: %s\n", guestStateLabel(*guest))
-		fmt.Printf("Quota: %s\n", formatGuestQuota(guest.QuotaGB))
-		fmt.Printf("Used: %.2fGB\n", float64(guest.UsedBytes)/(1024*1024*1024))
+		fmt.Printf("Limit: %s\n", config.FormatByteSize(guest.EffectiveLimitBytes()))
+		fmt.Printf("Used: %s\n", config.FormatByteSize(guest.UsedBytes))
 		fmt.Printf("Reset Day: %d\n", guest.ResetDay)
-		fmt.Printf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(*guest, time.Now()))
+		fmt.Printf("Notify: %s\n", guest.NormalizedNotifyMode())
+		if guest.NormalizedNotifyMode() == config.GuestNotifyRemark || guest.NormalizedNotifyMode() == config.GuestNotifyAll {
+			fmt.Printf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(*guest, time.Now()))
+		}
 		fmt.Printf("Listener: %s:%d\n", cfg.GuestSubBind, cfg.GuestSubPort)
 		fmt.Printf("Path: /guest-sub/%s\n", guest.SubToken)
 		fmt.Printf("URL: %s\n\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken))
@@ -530,19 +608,33 @@ var guestsSubShowCmd = &cobra.Command{
 }
 
 func init() {
-	guestsSetCmd.Flags().StringVarP(&quotaStr, "quota", "q", "", "Set quota (GB, -1, 0, or 'reset')")
+	guestsSetCmd.Flags().StringVarP(&limitStr, "limit", "l", "", "Set usage limit (e.g. 500MB, 10GB, 1TiB, -1, 0, or 'reset')")
+	guestsSetCmd.Flags().StringVarP(&quotaStr, "quota", "q", "", "Set usage limit (deprecated, alias to --limit)")
+	guestsSetCmd.Flags().MarkHidden("quota")
 	guestsSetCmd.Flags().StringVar(&relayStr, "relay", "", "Set relay node to a proxy link or 'direct'")
 	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct' (deprecated)")
 	guestsSetCmd.Flags().MarkHidden("outbound")
 	guestsSetCmd.Flags().IntVarP(&resetDay, "reset", "r", 1, "Monthly reset day (1-31)")
+	guestsSetCmd.Flags().StringVar(&notifyStr, "notify", "", "Subscription usage notify mode (off, header, remark, all)")
+	guestsSetCmd.Flags().StringVar(&notifyWebhookStr, "notify-webhook", "", "Set webhook URL for guest usage notifications (or empty to clear)")
+	guestsSetCmd.Flags().StringVar(&notifyTriggerStr, "notify-trigger", "", "Set remaining quota triggers, comma-separated (e.g. 80p,45p,40G,5G, or 'none' to clear)")
+	guestsSetCmd.RegisterFlagCompletionFunc("limit", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"reset", "-1", "0", "100MB", "10GB", "50GB", "100GB", "1TB", "1TiB"}, cobra.ShellCompDirectiveNoFileComp
+	})
 	guestsSetCmd.RegisterFlagCompletionFunc("quota", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"reset", "-1", "0", "10", "50", "100"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	guestsSetCmd.RegisterFlagCompletionFunc("notify-trigger", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"80p,45p,40G,5G", "80p,20p,5G", "none"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	guestsSetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	guestsSetCmd.RegisterFlagCompletionFunc("outbound", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	guestsSetCmd.RegisterFlagCompletionFunc("notify", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"off", "header", "remark", "all"}, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	guestsSubShowCmd.Flags().StringVarP(&guestSubShowAddr, "address", "a", "", "Override the host used when printing the guest sub URL")

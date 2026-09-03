@@ -27,14 +27,15 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		if guestChanged(active, g) {
 			indicator = "[*]"
 		}
-		used := fmt.Sprintf("%.2fGB", float64(g.UsedBytes)/(1024*1024*1024))
+		used := config.FormatByteSize(g.UsedBytes)
+		limit := config.FormatByteSize(g.EffectiveLimitBytes())
 		row := []string{
 			indicator,
 			g.Alias,
 			guestStateLabel(g),
 			guestSubStateLabel(g),
 			guestReasonLabel(g),
-			used + "/" + formatGuestQuota(g.QuotaGB),
+			used + "/" + limit,
 			fmt.Sprintf("%d", g.ResetDay),
 			guestOutboundLabel(g),
 		}
@@ -59,7 +60,6 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		}
 		b.WriteString("\n")
 	}
-
 	return b.String()
 }
 
@@ -69,13 +69,24 @@ func BuildGuestReport(guest config.GuestConfig) string {
 	b.WriteString(fmt.Sprintf("UUID: %s\n", guest.UUID))
 	b.WriteString(fmt.Sprintf("State: %s\n", guestStateLabel(guest)))
 	b.WriteString(fmt.Sprintf("Reason: %s\n", guestReasonLabel(guest)))
-	b.WriteString(fmt.Sprintf("Quota: %s\n", formatGuestQuota(guest.QuotaGB)))
-	b.WriteString(fmt.Sprintf("Used: %.2fGB\n", float64(guest.UsedBytes)/(1024*1024*1024)))
+	b.WriteString(fmt.Sprintf("Limit: %s\n", config.FormatByteSize(guest.EffectiveLimitBytes())))
+	b.WriteString(fmt.Sprintf("Used: %s\n", config.FormatByteSize(guest.UsedBytes)))
 	b.WriteString(fmt.Sprintf("Reset Day: %d\n", guest.ResetDay))
 	if guest.LastResetYM == "" {
 		b.WriteString("Last Reset Month: -\n")
 	} else {
 		b.WriteString(fmt.Sprintf("Last Reset Month: %s\n", guest.LastResetYM))
+	}
+	b.WriteString(fmt.Sprintf("Notify: %s\n", guest.NormalizedNotifyMode()))
+	if guest.NotifyWebhook == "" {
+		b.WriteString("Notify Webhook: -\n")
+	} else {
+		b.WriteString(fmt.Sprintf("Notify Webhook: %s\n", guest.NotifyWebhook))
+	}
+	if len(guest.NotifyTrigger) > 0 {
+		b.WriteString(fmt.Sprintf("Notify Trigger: %s\n", strings.Join(guest.NotifyTrigger, ", ")))
+	} else {
+		b.WriteString("Notify Trigger: -\n")
 	}
 	b.WriteString(fmt.Sprintf("Outbound: %s\n", guestOutboundLabel(guest)))
 	if guest.SubToken == "" {

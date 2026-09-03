@@ -12,12 +12,33 @@ import (
 func TestFormatGuestSubRemark(t *testing.T) {
 	now := time.Date(2026, 5, 9, 8, 0, 0, 0, time.UTC)
 	guest := config.GuestConfig{
-		UsedBytes: 2 * 1024 * 1024 * 1024,
+		UsedBytes: 2 * config.GigaByte,
 		QuotaGB:   5,
 		ResetDay:  15,
+		Enabled:   true,
 	}
-	if got, want := formatGuestSubRemark(guest, now), "2.00GB/5.00GB/6d"; got != want {
+	if got, want := formatGuestSubRemark(guest, now), "TRAFFIC: 2.00GB / 5.00GB | RESET: 6d"; got != want {
 		t.Fatalf("formatGuestSubRemark = %q, want %q", got, want)
+	}
+}
+
+func TestGenerateMemorialShadowsocksNode(t *testing.T) {
+	now := time.Date(2026, 5, 9, 8, 0, 0, 0, time.UTC)
+	guest := config.GuestConfig{
+		UsedBytes: 2 * config.GigaByte,
+		QuotaGB:   5,
+		ResetDay:  15,
+		Enabled:   true,
+	}
+	link := GenerateMemorialShadowsocksNode(guest, now)
+	if !strings.HasPrefix(link, "ss://") {
+		t.Fatalf("expected ss:// prefix, got %q", link)
+	}
+	if !strings.Contains(link, "@127.0.0.1:0#") {
+		t.Fatalf("expected @127.0.0.1:0# in link, got %q", link)
+	}
+	if !strings.Contains(link, "TRAFFIC") {
+		t.Fatalf("expected TRAFFIC in link remark, got %q", link)
 	}
 }
 
@@ -48,7 +69,7 @@ func TestValidatePrivateBindAddress(t *testing.T) {
 	}
 }
 
-func TestGuestSubHandlerReturnsAnnotatedSubscription(t *testing.T) {
+func TestGuestSubHandlerNotifyModes(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	cfg := &config.UserConfig{
@@ -65,39 +86,90 @@ func TestGuestSubHandlerReturnsAnnotatedSubscription(t *testing.T) {
 				ShortID:   "abcd",
 			},
 		}},
-		Guests: []config.GuestConfig{{
-			Alias:    "alice",
-			UUID:     "guest-uuid",
-			Enabled:  true,
-			QuotaGB:  5,
-			ResetDay: 20,
-			SubToken: "token123",
-		}},
+		Guests: []config.GuestConfig{
+			{
+				Alias:    "alice-off",
+				UUID:     "uuid-off",
+				Enabled:  true,
+				QuotaGB:  5,
+				ResetDay: 20,
+				SubToken: "token-off",
+				Notify:   config.GuestNotifyOff,
+			},
+			{
+				Alias:    "alice-all",
+				UUID:     "uuid-all",
+				Enabled:  true,
+				QuotaGB:  5,
+				ResetDay: 20,
+				SubToken: "token-all",
+				Notify:   config.GuestNotifyAll,
+			},
+		},
 	}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "http://127.0.0.1/guest-sub/token123", nil)
-	req.Host = "sub.example.com"
-	rec := httptest.NewRecorder()
-
 	handler := httpGuestSubHandler()
-	handler(rec, req)
 
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	// Test default / off mode: no header, no memorial node, real nodes clean
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/guest-sub/token-off", nil)
+		req.Host = "sub.example.com"
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if rec.Header().Get("Subscription-Userinfo") != "" {
+			t.Fatalf("expected no Subscription-Userinfo header in off mode")
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		body := string(decoded)
+		for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
+			if strings.HasPrefix(line, "ss://") {
+				t.Fatalf("expected no memorial ss node in off mode, got %q", line)
+			}
+		}
+		if !strings.Contains(body, "@sub.example.com:443?") {
+			t.Fatalf("expected real node in generated links, got %q", body)
+		}
 	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
-	if err != nil {
-		t.Fatalf("decode body: %v", err)
-	}
-	body := string(decoded)
-	if !strings.Contains(body, "#0GB%2F5.00GB%2F") {
-		t.Fatalf("expected annotated remark in body, got %q", body)
-	}
-	if !strings.Contains(body, "@sub.example.com:443?") {
-		t.Fatalf("expected request host in generated link, got %q", body)
+
+	// Test all mode: has Subscription-Userinfo header AND memorial ss node prepended
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/guest-sub/token-all", nil)
+		req.Host = "sub.example.com"
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+
+		if rec.Code != 200 {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		userInfo := rec.Header().Get("Subscription-Userinfo")
+		if !strings.Contains(userInfo, "download=0") || !strings.Contains(userInfo, "total=5000000000") {
+			t.Fatalf("expected Subscription-Userinfo header, got %q", userInfo)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		body := string(decoded)
+		lines := strings.Split(strings.TrimSpace(body), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("expected at least 2 lines (memorial node + real node), got %d", len(lines))
+		}
+		if !strings.HasPrefix(lines[0], "ss://") || !strings.Contains(lines[0], "@127.0.0.1:0#") {
+			t.Fatalf("expected memorial node on first line, got %q", lines[0])
+		}
+		if !strings.Contains(lines[1], "@sub.example.com:443?") {
+			t.Fatalf("expected real node on second line, got %q", lines[1])
+		}
 	}
 }
 
