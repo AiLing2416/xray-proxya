@@ -259,19 +259,11 @@ func serveFilebrowserStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	etag := fmt.Sprintf(`"%x-%x"`, fi.Size(), fi.ModTime().UnixNano())
-	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
-		w.Header().Set("Server", "Caddy")
-		w.Header().Set("ETag", etag)
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-
 	ext := strings.ToLower(filepath.Ext(relPath))
 	var ctype string
 	switch ext {
 	case ".js", ".mjs":
-		ctype = "text/javascript; charset=utf-8"
+		ctype = "application/javascript; charset=utf-8"
 	case ".css":
 		ctype = "text/css; charset=utf-8"
 	case ".svg":
@@ -301,8 +293,6 @@ func serveFilebrowserStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Accept-Ranges", "bytes")
-	w.Header().Set("ETag", etag)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
@@ -336,37 +326,81 @@ func newFilebrowserHandler() (http.Handler, error) {
 	// API and SPA routes
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
+
+		// 1. /api/login: any method returns 403 Forbidden
 		if path == "/api/login" {
-			if r.Method != http.MethodPost {
-				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-				w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
-				w.WriteHeader(http.StatusMethodNotAllowed)
-				_, _ = w.Write([]byte("Method Not Allowed\n"))
-				return
+			if r.Method == http.MethodPost {
+				simulatedHashDelay()
 			}
-			simulatedHashDelay()
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte("403 Forbidden\n"))
 			return
 		}
+
+		// 2. /api/signup: 405 Method Not Allowed (GET & POST)
+		if path == "/api/signup" {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = w.Write([]byte("405 Method Not Allowed\n"))
+			return
+		}
+
+		// 3. 301 redirects for /api/resources and /api/raw without trailing slash
+		if path == "/api/resources" {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			http.Redirect(w, r, "/api/resources/", http.StatusMovedPermanently)
+			return
+		}
+		if path == "/api/raw" {
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			http.Redirect(w, r, "/api/raw/", http.StatusMovedPermanently)
+			return
+		}
+
+		// 4. Unauthenticated public share/download endpoints: 404 Not Found on invalid token
+		if strings.HasPrefix(path, "/api/public/share/") || strings.HasPrefix(path, "/api/public/dl/") {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("404 Not Found\n"))
+			return
+		}
+
+		// 5. Public settings
 		if path == "/api/public/settings" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"signup":false,"createUserDir":false}`))
 			return
 		}
-		if strings.HasPrefix(path, "/api/") {
+
+		// 6. Known authenticated API endpoints: 401 Unauthorized
+		if strings.HasPrefix(path, "/api/resources/") ||
+			strings.HasPrefix(path, "/api/raw/") ||
+			path == "/api/users" || strings.HasPrefix(path, "/api/users/") ||
+			path == "/api/shares" || strings.HasPrefix(path, "/api/shares/") ||
+			path == "/api/commands" || strings.HasPrefix(path, "/api/commands/") {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = w.Write([]byte("401 Unauthorized\n"))
 			return
 		}
+
+		// 7. Health probe
 		if path == "/health" {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
@@ -374,6 +408,8 @@ func newFilebrowserHandler() (http.Handler, error) {
 			_, _ = w.Write([]byte("{\"status\":\"OK\"}\n"))
 			return
 		}
+
+		// 8. Manifest probe
 		if path == "/manifest.json" {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
@@ -382,6 +418,7 @@ func newFilebrowserHandler() (http.Handler, error) {
 			return
 		}
 
+		// 9. All other routes (including unregistered /api/*, /files, /login, /, etc.): fallback to SPA index.html
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")

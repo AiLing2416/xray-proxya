@@ -50,19 +50,83 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Errorf("GET /api/public/settings code = %d, want 200", rec.Code)
 	}
 
-	// 4. POST /api/login (wrong credentials)
-	req = httptest.NewRequest("POST", "/api/login", strings.NewReader(`{"username":"admin","password":"password"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusForbidden {
-		t.Errorf("POST /api/login code = %d, want 403", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "403 Forbidden") {
-		t.Errorf("POST /api/login body = %q, want '403 Forbidden'", rec.Body.String())
+	// 4. /api/login: POST, GET, OPTIONS all return 403 Forbidden
+	for _, method := range []string{"POST", "GET", "OPTIONS"} {
+		req = httptest.NewRequest(method, "/api/login", strings.NewReader(`{"username":"admin","password":"password"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s /api/login code = %d, want 403", method, rec.Code)
+		}
+		if rec.Body.String() != "403 Forbidden\n" {
+			t.Errorf("%s /api/login body = %q, want '403 Forbidden\\n'", method, rec.Body.String())
+		}
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s /api/login missing nosniff header", method)
+		}
 	}
 
-	// 5. GET /api/resources/
+	// 5. /api/signup: GET and POST both return 405 Method Not Allowed
+	for _, method := range []string{"GET", "POST"} {
+		req = httptest.NewRequest(method, "/api/signup", nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Errorf("%s /api/signup code = %d, want 405", method, rec.Code)
+		}
+		if rec.Body.String() != "405 Method Not Allowed\n" {
+			t.Errorf("%s /api/signup body = %q, want '405 Method Not Allowed\\n'", method, rec.Body.String())
+		}
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s /api/signup missing nosniff header", method)
+		}
+	}
+
+	// 6. Redirects: /api/resources and /api/raw return 301
+	for _, p := range []string{"/api/resources", "/api/raw"} {
+		req = httptest.NewRequest("GET", p, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMovedPermanently {
+			t.Errorf("GET %s code = %d, want 301", p, rec.Code)
+		}
+		if rec.Header().Get("Location") != p+"/" {
+			t.Errorf("GET %s Location = %q, want %s/", p, rec.Header().Get("Location"), p)
+		}
+	}
+
+	// 7. Public share / dl: return 404 Not Found on invalid token
+	for _, p := range []string{"/api/public/share/invalidtoken", "/api/public/dl/invalidtoken"} {
+		req = httptest.NewRequest("GET", p, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s code = %d, want 404", p, rec.Code)
+		}
+		if rec.Body.String() != "404 Not Found\n" {
+			t.Errorf("GET %s body = %q, want '404 Not Found\\n'", p, rec.Body.String())
+		}
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("GET %s missing nosniff header", p)
+		}
+	}
+
+	// 8. Unknown /api/ routes fall back to SPA index.html (200 OK)
+	req = httptest.NewRequest("GET", "/api/unknown_custom_route", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /api/unknown_custom_route code = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("GET /api/unknown_custom_route Content-Type = %q, want text/html", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Body.String(), "File Browser") {
+		t.Errorf("GET /api/unknown_custom_route should return SPA HTML")
+	}
+
+	// 9. Authenticated API: /api/resources/ returns 401
 	req = httptest.NewRequest("GET", "/api/resources/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -73,7 +137,7 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Errorf("GET /api/resources/ body = %q, want '401 Unauthorized\\n'", rec.Body.String())
 	}
 
-	// 6. Static asset /static/assets/index-BOEsmRAc.css
+	// 10. Static asset CSS: /static/assets/index-BOEsmRAc.css
 	req = httptest.NewRequest("GET", "/static/assets/index-BOEsmRAc.css", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -86,8 +150,31 @@ func TestFilebrowserHandler(t *testing.T) {
 	if rec.Header().Get("Server") != "Caddy" {
 		t.Errorf("GET /static/assets/index-BOEsmRAc.css Server = %q, want 'Caddy'", rec.Header().Get("Server"))
 	}
+	if rec.Header().Get("ETag") != "" {
+		t.Errorf("GET /static/assets/index-BOEsmRAc.css should NOT have ETag, got %q", rec.Header().Get("ETag"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "" {
+		t.Errorf("GET /static/assets/index-BOEsmRAc.css should NOT have Accept-Ranges, got %q", rec.Header().Get("Accept-Ranges"))
+	}
 
-	// 7. Non-existent static asset returns 404 Not Found (no Go runtime leak)
+	// 11. Static asset JS: /static/assets/index-BqkXVoMb.js
+	req = httptest.NewRequest("GET", "/static/assets/index-BqkXVoMb.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /static/assets/index-BqkXVoMb.js code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "application/javascript; charset=utf-8" {
+		t.Errorf("GET /static/assets/index-BqkXVoMb.js Content-Type = %q, want 'application/javascript; charset=utf-8'", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("ETag") != "" {
+		t.Errorf("GET /static/assets/index-BqkXVoMb.js should NOT have ETag, got %q", rec.Header().Get("ETag"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "" {
+		t.Errorf("GET /static/assets/index-BqkXVoMb.js should NOT have Accept-Ranges, got %q", rec.Header().Get("Accept-Ranges"))
+	}
+
+	// 12. Non-existent static asset returns 404 Not Found (no Go runtime leak)
 	req = httptest.NewRequest("GET", "/static/nonexistent.js", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -98,7 +185,7 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Errorf("GET /static/nonexistent.js body = %q, want '404 Not Found\\n'", rec.Body.String())
 	}
 
-	// 8. GET /health
+	// 13. GET /health
 	req = httptest.NewRequest("GET", "/health", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
