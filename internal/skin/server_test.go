@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
@@ -429,8 +430,25 @@ func TestSeafileHandler(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "pong") {
 		t.Errorf("GET /api2/ping/ = %q, want 'pong'", rec.Body.String())
 	}
+	if rec.Header().Get("Allow") != "GET, HEAD, OPTIONS" {
+		t.Errorf("GET /api2/ping/ Allow = %q, want 'GET, HEAD, OPTIONS'", rec.Header().Get("Allow"))
+	}
 
-	// 3. GET /accounts/login/
+	// 3. GET /seafhttp/protocol-version
+	req = httptest.NewRequest("GET", "/seafhttp/protocol-version", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /seafhttp/protocol-version code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "text/plain" {
+		t.Errorf("GET /seafhttp/protocol-version Content-Type = %q, want 'text/plain'", rec.Header().Get("Content-Type"))
+	}
+	if rec.Body.String() != `{"version": 2}` {
+		t.Errorf("GET /seafhttp/protocol-version body = %q, want '{\"version\": 2}'", rec.Body.String())
+	}
+
+	// 4. GET /accounts/login/ (dynamic CSRF & Cookies)
 	req = httptest.NewRequest("GET", "/accounts/login/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -438,18 +456,36 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("GET /accounts/login/ code = %d, want 200", rec.Code)
 	}
 	cookies := rec.Result().Cookies()
-	hasCSRF := false
+	var csrfCookie, sessionCookie *http.Cookie
 	for _, c := range cookies {
 		if c.Name == "sfcsrftoken" {
-			hasCSRF = true
-			break
+			csrfCookie = c
+		} else if c.Name == "sessionid" {
+			sessionCookie = c
 		}
 	}
-	if !hasCSRF {
-		t.Errorf("GET /accounts/login/ missing sfcsrftoken cookie")
+	if csrfCookie == nil || len(csrfCookie.Value) != 32 || csrfCookie.MaxAge != 31449600 {
+		t.Errorf("invalid sfcsrftoken cookie: %+v", csrfCookie)
+	}
+	if sessionCookie == nil || len(sessionCookie.Value) != 32 || sessionCookie.MaxAge != 86400 || !sessionCookie.HttpOnly {
+		t.Errorf("invalid sessionid cookie: %+v", sessionCookie)
+	}
+	body1 := rec.Body.String()
+	m1 := regexp.MustCompile(`name="csrfmiddlewaretoken" value="([^"]*)"`).FindStringSubmatch(body1)
+	if len(m1) < 2 || len(m1[1]) != 64 {
+		t.Errorf("GET /accounts/login/ missing 64-char csrf token: %v", m1)
 	}
 
-	// 4. POST /accounts/login/ (wrong credentials)
+	// Second request should generate different random tokens
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, httptest.NewRequest("GET", "/accounts/login/", nil))
+	body2 := rec2.Body.String()
+	m2 := regexp.MustCompile(`name="csrfmiddlewaretoken" value="([^"]*)"`).FindStringSubmatch(body2)
+	if len(m2) >= 2 && m1[1] == m2[1] {
+		t.Errorf("CSRF token was not dynamically randomized across requests")
+	}
+
+	// 5. POST /accounts/login/ (wrong credentials)
 	formData := url.Values{
 		"login":    {"user@example.com"},
 		"password": {"badpass"},
@@ -465,12 +501,151 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("POST /accounts/login/ should display error notice")
 	}
 
-	// 5. POST /api2/auth-token/
+	// 6. API2 auth-token: GET returns 405 with JSON, POST returns 400 with JSON
+	req = httptest.NewRequest("GET", "/api2/auth-token/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET /api2/auth-token/ code = %d, want 405", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `Method \"GET\" not allowed`) {
+		t.Errorf("GET /api2/auth-token/ body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Allow") != "POST, OPTIONS" {
+		t.Errorf("GET /api2/auth-token/ Allow = %q, want 'POST, OPTIONS'", rec.Header().Get("Allow"))
+	}
+
 	req = httptest.NewRequest("POST", "/api2/auth-token/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("POST /api2/auth-token/ code = %d, want 400", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Unable to login with provided credentials") {
+		t.Errorf("POST /api2/auth-token/ body = %q", rec.Body.String())
+	}
+
+	// 7. API2 protected endpoints (403 Forbidden with proper Allow)
+	req = httptest.NewRequest("GET", "/api2/account/info/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("GET /api2/account/info/ code = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Authentication credentials were not provided") {
+		t.Errorf("GET /api2/account/info/ body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("Allow") != "GET, PUT, HEAD, OPTIONS" {
+		t.Errorf("GET /api2/account/info/ Allow = %q, want 'GET, PUT, HEAD, OPTIONS'", rec.Header().Get("Allow"))
+	}
+
+	req = httptest.NewRequest("GET", "/api2/repos/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || rec.Header().Get("Allow") != "GET, POST, HEAD, OPTIONS" {
+		t.Errorf("GET /api2/repos/ code = %d, Allow = %q", rec.Code, rec.Header().Get("Allow"))
+	}
+
+	req = httptest.NewRequest("POST", "/api2/client-login/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || rec.Header().Get("Allow") != "POST, OPTIONS" {
+		t.Errorf("POST /api2/client-login/ code = %d, Allow = %q", rec.Code, rec.Header().Get("Allow"))
+	}
+
+	// 8. Password Reset: /accounts/password/reset/
+	req = httptest.NewRequest("GET", "/accounts/password/reset/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /accounts/password/reset/ code = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Password Reset") {
+		t.Errorf("GET /accounts/password/reset/ body missing 'Password Reset'")
+	}
+	mPr := regexp.MustCompile(`name="csrfmiddlewaretoken" value="([^"]*)"`).FindStringSubmatch(rec.Body.String())
+	if len(mPr) < 2 || len(mPr[1]) != 64 {
+		t.Errorf("password reset missing 64-char csrf token: %v", mPr)
+	}
+
+	// 9. Language Switch: /i18n/?lang=zh-cn
+	req = httptest.NewRequest("GET", "/i18n/?lang=zh-cn", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Errorf("GET /i18n/?lang=zh-cn code = %d, want 302", rec.Code)
+	}
+	if rec.Header().Get("Location") != "/" {
+		t.Errorf("GET /i18n/?lang=zh-cn Location = %q, want '/'", rec.Header().Get("Location"))
+	}
+	var langCookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "django_language" {
+			langCookie = c
+			break
+		}
+	}
+	if langCookie == nil || langCookie.Value != "zh-cn" || langCookie.MaxAge != 2592000 {
+		t.Errorf("invalid django_language cookie: %+v", langCookie)
+	}
+
+	// 10. Global 404 fallback
+	req = httptest.NewRequest("GET", "/some-random-unknown-path", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /some-random-unknown-path code = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Private Seafile") || !strings.Contains(rec.Body.String(), "could not be found") {
+		t.Errorf("GET /some-random-unknown-path did not return Seafile branded 404 HTML")
+	}
+
+	// 11. Media 404: non-existent static asset returns nginx default 404
+	req = httptest.NewRequest("GET", "/media/nonexistent.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /media/nonexistent.js code = %d, want 404", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "text/html" {
+		t.Errorf("GET /media/nonexistent.js Content-Type = %q, want 'text/html'", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Body.String(), "<center><h1>404 Not Found</h1></center>") {
+		t.Errorf("GET /media/nonexistent.js did not return Nginx 404 HTML")
+	}
+
+	// 12. Static CSS headers: text/css without charset, ETag, Last-Modified, no X-Frame-Options
+	req = httptest.NewRequest("GET", "/media/css/seafile-ui.css", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /media/css/seafile-ui.css code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "text/css" {
+		t.Errorf("GET /media/css/seafile-ui.css Content-Type = %q, want 'text/css'", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("ETag") == "" {
+		t.Errorf("GET /media/css/seafile-ui.css missing ETag")
+	}
+	if rec.Header().Get("Last-Modified") == "" {
+		t.Errorf("GET /media/css/seafile-ui.css missing Last-Modified")
+	}
+	if rec.Header().Get("X-Frame-Options") != "" {
+		t.Errorf("GET /media/css/seafile-ui.css should NOT have X-Frame-Options, got %q", rec.Header().Get("X-Frame-Options"))
+	}
+
+	// 13. Static JS headers: application/javascript without charset, no X-Frame-Options
+	req = httptest.NewRequest("GET", "/media/assets/scripts/lib/jquery.min.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /media/assets/scripts/lib/jquery.min.js code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "application/javascript" {
+		t.Errorf("GET /media/assets/scripts/lib/jquery.min.js Content-Type = %q, want 'application/javascript'", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("X-Frame-Options") != "" {
+		t.Errorf("GET /media/assets/scripts/lib/jquery.min.js should NOT have X-Frame-Options, got %q", rec.Header().Get("X-Frame-Options"))
 	}
 }
 

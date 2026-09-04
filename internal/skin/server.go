@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,6 +57,18 @@ func generate32ByteBase64() string {
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	return base64.StdEncoding.EncodeToString(b)
+}
+
+const base62Chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+func generateBase62(n int) string {
+	b := make([]byte, n)
+	randBytes := make([]byte, n)
+	_, _ = rand.Read(randBytes)
+	for i := range b {
+		b[i] = base62Chars[randBytes[i]%62]
+	}
+	return string(b)
 }
 
 // NewHandler creates an http.Handler implementing the requested skin camouflage.
@@ -820,15 +834,119 @@ func newNextcloudHandler() (http.Handler, error) {
 }
 
 // -----------------------------------------------------------------------------------------
-// Seafile Handler
+// Seafile Handler & Decoy Helpers
 // -----------------------------------------------------------------------------------------
+
+const nginx404HTML = "<html>\r\n<head><title>404 Not Found</title></head>\r\n<body>\r\n<center><h1>404 Not Found</h1></center>\r\n<hr><center>nginx</center>\r\n</body>\r\n</html>\r\n"
+
+func serveNginx404(w http.ResponseWriter) {
+	w.Header().Set("Server", "nginx")
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(nginx404HTML))
+}
+
+func serveSeafile404(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Server", "nginx")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("Content-Language", "en")
+	w.Header().Set("Vary", "Accept-Language, Cookie")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write(body)
+}
+
+func serveSeafileStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
+	cleanPath := path.Clean(r.URL.Path)
+	relPath := strings.TrimPrefix(cleanPath, "/")
+
+	f, err := sub.Open(relPath)
+	if err != nil {
+		serveNginx404(w)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		serveNginx404(w)
+		return
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		serveNginx404(w)
+		return
+	}
+
+	modTime := fi.ModTime()
+	if modTime.IsZero() || modTime.Year() < 2020 {
+		modTime = time.Date(2023, 8, 16, 9, 9, 4, 0, time.UTC)
+	}
+	etag := fmt.Sprintf(`"%x-%x"`, modTime.Unix(), fi.Size())
+	lastModified := modTime.UTC().Format(http.TimeFormat)
+
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("ETag", etag)
+		w.Header().Set("Last-Modified", lastModified)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	if ifModSince := r.Header.Get("If-Modified-Since"); ifModSince != "" {
+		if t, err := http.ParseTime(ifModSince); err == nil && !modTime.After(t) {
+			w.Header().Set("Server", "nginx")
+			w.Header().Set("ETag", etag)
+			w.Header().Set("Last-Modified", lastModified)
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
+	}
+
+	ext := strings.ToLower(filepath.Ext(relPath))
+	var ctype string
+	switch ext {
+	case ".css":
+		ctype = "text/css"
+	case ".js", ".mjs":
+		ctype = "application/javascript"
+	case ".png":
+		ctype = "image/png"
+	case ".jpg", ".jpeg":
+		ctype = "image/jpeg"
+	case ".gif":
+		ctype = "image/gif"
+	case ".ico":
+		ctype = "image/x-icon"
+	case ".svg":
+		ctype = "image/svg+xml"
+	case ".woff":
+		ctype = "font/woff"
+	case ".woff2":
+		ctype = "font/woff2"
+	case ".ttf":
+		ctype = "font/ttf"
+	case ".eot":
+		ctype = "application/vnd.ms-fontobject"
+	default:
+		ctype = "application/octet-stream"
+	}
+
+	w.Header().Set("Server", "nginx")
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Last-Modified", lastModified)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+var reCsrfToken = regexp.MustCompile(`name="csrfmiddlewaretoken" value="[^"]*"`)
 
 func newSeafileHandler() (http.Handler, error) {
 	sub, err := fs.Sub(assetsFS, "assets/seafile")
 	if err != nil {
 		return nil, err
 	}
-	fileServer := http.FileServer(http.FS(sub))
 
 	indexBytes, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
@@ -836,66 +954,198 @@ func newSeafileHandler() (http.Handler, error) {
 	}
 	indexStr := string(indexBytes)
 
+	seafile404Bytes, err := fs.ReadFile(sub, "404.html")
+	if err != nil {
+		return nil, err
+	}
+
+	passwordResetBytes, err := fs.ReadFile(sub, "password_reset.html")
+	if err != nil {
+		return nil, err
+	}
+	passwordResetStr := string(passwordResetBytes)
+
 	mux := http.NewServeMux()
 
 	// Media assets: /media/...
-	mux.Handle("/media/", fileServer)
+	mux.HandleFunc("/media/", func(w http.ResponseWriter, r *http.Request) {
+		serveSeafileStatic(sub, w, r)
+	})
 
-	// Probes
-	mux.HandleFunc("/api2/ping/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// 1. Core endpoint: /seafhttp/protocol-version
+	mux.HandleFunc("/seafhttp/protocol-version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("\"pong\""))
+		_, _ = w.Write([]byte(`{"version": 2}`))
 	})
 	mux.HandleFunc("/seafhttp/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("pong"))
 	})
+
+	// 2. Probes
+	mux.HandleFunc("/api2/ping/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Allow", "GET, HEAD, OPTIONS")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Vary", "Accept-Language, Cookie")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("\"pong\""))
+	})
 	mux.HandleFunc("/api2/server-info/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Allow", "GET, HEAD, OPTIONS")
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Vary", "Accept-Language, Cookie")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"version":"11.0.13","encrypted_library_version":2,"features":["seafile-basic"]}`))
 	})
+
+	// 3. /api2/auth-token/
 	mux.HandleFunc("/api2/auth-token/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Allow", "POST, OPTIONS")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Vary", "Accept-Language, Cookie")
+		w.Header().Set("Content-Type", "application/json")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodPost {
-			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			_, _ = w.Write([]byte(fmt.Sprintf("{\"detail\":\"Method \\\"%s\\\" not allowed.\"}", r.Method)))
 			return
 		}
 		simulatedHashDelay()
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"non_field_errors":["Unable to login with provided credentials."]}`))
 	})
 
-	// Login page
-	mux.HandleFunc("/accounts/login/", func(w http.ResponseWriter, r *http.Request) {
-		csrf := randomToken()
+	// 4. Other /api2/* routes: require authentication -> 403 Forbidden with proper Allow header
+	mux.HandleFunc("/api2/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Vary", "Accept-Language, Cookie")
+
+		allow := "GET, HEAD, OPTIONS"
+		p := r.URL.Path
+		if strings.HasPrefix(p, "/api2/repos") {
+			allow = "GET, POST, HEAD, OPTIONS"
+		} else if strings.HasPrefix(p, "/api2/client-login") {
+			allow = "POST, OPTIONS"
+		} else if strings.HasPrefix(p, "/api2/account/info") {
+			allow = "GET, PUT, HEAD, OPTIONS"
+		}
+		w.Header().Set("Allow", allow)
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"detail":"Authentication credentials were not provided."}`))
+	})
+
+	// 5. Password Reset: /accounts/password/reset/
+	mux.HandleFunc("/accounts/password/reset/", func(w http.ResponseWriter, r *http.Request) {
+		csrf := generateBase62(32)
+		formCsrf := generateBase62(64)
 		http.SetCookie(w, &http.Cookie{
 			Name:     "sfcsrftoken",
 			Value:    csrf,
 			Path:     "/",
-			HttpOnly: false,
+			MaxAge:   31449600,
+			Expires:  time.Now().Add(time.Duration(31449600) * time.Second),
+			SameSite: http.SameSiteLaxMode,
+		})
+
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Vary", "Cookie, Accept-Language")
+
+		if r.Method == http.MethodPost {
+			simulatedHashDelay()
+		}
+
+		html := reCsrfToken.ReplaceAllString(passwordResetStr, `name="csrfmiddlewaretoken" value="`+formCsrf+`"`)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(html))
+	})
+
+	// 6. Language switch: /i18n/
+	i18nHandler := func(w http.ResponseWriter, r *http.Request) {
+		lang := r.URL.Query().Get("lang")
+		if lang == "" && r.Method == http.MethodPost {
+			_ = r.ParseForm()
+			lang = r.FormValue("language")
+		}
+		if lang == "" {
+			lang = "en"
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:    "django_language",
+			Value:   lang,
+			Path:    "/",
+			MaxAge:  2592000,
+			Expires: time.Now().Add(30 * 24 * time.Hour),
+		})
+		w.Header().Set("Server", "nginx")
+		w.Header().Set("Location", "/")
+		w.Header().Set("Content-Language", "en")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Vary", "Accept-Language, Cookie")
+		w.WriteHeader(http.StatusFound)
+	}
+	mux.HandleFunc("/i18n", i18nHandler)
+	mux.HandleFunc("/i18n/", i18nHandler)
+
+	// 7. Login page: /accounts/login/
+	mux.HandleFunc("/accounts/login/", func(w http.ResponseWriter, r *http.Request) {
+		csrf := generateBase62(32)
+		sessionID := generateBase62(32)
+		formCsrf := generateBase62(64)
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     "sfcsrftoken",
+			Value:    csrf,
+			Path:     "/",
+			MaxAge:   31449600,
+			Expires:  time.Now().Add(time.Duration(31449600) * time.Second),
 			SameSite: http.SameSiteLaxMode,
 		})
 		http.SetCookie(w, &http.Cookie{
 			Name:     "sessionid",
-			Value:    randomToken(),
+			Value:    sessionID,
 			Path:     "/",
 			HttpOnly: true,
+			MaxAge:   86400,
+			Expires:  time.Now().Add(time.Duration(86400) * time.Second),
 			SameSite: http.SameSiteLaxMode,
 		})
 
+		w.Header().Set("Server", "nginx")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Content-Language", "en")
 		w.Header().Set("Vary", "Cookie, Accept-Language")
 		w.Header().Set("Cache-Control", "max-age=0, no-cache, no-store, must-revalidate, private")
+		w.Header().Set("Expires", time.Now().UTC().Format(http.TimeFormat))
+
+		html := reCsrfToken.ReplaceAllString(indexStr, `name="csrfmiddlewaretoken" value="`+formCsrf+`"`)
 
 		if r.Method == http.MethodPost {
 			simulatedHashDelay()
 			_ = r.ParseForm()
 			user := r.FormValue("login")
-			html := strings.Replace(indexStr, `<p class="error mt-2 hide"></p>`, `<p class="error mt-2">Incorrect email or password</p>`, 1)
+			html = strings.Replace(html, `<p class="error mt-2 hide"></p>`, `<p class="error mt-2">Incorrect email or password</p>`, 1)
 			if user != "" {
 				html = strings.Replace(html, `name="login" placeholder="Email or Username" aria-label="Email or Username" title="Email or Username" value=""`, `name="login" placeholder="Email or Username" aria-label="Email or Username" title="Email or Username" value="`+template.HTMLEscapeString(user)+`"`, 1)
 			}
@@ -905,26 +1155,23 @@ func newSeafileHandler() (http.Handler, error) {
 		}
 
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(indexStr))
+		_, _ = w.Write([]byte(html))
 	})
 
+	// 8. Global root redirect & 404 fallback
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			http.Redirect(w, r, "/accounts/login/?next=/", http.StatusFound)
+		path := r.URL.Path
+		if path == "/" {
+			w.Header().Set("Server", "nginx")
+			w.Header().Set("Location", "/accounts/login/?next=/")
+			w.Header().Set("Content-Language", "en")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Vary", "Accept-Language, Cookie")
+			w.WriteHeader(http.StatusFound)
 			return
 		}
-		fileServer.ServeHTTP(w, r)
+		serveSeafile404(w, seafile404Bytes)
 	})
 
-	return addCommonHeaders(mux, "nginx"), nil
-}
-
-
-func addCommonHeaders(next http.Handler, serverName string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server", serverName)
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
-		next.ServeHTTP(w, r)
-	})
+	return mux, nil
 }
