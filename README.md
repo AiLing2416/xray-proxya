@@ -10,15 +10,29 @@ Xray-Proxya is a Go-based Xray manager for two main jobs: running a role-based p
 - **Role-based deployment**:
   - `server` mode for inbound distribution and relay serving.
   - `gateway` mode for TUN-based transparent proxy forwarding.
-- **Relay and outbound tooling**:
-  - Import relay links with `outbound add`.
-  - Bind guests or the gateway to specific relays.
-  - Expose per-relay local SOCKS/HTTP listeners for debugging or local forwarding.
-  - Probe relay paths directly with IPv4 / IPv6-aware outbound tests.
-- **Guest isolation**:
+- **Authentic Web Camouflage v3**:
+  - Pixel-perfect Web login replicas for **Nextcloud 34**, **File Browser 2.63**, and **Seafile 11**.
+  - Embedded assets via Go `embed.FS` with zero external dependencies.
+  - Active probing and timing-attack defense via simulated password hash delay (400–700ms).
+  - Port 80 redirector with dynamic ACME challenge delegation and automatic expiration safety fuses.
+- **ACME Certificate Automation (`cert`)**:
+  - Native Let's Encrypt TLS issuance and automated renewal with root-shell protection.
+- **Upstream Subscription Lifecycle (`relay sub`)**:
+  - Add, update, diff, and remove upstream airport subscriptions directly in STAGING.
+  - Automatic base64 decoding, node remark sanitization (`<airport>/<node>`), and active gateway relay protection.
+- **Multi-Tenant Guest Isolation & Notifications**:
   - Create multiple guests with separate UUIDs.
-  - Set quotas and reset schedules.
-  - Route selected guests through dedicated outbounds.
+  - Unit-aware quotas supporting Base-10 (KB, MB, GB, TB) and Base-2 (KiB, MiB, GiB, TiB).
+  - Staged percentage and capacity alert triggers (`--notify-trigger`).
+  - Multi-mode notifications (HTTP headers, dynamic remarks, memorial nodes) and native `ntfy.sh` / JSON Webhook integration.
+- **Modular Relay Diagnostics & Multi-Provider Speed Tests**:
+  - `relay test`: Dual-stack IPv4/IPv6 exit IP, DNS53, modern protocols (H2/gRPC/WS/XHTTP), and SOCKS5 UDP test.
+  - `relay info`: Landing profile, streaming unlocks, and AI service web access with parallel worker pools.
+  - `relay speed`: Multi-provider speed testing (Cloudflare, Fast.com, M-Lab, Ookla, Custom) with persistent TCP latency probing.
+- **Automated Health Diagnostics (`doctor check`)**:
+  - Automated 7-point health check inspecting system clock sync, Xray core, kernel parameters, linger state, modern transport support, port collisions, and UDP reachability.
+- **Interactive Terminal UI (TUI)**:
+  - Full-screen dashboard with in-bar hierarchical service configuration, vertical gateway selection, non-blocking relay testing, and one-key upstream subscription refresh (`[P]`).
 - **Modern transport presets**:
   - VLESS Vision + Reality TCP
   - VLESS Reality XHTTP
@@ -42,8 +56,8 @@ curl -Ls https://raw.githubusercontent.com/AiLing2416/xray-proxya/main/install.s
 The installer verifies and installs the public `xray-proxya` CLI plus its
 private Xray core / `pathd` components. Only the CLI is added to `PATH`.
 
-PathLink commands are root-shell only. Use a direct root login or `su -`; do
-not invoke `path` through `sudo`, because its configuration and system service
+PathLink and Certificate commands are root-shell only. Use a direct root login or `su -`; do
+not invoke them through `sudo`, because configuration and system services
 are intentionally owned by root.
 
 ### Manual Build
@@ -71,21 +85,43 @@ xray-proxya init --role server
 xray-proxya init --role gateway
 ```
 
-### 2. Add a Relay
+### 2. Authentic Web Camouflage & ACME TLS (Server)
 ```bash
-xray-proxya outbound add hk-node "vless://..."
-xray-proxya outbound list
-```
+# Issue a Let's Encrypt certificate for your domain (direct root shell)
+xray-proxya cert add sea.example.com
 
-### 3. Multi-Tenant Setup
-```bash
-# Add a guest with 100GB monthly quota
-xray-proxya guests add john-doe --quota 100 --reset 1
-xray-proxya guests set john-doe --outbound hk-node
+# Bind high-fidelity Seafile camouflage skin to Reality preset
+xray-proxya presets set 1 --skin seafile --skin-domain sea.example.com
 xray-proxya apply
 ```
 
-### 4. Transparent Gateway
+### 3. Upstream Subscriptions & Relay Nodes
+```bash
+# Import an airport subscription into STAGING
+xray-proxya relay sub add myairport "https://sub.example.com/api/v1/..."
+
+# Or add a single relay node manually
+xray-proxya relay add hk-node "vless://..."
+
+# Run health diagnostics or speed tests
+xray-proxya relay test hk-node
+xray-proxya relay info hk-node
+xray-proxya relay speed hk-node
+xray-proxya apply
+```
+
+### 4. Multi-Tenant Guest Setup
+```bash
+# Add a guest user
+xray-proxya guests add john-doe
+
+# Configure 100GB limit, monthly reset, and alert triggers
+xray-proxya guests set john-doe --limit 100GB --reset 1 --notify-trigger 80%,90%
+xray-proxya guests set john-doe --relay hk-node
+xray-proxya apply
+```
+
+### 5. Transparent Gateway
 ```bash
 # Use a relay as the transparent upstream
 xray-proxya gateway set --relay hk-node
@@ -93,7 +129,19 @@ xray-proxya apply
 xray-proxya gateway up
 ```
 
-### 5. Temporary Kernel Tuning
+### 6. System Health Check
+```bash
+# Run host, kernel, and network diagnostics
+xray-proxya doctor check
+```
+
+### 7. Interactive TUI
+```bash
+# Launch full-screen management interface
+xray-proxya tui
+```
+
+### 8. Temporary Kernel Tuning
 
 `tune` is root-only. Enter a direct root shell or use `su -` before running
 these commands; do not invoke it through `sudo`.
@@ -117,7 +165,7 @@ Notes:
 - `tune` is root-only by design.
 - Tuning does not write `/etc/sysctl.conf` or `/etc/sysctl.d/*`. `tune use` changes only the current runtime; restarting Xray-Proxya does not reapply a profile, and a reboot restores the system-managed sysctl state. `tune rollback` restores values recorded for the current runtime session.
 
-### 6. PathLink ICMP Probes
+### 9. PathLink ICMP Probes
 
 PathLink is a root-only feature for probing a public destination through the
 Gateway's selected relay. Use a direct root login or `su -`, never `sudo`.
@@ -147,41 +195,18 @@ xray-proxya path trace 1.1.1.1
 xray-proxya path mtu 1.1.1.1
 ```
 
-`--relay` is Gateway-only: a Server always configures its local Pathd and
-rejects this flag. Pathd enablement is owned by `service enable/disable`, not
-by the PathLink configuration. Only public IP addresses and hostnames resolving
-to public addresses can be probed. `path status` reports the local agent state
-on a Server and the selected relay's credential/runtime state on a Gateway.
-
-### Tune migration
-
-Older releases could leave a `.tune_state` marker that claimed a profile would
-be replayed when Xray-Proxya started. Current releases intentionally ignore
-that marker: tuning is no longer tied to proxy service lifecycle. Remove the
-legacy marker if it remains, and use a separate, explicit systemd unit or
-configuration-management policy if boot-time tuning is required.
-- Unsupported keys are reported and skipped rather than forcing legacy compatibility behavior.
-
-## Common Commands
-
-```bash
-xray-proxya status
-xray-proxya show
-xray-proxya show --guest john-doe
-xray-proxya outbound test hk-node
-xray-proxya outbound info hk-node
-xray-proxya outbound probe-local hk-node -4
-```
-
 ## CLI Reference
 
-- `guests`: Manage multi-tenant users, quotas, and dedicated outbounds.
-- `presets`: Manage pre-defined inbound protocols (Reality, Vision, KEM, etc.).
-- `outbound`: Manage relay nodes, **physical interface bindings**, and **internal proxies**.
+- `cert`: Manage ACME / Let's Encrypt TLS certificates (root-only: add, list, renew, remove).
+- `presets`: Manage pre-defined inbound protocols (Reality, Vision, KEM, etc.) and Web camouflage (`--skin`, `--skin-domain`, `--sni`).
+- `relay`: Manage relay nodes, upstream subscriptions (`relay sub`), physical interface bindings, and test suites (`test`, `info`, `speed`).
+- `guests`: Manage multi-tenant users, unit-aware quotas, staged alert triggers, and dedicated outbounds.
 - `gateway`: Configure transparent proxy settings and dual-stack forwarding.
-- `tune`: Apply and rollback temporary kernel tuning profiles for gateway, relay, and server roles.
+- `doctor`: Run automated health diagnostics (`doctor check`) and manage shell completion (`doctor completion`).
+- `tui`: Full-screen terminal dashboard for real-time monitoring and configuration.
 - `status`: Real-time traffic stats and process monitoring.
+- `show`: Display client connection links, guest subscription links, and QR codes.
 - `apply / undo`: Commit or discard staging changes with automatic validation.
+- `tune`: Apply and rollback temporary kernel tuning profiles for gateway, relay, and server roles.
 - `path`: Configure PathLink and run relay-carried ICMP ping, trace, and MTU probes from a root Gateway shell.
-- `service`: Install and control the managed systemd units. `service install` only writes units; it does not enable or start them. Root installs register `xray-proxya`, `xray-proxya-pathd`, and `xray-proxya-sub@<instance>`; Pathd remains disabled until explicitly enabled.
-- `doctor completion install / uninstall`: Automatically detect bash, zsh, or fish and manage its shell completion.
+- `service`: Install and control the managed systemd units (`xray-proxya`, `xray-proxya-pathd`, `xray-proxya-sub@<instance>`).
