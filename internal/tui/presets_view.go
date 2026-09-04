@@ -18,7 +18,7 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 		return "No presets found. Run 'init' first."
 	}
 
-	headers := []string{"  ", "PRESETS", "PORT", "NET", "SECURITY", "STATUS"}
+	headers := []string{"  ", "PRESETS", "PORT", "NET", "SECURITY", "SKIN", "STATUS"}
 	rows := make([][]string, 0, len(staging.Presets))
 	disabled := make([]bool, 0, len(staging.Presets))
 
@@ -29,7 +29,7 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 			indicator = "[R]"
 		} else if active != nil && i < len(active.Presets) {
 			a := active.Presets[i]
-			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Enabled != a.Enabled {
+			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Skin != a.Skin || m.SkinDomain != a.SkinDomain || m.Enabled != a.Enabled {
 				isMod = true
 			}
 		} else if active == nil {
@@ -46,12 +46,20 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 			status = "DOWN"
 		}
 
-		row := []string{indicator, string(m.Mode), fmt.Sprintf("%d", m.Port), getNetworkName(m.Mode), getSecurityName(m), status}
+		skinStr := "-"
+		if m.Skin != "" {
+			skinStr = m.Skin
+			if m.SkinDomain != "" {
+				skinStr = fmt.Sprintf("%s (%s)", m.Skin, m.SkinDomain)
+			}
+		}
+
+		row := []string{indicator, string(m.Mode), fmt.Sprintf("%d", m.Port), getNetworkName(m.Mode), getSecurityName(m), skinStr, status}
 		rows = append(rows, row)
 		disabled = append(disabled, !m.Enabled)
 	}
 
-	widths := fitTableWidths(headers, rows, []int{3, 10, 4, 3, 8, 4}, width)
+	widths := fitTableWidths(headers, rows, []int{3, 10, 4, 3, 8, 8, 4}, width)
 
 	var b strings.Builder
 	b.WriteString(renderRow(headers, widths, true))

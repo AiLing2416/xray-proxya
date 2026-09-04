@@ -38,12 +38,14 @@
 package tui
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -51,6 +53,7 @@ import (
 	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/relaysub"
 	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
@@ -358,6 +361,61 @@ func fetchRelaySpeed(alias string) tea.Cmd {
 	}
 }
 
+type relaySubsUpdatedMsg struct {
+	added   int
+	updated int
+	removed int
+	err     error
+}
+
+func updateRelaySubsCmd() tea.Cmd {
+	return func() tea.Msg {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil || cfg == nil {
+			return relaySubsUpdatedMsg{err: fmt.Errorf("failed to load STAGING configuration")}
+		}
+		if len(cfg.RelaySubs) == 0 {
+			return relaySubsUpdatedMsg{err: fmt.Errorf("no upstream subscriptions configured")}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		var targets []string
+		for name := range cfg.RelaySubs {
+			targets = append(targets, name)
+		}
+		sort.Strings(targets)
+
+		totalAdded, totalUpdated, totalRemoved := 0, 0, 0
+		for _, name := range targets {
+			subURL := cfg.RelaySubs[name]
+			body, err := relaysub.FetchSubscription(ctx, subURL)
+			if err != nil {
+				continue
+			}
+			nodes, _, err := relaysub.ParseSubscription(name, body)
+			if err != nil {
+				continue
+			}
+			diff := relaysub.ComputeDiff(name, cfg.CustomOutbounds, nodes)
+			cfg.CustomOutbounds = diff.MergedOutbounds
+			totalAdded += len(diff.Added)
+			totalUpdated += len(diff.Updated)
+			totalRemoved += len(diff.Removed)
+		}
+
+		if err := cfg.SaveEx(true); err != nil {
+			return relaySubsUpdatedMsg{err: err}
+		}
+		return relaySubsUpdatedMsg{
+			added:   totalAdded,
+			updated: totalUpdated,
+			removed: totalRemoved,
+		}
+	}
+}
+
 func InitialModel() Model {
 	active, _ := config.LoadConfig()
 	staging, _ := config.LoadConfigEx(true)
@@ -465,6 +523,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.relayViewMode[msg.alias] = "speed"
 		m.overrideMsg = ""
 		return m, nil
+
+	case relaySubsUpdatedMsg:
+		m.overrideMsg = ""
+		if msg.err != nil {
+			m.setOverride(fmt.Sprintf("Subscription Update Error:\n%v", msg.err))
+			return m, m.setNotice("sub update failed")
+		}
+		if st, err := config.LoadConfigEx(true); err == nil && st != nil {
+			m.staging = st
+		}
+		if m.staging != nil && m.cursor >= len(m.staging.CustomOutbounds) && len(m.staging.CustomOutbounds) > 0 {
+			m.cursor = len(m.staging.CustomOutbounds) - 1
+		}
+		return m, m.setNotice(fmt.Sprintf("subs updated: +%d, ~%d, -%d", msg.added, msg.updated, msg.removed))
 
 	case serviceLogsMsg:
 		m.serviceLogs = msg.body
@@ -1097,6 +1169,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, fetchRelaySpeed(alias)
 				}
 
+			case "p", "P":
+				if m.staging == nil || len(m.staging.RelaySubs) == 0 {
+					return m, m.setNotice("no upstream subscriptions configured (use 'relay sub add')")
+				}
+				m.setOverride("Updating upstream subscriptions in STAGING...\nPlease wait...")
+				return m, updateRelaySubsCmd()
+
 			case "n", "N":
 				m.relayAlias = ""
 				m.startInput(inputAddRelayAlias, "New Relay Alias (Empty = Auto)", "")
@@ -1718,7 +1797,21 @@ func (m Model) getSelectedDetailContent() string {
 		return ""
 	}
 	if m.currentTab == tabPresets && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Presets) {
-		return m.getSelectedLink()
+		p := m.staging.Presets[m.cursor]
+		link := m.getSelectedLink()
+		if p.Skin != "" {
+			var b strings.Builder
+			domain := p.SkinDomain
+			if domain == "" {
+				domain = "-"
+			}
+			b.WriteString(fmt.Sprintf("Camouflage Skin: %s (Domain: %s)\n", p.Skin, domain))
+			if link != "" {
+				b.WriteString(fmt.Sprintf("Link: %s", link))
+			}
+			return strings.TrimSpace(b.String())
+		}
+		return link
 	}
 	if m.currentTab == tabRelays && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
 		co := m.staging.CustomOutbounds[m.cursor]
@@ -1975,7 +2068,7 @@ func (m Model) renderFooter() string {
 		case tabPresets:
 			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 		case tabRelays:
-			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 		case tabGuests:
 			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 		case tabGateway:
