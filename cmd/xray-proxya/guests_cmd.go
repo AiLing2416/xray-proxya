@@ -588,9 +588,19 @@ var guestsSubShowCmd = &cobra.Command{
 			return
 		}
 		ensureGuestSubListenerConfig(cfg)
-		host := cfg.GuestSubBind
-		if guestSubShowAddr != "" {
-			host = guestSubShowAddr
+		host := guestSubShowAddr
+		if host == "" {
+			host = strings.TrimSpace(cfg.GuestSubAddress)
+		}
+		if host == "" {
+			host = strings.TrimSpace(cfg.AdminSub.Address)
+		}
+		if host == "" {
+			if ip := net.ParseIP(cfg.GuestSubBind); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
+				host = utils.GetSmartIP(false)
+			} else {
+				host = cfg.GuestSubBind
+			}
 		}
 		fmt.Printf("\nGuest: %s\n", guest.Alias)
 		fmt.Printf("State: %s\n", guestStateLabel(*guest))
@@ -604,6 +614,59 @@ var guestsSubShowCmd = &cobra.Command{
 		fmt.Printf("Listener: %s:%d\n", cfg.GuestSubBind, cfg.GuestSubPort)
 		fmt.Printf("Path: /guest-sub/%s\n", guest.SubToken)
 		fmt.Printf("URL: %s\n\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken))
+	},
+}
+
+var (
+	guestSubSetAddr string
+	guestSubSetPort int
+	guestSubSetBind string
+)
+
+var guestsSubSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "Configure guest self-service subscription listener and address (STAGING)",
+	Example: `  # Set custom hostname for proxy nodes in guest subscriptions
+  xray-proxya guests sub set --address proxy.example.com
+
+  # Change guest subscription listener port and bind address
+  xray-proxya guests sub set --port 9445 --bind 127.0.0.1`,
+	Args: cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			return err
+		}
+		ensureGuestSubListenerConfig(cfg)
+		changed := false
+		if cmd.Flags().Changed("address") {
+			cfg.GuestSubAddress = strings.TrimSpace(guestSubSetAddr)
+			changed = true
+		}
+		if cmd.Flags().Changed("port") {
+			if guestSubSetPort < 1 || guestSubSetPort > 65535 {
+				return fmt.Errorf("port must be between 1 and 65535")
+			}
+			cfg.GuestSubPort = guestSubSetPort
+			changed = true
+		}
+		if cmd.Flags().Changed("bind") {
+			bind := strings.TrimSpace(guestSubSetBind)
+			if err := sub.ValidatePrivateBindAddress(bind); err != nil {
+				return err
+			}
+			cfg.GuestSubBind = bind
+			changed = true
+		}
+		if !changed {
+			return fmt.Errorf("no parameter supplied")
+		}
+		if err := cfg.SaveEx(true); err != nil {
+			return err
+		}
+		fmt.Println("✅ Guest subscription configuration updated in STAGING.")
+		fmt.Println("🚀 Run 'apply' to commit changes.")
+		return nil
 	},
 }
 
@@ -655,7 +718,11 @@ func init() {
 
 	guestsSubShowCmd.Flags().StringVarP(&guestSubShowAddr, "address", "a", "", "Override the host used when printing the guest sub URL")
 
-	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd)
+	guestsSubSetCmd.Flags().StringVarP(&guestSubSetAddr, "address", "a", "", "Public IP or domain for proxy nodes in guest subscriptions (or empty to auto-detect)")
+	guestsSubSetCmd.Flags().IntVarP(&guestSubSetPort, "port", "p", 0, "Guest subscription listener port (1-65535)")
+	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
+
+	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd, guestsSubSetCmd)
 	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)
 }

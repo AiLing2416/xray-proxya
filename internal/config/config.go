@@ -139,9 +139,10 @@ type UserConfig struct {
 	IPv6Rotations map[string]IPv6Config `json:"ipv6_rotations,omitempty"`
 	Subscriptions []Subscription        `json:"subscriptions"`
 	SubPort       int                   `json:"sub_port"`
-	GuestSubPort  int                   `json:"guest_sub_port,omitempty"`
-	GuestSubBind  string                `json:"guest_sub_bind,omitempty"`
-	IPv6Pool      IPv6Config            `json:"ipv6_pool"`
+	GuestSubPort    int                   `json:"guest_sub_port,omitempty"`
+	GuestSubBind    string                `json:"guest_sub_bind,omitempty"`
+	GuestSubAddress string                `json:"guest_sub_address,omitempty"`
+	IPv6Pool        IPv6Config            `json:"ipv6_pool"`
 	Certs         []ManagedCert         `json:"certs,omitempty"`
 	SkinPort      int                   `json:"skin_port,omitempty"`
 

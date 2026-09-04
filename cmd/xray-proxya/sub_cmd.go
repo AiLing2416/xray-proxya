@@ -127,7 +127,10 @@ func managedSubURL(cfg *config.UserConfig, entry *config.AdminSubConfig) string 
 }
 
 func subGuestSubURL(cfg *config.UserConfig, token string) string {
-	host := strings.TrimSpace(cfg.AdminSub.Address)
+	host := strings.TrimSpace(cfg.GuestSubAddress)
+	if host == "" {
+		host = strings.TrimSpace(cfg.AdminSub.Address)
+	}
 	if host == "" {
 		host = utils.GetSmartIP(false)
 	}

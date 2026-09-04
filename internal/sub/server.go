@@ -189,7 +189,7 @@ func httpGuestSubHandler() http.HandlerFunc {
 			return
 		}
 
-		addr := resolveGuestSubAddress(r)
+		addr := resolveGuestSubAddress(cfg)
 		links := xray.GenerateGuestLinks(cfg, addr, targetGuest.UUID, targetGuest.Alias)
 		if len(links) == 0 {
 			http.Error(w, "No links generated for this guest", http.StatusInternalServerError)
@@ -221,40 +221,19 @@ func httpGuestSubHandler() http.HandlerFunc {
 	}
 }
 
-func resolveGuestSubAddress(r *http.Request) string {
-	for _, header := range []string{"X-Forwarded-Host", "X-Original-Host"} {
-		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
-			if host := normalizeRequestHost(strings.Split(value, ",")[0]); host != "" {
-				return host
-			}
+func resolveGuestSubAddress(cfg *config.UserConfig) string {
+	if cfg != nil {
+		if addr := strings.TrimSpace(cfg.GuestSubAddress); addr != "" {
+			return addr
 		}
-	}
-	if host := normalizeRequestHost(r.Host); host != "" {
-		return host
+		if addr := strings.TrimSpace(cfg.AdminSub.Address); addr != "" {
+			return addr
+		}
 	}
 	return utils.GetSmartIP(false)
 }
 
-func normalizeRequestHost(raw string) string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return ""
-	}
-	if strings.HasPrefix(raw, "[") {
-		if host, _, err := net.SplitHostPort(raw); err == nil {
-			return strings.Trim(host, "[]")
-		}
-		return strings.Trim(raw, "[]")
-	}
-	if strings.Count(raw, ":") == 1 {
-		if host, _, err := net.SplitHostPort(raw); err == nil {
-			return host
-		}
-	}
-	return strings.Trim(raw, "[]")
-}
-
-func validatePrivateBindAddress(bind string) error {
+func ValidatePrivateBindAddress(bind string) error {
 	bind = strings.TrimSpace(bind)
 	switch bind {
 	case "", "localhost":
@@ -268,6 +247,10 @@ func validatePrivateBindAddress(bind string) error {
 		return nil
 	}
 	return errors.New("guest subscription bind address must be loopback or private")
+}
+
+func validatePrivateBindAddress(bind string) error {
+	return ValidatePrivateBindAddress(bind)
 }
 
 const (

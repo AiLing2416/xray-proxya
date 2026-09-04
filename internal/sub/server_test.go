@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 )
 
 func TestFormatGuestSubRemark(t *testing.T) {
@@ -49,10 +50,28 @@ func TestDaysUntilResetClampsMonthEnd(t *testing.T) {
 	}
 }
 
-func TestResolveGuestSubAddressUsesForwardedHost(t *testing.T) {
-	req := httptest.NewRequest("GET", "https://127.0.0.1/guest-sub/token", nil)
-	req.Header.Set("X-Forwarded-Host", "guest.example.com")
-	if got, want := resolveGuestSubAddress(req), "guest.example.com"; got != want {
+func TestResolveGuestSubAddress(t *testing.T) {
+	// 1. GuestSubAddress has highest precedence
+	cfg1 := &config.UserConfig{
+		GuestSubAddress: "guest.example.com",
+		AdminSub:        config.AdminSubConfig{Address: "admin.example.com"},
+	}
+	if got, want := resolveGuestSubAddress(cfg1), "guest.example.com"; got != want {
+		t.Fatalf("resolveGuestSubAddress = %q, want %q", got, want)
+	}
+
+	// 2. AdminSub.Address fallback
+	cfg2 := &config.UserConfig{
+		AdminSub: config.AdminSubConfig{Address: "admin.example.com"},
+	}
+	if got, want := resolveGuestSubAddress(cfg2), "admin.example.com"; got != want {
+		t.Fatalf("resolveGuestSubAddress = %q, want %q", got, want)
+	}
+
+	// 3. Fallback to public/smart IP
+	cfg3 := &config.UserConfig{}
+	smartIP := utils.GetSmartIP(false)
+	if got, want := resolveGuestSubAddress(cfg3), smartIP; got != want {
 		t.Fatalf("resolveGuestSubAddress = %q, want %q", got, want)
 	}
 }
@@ -73,9 +92,10 @@ func TestGuestSubHandlerNotifyModes(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	cfg := &config.UserConfig{
-		Role:         config.RoleServer,
-		UUID:         "server-uuid",
-		GuestSubBind: "127.0.0.1",
+		Role:            config.RoleServer,
+		UUID:            "server-uuid",
+		GuestSubBind:    "127.0.0.1",
+		GuestSubAddress: "sub.example.com",
 		Presets: []config.ModeInfo{{
 			Mode:    config.ModeVLESSVision,
 			Enabled: true,

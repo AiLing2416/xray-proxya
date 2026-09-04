@@ -364,6 +364,10 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubListenerChanged = true
 		mark("guest_sub_listener")
 	}
+	if activeCfg.GuestSubAddress != stagingCfg.GuestSubAddress {
+		impact.SubContentChanged = true
+		mark("guest_sub_address")
+	}
 	if !reflect.DeepEqual(activeCfg.Subscriptions, stagingCfg.Subscriptions) {
 		impact.SubContentChanged = true
 		mark("subscriptions")
