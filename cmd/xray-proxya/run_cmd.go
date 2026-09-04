@@ -288,8 +288,10 @@ var runCmd = &cobra.Command{
 		}
 
 		if len(skinMappings) > 0 {
+			skinPort := cfg.EnsureSkinPort()
+			skinAddr := fmt.Sprintf("127.0.0.1:%d", skinPort)
 			defaultSkin := skinMappings[0].SkinType
-			srv, err := skin.StartMultiSkinServer("127.0.0.1:9443", skinMappings, defaultSkin)
+			srv, err := skin.StartMultiSkinServer(skinAddr, skinMappings, defaultSkin)
 			if err == nil {
 				skinServers = append(skinServers, srv)
 				go func(s *http.Server) { _ = s.ListenAndServeTLS("", "") }(srv)
@@ -297,9 +299,9 @@ var runCmd = &cobra.Command{
 				for _, sm := range skinMappings {
 					domains = append(domains, fmt.Sprintf("%s (%s)", sm.Domain, sm.SkinType))
 				}
-				fmt.Printf("🎨 Web Skin HTTPS server listening on 127.0.0.1:9443 for: %s\n", strings.Join(domains, ", "))
+				fmt.Printf("🎨 Web Skin HTTPS server listening on %s for: %s\n", skinAddr, strings.Join(domains, ", "))
 			} else {
-				fmt.Printf("⚠️  Failed to start Web Skin HTTPS server: %v\n", err)
+				fmt.Printf("⚠️  Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
 			}
 
 			// Start port 80 HTTP -> HTTPS redirect server with ACME challenge delegation

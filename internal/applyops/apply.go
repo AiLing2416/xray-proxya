@@ -301,6 +301,10 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.XrayConfigChanged = true
 		mark("test_inbound")
 	}
+	if activeCfg.SkinPort != stagingCfg.SkinPort {
+		impact.XrayConfigChanged = true
+		mark("skin_port")
+	}
 	if !reflect.DeepEqual(activeCfg.Presets, stagingCfg.Presets) {
 		impact.XrayConfigChanged = true
 		impact.SubContentChanged = true

@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 )
 
@@ -363,5 +364,74 @@ func TestResolveMinClientVersion(t *testing.T) {
 	mCustom := &ModeInfo{Mode: ModeVLESSVision, MinClientVer: "0.0.0"}
 	if got := ResolveMinClientVersion(mCustom); got != "0.0.0" {
 		t.Errorf("ResolveMinClientVersion(mCustom) = %q, want 0.0.0", got)
+	}
+}
+
+func TestBackfillDefaultsSkinPort(t *testing.T) {
+	// Case 1: Skin configured, SkinPort == 0 -> should allocate random free port
+	cfg := &UserConfig{
+		Role: RoleServer,
+		Presets: []ModeInfo{
+			{
+				Mode:       ModeVLESSVision,
+				Enabled:    true,
+				Skin:       "seafile",
+				SkinDomain: "sea.example.com",
+				SNI:        "sea.example.com",
+			},
+		},
+	}
+	cfg.BackfillDefaults()
+	if cfg.SkinPort <= 0 || cfg.SkinPort >= 65536 {
+		t.Fatalf("expected allocated SkinPort, got %d", cfg.SkinPort)
+	}
+	expectedDest := fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
+	if cfg.Presets[0].Dest != expectedDest {
+		t.Errorf("Dest = %q, want %q", cfg.Presets[0].Dest, expectedDest)
+	}
+
+	// Case 2: SkinPort already persisted -> should preserve it
+	savedPort := cfg.SkinPort
+	cfg.BackfillDefaults()
+	if cfg.SkinPort != savedPort {
+		t.Errorf("SkinPort changed from %d to %d", savedPort, cfg.SkinPort)
+	}
+
+	// Case 3: Explicit custom port in Dest adopted when SkinPort is 0
+	cfgCustom := &UserConfig{
+		Role: RoleServer,
+		Presets: []ModeInfo{
+			{
+				Mode:       ModeVLESSVision,
+				Enabled:    true,
+				Skin:       "nextcloud",
+				SkinDomain: "cloud.example.com",
+				SNI:        "cloud.example.com",
+				Dest:       "127.0.0.1:18443",
+			},
+		},
+	}
+	cfgCustom.BackfillDefaults()
+	if cfgCustom.SkinPort != 18443 {
+		t.Errorf("SkinPort = %d, want 18443", cfgCustom.SkinPort)
+	}
+	if cfgCustom.Presets[0].Dest != "127.0.0.1:18443" {
+		t.Errorf("Dest = %q, want 127.0.0.1:18443", cfgCustom.Presets[0].Dest)
+	}
+
+	// Case 4: No skins enabled -> SkinPort remains 0
+	cfgNoSkin := &UserConfig{
+		Role: RoleServer,
+		Presets: []ModeInfo{
+			{
+				Mode:    ModeVLESSVision,
+				Enabled: true,
+				SNI:     "direct.example.com",
+			},
+		},
+	}
+	cfgNoSkin.BackfillDefaults()
+	if cfgNoSkin.SkinPort != 0 {
+		t.Errorf("expected SkinPort = 0 when no skin is configured, got %d", cfgNoSkin.SkinPort)
 	}
 }

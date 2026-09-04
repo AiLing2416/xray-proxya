@@ -43,8 +43,9 @@ When operating alongside underlying Xray REALITY / Inbound configurations, the s
    * The Xray core listens on public port 443, handling incoming REALITY / TLS handshakes.
    * Authorized proxy clients establish tunnels using configured private keys and UUIDs.
    * Unauthorized crawlers, scanners, or active probing connections are directed by REALITY's `dest` fallback rule to the local camouflage reverse proxy.
-3. **Port 9443 (Local Camouflage Reverse Proxy)**:
-   * Bound exclusively to `127.0.0.1:9443` and inaccessible externally.
+3. **Local Camouflage Reverse Proxy Port (`skin_port`)**:
+   * Automatically assigned as a random free port and persisted to `skin_port` in configuration (or explicitly customized using `--skin-port <port>`).
+   * Bound exclusively to `127.0.0.1:<skin_port>` and inaccessible externally, preventing local port collisions between multiple users or processes.
    * Terminates TLS using valid domain certificates and routes requests to the corresponding high-fidelity decoy web instance.
 
 ### 3.3 Expiration Safety Fuse
@@ -69,7 +70,7 @@ xray-proxya cert list
 ```
 
 ### Step 2: Bind Authentic Camouflage to a Preset
-Configure a preset (e.g. Preset 1: VLESS Reality) on a Server role with Seafile camouflage and the certified domain:
+Configure a preset (e.g. Preset 1: VLESS Reality) on a Server role with Seafile camouflage and the certified domain (the system automatically allocates and persists a random local isolation port, or you can specify `--skin-port <port>`):
 ```bash
 # Configure skin and domain binding in STAGING
 xray-proxya presets set 1 --skin seafile --skin-domain sea.example.com

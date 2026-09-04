@@ -42,8 +42,9 @@ Authentic Skin v3 针对以下三款广泛部署的知名企业级/个人网盘�
    * Xray 核心监听外部 443 端口，承接 REALITY / TLS 握手。
    * 正常的代理客户端通过预设秘钥与 UUID 建立代理隧道。
    * 任何未经授权的爬虫、扫描器或主动探测连接，均由 REALITY 的 `dest` 规则 fallback 回退至本地反向代理端口。
-3. **Port 9443 (本地伪装反代)**：
-   * 仅绑定在 `127.0.0.1:9443`，对外不可见。
+3. **本地伪装反代端口 (`skin_port`)**：
+   * 默认动态分配一个随机的空闲端口并持久化保存至配置中的 `skin_port`（亦可通过 `--skin-port <port>` 手动自定义）。
+   * 仅绑定在 `127.0.0.1:<skin_port>`，对外完全不可见，避免多用户及权限隔离环境下的本地端口冲突。
    * 基于真实域名证书终结 TLS，并分发至对应的高拟真网盘 Web 实例。
 
 ### 3.3 证书失效与注销熔断 (Expiration Safety Fuse)
@@ -68,7 +69,7 @@ xray-proxya cert list
 ```
 
 ### 步骤 2：为预设绑定真实伪装
-为服务器角色下的预设（例如 Preset 1：VLESS Reality）配置 Seafile 伪装及已签发证书的域名：
+为服务器角色下的预设（例如 Preset 1：VLESS Reality）配置 Seafile 伪装及已签发证书的域名（系统会自动为其分配并持久化一个随机的本地隔离端口，亦可传入 `--skin-port <port>` 指定）：
 ```bash
 # 配置伪装与域名绑定（写入 STAGING 暂存区）
 xray-proxya presets set 1 --skin seafile --skin-domain sea.example.com

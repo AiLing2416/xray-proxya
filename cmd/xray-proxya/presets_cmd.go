@@ -30,6 +30,7 @@ var (
 	presetMinVer      string
 	presetSkin        string
 	presetSkinDomain  string
+	presetSkinPort    int
 )
 
 var promptConfirmFunc = func(prompt string) bool {
@@ -109,6 +110,9 @@ var presetsListCmd = &cobra.Command{
 			}
 			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-26s | %-24s | %-12s | %-s\n",
 				i+1, mode.Mode, status, mode.Port, sni, skin, minVer, destOrPath)
+		}
+		if cfg.SkinPort > 0 {
+			fmt.Printf("\n🎨 Web Camouflage Skin Port: %d (127.0.0.1:%d)\n", cfg.SkinPort, cfg.SkinPort)
 		}
 		fmt.Println()
 	},
@@ -362,6 +366,21 @@ Web camouflage skin highlights:
 			fmt.Printf("🎯 Validated current REALITY target: %s (%s)\n", m.SNI, target)
 		}
 
+		// 4.5. Web camouflage skin port configuration
+		if cmd.Flags().Changed("skin-port") {
+			if presetSkinPort < 1024 || presetSkinPort > 65535 {
+				fmt.Printf("❌ Error: Invalid --skin-port %d. Must be between 1024 and 65535.\n", presetSkinPort)
+				return
+			}
+			cfg.SkinPort = presetSkinPort
+			for i := range cfg.Presets {
+				if cfg.Presets[i].Skin != "" && (strings.HasPrefix(cfg.Presets[i].Dest, "127.0.0.1:") || strings.HasPrefix(cfg.Presets[i].Dest, "localhost:")) {
+					cfg.Presets[i].Dest = fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
+				}
+			}
+			fmt.Printf("🎨 Configured Web Skin port to %d.\n", cfg.SkinPort)
+		}
+
 		// 5. Web camouflage skin configuration
 		if cmd.Flags().Changed("skin") && presetSkin != "" {
 			if !supportsSkin(m.Mode) {
@@ -401,12 +420,13 @@ Web camouflage skin highlights:
 				}
 				m.Skin = st
 				m.SkinDomain = effectiveDomain
+				skinPort := cfg.EnsureSkinPort()
 				if supportsReality(m.Mode) {
 					m.SNI = effectiveDomain
-					m.Dest = "127.0.0.1:9443"
+					m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
 				}
-				fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s (Cert valid until %s).\n",
-					m.Skin, m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+				fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
+					m.Skin, m.SkinDomain, skinPort, cert.ExpiresAt.Format("2006-01-02"))
 			}
 		} else if cmd.Flags().Changed("skin-domain") {
 			if m.Skin == "" {
@@ -507,6 +527,7 @@ func init() {
 	// Web camouflage skin flags
 	presetsSetCmd.Flags().StringVar(&presetSkin, "skin", "", "Configure Web camouflage skin (nextcloud, filebrowser, seafile, off)")
 	presetsSetCmd.Flags().StringVar(&presetSkinDomain, "skin-domain", "", "Specify domain for Web camouflage skin (must have valid cert in cert list)")
+	presetsSetCmd.Flags().IntVar(&presetSkinPort, "skin-port", 0, "Specify local port for Web camouflage skin (defaults to random free port)")
 
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Set REALITY destination host:port (host must match SNI)")
 	presetsSetCmd.Flags().StringVar(&presetMinVer, "min-ver", "", "Set minimum Xray client version required for REALITY (e.g. 26.3.27, or 0.0.0 to disable)")

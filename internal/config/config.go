@@ -143,6 +143,7 @@ type UserConfig struct {
 	GuestSubBind  string                `json:"guest_sub_bind,omitempty"`
 	IPv6Pool      IPv6Config            `json:"ipv6_pool"`
 	Certs         []ManagedCert         `json:"certs,omitempty"`
+	SkinPort      int                   `json:"skin_port,omitempty"`
 
 	// legacyPath* are populated only while decoding the pre-relay PathLink
 	// schema. They are intentionally not persisted.
@@ -529,6 +530,54 @@ func (cfg *UserConfig) GetCertDir() string {
 	return filepath.Join(GetConfigDir(), "certs")
 }
 
+// AllocateRandomSkinPort attempts to find an available local TCP port for the Web camouflage server.
+// It tries random ports in the range 10000-59999 first, falling back to ephemeral allocation.
+func AllocateRandomSkinPort() int {
+	for i := 0; i < 50; i++ {
+		p, err := rand.Int(rand.Reader, big.NewInt(50000))
+		if err != nil {
+			break
+		}
+		port := int(p.Int64()) + 10000
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			_ = ln.Close()
+			return port
+		}
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err == nil {
+		defer ln.Close()
+		if tcpAddr, ok := ln.Addr().(*net.TCPAddr); ok {
+			return tcpAddr.Port
+		}
+	}
+	return 9443
+}
+
+// GetSkinPort returns the configured Web camouflage skin port.
+// If SkinPort is not configured, it returns 0.
+func (cfg *UserConfig) GetSkinPort() int {
+	if cfg == nil {
+		return 0
+	}
+	return cfg.SkinPort
+}
+
+// EnsureSkinPort ensures that a valid local port is assigned to SkinPort.
+// If SkinPort is already configured (> 0 and < 65536), it is returned.
+// Otherwise, an available random port is allocated and stored in SkinPort.
+func (cfg *UserConfig) EnsureSkinPort() int {
+	if cfg == nil {
+		return 0
+	}
+	if cfg.SkinPort > 0 && cfg.SkinPort < 65536 {
+		return cfg.SkinPort
+	}
+	cfg.SkinPort = AllocateRandomSkinPort()
+	return cfg.SkinPort
+}
+
 func (cfg *UserConfig) Normalize() {
 	if cfg.Role != RoleServer {
 		return
@@ -867,6 +916,23 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			m.SkinDomain = ""
 			changes = append(changes, "cleared unsupported skin for preset "+string(m.Mode))
 		}
+		if m.Skin != "" {
+			if cfg.SkinPort <= 0 || cfg.SkinPort >= 65536 {
+				customPort := 0
+				if strings.HasPrefix(m.Dest, "127.0.0.1:") {
+					if p, err := strconv.Atoi(strings.TrimPrefix(m.Dest, "127.0.0.1:")); err == nil && p != 8443 && p != 9443 {
+						customPort = p
+					}
+				}
+				if customPort > 0 {
+					cfg.SkinPort = customPort
+					changes = append(changes, fmt.Sprintf("adopted existing skin dest port %d as skin_port", cfg.SkinPort))
+				} else {
+					cfg.EnsureSkinPort()
+					changes = append(changes, fmt.Sprintf("allocated random skin_port %d", cfg.SkinPort))
+				}
+			}
+		}
 		if m.Mode == ModeVLESSVision || m.Mode == ModeVLESSReality {
 			if m.Fingerprint == "" || !IsAllowedRealityFingerprint(m.Fingerprint) {
 				fp, err := GetRandomRealityFingerprint()
@@ -883,16 +949,27 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 					changes = append(changes, "normalized SNI for preset "+string(m.Mode))
 				}
 				if m.Dest == "" {
-					m.Dest = net.JoinHostPort(normSNI, "443")
-					changes = append(changes, "backfilled default dest for preset "+string(m.Mode))
+					if m.Skin != "" {
+						skinPort := cfg.EnsureSkinPort()
+						m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
+						changes = append(changes, fmt.Sprintf("set skin dest to 127.0.0.1:%d for preset %s", skinPort, m.Mode))
+					} else {
+						m.Dest = net.JoinHostPort(normSNI, "443")
+						changes = append(changes, "backfilled default dest for preset "+string(m.Mode))
+					}
 				} else {
 					// If Dest is local fallback for skin, preserve it
 					isLocalDest := strings.HasPrefix(m.Dest, "127.0.0.1:") || strings.HasPrefix(m.Dest, "localhost:")
 					if m.Skin != "" && isLocalDest {
-						if m.Dest == "127.0.0.1:8443" {
-							m.Dest = "127.0.0.1:9443"
-							changes = append(changes, "migrated skin dest port to 9443 for preset "+string(m.Mode))
+						skinDest := fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
+						if m.Dest != skinDest {
+							m.Dest = skinDest
+							changes = append(changes, fmt.Sprintf("migrated skin dest port to %d for preset %s", cfg.SkinPort, m.Mode))
 						}
+					} else if m.Skin != "" {
+						skinDest := fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
+						m.Dest = skinDest
+						changes = append(changes, fmt.Sprintf("set skin dest to %s for preset %s", skinDest, m.Mode))
 					} else {
 						destHost, _, normDest, err := NormalizeRealityTarget(m.Dest)
 						if err != nil || destHost != normSNI {

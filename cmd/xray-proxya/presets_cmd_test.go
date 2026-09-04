@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
@@ -271,8 +272,26 @@ func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
 	if loaded.Presets[0].SNI != "sea.ailing.dev" {
 		t.Errorf("SNI = %q, want sea.ailing.dev", loaded.Presets[0].SNI)
 	}
-	if loaded.Presets[0].Dest != "127.0.0.1:9443" {
-		t.Errorf("Dest = %q, want 127.0.0.1:9443", loaded.Presets[0].Dest)
+	if loaded.SkinPort <= 0 {
+		t.Errorf("SkinPort = %d, want > 0", loaded.SkinPort)
+	}
+	expectedDest := fmt.Sprintf("127.0.0.1:%d", loaded.SkinPort)
+	if loaded.Presets[0].Dest != expectedDest {
+		t.Errorf("Dest = %q, want %s", loaded.Presets[0].Dest, expectedDest)
+	}
+
+	// 3b. Setting custom --skin-port
+	if err := presetsSetCmd.ParseFlags([]string{"--skin-port", "19443"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.SkinPort != 19443 {
+		t.Errorf("SkinPort = %d, want 19443", loaded.SkinPort)
+	}
+	if loaded.Presets[0].Dest != "127.0.0.1:19443" {
+		t.Errorf("Dest = %q, want 127.0.0.1:19443", loaded.Presets[0].Dest)
 	}
 
 	// 4. Setting --skin off -> disables skin

@@ -59,6 +59,18 @@ func CheckPortConflicts(ctx context.Context, cfg *config.UserConfig) []CheckResu
 			addPort(m.Port, fmt.Sprintf("Preset Port (%s)", m.Mode))
 		}
 	}
+	if cfg.SkinPort > 0 {
+		hasActiveSkin := false
+		for _, m := range cfg.Presets {
+			if m.Enabled && m.Skin != "" {
+				hasActiveSkin = true
+				break
+			}
+		}
+		if hasActiveSkin {
+			addPort(cfg.SkinPort, "Web Camouflage Skin Port")
+		}
+	}
 	if cfg.SubPort > 0 {
 		addPort(cfg.SubPort, "Subscription Port")
 	}

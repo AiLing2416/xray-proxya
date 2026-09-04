@@ -29,7 +29,7 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 			indicator = "[R]"
 		} else if active != nil && i < len(active.Presets) {
 			a := active.Presets[i]
-			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Skin != a.Skin || m.SkinDomain != a.SkinDomain || m.Enabled != a.Enabled {
+			if m.Port != a.Port || m.Path != a.Path || m.SNI != a.SNI || m.Skin != a.Skin || m.SkinDomain != a.SkinDomain || m.Enabled != a.Enabled || m.Dest != a.Dest {
 				isMod = true
 			}
 		} else if active == nil {
