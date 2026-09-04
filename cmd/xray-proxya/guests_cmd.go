@@ -628,10 +628,26 @@ func init() {
 		return []string{"80p,45p,40G,5G", "80p,20p,5G", "none"}, cobra.ShellCompDirectiveNoFileComp
 	})
 	guestsSetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil || cfg == nil {
+			return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+		}
+		aliases := []string{"direct"}
+		for _, co := range cfg.CustomOutbounds {
+			aliases = append(aliases, co.Alias)
+		}
+		return aliases, cobra.ShellCompDirectiveNoFileComp
 	})
 	guestsSetCmd.RegisterFlagCompletionFunc("outbound", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil || cfg == nil {
+			return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+		}
+		aliases := []string{"direct"}
+		for _, co := range cfg.CustomOutbounds {
+			aliases = append(aliases, co.Alias)
+		}
+		return aliases, cobra.ShellCompDirectiveNoFileComp
 	})
 	guestsSetCmd.RegisterFlagCompletionFunc("notify", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"off", "header", "remark", "all"}, cobra.ShellCompDirectiveNoFileComp

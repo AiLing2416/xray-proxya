@@ -77,9 +77,9 @@ var presetsListCmd = &cobra.Command{
 			return
 		}
 
-		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-26s | %-12s | %-12s | %-s\n",
+		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-26s | %-24s | %-12s | %-s\n",
 			"ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "SKIN", "MIN VER", "DEST / PATH")
-		fmt.Println("-----------------------------------------------------------------------------------------------------------------------------")
+		fmt.Println("-----------------------------------------------------------------------------------------------------------------------------------------")
 		for i, mode := range cfg.Presets {
 			status := "OFF"
 			if mode.Enabled {
@@ -91,7 +91,11 @@ var presetsListCmd = &cobra.Command{
 			}
 			skin := "-"
 			if mode.Skin != "" {
-				skin = mode.Skin
+				if mode.SkinDomain != "" {
+					skin = fmt.Sprintf("%s (%s)", mode.Skin, mode.SkinDomain)
+				} else {
+					skin = mode.Skin
+				}
 			}
 			minVer := "-"
 			if supportsReality(mode.Mode) {
@@ -103,7 +107,7 @@ var presetsListCmd = &cobra.Command{
 			} else if mode.Path != "" {
 				destOrPath = mode.Path
 			}
-			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-26s | %-12s | %-12s | %-s\n",
+			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-26s | %-24s | %-12s | %-s\n",
 				i+1, mode.Mode, status, mode.Port, sni, skin, minVer, destOrPath)
 		}
 		fmt.Println()

@@ -56,5 +56,9 @@ func init() {
 	doctorCheckCmd.Flags().StringVar(&doctorCheckRole, "role", "", "Override inspection role (server, gateway, or generic)")
 	doctorCheckCmd.Flags().IntVar(&doctorCheckTimeoutS, "timeout", 12, "Diagnostic execution timeout in seconds")
 
+	_ = doctorCheckCmd.RegisterFlagCompletionFunc("role", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"server", "gateway", "generic"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
 	doctorCmd.AddCommand(doctorCheckCmd)
 }
