@@ -153,7 +153,7 @@ func TestNextcloudHandler(t *testing.T) {
 		t.Errorf("GET /login?direct=1 missing base64 encoded username")
 	}
 
-	// 6. WebDAV probe
+	// 6. WebDAV probe (SabreDAV XML, no Go plaintext)
 	req = httptest.NewRequest("GET", "/remote.php/webdav/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -162,6 +162,12 @@ func TestNextcloudHandler(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Www-Authenticate"), "Nextcloud") {
 		t.Errorf("GET /remote.php/webdav/ Www-Authenticate header mismatch")
+	}
+	if !strings.Contains(rec.Body.String(), "<s:exception>Sabre\\DAV\\Exception\\NotAuthenticated</s:exception>") {
+		t.Errorf("GET /remote.php/webdav/ missing SabreDAV XML body, got %q", rec.Body.String())
+	}
+	if rec.Body.String() == "Unauthorized\n" {
+		t.Errorf("GET /remote.php/webdav/ returned Go plaintext Unauthorized")
 	}
 
 	// 7. CalDAV probe redirect
@@ -178,6 +184,120 @@ func TestNextcloudHandler(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("GET /ocs/v2.php/core/getapppassword code = %d, want 401", rec.Code)
+	}
+
+	// 9. Static asset: no X-Powered-By, valid Cache-Control, text/javascript MIME
+	req = httptest.NewRequest("GET", "/dist/core-common.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /dist/core-common.js code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("X-Powered-By") != "" {
+		t.Errorf("GET /dist/core-common.js should not have X-Powered-By header, got %q", rec.Header().Get("X-Powered-By"))
+	}
+	if rec.Header().Get("Content-Type") != "text/javascript" {
+		t.Errorf("GET /dist/core-common.js Content-Type = %q, want 'text/javascript'", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Header().Get("Cache-Control"), "max-age=15778463") {
+		t.Errorf("GET /dist/core-common.js missing Cache-Control max-age header")
+	}
+
+	// 10. 204 Ping probe
+	req = httptest.NewRequest("GET", "/index.php/204", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("GET /index.php/204 code = %d, want 204", rec.Code)
+	}
+	if rec.Header().Get("X-Powered-By") != "PHP/8.5.10" {
+		t.Errorf("GET /index.php/204 missing X-Powered-By: PHP/8.5.10")
+	}
+
+	// 11. Webcron probe
+	req = httptest.NewRequest("GET", "/cron.php", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"status":"success"`) {
+		t.Errorf("GET /cron.php failed: %s", rec.Body.String())
+	}
+
+	// 12. Robots.txt: no X-Powered-By
+	req = httptest.NewRequest("GET", "/robots.txt", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "User-agent: *") {
+		t.Errorf("GET /robots.txt failed: %s", rec.Body.String())
+	}
+	if rec.Header().Get("X-Powered-By") != "" {
+		t.Errorf("GET /robots.txt should not have X-Powered-By header")
+	}
+
+	// 13. Nodeinfo probe
+	req = httptest.NewRequest("GET", "/.well-known/nodeinfo", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /.well-known/nodeinfo code = %d, want 404", rec.Code)
+	}
+	if rec.Header().Get("X-Nextcloud-Well-Known") != "1" {
+		t.Errorf("GET /.well-known/nodeinfo missing X-Nextcloud-Well-Known header")
+	}
+
+	// 14. Capabilities probe
+	req = httptest.NewRequest("GET", "/ocs/v2.php/cloud/capabilities", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Errorf("GET /ocs/v2.php/cloud/capabilities code = %d, want 412", rec.Code)
+	}
+
+	// 15. Catch-all 404: Apache HTML, no Go plaintext 404
+	req = httptest.NewRequest("GET", "/some/random/nonexistent/path", nil)
+	req.Host = "nextcloud.example.com"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /some/random/nonexistent/path code = %d, want 404", rec.Code)
+	}
+	if rec.Body.String() == "404 page not found\n" {
+		t.Errorf("GET /some/random/nonexistent/path returned Go plaintext 404")
+	}
+	if !strings.Contains(rec.Body.String(), "<title>404 Not Found</title>") {
+		t.Errorf("GET /some/random/nonexistent/path missing Apache 404 title")
+	}
+	if !strings.Contains(rec.Body.String(), "Apache/2.4.68 (Debian) Server at nextcloud.example.com Port 443") {
+		t.Errorf("GET /some/random/nonexistent/path missing Apache server address banner")
+	}
+
+	// 16. GET /login CSP and cookie verification
+	req = httptest.NewRequest("GET", "/login", nil)
+	req.Host = "nextcloud.example.com"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	csp := rec.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self' 'nonce-") {
+		t.Errorf("GET /login CSP missing nonce: %s", csp)
+	}
+	if strings.Contains(rec.Body.String(), "skin1.ailing.dev") {
+		t.Errorf("GET /login body contains leaked reference to skin1.ailing.dev")
+	}
+	cookies := rec.Result().Cookies()
+	var hasPassphrase, hasSID, hasLax, hasStrict bool
+	for _, c := range cookies {
+		switch c.Name {
+		case "oc_sessionPassphrase":
+			hasPassphrase = true
+		case "ocouaube3hh1":
+			hasSID = true
+		case "nc_sameSiteCookielax":
+			hasLax = true
+		case "nc_sameSiteCookiestrict":
+			hasStrict = true
+		}
+	}
+	if !hasPassphrase || !hasSID || !hasLax || !hasStrict {
+		t.Errorf("GET /login missing expected Nextcloud cookies")
 	}
 }
 

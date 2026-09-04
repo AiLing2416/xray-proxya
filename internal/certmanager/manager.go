@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"xray-proxya/internal/config"
 
@@ -24,6 +25,40 @@ import (
 
 // RenewalThreshold defines how early before expiration auto-renewal is triggered (last 7 days).
 const RenewalThreshold = 7 * 24 * time.Hour
+
+var (
+	challengesMu     sync.RWMutex
+	activeChallenges = make(map[string]string)
+)
+
+// RegisterChallenge records an active ACME HTTP-01 challenge response for a given path.
+func RegisterChallenge(path, response string) {
+	challengesMu.Lock()
+	defer challengesMu.Unlock()
+	activeChallenges[path] = response
+}
+
+// UnregisterChallenge removes an active ACME challenge path.
+func UnregisterChallenge(path string) {
+	challengesMu.Lock()
+	defer challengesMu.Unlock()
+	delete(activeChallenges, path)
+}
+
+// HandleChallenge checks whether an incoming HTTP request matches an active ACME challenge.
+// Returns true if the request was handled.
+func HandleChallenge(w http.ResponseWriter, r *http.Request) bool {
+	challengesMu.RLock()
+	resp, ok := activeChallenges[r.URL.Path]
+	challengesMu.RUnlock()
+	if !ok {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte(resp))
+	return true
+}
 
 // Hookable dependencies for testing.
 var (
@@ -149,8 +184,11 @@ func performACMEHttp01(ctx context.Context, domain, email, certDir string) (*con
 		return nil, fmt.Errorf("compute challenge response: %w", err)
 	}
 
-	// Spin up temporary HTTP server on port 80
+	// Spin up temporary HTTP server on port 80 (or register with existing port 80 listener)
 	challengePath := client.HTTP01ChallengePath(http01Chal.Token)
+	RegisterChallenge(challengePath, responseVal)
+	defer UnregisterChallenge(challengePath)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc(challengePath, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
@@ -159,16 +197,15 @@ func performACMEHttp01(ctx context.Context, domain, email, certDir string) (*con
 	})
 
 	listener, err := httpListenFunc(":80", mux)
-	if err != nil {
-		return nil, fmt.Errorf("listen on port 80 for ACME challenge: %w (ensure port 80 is free)", err)
+	if err == nil {
+		server := &http.Server{Handler: mux}
+		go func() {
+			_ = server.Serve(listener)
+		}()
+		defer func() {
+			_ = server.Shutdown(context.Background())
+		}()
 	}
-	server := &http.Server{Handler: mux}
-	go func() {
-		_ = server.Serve(listener)
-	}()
-	defer func() {
-		_ = server.Shutdown(context.Background())
-	}()
 
 	// Accept challenge
 	if _, err := client.Accept(ctx, http01Chal); err != nil {

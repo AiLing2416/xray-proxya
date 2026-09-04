@@ -301,6 +301,29 @@ var runCmd = &cobra.Command{
 			} else {
 				fmt.Printf("⚠️  Failed to start Web Skin HTTPS server: %v\n", err)
 			}
+
+			// Start port 80 HTTP -> HTTPS redirect server with ACME challenge delegation
+			httpRedirectServer := &http.Server{
+				Addr: ":80",
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if certmanager.HandleChallenge(w, r) {
+						return
+					}
+					host := r.Host
+					if h, _, err := net.SplitHostPort(host); err == nil {
+						host = h
+					}
+					target := "https://" + host + r.URL.RequestURI()
+					http.Redirect(w, r, target, http.StatusMovedPermanently)
+				}),
+			}
+			if ln, err := net.Listen("tcp", ":80"); err == nil {
+				skinServers = append(skinServers, httpRedirectServer)
+				go func() { _ = httpRedirectServer.Serve(ln) }()
+				fmt.Println("🌐 Port 80 HTTP -> HTTPS redirect listener started")
+			} else {
+				fmt.Printf("⚠️  Port 80 redirect listener not started: %v\n", err)
+			}
 		}
 
 		sigChan := make(chan os.Signal, 1)
