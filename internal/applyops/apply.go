@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"syscall"
 	"time"
 	"xray-proxya/internal/config"
@@ -79,25 +80,36 @@ func applyPendingLocked(opts Options) ([]string, error) {
 				continue
 			}
 			if m.Mode == config.ModeVLESSVision || m.Mode == config.ModeVLESSReality {
-				if _, _, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest); err != nil {
-					return lines, fmt.Errorf("REALITY preset %s configuration invalid: %w", m.Mode, err)
-				}
-				var activeM *config.ModeInfo
-				if activeCfg != nil {
-					for j := range activeCfg.Presets {
-						if activeCfg.Presets[j].Mode == m.Mode {
-							activeM = &activeCfg.Presets[j]
-							break
+				isLocalDest := strings.HasPrefix(m.Dest, "127.0.0.1:") || strings.HasPrefix(m.Dest, "localhost:")
+				if m.Skin != "" && isLocalDest {
+					cert := cfg.FindCert(m.SNI)
+					if cert == nil && m.SkinDomain != "" {
+						cert = cfg.FindCert(m.SkinDomain)
+					}
+					if cert == nil {
+						return lines, fmt.Errorf("REALITY preset %s has skin enabled for domain %s, but certificate is not registered", m.Mode, m.SNI)
+					}
+				} else {
+					if _, _, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest); err != nil {
+						return lines, fmt.Errorf("REALITY preset %s configuration invalid: %w", m.Mode, err)
+					}
+					var activeM *config.ModeInfo
+					if activeCfg != nil {
+						for j := range activeCfg.Presets {
+							if activeCfg.Presets[j].Mode == m.Mode {
+								activeM = &activeCfg.Presets[j]
+								break
+							}
 						}
 					}
-				}
-				needsOnlineValidation := activeM == nil || !activeM.Enabled || activeM.SNI != m.SNI || activeM.Dest != m.Dest
-				if needsOnlineValidation {
-					lines = append(lines, fmt.Sprintf("🔍 Validating REALITY target for preset %s: %s (%s)...", m.Mode, m.SNI, m.Dest))
-					if _, err := config.ValidateSkinTarget(m.Dest, 5*time.Second); err != nil {
-						return lines, fmt.Errorf("REALITY target %s (%s) validation failed during apply: %w", m.SNI, m.Dest, err)
+					needsOnlineValidation := activeM == nil || !activeM.Enabled || activeM.SNI != m.SNI || activeM.Dest != m.Dest
+					if needsOnlineValidation {
+						lines = append(lines, fmt.Sprintf("🔍 Validating REALITY target for preset %s: %s (%s)...", m.Mode, m.SNI, m.Dest))
+						if _, err := config.ValidateRealityTarget(m.Dest, 5*time.Second); err != nil {
+							return lines, fmt.Errorf("REALITY target %s (%s) validation failed during apply: %w", m.SNI, m.Dest, err)
+						}
+						lines = append(lines, fmt.Sprintf("✅ REALITY target validated for preset %s.", m.Mode))
 					}
-					lines = append(lines, fmt.Sprintf("✅ REALITY target validated for preset %s.", m.Mode))
 				}
 			}
 		}

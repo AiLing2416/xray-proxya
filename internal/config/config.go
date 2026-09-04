@@ -142,6 +142,7 @@ type UserConfig struct {
 	GuestSubPort  int                   `json:"guest_sub_port,omitempty"`
 	GuestSubBind  string                `json:"guest_sub_bind,omitempty"`
 	IPv6Pool      IPv6Config            `json:"ipv6_pool"`
+	Certs         []ManagedCert         `json:"certs,omitempty"`
 
 	// legacyPath* are populated only while decoding the pre-relay PathLink
 	// schema. They are intentionally not persisted.
@@ -413,6 +414,33 @@ type CustomOutbound struct {
 	Config map[string]interface{} `json:"config"`
 }
 
+const (
+	SkinNextcloud   = "nextcloud"
+	SkinFilebrowser = "filebrowser"
+	SkinSeafile     = "seafile"
+)
+
+var SupportedSkins = []string{SkinNextcloud, SkinFilebrowser, SkinSeafile}
+
+func IsValidSkin(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case SkinNextcloud, SkinFilebrowser, SkinSeafile:
+		return true
+	default:
+		return false
+	}
+}
+
+type ManagedCert struct {
+	Domain    string    `json:"domain"`
+	CertPath  string    `json:"cert_path"`
+	KeyPath   string    `json:"key_path"`
+	IssuedAt  time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Issuer    string    `json:"issuer,omitempty"`
+	AutoRenew bool      `json:"auto_renew"`
+}
+
 type ModeInfo struct {
 	Mode         PresetMode `json:"mode"`
 	Enabled      bool       `json:"enabled"`
@@ -423,8 +451,32 @@ type ModeInfo struct {
 	Fingerprint  string     `json:"fingerprint,omitempty"`
 	MinClientVer string     `json:"min_client_ver,omitempty"`
 	Settings     Settings   `json:"settings"`
-	Skin         bool       `json:"skin,omitempty"`
+	Skin         string     `json:"skin,omitempty"`
+	SkinDomain   string     `json:"skin_domain,omitempty"`
 	RegenFlag    bool       `json:"regen_flag,omitempty"`
+}
+
+func (m *ModeInfo) UnmarshalJSON(data []byte) error {
+	type Alias ModeInfo
+	aux := &struct {
+		Skin json.RawMessage `json:"skin"`
+		*Alias
+	}{
+		Alias: (*Alias)(m),
+	}
+	if err := json.Unmarshal(data, aux); err != nil {
+		return err
+	}
+	if len(aux.Skin) > 0 {
+		var s string
+		if err := json.Unmarshal(aux.Skin, &s); err == nil {
+			m.Skin = s
+		} else {
+			// legacy bool: ignore
+			m.Skin = ""
+		}
+	}
+	return nil
 }
 
 type Settings struct {
@@ -433,6 +485,48 @@ type Settings struct {
 	ShortID    string `json:"shortId,omitempty"`
 	Password   string `json:"password,omitempty"`
 	Cipher     string `json:"cipher,omitempty"`
+}
+
+func (cfg *UserConfig) FindCert(domain string) *ManagedCert {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	for i := range cfg.Certs {
+		if strings.ToLower(cfg.Certs[i].Domain) == d {
+			return &cfg.Certs[i]
+		}
+	}
+	return nil
+}
+
+func (cfg *UserConfig) AddCert(cert ManagedCert) {
+	d := strings.ToLower(strings.TrimSpace(cert.Domain))
+	cert.Domain = d
+	for i := range cfg.Certs {
+		if strings.ToLower(cfg.Certs[i].Domain) == d {
+			cfg.Certs[i] = cert
+			return
+		}
+	}
+	cfg.Certs = append(cfg.Certs, cert)
+}
+
+func (cfg *UserConfig) RemoveCert(domain string) bool {
+	d := strings.ToLower(strings.TrimSpace(domain))
+	idx := -1
+	for i := range cfg.Certs {
+		if strings.ToLower(cfg.Certs[i].Domain) == d {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		cfg.Certs = append(cfg.Certs[:idx], cfg.Certs[idx+1:]...)
+		return true
+	}
+	return false
+}
+
+func (cfg *UserConfig) GetCertDir() string {
+	return filepath.Join(GetConfigDir(), "certs")
 }
 
 func (cfg *UserConfig) Normalize() {
@@ -758,11 +852,22 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 
 	for i := range cfg.Presets {
 		m := &cfg.Presets[i]
+		if m.Skin != "" && !IsValidSkin(m.Skin) {
+			m.Skin = ""
+			m.SkinDomain = ""
+			changes = append(changes, "cleared invalid skin for preset "+string(m.Mode))
+		}
+		if m.Skin != "" && m.SkinDomain == "" {
+			// If skin is set but domain is missing, skin cannot be active
+			m.Skin = ""
+			changes = append(changes, "cleared skin without domain for preset "+string(m.Mode))
+		}
+		if m.Skin != "" && m.Mode != ModeVLESSVision && m.Mode != ModeVLESSReality {
+			m.Skin = ""
+			m.SkinDomain = ""
+			changes = append(changes, "cleared unsupported skin for preset "+string(m.Mode))
+		}
 		if m.Mode == ModeVLESSVision || m.Mode == ModeVLESSReality {
-			if m.Skin {
-				m.Skin = false
-				changes = append(changes, "cleared legacy skin flag for preset "+string(m.Mode))
-			}
 			if m.Fingerprint == "" || !IsAllowedRealityFingerprint(m.Fingerprint) {
 				fp, err := GetRandomRealityFingerprint()
 				if err != nil {
@@ -781,13 +886,22 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 					m.Dest = net.JoinHostPort(normSNI, "443")
 					changes = append(changes, "backfilled default dest for preset "+string(m.Mode))
 				} else {
-					destHost, _, normDest, err := NormalizeRealityTarget(m.Dest)
-					if err != nil || destHost != normSNI {
-						m.Dest = net.JoinHostPort(normSNI, "443")
-						changes = append(changes, "aligned mismatched dest with SNI for preset "+string(m.Mode))
-					} else if normDest != m.Dest {
-						m.Dest = normDest
-						changes = append(changes, "normalized dest for preset "+string(m.Mode))
+					// If Dest is local fallback for skin, preserve it
+					isLocalDest := strings.HasPrefix(m.Dest, "127.0.0.1:") || strings.HasPrefix(m.Dest, "localhost:")
+					if m.Skin != "" && isLocalDest {
+						if m.Dest == "127.0.0.1:8443" {
+							m.Dest = "127.0.0.1:9443"
+							changes = append(changes, "migrated skin dest port to 9443 for preset "+string(m.Mode))
+						}
+					} else {
+						destHost, _, normDest, err := NormalizeRealityTarget(m.Dest)
+						if err != nil || destHost != normSNI {
+							m.Dest = net.JoinHostPort(normSNI, "443")
+							changes = append(changes, "aligned mismatched dest with SNI for preset "+string(m.Mode))
+						} else if normDest != m.Dest {
+							m.Dest = normDest
+							changes = append(changes, "normalized dest for preset "+string(m.Mode))
+						}
 					}
 				}
 			}

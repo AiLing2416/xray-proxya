@@ -516,7 +516,7 @@ func TestGenerateXrayJSONSkinPreservesRealityDestination(t *testing.T) {
 				Port:    443,
 				SNI:     "www.intel.com",
 				Dest:    "www.intel.com:443",
-				Skin:    true,
+				Skin:    "",
 			},
 		},
 	}

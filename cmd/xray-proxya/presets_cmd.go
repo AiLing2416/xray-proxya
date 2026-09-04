@@ -14,20 +14,22 @@ import (
 )
 
 var (
-	presetOff               bool
-	presetOn                bool
-	presetPort              int
-	presetRegen             bool
-	presetSkin              bool
-	presetSkinAWS           bool
-	presetSkinGCP           bool
-	presetSkinOracle        bool
-	presetSkinVendor        string
-	presetSkinManual        string
-	presetSkinManualForce   bool
-	presetSNI               string
-	presetDest              string
-	presetMinVer            string
+	presetOff         bool
+	presetOn          bool
+	presetPort        int
+	presetRegen       bool
+	presetSNIAWS      bool
+	presetSNIGCP      bool
+	presetSNIOracle   bool
+	presetSNIVendor   string
+	presetSNIManual   string
+	presetSNIForce    bool
+	presetSNICheck    bool
+	presetSNI         string
+	presetDest        string
+	presetMinVer      string
+	presetSkin        string
+	presetSkinDomain  string
 )
 
 var promptConfirmFunc = func(prompt string) bool {
@@ -46,12 +48,16 @@ var presetsCmd = &cobra.Command{
 	Short: "Manage preset inbound slots (STAGING)",
 }
 
+func supportsReality(m config.PresetMode) bool {
+	return m == config.ModeVLESSVision || m == config.ModeVLESSReality
+}
+
 func supportsSkin(m config.PresetMode) bool {
 	return m == config.ModeVLESSVision || m == config.ModeVLESSReality
 }
 
 var checkTargetAvailability = func(target string) error {
-	_, err := config.ValidateSkinTarget(target, 5*time.Second)
+	_, err := config.ValidateRealityTarget(target, 5*time.Second)
 	return err
 }
 
@@ -71,8 +77,9 @@ var presetsListCmd = &cobra.Command{
 			return
 		}
 
-		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-30s | %-12s | %-s\n", "ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "MIN VER", "DEST / PATH")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------")
+		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-26s | %-12s | %-12s | %-s\n",
+			"ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "SKIN", "MIN VER", "DEST / PATH")
+		fmt.Println("-----------------------------------------------------------------------------------------------------------------------------")
 		for i, mode := range cfg.Presets {
 			status := "OFF"
 			if mode.Enabled {
@@ -82,8 +89,12 @@ var presetsListCmd = &cobra.Command{
 			if mode.SNI != "" {
 				sni = mode.SNI
 			}
+			skin := "-"
+			if mode.Skin != "" {
+				skin = mode.Skin
+			}
 			minVer := "-"
-			if supportsSkin(mode.Mode) {
+			if supportsReality(mode.Mode) {
 				minVer = config.ResolveMinClientVersion(&mode)
 			}
 			destOrPath := "-"
@@ -92,8 +103,28 @@ var presetsListCmd = &cobra.Command{
 			} else if mode.Path != "" {
 				destOrPath = mode.Path
 			}
-			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-30s | %-12s | %-s\n", i+1, mode.Mode, status, mode.Port, sni, minVer, destOrPath)
+			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-26s | %-12s | %-12s | %-s\n",
+				i+1, mode.Mode, status, mode.Port, sni, skin, minVer, destOrPath)
 		}
+		fmt.Println()
+	},
+}
+
+var presetsSkinCmd = &cobra.Command{
+	Use:   "skin",
+	Short: "Manage Web camouflage skins for presets",
+}
+
+var presetsSkinListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "List available Web camouflage skins and their characteristics",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Println("\nAVAILABLE WEB CAMOUFLAGE SKINS:")
+		fmt.Println("--------------------------------------------------------------------------------------")
+		fmt.Println("nextcloud   - Official Nextcloud Hub login replica with /status.php & auth rejection")
+		fmt.Println("filebrowser - Modern Vue-based File Browser login replica with /manifest.json & 403 rejection")
+		fmt.Println("seafile     - Seafile Seahub login replica with /api2/ping & 200 error banner")
+		fmt.Println("off / none  - Disable Web camouflage skin")
 		fmt.Println()
 	},
 }
@@ -104,25 +135,32 @@ var presetsSetCmd = &cobra.Command{
 	Long: strings.TrimSpace(`
 Configure or toggle features for a specific preset slot in the STAGING config.
 
-You can enable/disable modes, change ports, regenerate secrets/paths, and
-select or validate REALITY destination SNI and targets.
+You can enable/disable modes, change ports, regenerate secrets/paths,
+select or validate REALITY destination SNI and targets, and configure
+high-fidelity Web camouflage skins (Nextcloud, File Browser, Seafile).
 
 REALITY target selection highlights:
   - REALITY requires a qualified destination site matching the advertised SNI.
   - Candidate targets must pass strict TLS 1.3, X25519, HTTP/2, certificate, and non-redirect validation.
-  - Select candidate targets from safe cloud vendor pools (AWS, GCP, Oracle).
-  - Supports manual domain selection with mandatory online validation and risk safety checks.
+  - Select candidate targets from safe cloud vendor pools (AWS, GCP, Oracle) via --sni-aws, etc.
+  - Supports manual domain selection with mandatory online validation via --sni.
+
+Web camouflage skin highlights:
+  - Set authentic login replicas with realistic credential rejection: --skin <type>
+  - Must provide a domain with a valid certificate: --skin-domain <domain>
 `),
 	Example: strings.TrimSpace(`
-  # Enable slot 1 and validate current REALITY target
-  xray-proxya presets set 1 --on --port 443 --skin
-
-  # Benchmark and select best domain from GCP or AWS cloud pool
-  xray-proxya presets set 1 --skin-gcp
-  xray-proxya presets set 1 --skin-aws
+  # Enable slot 1 and select qualified domain from AWS pool
+  xray-proxya presets set 1 --on --port 443 --sni-aws
 
   # Manually set arbitrary REALITY domain with validation
-  xray-proxya presets set 1 --skin-manual pkg.go.dev
+  xray-proxya presets set 1 --sni pkg.go.dev
+
+  # Configure Seafile login skin with managed certificate
+  xray-proxya presets set 1 --skin seafile --skin-domain sea.ailing.dev
+
+  # Disable Web skin
+  xray-proxya presets set 1 --skin off
 `),
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -140,29 +178,29 @@ REALITY target selection highlights:
 		m := &cfg.Presets[idx]
 
 		selectors := 0
-		if presetSkinAWS {
+		if presetSNIAWS {
 			selectors++
 		}
-		if presetSkinGCP {
+		if presetSNIGCP {
 			selectors++
 		}
-		if presetSkinOracle {
+		if presetSNIOracle {
 			selectors++
 		}
-		if presetSkinVendor != "" {
+		if presetSNIVendor != "" {
 			selectors++
 		}
-		if presetSkinManual != "" || presetSNI != "" {
+		if presetSNIManual != "" || presetSNI != "" {
 			selectors++
 		}
 
 		if selectors > 1 {
-			fmt.Println("❌ Error: Conflicting skin target flags specified. Please specify only one target selection option.")
+			fmt.Println("❌ Error: Conflicting SNI target flags specified. Please specify only one target selection option.")
 			return
 		}
 
-		hasRealityReq := presetSkin || selectors > 0 || presetDest != ""
-		if hasRealityReq && !supportsSkin(m.Mode) {
+		hasRealityReq := presetSNICheck || selectors > 0 || presetDest != ""
+		if hasRealityReq && !supportsReality(m.Mode) {
 			fmt.Printf("❌ Error: Mode [%s] does not support REALITY target/SNI configuration (requires VLESS Reality or Vision).\n", m.Mode)
 			return
 		}
@@ -180,9 +218,9 @@ REALITY target selection highlights:
 			m.RegenFlag = true
 		}
 
-		// 1. Manual Skin mode
-		if presetSkinManual != "" || presetSNI != "" {
-			manualDomain := presetSkinManual
+		// 1. Manual SNI mode
+		if presetSNIManual != "" || presetSNI != "" {
+			manualDomain := presetSNIManual
 			if manualDomain == "" {
 				manualDomain = presetSNI
 			}
@@ -210,15 +248,15 @@ REALITY target selection highlights:
 			// Security risk inspection
 			if isRisky, reason := config.InspectRealityDomainRisk(normHost); isRisky {
 				fmt.Printf("⚠️  WARNING: Target domain %q is flagged as risky:\n    -> %s\n", normHost, reason)
-				if !presetSkinManualForce {
+				if !presetSNIForce {
 					confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", normHost))
 					if !confirmed {
-						fmt.Printf("❌ Target configuration aborted. Use '--skin-manual-force' to bypass this safety check.\n")
+						fmt.Printf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.\n")
 						return
 					}
 					fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
 				} else {
-					fmt.Println("⚠️  Bypassing safety check via '--skin-manual-force'.")
+					fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
 				}
 			}
 
@@ -233,16 +271,16 @@ REALITY target selection highlights:
 		} else if selectors > 0 {
 			// 2. Specific Cloud Vendor Pool
 			vendor := config.VendorAWS
-			if presetSkinGCP {
+			if presetSNIGCP {
 				vendor = config.VendorGCP
-			} else if presetSkinOracle {
+			} else if presetSNIOracle {
 				vendor = config.VendorOracle
-			} else if presetSkinVendor != "" {
-				vendor = config.NormalizeVendor(presetSkinVendor)
+			} else if presetSNIVendor != "" {
+				vendor = config.NormalizeVendor(presetSNIVendor)
 			}
 
 			if !config.IsValidCloudVendor(vendor) {
-				fmt.Printf("❌ Error: Unknown cloud vendor %q\n", presetSkinVendor)
+				fmt.Printf("❌ Error: Unknown cloud vendor %q\n", presetSNIVendor)
 				return
 			}
 
@@ -278,15 +316,15 @@ REALITY target selection highlights:
 
 			if isRisky, reason := config.InspectRealityDomainRisk(destHost); isRisky {
 				fmt.Printf("⚠️  WARNING: Target destination %q is flagged as risky:\n    -> %s\n", destHost, reason)
-				if !presetSkinManualForce {
+				if !presetSNIForce {
 					confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", destHost))
 					if !confirmed {
-						fmt.Printf("❌ Target configuration aborted. Use '--skin-manual-force' to bypass this safety check.\n")
+						fmt.Printf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.\n")
 						return
 					}
 					fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
 				} else {
-					fmt.Println("⚠️  Bypassing safety check via '--skin-manual-force'.")
+					fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
 				}
 			}
 
@@ -297,7 +335,7 @@ REALITY target selection highlights:
 			}
 			m.Dest = normDest
 			fmt.Printf("🎯 Validated REALITY destination: %s\n", normDest)
-		} else if presetSkin {
+		} else if presetSNICheck {
 			// 4. Validate current SNI/Dest without changing
 			if m.SNI == "" {
 				fmt.Println("❌ Error: Current preset has no SNI configured.")
@@ -316,8 +354,72 @@ REALITY target selection highlights:
 			fmt.Printf("🎯 Validated current REALITY target: %s (%s)\n", m.SNI, target)
 		}
 
-		if cmd.Flags().Changed("min-ver") {
+		// 5. Web camouflage skin configuration
+		if cmd.Flags().Changed("skin") && presetSkin != "" {
 			if !supportsSkin(m.Mode) {
+				fmt.Printf("❌ Error: Mode [%s] does not support Web camouflage skin.\n", m.Mode)
+				return
+			}
+			st := strings.ToLower(strings.TrimSpace(presetSkin))
+			if st == "off" || st == "none" {
+				m.Skin = ""
+				m.SkinDomain = ""
+				if strings.HasPrefix(m.Dest, "127.0.0.1:") && m.SNI != "" {
+					m.Dest = net.JoinHostPort(m.SNI, "443")
+				}
+				fmt.Printf("🎨 Disabled Web Skin for preset [%s].\n", m.Mode)
+			} else {
+				if !config.IsValidSkin(st) {
+					fmt.Printf("❌ Error: Unknown skin %q. Available skins: %s\n", presetSkin, strings.Join(config.SupportedSkins, ", "))
+					return
+				}
+				effectiveDomain := presetSkinDomain
+				if effectiveDomain == "" {
+					if m.SkinDomain != "" {
+						effectiveDomain = m.SkinDomain
+					} else if m.SNI != "" {
+						effectiveDomain = m.SNI
+					}
+				}
+				effectiveDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(effectiveDomain)), ".")
+				if effectiveDomain == "" {
+					fmt.Println("❌ Error: Setting --skin requires a valid domain. Please specify --skin-domain <domain> or run 'xray-proxya cert add <domain>' first.")
+					return
+				}
+				cert := cfg.FindCert(effectiveDomain)
+				if cert == nil {
+					fmt.Printf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.\n", effectiveDomain, effectiveDomain)
+					return
+				}
+				m.Skin = st
+				m.SkinDomain = effectiveDomain
+				if supportsReality(m.Mode) {
+					m.SNI = effectiveDomain
+					m.Dest = "127.0.0.1:9443"
+				}
+				fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s (Cert valid until %s).\n",
+					m.Skin, m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+			}
+		} else if cmd.Flags().Changed("skin-domain") {
+			if m.Skin == "" {
+				fmt.Println("❌ Error: Cannot set --skin-domain without setting --skin.")
+				return
+			}
+			effectiveDomain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSkinDomain)), ".")
+			cert := cfg.FindCert(effectiveDomain)
+			if cert == nil {
+				fmt.Printf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.\n", effectiveDomain, effectiveDomain)
+				return
+			}
+			m.SkinDomain = effectiveDomain
+			if supportsReality(m.Mode) {
+				m.SNI = effectiveDomain
+			}
+			fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+		}
+
+		if cmd.Flags().Changed("min-ver") {
+			if !supportsReality(m.Mode) {
 				fmt.Printf("❌ Error: Mode [%s] does not support REALITY min-ver configuration (requires VLESS Reality or Vision).\n", m.Mode)
 				return
 			}
@@ -335,11 +437,15 @@ REALITY target selection highlights:
 			status = "ON"
 		}
 		extraInfo := ""
-		if supportsSkin(m.Mode) {
+		if supportsReality(m.Mode) {
 			extraInfo = fmt.Sprintf(", MinVer: %s", config.ResolveMinClientVersion(m))
 		}
-		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s [STAGING]\n",
-			m.Mode, status, m.Port, m.SNI, m.Dest, extraInfo)
+		skinInfo := ""
+		if m.Skin != "" {
+			skinInfo = fmt.Sprintf(", Skin: %s (%s)", m.Skin, m.SkinDomain)
+		}
+		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s%s [STAGING]\n",
+			m.Mode, status, m.Port, m.SNI, m.Dest, extraInfo, skinInfo)
 		fmt.Println("🚀 Run 'apply' to commit changes.")
 	},
 }
@@ -366,14 +472,34 @@ func init() {
 	presetsSetCmd.Flags().BoolVar(&presetOn, "on", false, "Enable this mode")
 	presetsSetCmd.Flags().IntVarP(&presetPort, "port", "p", 0, "Set specific port")
 	presetsSetCmd.Flags().BoolVarP(&presetRegen, "regen", "r", false, "Regenerate secrets/paths for this mode on apply")
-	presetsSetCmd.Flags().BoolVar(&presetSkin, "skin", false, "Validate current REALITY target without changing SNI")
-	presetsSetCmd.Flags().BoolVar(&presetSkinAWS, "skin-aws", false, "Benchmark and select qualified target from AWS pool")
-	presetsSetCmd.Flags().BoolVar(&presetSkinGCP, "skin-gcp", false, "Benchmark and select qualified target from GCP pool")
-	presetsSetCmd.Flags().BoolVar(&presetSkinOracle, "skin-oracle", false, "Benchmark and select qualified target from Oracle Cloud pool")
-	presetsSetCmd.Flags().StringVar(&presetSkinVendor, "skin-vendor", "", "Benchmark and select qualified target from a specific cloud vendor")
-	presetsSetCmd.Flags().StringVar(&presetSkinManual, "skin-manual", "", "Manually set and validate arbitrary REALITY target domain")
-	presetsSetCmd.Flags().BoolVar(&presetSkinManualForce, "skin-manual-force", false, "Force using a risky REALITY target without interactive confirmation")
+
+	// SNI flags (migrated from skin)
 	presetsSetCmd.Flags().StringVar(&presetSNI, "sni", "", "Manually set and validate REALITY SNI domain")
+	presetsSetCmd.Flags().BoolVar(&presetSNIAWS, "sni-aws", false, "Benchmark and select qualified target from AWS pool")
+	presetsSetCmd.Flags().BoolVar(&presetSNIGCP, "sni-gcp", false, "Benchmark and select qualified target from GCP pool")
+	presetsSetCmd.Flags().BoolVar(&presetSNIOracle, "sni-oracle", false, "Benchmark and select qualified target from Oracle Cloud pool")
+	presetsSetCmd.Flags().StringVar(&presetSNIVendor, "sni-vendor", "", "Benchmark and select qualified target from a specific cloud vendor")
+	presetsSetCmd.Flags().BoolVar(&presetSNIForce, "sni-force", false, "Force using a risky REALITY target without interactive confirmation")
+	presetsSetCmd.Flags().BoolVar(&presetSNICheck, "sni-check", false, "Validate current REALITY target without changing SNI")
+
+	// Backward compatibility aliases for old skin-* SNI flags
+	presetsSetCmd.Flags().BoolVar(&presetSNIAWS, "skin-aws", false, "Alias for --sni-aws")
+	presetsSetCmd.Flags().BoolVar(&presetSNIGCP, "skin-gcp", false, "Alias for --sni-gcp")
+	presetsSetCmd.Flags().BoolVar(&presetSNIOracle, "skin-oracle", false, "Alias for --sni-oracle")
+	presetsSetCmd.Flags().StringVar(&presetSNIVendor, "skin-vendor", "", "Alias for --sni-vendor")
+	presetsSetCmd.Flags().StringVar(&presetSNIManual, "skin-manual", "", "Alias for --sni")
+	presetsSetCmd.Flags().BoolVar(&presetSNIForce, "skin-manual-force", false, "Alias for --sni-force")
+	_ = presetsSetCmd.Flags().MarkHidden("skin-aws")
+	_ = presetsSetCmd.Flags().MarkHidden("skin-gcp")
+	_ = presetsSetCmd.Flags().MarkHidden("skin-oracle")
+	_ = presetsSetCmd.Flags().MarkHidden("skin-vendor")
+	_ = presetsSetCmd.Flags().MarkHidden("skin-manual")
+	_ = presetsSetCmd.Flags().MarkHidden("skin-manual-force")
+
+	// Web camouflage skin flags
+	presetsSetCmd.Flags().StringVar(&presetSkin, "skin", "", "Configure Web camouflage skin (nextcloud, filebrowser, seafile, off)")
+	presetsSetCmd.Flags().StringVar(&presetSkinDomain, "skin-domain", "", "Specify domain for Web camouflage skin (must have valid cert in cert list)")
+
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Set REALITY destination host:port (host must match SNI)")
 	presetsSetCmd.Flags().StringVar(&presetMinVer, "min-ver", "", "Set minimum Xray client version required for REALITY (e.g. 26.3.27, or 0.0.0 to disable)")
 
@@ -384,7 +510,7 @@ func init() {
 		return getPresetIDs(), cobra.ShellCompDirectiveNoFileComp
 	}
 
-	presetsSetCmd.RegisterFlagCompletionFunc("skin-vendor", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	presetsSetCmd.RegisterFlagCompletionFunc("sni-vendor", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return config.GetAllCloudVendors(), cobra.ShellCompDirectiveNoFileComp
 	})
 
@@ -392,8 +518,25 @@ func init() {
 		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
 	})
 
-	presetsSetCmd.RegisterFlagCompletionFunc("skin-manual", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return config.GetAllRealityDomains(), cobra.ShellCompDirectiveNoFileComp
+	presetsSetCmd.RegisterFlagCompletionFunc("skin", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{
+			"nextcloud\tNextcloud Hub login replica with /status.php",
+			"filebrowser\tFile Browser Vue SPA login replica with 403 rejection",
+			"seafile\tSeafile login replica with /api2/ping",
+			"off\tDisable Web camouflage skin",
+		}, cobra.ShellCompDirectiveNoFileComp
+	})
+
+	presetsSetCmd.RegisterFlagCompletionFunc("skin-domain", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		domains := make([]string, 0, len(cfg.Certs))
+		for _, c := range cfg.Certs {
+			domains = append(domains, c.Domain)
+		}
+		return domains, cobra.ShellCompDirectiveNoFileComp
 	})
 
 	presetsSetCmd.RegisterFlagCompletionFunc("min-ver", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -404,6 +547,7 @@ func init() {
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd)
+	presetsSkinCmd.AddCommand(presetsSkinListCmd)
+	presetsCmd.AddCommand(presetsListCmd, presetsSetCmd, presetsSkinCmd)
 	rootCmd.AddCommand(presetsCmd)
 }

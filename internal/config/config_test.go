@@ -215,14 +215,14 @@ func TestBackfillDefaultsRealitySNIAndDestMigration(t *testing.T) {
 				Enabled: true,
 				SNI:     "SUB.Example.COM.",
 				Dest:    "",
-				Skin:    true,
+				Skin:    "invalid-skin",
 			},
 			{
 				Mode:    ModeVLESSReality,
 				Enabled: true,
 				SNI:     "target.org",
 				Dest:    "mismatched.net:443",
-				Skin:    false,
+				Skin:    "",
 			},
 		},
 	}
@@ -232,15 +232,15 @@ func TestBackfillDefaultsRealitySNIAndDestMigration(t *testing.T) {
 		t.Fatalf("expected changes during BackfillDefaults")
 	}
 
-	// 1. SNI normalized, dest backfilled, legacy Skin cleared
+	// 1. SNI normalized, dest backfilled, invalid Skin cleared
 	if cfg.Presets[0].SNI != "sub.example.com" {
 		t.Errorf("Preset 0 SNI = %q, want sub.example.com", cfg.Presets[0].SNI)
 	}
 	if cfg.Presets[0].Dest != "sub.example.com:443" {
 		t.Errorf("Preset 0 Dest = %q, want sub.example.com:443", cfg.Presets[0].Dest)
 	}
-	if cfg.Presets[0].Skin != false {
-		t.Errorf("Preset 0 Skin = %v, want false", cfg.Presets[0].Skin)
+	if cfg.Presets[0].Skin != "" {
+		t.Errorf("Preset 0 Skin = %q, want empty", cfg.Presets[0].Skin)
 	}
 
 	// 2. Mismatched dest aligned with SNI even when skin was false

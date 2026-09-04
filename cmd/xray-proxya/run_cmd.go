@@ -3,18 +3,22 @@ package main
 import (
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
+	"xray-proxya/internal/certmanager"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/pathtun"
 	"xray-proxya/internal/quota"
 	proxyaSELinux "xray-proxya/internal/selinux"
+	"xray-proxya/internal/skin"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -152,10 +156,15 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		var skinServers []*http.Server
 		var pathTunManager *pathtun.Manager
 		var pathClient *pathd.IdleClient
 		var pathRuntimeStop chan struct{}
 		cleanup := func() {
+			for _, s := range skinServers {
+				_ = s.Close()
+			}
+			skinServers = nil
 			if pathTunManager != nil {
 				_ = pathTunManager.Close()
 				pathTunManager = nil
@@ -243,14 +252,81 @@ var runCmd = &cobra.Command{
 			}
 		}
 
+		// Start Web skin servers only for presets that have a skin explicitly configured
+		var skinMappings []skin.DomainSkinMapping
+		for _, m := range cfg.Presets {
+			if !m.Enabled || m.Skin == "" {
+				continue
+			}
+			domain := m.SkinDomain
+			if domain == "" {
+				domain = m.SNI
+			}
+			if domain == "" {
+				continue
+			}
+			alreadyMapped := false
+			for _, sm := range skinMappings {
+				if sm.Domain == domain {
+					alreadyMapped = true
+					break
+				}
+			}
+			if !alreadyMapped {
+				cert := cfg.FindCert(domain)
+				certPath, keyPath := "", ""
+				if cert != nil {
+					certPath, keyPath = cert.CertPath, cert.KeyPath
+				}
+				skinMappings = append(skinMappings, skin.DomainSkinMapping{
+					Domain:   domain,
+					SkinType: m.Skin,
+					CertPath: certPath,
+					KeyPath:  keyPath,
+				})
+			}
+		}
+
+		if len(skinMappings) > 0 {
+			defaultSkin := skinMappings[0].SkinType
+			srv, err := skin.StartMultiSkinServer("127.0.0.1:9443", skinMappings, defaultSkin)
+			if err == nil {
+				skinServers = append(skinServers, srv)
+				go func(s *http.Server) { _ = s.ListenAndServeTLS("", "") }(srv)
+				domains := make([]string, 0, len(skinMappings))
+				for _, sm := range skinMappings {
+					domains = append(domains, fmt.Sprintf("%s (%s)", sm.Domain, sm.SkinType))
+				}
+				fmt.Printf("🎨 Web Skin HTTPS server listening on 127.0.0.1:9443 for: %s\n", strings.Join(domains, ", "))
+			} else {
+				fmt.Printf("⚠️  Failed to start Web Skin HTTPS server: %v\n", err)
+			}
+		}
+
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 		defer signal.Stop(sigChan)
 		quotaTicker := time.NewTicker(guestQuotaCheckInterval)
 		defer quotaTicker.Stop()
+		certTicker := time.NewTicker(12 * time.Hour)
+		defer certTicker.Stop()
 
 		for {
 			select {
+			case <-certTicker.C:
+				renewed, expiredFailed, err := certmanager.CheckAndRenewCerts(cfg, false)
+				if err != nil {
+					fmt.Printf("⚠️  Cert auto-renewal check error: %v\n", err)
+				}
+				for _, d := range renewed {
+					fmt.Printf("✅ Auto-renewed certificate for %s\n", d)
+				}
+				for _, d := range expiredFailed {
+					fmt.Printf("🚨 Alert: Certificate for %s expired and renewal failed. Dependent presets disabled.\n", d)
+				}
+				if len(renewed) > 0 || len(expiredFailed) > 0 {
+					_ = cfg.Save()
+				}
 			case sig := <-sigChan:
 				fmt.Printf("\n🛑 Stopping Xray (%s)...\n", sig)
 				_ = stopProcess(process, waitCh)

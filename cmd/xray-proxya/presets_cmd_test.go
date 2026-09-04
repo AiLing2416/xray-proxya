@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"testing"
+	"time"
 	"xray-proxya/internal/config"
 )
 
@@ -34,7 +35,23 @@ func TestValidateManualTargetReturnsAvailabilityFailure(t *testing.T) {
 	}
 }
 
-func TestSupportsSkin(t *testing.T) {
+func TestSupportsRealityAndSkin(t *testing.T) {
+	if !supportsReality(config.ModeVLESSVision) {
+		t.Errorf("expected ModeVLESSVision to support reality")
+	}
+	if !supportsReality(config.ModeVLESSReality) {
+		t.Errorf("expected ModeVLESSReality to support reality")
+	}
+	if supportsReality(config.ModeVLESSXHTTP) {
+		t.Errorf("expected ModeVLESSXHTTP not to support reality")
+	}
+	if supportsReality(config.ModeVMessWS) {
+		t.Errorf("expected ModeVMessWS not to support reality")
+	}
+	if supportsReality(config.ModeShadowsocksTCP) {
+		t.Errorf("expected ModeShadowsocksTCP not to support reality")
+	}
+
 	if !supportsSkin(config.ModeVLESSVision) {
 		t.Errorf("expected ModeVLESSVision to support skin")
 	}
@@ -68,10 +85,10 @@ func TestPresetsSetRiskyTargetInteractiveReject(t *testing.T) {
 	t.Cleanup(func() {
 		promptConfirmFunc = origPrompt
 		checkTargetAvailability = origChecker
-		presetSkinManual = ""
+		presetSNIManual = ""
 		presetSNI = ""
 		presetDest = ""
-		presetSkinManualForce = false
+		presetSNIForce = false
 	})
 
 	promptCalls := 0
@@ -81,8 +98,8 @@ func TestPresetsSetRiskyTargetInteractiveReject(t *testing.T) {
 	}
 	checkTargetAvailability = func(string) error { return nil }
 
-	presetSkinManual = "cdn.jsdelivr.net"
-	presetSkinManualForce = false
+	presetSNIManual = "cdn.jsdelivr.net"
+	presetSNIForce = false
 
 	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
 
@@ -112,10 +129,10 @@ func TestPresetsSetRiskyTargetInteractiveConfirm(t *testing.T) {
 	t.Cleanup(func() {
 		promptConfirmFunc = origPrompt
 		checkTargetAvailability = origChecker
-		presetSkinManual = ""
+		presetSNIManual = ""
 		presetSNI = ""
 		presetDest = ""
-		presetSkinManualForce = false
+		presetSNIForce = false
 	})
 
 	promptCalls := 0
@@ -125,8 +142,8 @@ func TestPresetsSetRiskyTargetInteractiveConfirm(t *testing.T) {
 	}
 	checkTargetAvailability = func(string) error { return nil }
 
-	presetSkinManual = "cdn.jsdelivr.net"
-	presetSkinManualForce = false
+	presetSNIManual = "cdn.jsdelivr.net"
+	presetSNIForce = false
 
 	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
 
@@ -156,10 +173,10 @@ func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
 	t.Cleanup(func() {
 		promptConfirmFunc = origPrompt
 		checkTargetAvailability = origChecker
-		presetSkinManual = ""
+		presetSNIManual = ""
 		presetSNI = ""
 		presetDest = ""
-		presetSkinManualForce = false
+		presetSNIForce = false
 	})
 
 	promptCalls := 0
@@ -169,8 +186,8 @@ func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
 	}
 	checkTargetAvailability = func(string) error { return nil }
 
-	presetSkinManual = "cdn.jsdelivr.net"
-	presetSkinManualForce = true
+	presetSNIManual = "cdn.jsdelivr.net"
+	presetSNIForce = true
 
 	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
 
@@ -181,6 +198,92 @@ func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
 	loaded, _ := config.LoadConfigEx(true)
 	if loaded.Presets[0].SNI != "cdn.jsdelivr.net" {
 		t.Errorf("SNI = %q, want cdn.jsdelivr.net", loaded.Presets[0].SNI)
+	}
+}
+
+func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Enabled: true, Port: 443, SNI: "pkg.go.dev", Dest: "pkg.go.dev:443"},
+		},
+		Certs: []config.ManagedCert{
+			{
+				Domain:    "sea.ailing.dev",
+				IssuedAt:  time.Now().Add(-10 * 24 * time.Hour),
+				ExpiresAt: time.Now().Add(80 * 24 * time.Hour),
+				Issuer:    "Let's Encrypt",
+			},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	t.Cleanup(func() {
+		presetSkin = ""
+		presetSkinDomain = ""
+		_ = presetsSetCmd.Flags().Set("skin", "")
+		_ = presetsSetCmd.Flags().Set("skin-domain", "")
+		if f := presetsSetCmd.Flags().Lookup("skin"); f != nil {
+			f.Changed = false
+		}
+		if f := presetsSetCmd.Flags().Lookup("skin-domain"); f != nil {
+			f.Changed = false
+		}
+	})
+
+	// 1. Setting --skin seafile without domain -> should be rejected
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ := config.LoadConfigEx(true)
+	if loaded.Presets[0].Skin != "" {
+		t.Errorf("Skin should not be set without domain")
+	}
+
+	// 2. Setting --skin seafile with uncertified domain -> should be rejected
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile", "--skin-domain", "uncerted.com"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Presets[0].Skin != "" {
+		t.Errorf("Skin should not be set with uncertified domain")
+	}
+
+	// 3. Setting --skin seafile with registered domain sea.ailing.dev -> succeeds!
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile", "--skin-domain", "sea.ailing.dev"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Presets[0].Skin != "seafile" {
+		t.Errorf("Skin = %q, want seafile", loaded.Presets[0].Skin)
+	}
+	if loaded.Presets[0].SkinDomain != "sea.ailing.dev" {
+		t.Errorf("SkinDomain = %q, want sea.ailing.dev", loaded.Presets[0].SkinDomain)
+	}
+	if loaded.Presets[0].SNI != "sea.ailing.dev" {
+		t.Errorf("SNI = %q, want sea.ailing.dev", loaded.Presets[0].SNI)
+	}
+	if loaded.Presets[0].Dest != "127.0.0.1:9443" {
+		t.Errorf("Dest = %q, want 127.0.0.1:9443", loaded.Presets[0].Dest)
+	}
+
+	// 4. Setting --skin off -> disables skin
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "off"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Presets[0].Skin != "" {
+		t.Errorf("Skin should be cleared on --skin off")
 	}
 }
 

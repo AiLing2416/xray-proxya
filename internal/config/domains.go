@@ -283,7 +283,7 @@ func NormalizeRealityTarget(target string) (string, int, string, error) {
 
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port <= 0 || port > 65535 {
-		return "", 0, "", fmt.Errorf("invalid port %q in target %q", portStr, target)
+		return "", 0, "", fmt.Errorf("target port in %q must be between 1 and 65535", target)
 	}
 
 	return host, port, net.JoinHostPort(host, strconv.Itoa(port)), nil
@@ -308,6 +308,16 @@ func ValidateRealitySNIAndDest(sni, dest string) (string, string, error) {
 		dest = net.JoinHostPort(normSNI, "443")
 	}
 
+	// Allow loopback destination for local skin fallback
+	if strings.HasPrefix(dest, "127.0.0.1:") || strings.HasPrefix(dest, "localhost:") || strings.HasPrefix(dest, "[::1]:") {
+		host, portStr, err := net.SplitHostPort(dest)
+		if err == nil {
+			if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port <= 65535 {
+				return normSNI, net.JoinHostPort(host, strconv.Itoa(port)), nil
+			}
+		}
+	}
+
 	destHost, _, normDest, err := NormalizeRealityTarget(dest)
 	if err != nil {
 		return "", "", fmt.Errorf("invalid REALITY dest %q: %w", dest, err)
@@ -327,7 +337,7 @@ type targetValidatorOptions struct {
 
 var defaultTargetValidatorOpts = targetValidatorOptions{}
 
-// ValidateSkinTarget performs comprehensive qualification for a Reality fallback target:
+// ValidateRealityTarget performs comprehensive qualification for a Reality fallback target:
 // 1. Host/port normalization and rejection of IP literals / invalid targets
 // 2. TCP connectivity
 // 3. Mandatory TLS 1.3 protocol negotiation with X25519 support
@@ -335,8 +345,13 @@ var defaultTargetValidatorOpts = targetValidatorOptions{}
 // 5. ALPN negotiation of HTTP/2 ("h2")
 // 6. HTTP/2 GET request to "/" confirming non-redirect (rejects any 3xx) and valid status (2xx, 401, 403, 404; rejects 5xx).
 // Returns measured handshake RTT on success.
-func ValidateSkinTarget(target string, timeout time.Duration) (time.Duration, error) {
+func ValidateRealityTarget(target string, timeout time.Duration) (time.Duration, error) {
 	return validateSkinTargetInternal(target, timeout, defaultTargetValidatorOpts)
+}
+
+// ValidateSkinTarget is a backward-compatible alias for ValidateRealityTarget.
+func ValidateSkinTarget(target string, timeout time.Duration) (time.Duration, error) {
+	return ValidateRealityTarget(target, timeout)
 }
 
 func validateSkinTargetInternal(target string, timeout time.Duration, opts targetValidatorOptions) (time.Duration, error) {
