@@ -69,6 +69,9 @@ func TestFilebrowserHandler(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("GET /api/resources/ code = %d, want 401", rec.Code)
 	}
+	if rec.Body.String() != "401 Unauthorized\n" {
+		t.Errorf("GET /api/resources/ body = %q, want '401 Unauthorized\\n'", rec.Body.String())
+	}
 
 	// 6. Static asset /static/assets/index-BOEsmRAc.css
 	req = httptest.NewRequest("GET", "/static/assets/index-BOEsmRAc.css", nil)
@@ -77,8 +80,25 @@ func TestFilebrowserHandler(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /static/assets/index-BOEsmRAc.css code = %d, want 200", rec.Code)
 	}
+	if !strings.Contains(rec.Header().Get("Cache-Control"), "max-age=86400") {
+		t.Errorf("GET /static/assets/index-BOEsmRAc.css missing Cache-Control: max-age=86400")
+	}
+	if rec.Header().Get("Server") != "Caddy" {
+		t.Errorf("GET /static/assets/index-BOEsmRAc.css Server = %q, want 'Caddy'", rec.Header().Get("Server"))
+	}
 
-	// 7. GET /health
+	// 7. Non-existent static asset returns 404 Not Found (no Go runtime leak)
+	req = httptest.NewRequest("GET", "/static/nonexistent.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /static/nonexistent.js code = %d, want 404", rec.Code)
+	}
+	if rec.Body.String() != "404 Not Found\n" {
+		t.Errorf("GET /static/nonexistent.js body = %q, want '404 Not Found\\n'", rec.Body.String())
+	}
+
+	// 8. GET /health
 	req = httptest.NewRequest("GET", "/health", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

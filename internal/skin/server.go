@@ -202,6 +202,10 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 			h.ServeHTTP(w, r)
 			return
 		}
+		if defaultSkin == config.SkinFilebrowser {
+			serveFilebrowser404(w, r)
+			return
+		}
 		serveApache404(w, r)
 	})
 
@@ -227,15 +231,95 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 }
 
 // -----------------------------------------------------------------------------------------
-// Filebrowser Handler
+// Filebrowser Handler & Helpers
 // -----------------------------------------------------------------------------------------
+
+func serveFilebrowser404(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Server", "Caddy")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte("404 Not Found\n"))
+}
+
+func serveFilebrowserStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
+	relPath := strings.TrimPrefix(r.URL.Path, "/")
+	f, err := sub.Open(relPath)
+	if err != nil {
+		serveFilebrowser404(w, r)
+		return
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil || fi.IsDir() {
+		serveFilebrowser404(w, r)
+		return
+	}
+
+	etag := fmt.Sprintf(`"%x-%x"`, fi.Size(), fi.ModTime().UnixNano())
+	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
+		w.Header().Set("Server", "Caddy")
+		w.Header().Set("ETag", etag)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	ext := strings.ToLower(filepath.Ext(relPath))
+	var ctype string
+	switch ext {
+	case ".js", ".mjs":
+		ctype = "text/javascript; charset=utf-8"
+	case ".css":
+		ctype = "text/css; charset=utf-8"
+	case ".svg":
+		ctype = "image/svg+xml"
+	case ".png":
+		ctype = "image/png"
+	case ".ico":
+		ctype = "image/x-icon"
+	case ".json":
+		ctype = "application/json; charset=utf-8"
+	case ".woff2":
+		ctype = "font/woff2"
+	case ".woff":
+		ctype = "font/woff"
+	default:
+		ctype = "application/octet-stream"
+	}
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		serveFilebrowser404(w, r)
+		return
+	}
+
+	w.Header().Set("Server", "Caddy")
+	w.Header().Set("Content-Type", ctype)
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("ETag", etag)
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func addFilebrowserHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Caddy")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
 
 func newFilebrowserHandler() (http.Handler, error) {
 	sub, err := fs.Sub(assetsFS, "assets/filebrowser")
 	if err != nil {
 		return nil, err
 	}
-	fileServer := http.FileServer(http.FS(sub))
 
 	indexHTML, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
@@ -245,60 +329,68 @@ func newFilebrowserHandler() (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	// Static assets: /static/...
-	mux.Handle("/static/", fileServer)
+	mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
+		serveFilebrowserStatic(sub, w, r)
+	})
 
 	// API and SPA routes
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 		if path == "/api/login" {
 			if r.Method != http.MethodPost {
-				http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				_, _ = w.Write([]byte("Method Not Allowed\n"))
 				return
 			}
 			simulatedHashDelay()
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 			w.WriteHeader(http.StatusForbidden)
 			_, _ = w.Write([]byte("403 Forbidden\n"))
 			return
 		}
 		if path == "/api/public/settings" {
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"signup":false,"createUserDir":false}`))
 			return
 		}
-		if strings.HasPrefix(path, "/api/resources/") || path == "/api/users" {
-			w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(path, "/api/") {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte(`{"error":"Unauthorized"}`))
+			_, _ = w.Write([]byte("401 Unauthorized\n"))
 			return
 		}
 		if path == "/health" {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("{\"status\":\"OK\"}\n"))
 			return
 		}
 		if path == "/manifest.json" {
 			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"name":"File Browser","short_name":"File Browser","start_url":"/","display":"standalone"}`))
-			return
-		}
-		if strings.HasPrefix(path, "/static/") {
-			fileServer.ServeHTTP(w, r)
 			return
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(indexHTML)
 	})
 
-	return addCommonHeaders(mux, "Caddy"), nil
+	return addFilebrowserHeaders(mux), nil
 }
 
 // -----------------------------------------------------------------------------------------
