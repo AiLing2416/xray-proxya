@@ -34,8 +34,8 @@ func TestGenerateMemorialShadowsocksNode(t *testing.T) {
 	if !strings.HasPrefix(link, "ss://") {
 		t.Fatalf("expected ss:// prefix, got %q", link)
 	}
-	if !strings.Contains(link, "@127.0.0.1:0#") {
-		t.Fatalf("expected @127.0.0.1:0# in link, got %q", link)
+	if !strings.Contains(link, "@127.0.0.1:1#") {
+		t.Fatalf("expected @127.0.0.1:1# in link, got %q", link)
 	}
 	if !strings.Contains(link, "TRAFFIC") {
 		t.Fatalf("expected TRAFFIC in link remark, got %q", link)
@@ -164,7 +164,7 @@ func TestGuestSubHandlerNotifyModes(t *testing.T) {
 		if len(lines) < 2 {
 			t.Fatalf("expected at least 2 lines (memorial node + real node), got %d", len(lines))
 		}
-		if !strings.HasPrefix(lines[0], "ss://") || !strings.Contains(lines[0], "@127.0.0.1:0#") {
+		if !strings.HasPrefix(lines[0], "ss://") || !strings.Contains(lines[0], "@127.0.0.1:1#") {
 			t.Fatalf("expected memorial node on first line, got %q", lines[0])
 		}
 		if !strings.Contains(lines[1], "@sub.example.com:443?") {

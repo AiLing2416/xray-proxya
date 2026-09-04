@@ -273,7 +273,7 @@ func validatePrivateBindAddress(bind string) error {
 const (
 	MemorialSSCipher   = "aes-256-gcm"
 	MemorialSSPassword = "jun-04-1989"
-	MemorialSSAddress  = "127.0.0.1:0"
+	MemorialSSAddress  = "127.0.0.1:1"
 )
 
 func GenerateMemorialShadowsocksNode(guest config.GuestConfig, now time.Time) string {
