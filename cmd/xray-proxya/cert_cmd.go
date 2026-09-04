@@ -6,6 +6,7 @@ import (
 	"time"
 	"xray-proxya/internal/certmanager"
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
@@ -18,7 +19,13 @@ var (
 
 var certCmd = &cobra.Command{
 	Use:   "cert",
-	Short: "Manage domains and TLS certificates for Web skins and REALITY",
+	Short: "Manage domains and TLS certificates for Web skins and REALITY (Root only)",
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = cmd.Help()
+	},
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		return utils.RequireRootShell("cert")
+	},
 }
 
 var certAddCmd = &cobra.Command{
@@ -69,8 +76,9 @@ var certAddCmd = &cobra.Command{
 }
 
 var certListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List managed domains and their certificate issuance & expiration dates",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List managed domains and their certificate issuance & expiration dates",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
@@ -121,9 +129,24 @@ var certListCmd = &cobra.Command{
 }
 
 var certRemoveCmd = &cobra.Command{
-	Use:   "remove [domain]",
-	Short: "Remove a managed domain & certificate, automatically disabling any dependent presets",
-	Args:  cobra.ExactArgs(1),
+	Use:     "remove [domain]",
+	Aliases: []string{"rm", "del", "delete"},
+	Short:   "Remove a managed domain & certificate, automatically disabling any dependent presets",
+	Args:    cobra.ExactArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		domains := make([]string, 0, len(cfg.Certs))
+		for _, c := range cfg.Certs {
+			domains = append(domains, c.Domain)
+		}
+		return domains, cobra.ShellCompDirectiveNoFileComp
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(args[0])), ".")
 		cfg, err := config.LoadConfigEx(true)

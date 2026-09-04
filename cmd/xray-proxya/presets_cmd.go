@@ -113,11 +113,15 @@ var presetsListCmd = &cobra.Command{
 var presetsSkinCmd = &cobra.Command{
 	Use:   "skin",
 	Short: "Manage Web camouflage skins for presets",
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = cmd.Help()
+	},
 }
 
 var presetsSkinListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List available Web camouflage skins and their characteristics",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List available Web camouflage skins and their characteristics",
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("\nAVAILABLE WEB CAMOUFLAGE SKINS:")
 		fmt.Println("--------------------------------------------------------------------------------------")

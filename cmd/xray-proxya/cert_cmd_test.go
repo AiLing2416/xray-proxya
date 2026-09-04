@@ -128,3 +128,40 @@ func TestCertAddCommand(t *testing.T) {
 		t.Errorf("expected error for empty domain")
 	}
 }
+
+func TestCertRootRequired(t *testing.T) {
+	// PersistentPreRunE calls utils.RequireRootShell("cert")
+	if certCmd.PersistentPreRunE == nil {
+		t.Fatalf("certCmd.PersistentPreRunE must not be nil")
+	}
+
+	// Non-root user (euid != 0) must be rejected
+	errNonRoot := certCmd.PersistentPreRunE(certCmd, nil)
+	if os.Geteuid() != 0 && errNonRoot == nil {
+		t.Errorf("certCmd should reject non-root execution")
+	}
+}
+
+func TestCertRemoveCompletion(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Certs: []config.ManagedCert{
+			{Domain: "domain1.example.com"},
+			{Domain: "domain2.example.com"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	if certRemoveCmd.ValidArgsFunction == nil {
+		t.Fatalf("certRemoveCmd.ValidArgsFunction must not be nil")
+	}
+
+	completions, _ := certRemoveCmd.ValidArgsFunction(certRemoveCmd, []string{}, "")
+	if len(completions) != 2 {
+		t.Fatalf("expected 2 completions, got %d: %v", len(completions), completions)
+	}
+	if completions[0] != "domain1.example.com" || completions[1] != "domain2.example.com" {
+		t.Errorf("unexpected completions: %v", completions)
+	}
+}
