@@ -69,7 +69,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 			}
 			ps := fmt.Sprintf("VLess-XHTTP-Reality-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=%s&type=xhttp&serviceName=&path=%s&sni=%s&sid=%s&spx=%%2F#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(fp), url.QueryEscape(mode.Path), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
+				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(fp), url.QueryEscape(mode.Path), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.PathEscape(ps))
 
 		case config.ModeVLESSVision:
 			fp := mode.Fingerprint
@@ -78,12 +78,12 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 			}
 			ps := fmt.Sprintf("VLess-Vision-Reality-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=reality&encryption=none&pbk=%s&fp=%s&type=tcp&flow=xtls-rprx-vision&sni=%s&sid=%s#%s",
-				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(fp), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.QueryEscape(ps))
+				userUUID, formattedIP, mode.Port, mode.Settings.PublicKey, url.QueryEscape(fp), url.QueryEscape(mode.SNI), mode.Settings.ShortID, url.PathEscape(ps))
 
 		case config.ModeVLESSXHTTP:
 			ps := fmt.Sprintf("VLess-XHTTP-KEM768-%d%s", mode.Port, psSuffix)
 			link = fmt.Sprintf("vless://%s@%s:%d?security=none&encryption=%s&type=xhttp&path=%s#%s",
-				userUUID, formattedIP, mode.Port, url.QueryEscape(mode.Settings.Password), url.QueryEscape(mode.Path), url.QueryEscape(ps))
+				userUUID, formattedIP, mode.Port, url.QueryEscape(mode.Settings.Password), url.QueryEscape(mode.Path), url.PathEscape(ps))
 
 		case config.ModeVMessWS:
 			ps := fmt.Sprintf("VMess-WS%s", psSuffix)
@@ -99,7 +99,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 			if suffix == "" {
 				ps := fmt.Sprintf("SS-TCP-%d", mode.Port)
 				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", mode.Settings.Cipher, mode.Settings.Password)))
-				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, url.QueryEscape(ps))
+				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, url.PathEscape(ps))
 			}
 		}
 		if link != "" {
@@ -139,7 +139,7 @@ func rewriteVMessRemark(link string, remark string) (string, bool) {
 }
 
 func rewriteFragmentRemark(link string, remark string) string {
-	escaped := url.QueryEscape(remark)
+	escaped := url.PathEscape(remark)
 	if idx := strings.Index(link, "#"); idx >= 0 {
 		return link[:idx+1] + escaped
 	}

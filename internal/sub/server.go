@@ -279,7 +279,7 @@ const (
 func GenerateMemorialShadowsocksNode(guest config.GuestConfig, now time.Time) string {
 	auth := base64.StdEncoding.EncodeToString([]byte(MemorialSSCipher + ":" + MemorialSSPassword))
 	remark := formatGuestSubRemark(guest, now)
-	return fmt.Sprintf("ss://%s@%s#%s", auth, MemorialSSAddress, url.QueryEscape(remark))
+	return fmt.Sprintf("ss://%s@%s#%s", auth, MemorialSSAddress, url.PathEscape(remark))
 }
 
 func formatGuestSubRemark(guest config.GuestConfig, now time.Time) string {
