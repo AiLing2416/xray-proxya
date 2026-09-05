@@ -136,13 +136,71 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 				},
 			},
 		}
-		if n.Transport == "ws" {
-			out["streamSettings"] = map[string]interface{}{
-				"network": "ws",
-				"wsSettings": map[string]interface{}{
-					"path": n.Path,
-				},
+
+		transport := n.Transport
+		if transport == "" {
+			transport = "tcp"
+		}
+		stream := map[string]interface{}{
+			"network": transport,
+		}
+		out["streamSettings"] = stream
+
+		if n.Security != "" && n.Security != "none" {
+			stream["security"] = n.Security
+			if n.Security == "tls" || n.Security == "xtls" {
+				tlsSettings := map[string]interface{}{
+					"serverName": n.SNI,
+				}
+				if n.ALPN != "" {
+					tlsSettings["alpn"] = strings.Split(n.ALPN, ",")
+				}
+				stream[n.Security+"Settings"] = tlsSettings
 			}
+		}
+
+		switch transport {
+		case "ws":
+			wsSettings := map[string]interface{}{
+				"path": n.Path,
+			}
+			if n.Host != "" {
+				wsSettings["headers"] = map[string]interface{}{
+					"Host": n.Host,
+				}
+			}
+			stream["wsSettings"] = wsSettings
+		case "xhttp":
+			xhttpSettings := map[string]interface{}{
+				"path": n.Path,
+			}
+			if n.Mode != "" {
+				xhttpSettings["mode"] = n.Mode
+			}
+			if n.Host != "" {
+				xhttpSettings["host"] = n.Host
+			}
+			stream["xhttpSettings"] = xhttpSettings
+		case "grpc":
+			serviceName := n.ServiceName
+			if serviceName == "" {
+				serviceName = n.Path
+			}
+			grpcSettings := map[string]interface{}{
+				"serviceName": serviceName,
+			}
+			if n.Mode == "multi" {
+				grpcSettings["multiMode"] = true
+			}
+			stream["grpcSettings"] = grpcSettings
+		case "http", "h2":
+			httpSettings := map[string]interface{}{
+				"path": n.Path,
+			}
+			if n.Host != "" {
+				httpSettings["host"] = strings.Split(n.Host, ",")
+			}
+			stream["httpSettings"] = httpSettings
 		}
 		return out
 

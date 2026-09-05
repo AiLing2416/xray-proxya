@@ -190,4 +190,41 @@ func TestParseVLESSXHTTPMode(t *testing.T) {
 	}
 }
 
+func TestParseVMessTLS(t *testing.T) {
+	payload := `{"v":"2","ps":"TLS-VMess","add":"1.2.3.4","port":443,"id":"uuid-123","net":"ws","path":"/ws","tls":"tls","host":"ws.example.com","sni":"ws.example.com"}`
+	encoded := base64.StdEncoding.EncodeToString([]byte(payload))
+	link := "vmess://" + encoded
+
+	spec, err := Parse(link)
+	if err != nil {
+		t.Fatalf("Parse VMess TLS failed: %v", err)
+	}
+	if spec.Security != "tls" || spec.SNI != "ws.example.com" || spec.Host != "ws.example.com" {
+		t.Fatalf("spec mismatch: Security=%s, SNI=%s, Host=%s", spec.Security, spec.SNI, spec.Host)
+	}
+
+	out := spec.ToOutbound()
+	stream, ok := out["streamSettings"].(map[string]interface{})
+	if !ok || stream["security"] != "tls" {
+		t.Fatalf("streamSettings missing security=tls: %+v", stream)
+	}
+	tlsSettings, ok := stream["tlsSettings"].(map[string]interface{})
+	if !ok || tlsSettings["serverName"] != "ws.example.com" {
+		t.Fatalf("tlsSettings missing serverName: %+v", tlsSettings)
+	}
+	wsSettings, ok := stream["wsSettings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("wsSettings missing: %+v", stream)
+	}
+	headers, ok := wsSettings["headers"].(map[string]interface{})
+	if !ok || headers["Host"] != "ws.example.com" {
+		t.Fatalf("wsSettings missing Host header: %+v", wsSettings)
+	}
+
+	extracted := FromOutbound(out)
+	if extracted.Security != "tls" || extracted.SNI != "ws.example.com" || extracted.Host != "ws.example.com" {
+		t.Fatalf("FromOutbound extracted VMess mismatch: %+v", extracted)
+	}
+}
+
 
