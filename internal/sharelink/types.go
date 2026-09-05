@@ -35,6 +35,9 @@ type NodeSpec struct {
 	Method      string `json:"method"`       // Shadowsocks cipher method (e.g. "chacha20-poly1305")
 	User        string `json:"user"`         // SOCKS / HTTP auth username
 	Host        string `json:"host"`         // Host header override
+	Mode        string `json:"mode"`         // Transport mode (e.g. "auto", "multi", "packet-up")
+	ALPN        string `json:"alpn"`         // Application-Layer Protocol Negotiation (e.g. "h2,http/1.1")
+	ServiceName string `json:"service_name"` // gRPC serviceName override
 	Remark      string `json:"remark"`       // Node name / remark / ps / fragment
 	RawLink     string `json:"raw_link"`     // Original raw link
 }

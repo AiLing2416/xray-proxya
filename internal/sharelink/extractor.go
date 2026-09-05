@@ -77,6 +77,18 @@ func FromOutbound(outbound map[string]interface{}) *NodeSpec {
 			if spec.SNI == "" {
 				spec.SNI = stringValue(tls["serverName"])
 			}
+			if alpnList := getSliceStrings(tls["alpn"]); len(alpnList) > 0 {
+				spec.ALPN = strings.Join(alpnList, ",")
+			}
+		}
+
+		if xtls, ok := stream["xtlsSettings"].(map[string]interface{}); ok {
+			if spec.SNI == "" {
+				spec.SNI = stringValue(xtls["serverName"])
+			}
+			if alpnList := getSliceStrings(xtls["alpn"]); len(alpnList) > 0 {
+				spec.ALPN = strings.Join(alpnList, ",")
+			}
 		}
 
 		if ws, ok := stream["wsSettings"].(map[string]interface{}); ok {
@@ -89,10 +101,17 @@ func FromOutbound(outbound map[string]interface{}) *NodeSpec {
 		if xhttp, ok := stream["xhttpSettings"].(map[string]interface{}); ok {
 			spec.Path = stringValue(xhttp["path"])
 			spec.Host = stringValue(xhttp["host"])
+			spec.Mode = stringValue(xhttp["mode"])
 		}
 
 		if grpc, ok := stream["grpcSettings"].(map[string]interface{}); ok {
-			spec.Path = stringValue(grpc["serviceName"])
+			spec.ServiceName = stringValue(grpc["serviceName"])
+			if spec.Path == "" {
+				spec.Path = spec.ServiceName
+			}
+			if multi, ok := grpc["multiMode"].(bool); ok && multi {
+				spec.Mode = "multi"
+			}
 		}
 
 		if httpSet, ok := stream["httpSettings"].(map[string]interface{}); ok {

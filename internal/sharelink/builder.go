@@ -70,6 +70,9 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 			tlsSettings := map[string]interface{}{
 				"serverName": n.SNI,
 			}
+			if n.ALPN != "" {
+				tlsSettings["alpn"] = strings.Split(n.ALPN, ",")
+			}
 			stream[n.Security+"Settings"] = tlsSettings
 		}
 
@@ -88,13 +91,23 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 			xhttpSettings := map[string]interface{}{
 				"path": n.Path,
 			}
+			if n.Mode != "" {
+				xhttpSettings["mode"] = n.Mode
+			}
 			if n.Host != "" {
 				xhttpSettings["host"] = n.Host
 			}
 			stream["xhttpSettings"] = xhttpSettings
 		case "grpc":
+			serviceName := n.ServiceName
+			if serviceName == "" {
+				serviceName = n.Path
+			}
 			grpcSettings := map[string]interface{}{
-				"serviceName": n.Path,
+				"serviceName": serviceName,
+			}
+			if n.Mode == "multi" {
+				grpcSettings["multiMode"] = true
 			}
 			stream["grpcSettings"] = grpcSettings
 		case "http", "h2":

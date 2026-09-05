@@ -133,4 +133,61 @@ func TestDecodePayload(t *testing.T) {
 	}
 }
 
+func TestParseVLESSGRPC(t *testing.T) {
+	link := "vless://11111111-2222-3333-4444-555555555555@example.com:443?type=grpc&serviceName=my-grpc-service&mode=multi&security=tls&sni=example.com&alpn=h2#GRPC-Node"
+	spec, err := Parse(link)
+	if err != nil {
+		t.Fatalf("Parse gRPC link failed: %v", err)
+	}
+	if spec.Transport != "grpc" || spec.ServiceName != "my-grpc-service" || spec.Mode != "multi" {
+		t.Fatalf("spec mismatch: Transport=%s, ServiceName=%s, Mode=%s", spec.Transport, spec.ServiceName, spec.Mode)
+	}
+	if spec.ALPN != "h2" {
+		t.Fatalf("spec ALPN=%s, want h2", spec.ALPN)
+	}
+
+	out := spec.ToOutbound()
+	stream := out["streamSettings"].(map[string]interface{})
+	grpcSettings := stream["grpcSettings"].(map[string]interface{})
+	if grpcSettings["serviceName"] != "my-grpc-service" {
+		t.Errorf("grpcSettings.serviceName = %v", grpcSettings["serviceName"])
+	}
+	if grpcSettings["multiMode"] != true {
+		t.Errorf("grpcSettings.multiMode = %v", grpcSettings["multiMode"])
+	}
+	tlsSettings := stream["tlsSettings"].(map[string]interface{})
+	alpnSlice, ok := tlsSettings["alpn"].([]string)
+	if !ok || len(alpnSlice) != 1 || alpnSlice[0] != "h2" {
+		t.Errorf("tlsSettings.alpn = %v", tlsSettings["alpn"])
+	}
+
+	extracted := FromOutbound(out)
+	if extracted.ServiceName != "my-grpc-service" || extracted.Mode != "multi" || extracted.ALPN != "h2" {
+		t.Errorf("FromOutbound extracted: %+v", extracted)
+	}
+}
+
+func TestParseVLESSXHTTPMode(t *testing.T) {
+	link := "vless://11111111-2222-3333-4444-555555555555@example.com:443?type=xhttp&path=%2Fcustom&mode=packet-up&host=cdn.example.com#XHTTP-Node"
+	spec, err := Parse(link)
+	if err != nil {
+		t.Fatalf("Parse xhttp failed: %v", err)
+	}
+	if spec.Mode != "packet-up" || spec.Host != "cdn.example.com" {
+		t.Fatalf("spec mismatch: Mode=%s, Host=%s", spec.Mode, spec.Host)
+	}
+
+	out := spec.ToOutbound()
+	stream := out["streamSettings"].(map[string]interface{})
+	xhttpSettings := stream["xhttpSettings"].(map[string]interface{})
+	if xhttpSettings["mode"] != "packet-up" || xhttpSettings["host"] != "cdn.example.com" {
+		t.Errorf("xhttpSettings mismatch: %+v", xhttpSettings)
+	}
+
+	extracted := FromOutbound(out)
+	if extracted.Mode != "packet-up" || extracted.Host != "cdn.example.com" {
+		t.Errorf("FromOutbound extracted xhttp mismatch: %+v", extracted)
+	}
+}
+
 

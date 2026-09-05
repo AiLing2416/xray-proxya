@@ -111,23 +111,30 @@ func parseVLESS(link string) (*NodeSpec, error) {
 		network = "tcp"
 	}
 	path := query.Get("path")
+	serviceName := query.Get("serviceName")
+	if path == "" && serviceName != "" {
+		path = serviceName
+	}
 	encryptionStr := query.Get("encryption")
 	if encryptionStr == "" {
 		encryptionStr = "none"
 	}
 
 	spec := &NodeSpec{
-		Protocol:  ProtoVLESS,
-		Address:   host,
-		Port:      port,
-		UUID:      uuid,
-		Password:  encryptionStr,
-		Security:  security,
-		Transport: network,
-		Path:      path,
-		Flow:      query.Get("flow"),
-		Remark:    remark,
-		RawLink:   link,
+		Protocol:    ProtoVLESS,
+		Address:     host,
+		Port:        port,
+		UUID:        uuid,
+		Password:    encryptionStr,
+		Security:    security,
+		Transport:   network,
+		Path:        path,
+		ServiceName: serviceName,
+		Mode:        query.Get("mode"),
+		ALPN:        query.Get("alpn"),
+		Flow:        query.Get("flow"),
+		Remark:      remark,
+		RawLink:     link,
 	}
 
 	if security == "reality" {
