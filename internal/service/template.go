@@ -47,7 +47,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-	Type=exec
+Type=exec
 %sExecStart=%s run
 Restart=on-failure
 RestartSec=2
