@@ -2,6 +2,7 @@ package xray
 
 import (
 	"archive/zip"
+	"bytes"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -9,13 +10,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 
 	"github.com/google/uuid"
 	"golang.org/x/crypto/curve25519"
@@ -92,31 +96,121 @@ func StartXray(configPath string) (*exec.Cmd, error) {
 	return cmd, nil
 }
 
-func StartXrayTemp(jsonData []byte) (*exec.Cmd, func(), error) {
+func createTempConfigFile(jsonData []byte) (string, error) {
 	tmp, err := os.CreateTemp(os.TempDir(), "xray-check-*.json")
 	if err != nil {
-		return nil, nil, err
+		return "", err
 	}
 	tmpFile := tmp.Name()
 	if _, err := tmp.Write(jsonData); err != nil {
 		tmp.Close()
 		os.Remove(tmpFile)
-		return nil, nil, err
+		return "", err
 	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(tmpFile)
+		return "", err
+	}
+	return tmpFile, nil
+}
+
+// StartXrayTemp starts a temporary Xray process using the provided JSON config data.
+func StartXrayTemp(jsonData []byte) (*exec.Cmd, func(), error) {
+	tmpFile, err := createTempConfigFile(jsonData)
+	if err != nil {
 		return nil, nil, err
 	}
 
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "run", "-c", tmpFile)
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
 
 	if err := cmd.Start(); err != nil {
 		os.Remove(tmpFile)
 		return nil, nil, err
 	}
-	return cmd, func() { cmd.Process.Kill(); os.Remove(tmpFile) }, nil
+
+	var once sync.Once
+	cleanup := func() {
+		once.Do(func() {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+			_ = os.Remove(tmpFile)
+		})
+	}
+	return cmd, cleanup, nil
+}
+
+// ValidateRuntime performs an isolated sandbox runtime test by starting a temporary
+// Xray instance with randomized dynamic ports to ensure the generated config can bind and run.
+func ValidateRuntime(cfg *config.UserConfig) error {
+	if cfg == nil {
+		return fmt.Errorf("nil config provided")
+	}
+
+	testSocksPort, err := utils.GetFreePort()
+	if err != nil {
+		return fmt.Errorf("failed to allocate test-socks port: %w", err)
+	}
+	apiPort, err := utils.GetFreePort()
+	if err != nil {
+		return fmt.Errorf("failed to allocate api port: %w", err)
+	}
+
+	overrides := map[string]int{
+		"test-socks":           testSocksPort,
+		"api":                  apiPort,
+		"gateway-tun-disabled": 1,
+	}
+
+	for _, m := range cfg.Presets {
+		if m.Enabled {
+			p, err := utils.GetFreePort()
+			if err != nil {
+				return fmt.Errorf("failed to allocate preset port: %w", err)
+			}
+			overrides[string(m.Mode)] = p
+		}
+	}
+
+	for _, co := range cfg.CustomOutbounds {
+		if co.InternalProxyPort > 0 {
+			p, err := utils.GetFreePort()
+			if err != nil {
+				return fmt.Errorf("failed to allocate outbound socks port: %w", err)
+			}
+			overrides["outbound-"+co.Alias] = p
+			if co.InternalHttpPort > 0 {
+				hp, err := utils.GetFreePort()
+				if err != nil {
+					return fmt.Errorf("failed to allocate outbound http port: %w", err)
+				}
+				overrides["outbound-http-"+co.Alias] = hp
+			}
+		}
+	}
+
+	testJSON, err := GenerateXrayJSON(cfg, overrides, "")
+	if err != nil {
+		return fmt.Errorf("generate runtime test json: %w", err)
+	}
+
+	cmd, cleanup, err := StartXrayTemp(testJSON)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	// Give it a tiny bit of time to start and check if it is still running
+	time.Sleep(100 * time.Millisecond)
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		return fmt.Errorf("temporary xray instance exited prematurely")
+	}
+	return nil
 }
 
 func ValidateConfig(jsonData []byte) error {
@@ -218,16 +312,7 @@ func RemoveUserAPI(apiPort int, inboundTag, email string) error {
 }
 
 func GetFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
-	if err != nil {
-		return 0, err
-	}
-	l, err := net.ListenTCP("tcp", addr)
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	return utils.GetFreePort()
 }
 
 func GetXrayBinaryPath() string {

@@ -2,14 +2,14 @@ package relaytest
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
+
+	"xray-proxya/internal/netprobe"
 	"xray-proxya/pkg/utils"
 )
 
@@ -138,121 +138,15 @@ func probeDNS53(ctx context.Context, session *TestSession, customServers []strin
 }
 
 func probeTCPDNS(ctx context.Context, dialer *utils.SOCKS5Dialer, targetAddr, domain string) (time.Duration, error) {
-	deadline, ok := ctx.Deadline()
-	timeout := 4 * time.Second
-	if ok {
-		rem := time.Until(deadline)
-		if rem < timeout {
-			timeout = rem
-		}
-	}
-
-	conn, err := dialer.Dial("tcp", targetAddr)
-	if err != nil {
-		return 0, fmt.Errorf("tcp dial: %w", err)
-	}
-	defer conn.Close()
-
-	if err := conn.SetDeadline(time.Now().Add(timeout)); err != nil {
-		return 0, err
-	}
-
-	query, err := buildDNSWireQuery(domain, 1) // Type A
-	if err != nil {
-		return 0, err
-	}
-
-	frame := make([]byte, 2+len(query))
-	binary.BigEndian.PutUint16(frame[:2], uint16(len(query)))
-	copy(frame[2:], query)
-
-	start := time.Now()
-	if _, err := conn.Write(frame); err != nil {
-		return 0, fmt.Errorf("tcp write: %w", err)
-	}
-
-	head := make([]byte, 2)
-	if _, err := io.ReadFull(conn, head); err != nil {
-		return 0, fmt.Errorf("read length: %w", err)
-	}
-	respLen := int(binary.BigEndian.Uint16(head))
-	if respLen < 12 {
-		return 0, fmt.Errorf("response too short (%d bytes)", respLen)
-	}
-
-	resp := make([]byte, respLen)
-	if _, err := io.ReadFull(conn, resp); err != nil {
-		return 0, fmt.Errorf("read body: %w", err)
-	}
-	duration := time.Since(start)
-
-	// Check QR flag and ANCOUNT
-	qr := (resp[2] & 0x80) != 0
-	if !qr {
-		return duration, fmt.Errorf("not a dns response")
-	}
-	return duration, nil
+	pt := netprobe.NewProxyTransport(dialer, nil, "")
+	return netprobe.ProbeTCPDNS(ctx, pt, targetAddr, domain)
 }
 
 func probeUDPDNS(ctx context.Context, socksAddr, targetAddr, domain string) (time.Duration, error) {
-	deadline, ok := ctx.Deadline()
-	timeout := 4 * time.Second
-	if ok {
-		rem := time.Until(deadline)
-		if rem < timeout {
-			timeout = rem
-		}
-	}
-
-	udpClient, err := utils.DialSOCKS5UDP(socksAddr, timeout)
-	if err != nil {
-		return 0, fmt.Errorf("socks5 udp associate: %w", err)
-	}
-	defer udpClient.Close()
-
-	query, err := buildDNSWireQuery(domain, 1) // Type A
-	if err != nil {
-		return 0, err
-	}
-
-	resp, duration, err := udpClient.SendAndReceive(targetAddr, query, timeout)
-	if err != nil {
-		return 0, err
-	}
-
-	if len(resp) < 12 {
-		return duration, fmt.Errorf("dns response too short (%d bytes)", len(resp))
-	}
-	qr := (resp[2] & 0x80) != 0
-	if !qr {
-		return duration, fmt.Errorf("not a dns response")
-	}
-	return duration, nil
+	pt := netprobe.NewProxyTransport(nil, nil, socksAddr)
+	return netprobe.ProbeUDPDNS(ctx, pt, targetAddr, domain)
 }
 
 func buildDNSWireQuery(domain string, qtype uint16) ([]byte, error) {
-	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
-	if domain == "" {
-		return nil, fmt.Errorf("empty domain")
-	}
-
-	packet := make([]byte, 12)
-	binary.BigEndian.PutUint16(packet[0:2], 0x1234) // Transaction ID
-	binary.BigEndian.PutUint16(packet[2:4], 0x0100) // Standard query with RD set
-	binary.BigEndian.PutUint16(packet[4:6], 1)      // QDCOUNT = 1
-
-	for _, label := range strings.Split(domain, ".") {
-		if label == "" || len(label) > 63 {
-			return nil, fmt.Errorf("invalid domain label %q", label)
-		}
-		packet = append(packet, byte(len(label)))
-		packet = append(packet, label...)
-	}
-	packet = append(packet, 0x00)
-
-	qtail := make([]byte, 4)
-	binary.BigEndian.PutUint16(qtail[0:2], qtype)
-	binary.BigEndian.PutUint16(qtail[2:4], 1) // Class IN
-	packet = append(packet, qtail...)
-	return packet, nil
+	return netprobe.BuildDNSWireQuery(domain, qtype)
 }

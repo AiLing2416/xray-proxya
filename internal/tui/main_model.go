@@ -55,8 +55,10 @@ import (
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/relaysub"
 	"xray-proxya/internal/relaytest"
+	"xray-proxya/internal/service"
 	"xray-proxya/internal/sub"
 	"xray-proxya/internal/trafficstats"
+	"xray-proxya/internal/tune"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -1832,7 +1834,7 @@ func (m Model) getSelectedDetailContent() string {
 		g := m.staging.Guests[m.cursor]
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("Guest:    %s (UUID: %s)\n", g.Alias, g.UUID))
-		b.WriteString(fmt.Sprintf("Quota:    %s  Used: %.2fGB\n", formatGuestQuota(g.QuotaGB), float64(g.UsedBytes)/(1024*1024*1024)))
+		b.WriteString(fmt.Sprintf("Quota:    %s  Used: %s\n", formatGuestQuota(g.QuotaGB), config.FormatByteSize(g.UsedBytes)))
 		b.WriteString(fmt.Sprintf("Relay:    %s\n", guestOutboundLabel(g)))
 		if g.OutboundLink != "" {
 			b.WriteString(fmt.Sprintf("Relay To: %s\n", g.OutboundLink))
@@ -2196,14 +2198,14 @@ func Start() error {
 
 func runMainServiceAction(action string) tea.Cmd {
 	return func() tea.Msg {
-		err := xray.ManageSystemdUnit(action, xray.MainServiceUnit)
+		err := service.DefaultManager.ExecuteAction(action, service.MainUnit, false)
 		return serviceActionMsg{action: action, err: err, state: xray.GetServiceState()}
 	}
 }
 
 func runUnitServiceAction(action, unit string) tea.Cmd {
 	return func() tea.Msg {
-		err := xray.ManageSystemdUnit(action, unit)
+		err := service.DefaultManager.ExecuteAction(action, unit, false)
 		return serviceActionMsg{action: fmt.Sprintf("%s %s", action, unit), err: err, state: xray.GetServiceState()}
 	}
 }
@@ -2230,11 +2232,7 @@ func checkGatewayStatus() (nft bool, tun bool, fwd bool) {
 	if err := cmd.Run(); err == nil {
 		nft = true
 	}
-	if data, err := os.ReadFile("/proc/sys/net/ipv4/ip_forward"); err == nil {
-		if strings.TrimSpace(string(data)) == "1" {
-			fwd = true
-		}
-	}
+	fwd = tune.IsIPv4ForwardingEnabled()
 	return
 }
 

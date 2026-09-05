@@ -13,6 +13,7 @@ import (
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
+	"xray-proxya/internal/tune"
 )
 
 const (
@@ -554,7 +555,7 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 
 	// For both forward-only and proxy, check IP forwarding is enabled
-	if out, err := exec.Command("sysctl", "-n", "net.ipv4.ip_forward").Output(); err != nil || strings.TrimSpace(string(out)) != "1" {
+	if !tune.IsIPv4ForwardingEnabled() {
 		problems = append(problems, "net.ipv4.ip_forward is not enabled")
 	}
 
@@ -1123,11 +1124,7 @@ func sysctlStatePath() string {
 }
 
 func readSysctl(key string) (string, error) {
-	out, err := exec.Command("sysctl", "-n", key).Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
+	return tune.ReadSysctl(key)
 }
 
 func ipv6Available() bool {
@@ -1135,7 +1132,7 @@ func ipv6Available() bool {
 	if err != nil || len(strings.TrimSpace(string(data))) == 0 {
 		return false
 	}
-	if data, err := os.ReadFile("/proc/sys/net/ipv6/conf/all/disable_ipv6"); err == nil && strings.TrimSpace(string(data)) == "1" {
+	if val, err := tune.ReadSysctl("net.ipv6.conf.all.disable_ipv6"); err == nil && val == "1" {
 		return false
 	}
 	return true

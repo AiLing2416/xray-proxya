@@ -9,6 +9,7 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/notify"
+	"xray-proxya/internal/trafficstats"
 )
 
 type UpdateResult struct {
@@ -78,7 +79,7 @@ func (m *Monitor) UpdateGuests(cfg *config.UserConfig, allStats map[string]int64
 		m = NewMonitor()
 	}
 
-	observed := collectGuestUsage(allStats)
+	observed := trafficstats.Summarize(allStats).GuestStats
 	result := UpdateResult{}
 	monthKey := now.Format("2006-01")
 
@@ -267,24 +268,6 @@ func (m *Monitor) UpdateGuests(cfg *config.UserConfig, allStats map[string]int64
 	return result
 }
 
-func collectGuestUsage(allStats map[string]int64) map[string]int64 {
-	out := make(map[string]int64)
-	for name, val := range allStats {
-		if !strings.HasPrefix(name, "user>>>guest-") {
-			continue
-		}
-		parts := strings.Split(name, ">>>")
-		if len(parts) < 2 {
-			continue
-		}
-		alias := strings.TrimPrefix(parts[1], "guest-")
-		if alias == "" {
-			continue
-		}
-		out[alias] += val
-	}
-	return out
-}
 
 func shouldResetGuest(guest *config.GuestConfig, now time.Time, monthKey string) bool {
 	if guest == nil || guest.ResetDay < 1 || guest.EffectiveLimitBytes() == 0 {

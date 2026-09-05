@@ -2,12 +2,12 @@ package doctor
 
 import (
 	"context"
-	"encoding/binary"
 	"fmt"
 	"math"
-	"net"
 	"net/http"
 	"time"
+
+	"xray-proxya/internal/netprobe"
 )
 
 var ntpServers = []string{
@@ -99,57 +99,10 @@ func formatOffset(d time.Duration) string {
 	return fmt.Sprintf("%s%.2fs", sign, d.Seconds())
 }
 
-// querySNTP performs a standard SNTP (RFC 4330 / 5905) packet exchange.
+// querySNTP performs a standard SNTP (RFC 4330 / 5905) packet exchange via netprobe.
 func querySNTP(ctx context.Context, server string) (time.Duration, time.Duration, error) {
-	d := net.Dialer{Timeout: 2500 * time.Millisecond}
-	conn, err := d.DialContext(ctx, "udp", server)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer conn.Close()
-
-	// 48-byte request packet: LI=0, VN=3 (NTPv3), Mode=3 (Client)
-	req := make([]byte, 48)
-	req[0] = 0x1B
-
-	t0 := time.Now()
-	if err := conn.SetDeadline(time.Now().Add(2500 * time.Millisecond)); err != nil {
-		return 0, 0, err
-	}
-	if _, err := conn.Write(req); err != nil {
-		return 0, 0, err
-	}
-
-	resp := make([]byte, 48)
-	n, err := conn.Read(resp)
-	t3 := time.Now()
-	if err != nil {
-		return 0, 0, err
-	}
-	if n < 48 {
-		return 0, 0, fmt.Errorf("truncated NTP packet (%d bytes)", n)
-	}
-
-	// Transmit Timestamp (T2) at byte 40..47
-	secs := binary.BigEndian.Uint32(resp[40:44])
-	frac := binary.BigEndian.Uint32(resp[44:48])
-
-	if secs == 0 {
-		return 0, 0, fmt.Errorf("invalid zero timestamp from NTP server")
-	}
-
-	// NTP Epoch is 1900-01-01; Unix Epoch is 1970-01-01 (70 years = 2208988800 seconds)
-	const ntpEpochOffset = 2208988800
-	unixSecs := int64(secs) - ntpEpochOffset
-	nanosecs := (int64(frac) * 1e9) >> 32
-	serverTime := time.Unix(unixSecs, nanosecs)
-
-	// Round-trip time and clock offset
-	rtt := t3.Sub(t0)
-	// Offset = (T2 - T0) - RTT/2
-	offset := serverTime.Sub(t0.Add(rtt / 2))
-
-	return offset, rtt, nil
+	dt := &netprobe.DirectTransport{}
+	return netprobe.QuerySNTP(ctx, dt, server)
 }
 
 // queryHTTPTime uses the HTTP Date header as fallback.

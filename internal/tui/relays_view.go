@@ -1,9 +1,9 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/sharelink"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -30,17 +30,7 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 			indicator = "[S]"
 		}
 
-		// Extract port from config
-		port := "--"
-		if vnext, ok := co.Config["settings"].(map[string]interface{})["vnext"].([]interface{}); ok && len(vnext) > 0 {
-			if p, ok := vnext[0].(map[string]interface{})["port"]; ok {
-				port = fmt.Sprintf("%v", p)
-			}
-		} else if servers, ok := co.Config["settings"].(map[string]interface{})["servers"].([]interface{}); ok && len(servers) > 0 {
-			if p, ok := servers[0].(map[string]interface{})["port"]; ok {
-				port = fmt.Sprintf("%v", p)
-			}
-		}
+		spec := sharelink.FromOutbound(co.Config)
 
 		state := "OFF"
 		if co.Enabled {
@@ -55,8 +45,8 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 			indicator,
 			co.Alias,
 			state,
-			fmt.Sprintf("%v", co.Config["protocol"]),
-			port,
+			spec.DisplayProtocol(),
+			spec.DisplayPort(),
 			tcp,
 			udp,
 			dns,

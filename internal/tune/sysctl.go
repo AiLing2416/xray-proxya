@@ -64,3 +64,9 @@ func KernelVersion() string {
 	}
 	return strings.TrimSpace(string(data))
 }
+
+// IsIPv4ForwardingEnabled checks if net.ipv4.ip_forward is enabled (set to 1).
+func IsIPv4ForwardingEnabled() bool {
+	val, err := ReadSysctl("net.ipv4.ip_forward")
+	return err == nil && val == "1"
+}

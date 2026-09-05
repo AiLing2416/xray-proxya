@@ -3,11 +3,12 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"sort"
-	"strconv"
 	"strings"
+	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/quota"
+	"xray-proxya/internal/service"
 	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -122,32 +123,14 @@ var statusCmd = &cobra.Command{
 }
 
 func querySystemdUnitState(unit string) (bool, int, string) {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false, 0, "[N/A (systemctl missing)]"
+	st := service.GetUnitStatus(unit)
+	statusStr := "[" + st.State + "]"
+	if st.Active {
+		statusStr = "[Active]"
+	} else if st.State == "Stopped" {
+		statusStr = "[Inactive]"
 	}
-	args := append(xray.SystemdScopeArgs(), "is-active", unit)
-	cmd := exec.Command("systemctl", args...)
-	if err := cmd.Run(); err != nil {
-		showArgs := append(xray.SystemdScopeArgs(), "show", "-p", "ActiveState,LoadState", "--value", unit)
-		out, err2 := exec.Command("systemctl", showArgs...).Output()
-		if err2 == nil {
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if len(lines) >= 2 && lines[1] == "not-found" {
-				return false, 0, "[Not Installed]"
-			}
-			if len(lines) >= 1 && lines[0] == "failed" {
-				return false, 0, "[Failed]"
-			}
-		}
-		return false, 0, "[Inactive]"
-	}
-	showPIDArgs := append(xray.SystemdScopeArgs(), "show", "-p", "MainPID", "--value", unit)
-	out, err := exec.Command("systemctl", showPIDArgs...).Output()
-	pid := 0
-	if err == nil {
-		pid, _ = strconv.Atoi(strings.TrimSpace(string(out)))
-	}
-	return true, pid, "[Active]"
+	return st.Active, st.PID, statusStr
 }
 
 func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
@@ -278,13 +261,11 @@ func printGuestStatsWithDetails(guestStats map[string]int64, guests []config.Gue
 
 	for _, alias := range allAliases {
 		trafficBytes := guestStats[alias]
-		trafficFormatted := utils.FormatBytes(trafficBytes)
 		if g, ok := guestMap[alias]; ok {
-			state := guestStateLabel(g)
-			quotaFormatted := formatGuestQuota(g.QuotaGB)
-			fmt.Printf("      - %-15s: %s (Quota: %s) [%s]\n", alias, trafficFormatted, quotaFormatted, state)
+			v := quota.BuildGuestView(g, time.Now())
+			fmt.Printf("      - %-15s: %s (Quota: %s) [%s]\n", alias, utils.FormatBytes(trafficBytes), v.QuotaFormatted, v.StateLabel)
 		} else {
-			fmt.Printf("      - %-15s: %s\n", alias, trafficFormatted)
+			fmt.Printf("      - %-15s: %s\n", alias, utils.FormatBytes(trafficBytes))
 		}
 	}
 }

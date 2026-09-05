@@ -2,13 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"xray-proxya/internal/relayinfo"
 	"xray-proxya/internal/relayspeed"
 	"xray-proxya/internal/relaytest"
+	"xray-proxya/internal/sharelink"
 	"xray-proxya/internal/xray"
 
 	"github.com/google/uuid"
@@ -153,14 +152,11 @@ var listOutboundCmd = &cobra.Command{
 }
 
 func outboundProtocol(co config.CustomOutbound) string {
-	if proto, _ := co.Config["protocol"].(string); proto != "" {
-		return proto
-	}
-	return "unknown"
+	return sharelink.FromOutbound(co.Config).DisplayProtocol()
 }
 
 func outboundRemoteSummary(co config.CustomOutbound) string {
-	server := outboundServerSpec(co)
+	server := sharelink.FromOutbound(co.Config).ServerSpec()
 	if server == "" {
 		return "-"
 	}
@@ -168,100 +164,11 @@ func outboundRemoteSummary(co config.CustomOutbound) string {
 }
 
 func outboundServerSpec(co config.CustomOutbound) string {
-	settings, _ := co.Config["settings"].(map[string]interface{})
-	switch outboundProtocol(co) {
-	case "vless", "vmess":
-		vnext := getMapSlice(settings, "vnext")
-		if len(vnext) == 0 {
-			return ""
-		}
-		return joinHostPort(vnext[0]["address"], vnext[0]["port"])
-	case "shadowsocks":
-		servers := getMapSlice(settings, "servers")
-		if len(servers) == 0 {
-			return ""
-		}
-		return joinHostPort(servers[0]["address"], servers[0]["port"])
-	case "socks", "http":
-		servers := getMapSlice(settings, "servers")
-		if len(servers) == 0 {
-			return ""
-		}
-		return joinHostPort(servers[0]["address"], servers[0]["port"])
-	case "freedom":
-		sendThrough, _ := co.Config["sendThrough"].(string)
-		if sendThrough != "" {
-			return sendThrough
-		}
-		return "direct"
-	default:
-		return ""
-	}
+	return sharelink.FromOutbound(co.Config).ServerSpec()
 }
 
 func outboundTransportSummary(co config.CustomOutbound) string {
-	stream, _ := co.Config["streamSettings"].(map[string]interface{})
-	parts := []string{}
-
-	network := stringValue(stream["network"])
-	if network == "" {
-		switch outboundProtocol(co) {
-		case "shadowsocks", "socks", "http", "freedom":
-			network = "tcp"
-		}
-	}
-	if network != "" {
-		parts = append(parts, network)
-	}
-
-	security := stringValue(stream["security"])
-	if security != "" && security != "none" {
-		parts = append(parts, security)
-	}
-
-	serverName := firstNonEmpty(
-		nestedString(stream, "realitySettings", "serverName"),
-		nestedString(stream, "tlsSettings", "serverName"),
-	)
-	if serverName != "" {
-		parts = append(parts, "sni="+serverName)
-	}
-
-	host := outboundHeaderHost(stream)
-	if host != "" && host != serverName {
-		parts = append(parts, "host="+host)
-	}
-
-	path := firstNonEmpty(
-		nestedString(stream, "wsSettings", "path"),
-		nestedString(stream, "xhttpSettings", "path"),
-	)
-	if path != "" {
-		parts = append(parts, "path="+path)
-	}
-
-	fp := nestedString(stream, "realitySettings", "fingerprint")
-	if fp != "" {
-		parts = append(parts, "fp="+fp)
-	}
-
-	if len(parts) == 0 {
-		return "-"
-	}
-	return trimText(strings.Join(parts, " "), 20)
-}
-
-func outboundHeaderHost(stream map[string]interface{}) string {
-	if host := nestedString(stream, "xhttpSettings", "host"); host != "" {
-		return host
-	}
-	if host := nestedString(stream, "wsSettings", "headers", "Host"); host != "" {
-		return host
-	}
-	if vals := nestedStringSlice(stream, "httpSettings", "host"); len(vals) > 0 {
-		return strings.Join(vals, ",")
-	}
-	return ""
+	return trimText(sharelink.FromOutbound(co.Config).TransportSummary(), 20)
 }
 
 func outboundDNSSummary(co config.CustomOutbound, fallback string) string {
@@ -305,41 +212,7 @@ func normalizeDNSFlags(strategy string, servers []string, reset bool) (string, [
 	return normalizedStrategy, normalizedServers, nil
 }
 
-func waitForLocalTCPPort(address string, timeout time.Duration) error {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", address, 300*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return nil
-		}
-		lastErr = err
-		time.Sleep(150 * time.Millisecond)
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("timed out waiting for %s", address)
-	}
-	return lastErr
-}
 
-func resolveDNSWithRetry(serverAddr string, domain string, qtype uint16, attempts int) ([]string, time.Duration, error) {
-	if attempts < 1 {
-		attempts = 1
-	}
-	var lastAnswers []string
-	var lastDuration time.Duration
-	var lastErr error
-	for attempt := 0; attempt < attempts; attempt++ {
-		answers, duration, err := xray.ResolveDNSTCP(serverAddr, domain, qtype)
-		lastAnswers, lastDuration, lastErr = answers, duration, err
-		if err == nil {
-			return answers, duration, nil
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	return lastAnswers, lastDuration, lastErr
-}
 
 func applyDNSConfigUpdate(co *config.CustomOutbound, strategy string, servers []string, reset bool) {
 	if reset {
@@ -355,97 +228,6 @@ func applyDNSConfigUpdate(co *config.CustomOutbound, strategy string, servers []
 	}
 }
 
-func getMapSlice(m map[string]interface{}, key string) []map[string]interface{} {
-	raw, ok := m[key].([]interface{})
-	if !ok {
-		return nil
-	}
-	out := make([]map[string]interface{}, 0, len(raw))
-	for _, item := range raw {
-		if mm, ok := item.(map[string]interface{}); ok {
-			out = append(out, mm)
-		}
-	}
-	return out
-}
-
-func joinHostPort(hostVal, portVal interface{}) string {
-	host := stringValue(hostVal)
-	port := stringValue(portVal)
-	if host == "" {
-		return ""
-	}
-	if port == "" || port == "0" {
-		return host
-	}
-	return net.JoinHostPort(host, port)
-}
-
-func stringValue(v interface{}) string {
-	switch vv := v.(type) {
-	case string:
-		return vv
-	case float64:
-		return fmt.Sprintf("%.0f", vv)
-	case int:
-		return fmt.Sprintf("%d", vv)
-	case int64:
-		return fmt.Sprintf("%d", vv)
-	case json.Number:
-		return vv.String()
-	default:
-		return ""
-	}
-}
-
-func nestedString(m map[string]interface{}, keys ...string) string {
-	var cur interface{} = m
-	for _, key := range keys {
-		mm, ok := cur.(map[string]interface{})
-		if !ok {
-			return ""
-		}
-		cur, ok = mm[key]
-		if !ok {
-			return ""
-		}
-	}
-	return stringValue(cur)
-}
-
-func nestedStringSlice(m map[string]interface{}, keys ...string) []string {
-	var cur interface{} = m
-	for _, key := range keys {
-		mm, ok := cur.(map[string]interface{})
-		if !ok {
-			return nil
-		}
-		cur, ok = mm[key]
-		if !ok {
-			return nil
-		}
-	}
-	raw, ok := cur.([]interface{})
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	for _, item := range raw {
-		if v := stringValue(item); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if value != "" {
-			return value
-		}
-	}
-	return ""
-}
 
 func trimText(value string, limit int) string {
 	if limit <= 0 || len(value) <= limit {
@@ -733,64 +515,16 @@ without changing the running service.
 			return
 		}
 
-		bin := xray.GetXrayBinaryPath()
-		if _, err := os.Stat(bin); os.IsNotExist(err) {
-			fmt.Println("⬇️ Xray core missing, downloading for test...")
-			if err := xray.DownloadXray(); err != nil {
-				fmt.Printf("❌ Failed to download Xray: %v\n", err)
-				return
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
 
-		testCfg := *cfg
-		testCfg.Role = config.RoleServer
-		testCfg.Gateway = config.GatewayConfig{}
+		session, err := relaytest.StartTestSession(ctx, cfg, alias, relaytest.WithDNS())
+		if err != nil {
+			fmt.Printf("❌ Failed to start test session: %v\n", err)
+			return
+		}
+		defer session.Close()
 
-		testSocksPort, err := xray.GetFreePort()
-		if err != nil {
-			fmt.Printf("❌ Failed to allocate port: %v\n", err)
-			return
-		}
-		apiPort, err := xray.GetFreePort()
-		if err != nil {
-			fmt.Printf("❌ Failed to allocate port: %v\n", err)
-			return
-		}
-		dnsPort, err := xray.GetFreePort()
-		if err != nil {
-			fmt.Printf("❌ Failed to allocate port: %v\n", err)
-			return
-		}
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "dns-in": dnsPort}
-		for _, m := range testCfg.Presets {
-			if m.Enabled {
-				p, err := xray.GetFreePort()
-				if err != nil {
-					fmt.Printf("❌ Failed to allocate port: %v\n", err)
-					return
-				}
-				overrides[string(m.Mode)] = p
-			}
-		}
-
-		jsonData, err := xray.GenerateXrayJSON(&testCfg, overrides, alias)
-		if err != nil {
-			fmt.Printf("❌ Error: %v\n", err)
-			return
-		}
-		_, cleanup, err := xray.StartXrayTemp(jsonData)
-		if err != nil {
-			fmt.Printf("❌ Error: %v\n", err)
-			return
-		}
-		defer cleanup()
-
-		serverAddr := fmt.Sprintf("127.0.0.1:%d", dnsPort)
-		if err := waitForLocalTCPPort(serverAddr, 5*time.Second); err != nil {
-			fmt.Printf("❌ DNS test listener did not become ready: %v\n", err)
-			return
-		}
 		for _, queryType := range []struct {
 			label string
 			value uint16
@@ -798,7 +532,7 @@ without changing the running service.
 			{label: "A", value: xray.DNSTypeA},
 			{label: "AAAA", value: xray.DNSTypeAAAA},
 		} {
-			answers, duration, err := resolveDNSWithRetry(serverAddr, domain, queryType.value, 3)
+			answers, duration, err := session.ResolveDNS(domain, queryType.value, 3)
 			if err != nil {
 				fmt.Printf("%s  %s  ❌ %v\n", alias, queryType.label, err)
 				continue

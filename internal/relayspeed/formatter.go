@@ -3,9 +3,9 @@ package relayspeed
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
+	"xray-proxya/pkg/units"
 )
 
 // RenderTerminal renders speed test results in terminal format (card view for single node, table for multi-node).
@@ -195,19 +195,13 @@ func FormatDecimalBytes(bytes int64) string {
 	if bytes <= 0 {
 		return "0 B"
 	}
-	const (
-		kb = 1000
-		mb = 1000 * kb
-		gb = 1000 * mb
-	)
-
 	switch {
-	case bytes >= gb:
-		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(gb))
-	case bytes >= mb:
-		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(mb))
-	case bytes >= kb:
-		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(kb))
+	case bytes >= units.GB:
+		return fmt.Sprintf("%.2f GB", float64(bytes)/float64(units.GB))
+	case bytes >= units.MB:
+		return fmt.Sprintf("%.2f MB", float64(bytes)/float64(units.MB))
+	case bytes >= units.KB:
+		return fmt.Sprintf("%.2f KB", float64(bytes)/float64(units.KB))
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
@@ -244,67 +238,12 @@ func truncate(s string, maxLen int) string {
 }
 
 func ParseSize(s string) (int64, error) {
-	s = strings.TrimSpace(strings.ToLower(s))
-	if s == "" {
-		return 0, fmt.Errorf("empty size")
-	}
-
-	var multiplier int64 = 1
-	var unitLen int
-
-	if strings.HasSuffix(s, "gib") || strings.HasSuffix(s, "gi") {
-		multiplier = 1024 * 1024 * 1024
-		unitLen = 3
-		if strings.HasSuffix(s, "gi") {
-			unitLen = 2
-		}
-	} else if strings.HasSuffix(s, "mib") || strings.HasSuffix(s, "mi") {
-		multiplier = 1024 * 1024
-		unitLen = 3
-		if strings.HasSuffix(s, "mi") {
-			unitLen = 2
-		}
-	} else if strings.HasSuffix(s, "kib") || strings.HasSuffix(s, "ki") {
-		multiplier = 1024
-		unitLen = 3
-		if strings.HasSuffix(s, "ki") {
-			unitLen = 2
-		}
-	} else if strings.HasSuffix(s, "gb") || strings.HasSuffix(s, "g") {
-		multiplier = 1000 * 1000 * 1000
-		unitLen = 2
-		if strings.HasSuffix(s, "g") {
-			unitLen = 1
-		}
-	} else if strings.HasSuffix(s, "mb") || strings.HasSuffix(s, "m") {
-		multiplier = 1000 * 1000
-		unitLen = 2
-		if strings.HasSuffix(s, "m") {
-			unitLen = 1
-		}
-	} else if strings.HasSuffix(s, "kb") || strings.HasSuffix(s, "k") {
-		multiplier = 1000
-		unitLen = 2
-		if strings.HasSuffix(s, "k") {
-			unitLen = 1
-		}
-	} else if strings.HasSuffix(s, "b") {
-		multiplier = 1
-		unitLen = 1
-	}
-
-	numStr := strings.TrimSpace(s[:len(s)-unitLen])
-	if numStr == "" {
-		return 0, fmt.Errorf("invalid size format: %q", s)
-	}
-
-	val, err := strconv.ParseFloat(numStr, 64)
+	val, err := units.ParseBytes(s, units.Byte)
 	if err != nil {
-		return 0, fmt.Errorf("invalid size value: %w", err)
+		return 0, err
 	}
 	if val < 0 {
 		return 0, fmt.Errorf("size cannot be negative")
 	}
-
-	return int64(val * float64(multiplier)), nil
+	return val, nil
 }

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/quota"
 	"xray-proxya/internal/sub"
 
 	"github.com/charmbracelet/lipgloss"
@@ -99,45 +100,15 @@ func BuildGuestReport(guest config.GuestConfig) string {
 }
 
 func formatGuestQuota(value float64) string {
-	switch {
-	case value < 0:
-		return "Unlimited"
-	case value == 0:
-		return "Paused"
-	case value >= 10:
-		return fmt.Sprintf("%.1fGB", value)
-	case value >= 1:
-		return fmt.Sprintf("%.2fGB", value)
-	default:
-		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", value), "0"), ".") + "GB"
-	}
+	return quota.FormatQuota(value)
 }
 
 func guestStateLabel(guest config.GuestConfig) string {
-	if guest.Enabled {
-		return "ON"
-	}
-	switch guest.DisabledReason {
-	case config.GuestDisabledQuotaReached:
-		return "QUOTA"
-	case config.GuestDisabledQuotaZero, config.GuestDisabledManual:
-		return "PAUSED"
-	default:
-		return "OFF"
-	}
+	return quota.GuestStateLabel(guest)
 }
 
 func guestReasonLabel(guest config.GuestConfig) string {
-	switch guest.DisabledReason {
-	case config.GuestDisabledManual:
-		return "manual"
-	case config.GuestDisabledQuotaReached:
-		return "quota reached"
-	case config.GuestDisabledQuotaZero:
-		return "quota=0"
-	default:
-		return "-"
-	}
+	return quota.GuestReasonLabel(guest)
 }
 
 func guestOutboundLabel(guest config.GuestConfig) string {

@@ -2,12 +2,9 @@ package relaytest
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/binary"
-	"fmt"
 	"sync"
-	"time"
-	"xray-proxya/pkg/utils"
+
+	"xray-proxya/internal/netprobe"
 )
 
 func probeUDPCapabilities(ctx context.Context, session *TestSession) *CategoryResult {
@@ -81,96 +78,19 @@ func probeUDPCapabilities(ctx context.Context, session *TestSession) *CategoryRe
 }
 
 func probeSTUN(ctx context.Context, session *TestSession) (int64, error) {
-	timeout := 3 * time.Second
-	udpClient, err := utils.DialSOCKS5UDP(session.SOCKSAddr, timeout)
-	if err != nil {
-		return 0, fmt.Errorf("udp associate: %w", err)
-	}
-	defer udpClient.Close()
-
-	// 20-byte STUN Binding Request header
-	req := make([]byte, 20)
-	binary.BigEndian.PutUint16(req[0:2], 0x0001) // Binding Request
-	binary.BigEndian.PutUint16(req[2:4], 0x0000) // Message Length: 0
-	binary.BigEndian.PutUint32(req[4:8], 0x2112A442) // Magic Cookie
-	_, _ = rand.Read(req[8:20])                  // Transaction ID
-
-	resp, duration, err := udpClient.SendAndReceive("stun.cloudflare.com:3478", req, timeout)
-	if err != nil {
-		// Fallback to Google STUN
-		resp, duration, err = udpClient.SendAndReceive("stun.google.com:19302", req, timeout)
-		if err != nil {
-			return 0, fmt.Errorf("stun failed: %w", err)
-		}
-	}
-
-	if len(resp) < 20 {
-		return duration.Milliseconds(), fmt.Errorf("truncated stun response")
-	}
-
-	msgType := binary.BigEndian.Uint16(resp[0:2])
-	cookie := binary.BigEndian.Uint32(resp[4:8])
-	if (msgType == 0x0101 || msgType == 0x0111) && cookie == 0x2112A442 {
-		return duration.Milliseconds(), nil
-	}
-	return duration.Milliseconds(), fmt.Errorf("invalid stun response type 0x%04x", msgType)
+	pt := netprobe.NewProxyTransport(session.Dialer, session.HTTPClient, session.SOCKSAddr)
+	dur, err := netprobe.ProbeSTUN(ctx, pt, "stun.cloudflare.com:3478", "stun.google.com:19302")
+	return dur.Milliseconds(), err
 }
 
 func probeNTP(ctx context.Context, session *TestSession) (int64, error) {
-	timeout := 3 * time.Second
-	udpClient, err := utils.DialSOCKS5UDP(session.SOCKSAddr, timeout)
-	if err != nil {
-		return 0, fmt.Errorf("udp associate: %w", err)
-	}
-	defer udpClient.Close()
-
-	// 48-byte NTP client request packet: LI=0, VN=4, Mode=3 -> 0x23
-	req := make([]byte, 48)
-	req[0] = 0x23
-
-	resp, duration, err := udpClient.SendAndReceive("pool.ntp.org:123", req, timeout)
-	if err != nil {
-		// Fallback to Google NTP
-		resp, duration, err = udpClient.SendAndReceive("time.google.com:123", req, timeout)
-		if err != nil {
-			return 0, fmt.Errorf("ntp failed: %w", err)
-		}
-	}
-
-	if len(resp) < 48 {
-		return duration.Milliseconds(), fmt.Errorf("ntp response too short (%d)", len(resp))
-	}
-	return duration.Milliseconds(), nil
+	pt := netprobe.NewProxyTransport(session.Dialer, session.HTTPClient, session.SOCKSAddr)
+	dur, err := netprobe.ProbeNTP(ctx, pt, "pool.ntp.org:123", "time.google.com:123")
+	return dur.Milliseconds(), err
 }
 
 func probeLargePacket(ctx context.Context, session *TestSession) (int64, error) {
-	timeout := 3 * time.Second
-	udpClient, err := utils.DialSOCKS5UDP(session.SOCKSAddr, timeout)
-	if err != nil {
-		return 0, fmt.Errorf("udp associate: %w", err)
-	}
-	defer udpClient.Close()
-
-	// Build EDNS0 query with EDNS buffer size 1400 and padding
-	query, err := buildDNSWireQuery("cloudflare.com", 1)
-	if err != nil {
-		return 0, err
-	}
-
-	// Pad to 1400 bytes
-	payload := make([]byte, 1400)
-	copy(payload, query)
-
-	resp, duration, err := udpClient.SendAndReceive("1.1.1.1:53", payload, timeout)
-	if err != nil {
-		resp, duration, err = udpClient.SendAndReceive("8.8.8.8:53", payload, timeout)
-		if err != nil {
-			return 0, fmt.Errorf("large udp packet failed: %w", err)
-		}
-	}
-
-	if len(resp) < 12 {
-		return duration.Milliseconds(), fmt.Errorf("response too short (%d)", len(resp))
-	}
-	return duration.Milliseconds(), nil
+	pt := netprobe.NewProxyTransport(session.Dialer, session.HTTPClient, session.SOCKSAddr)
+	dur, err := netprobe.ProbeLargeUDP(ctx, pt, "1.1.1.1:53", "8.8.8.8:53", "cloudflare.com")
+	return dur.Milliseconds(), err
 }

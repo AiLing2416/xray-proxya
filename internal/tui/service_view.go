@@ -2,13 +2,9 @@ package tui
 
 import (
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/xray"
+	"xray-proxya/internal/service"
 )
 
 // ManagedServiceItem represents a simplified service unit entry for the list-based SERVICE view.
@@ -24,77 +20,25 @@ type ManagedServiceItem struct {
 
 // QueryManagedServices scans and checks status for all core and auxiliary services.
 func QueryManagedServices(cfg *config.UserConfig) []ManagedServiceItem {
-	var list []ManagedServiceItem
-
-	// 1. Core Service
-	coreActive, corePID := checkUnitState(xray.MainServiceUnit)
-	coreStatus := "Stopped"
-	if coreActive {
-		coreStatus = "Running"
-	}
-	list = append(list, ManagedServiceItem{
-		DisplayName: "Core",
-		UnitName:    xray.MainServiceUnit,
-		Active:      coreActive,
-		PID:         corePID,
-		Status:      coreStatus,
-		Enabled:     checkUnitEnabled(xray.MainServiceUnit),
-		Description: "Main Xray-Core proxy service",
-	})
-
-	// 2. Pathd Probe Service
-	pathdUnit := "xray-proxya-pathd.service"
-	pathdActive, pathdPID := checkUnitState(pathdUnit)
-	pathdStatus := "Stopped"
-	if pathdActive {
-		pathdStatus = "Running"
-	}
-	list = append(list, ManagedServiceItem{
-		DisplayName: "Pathd",
-		UnitName:    pathdUnit,
-		Active:      pathdActive,
-		PID:         pathdPID,
-		Status:      pathdStatus,
-		Enabled:     checkUnitEnabled(pathdUnit),
-		Description: "PathLink ICMP latency & health daemon",
-	})
-
-	// 3. IPv6-Rotate Service (Server mode)
-	if cfg == nil || cfg.Role == config.RoleServer {
-		rotUnit := "xray-proxya-ipv6-rotate.service"
-		rotActive, rotPID := checkUnitState(rotUnit)
-		rotStatus := "Stopped"
-		if rotActive {
-			rotStatus = "Running"
+	statuses, _ := service.ListManagedServices(cfg)
+	list := make([]ManagedServiceItem, len(statuses))
+	for i, st := range statuses {
+		status := st.State
+		if st.Active {
+			status = "Running"
+		} else if st.State == "Not Installed" {
+			status = "Stopped"
 		}
-		list = append(list, ManagedServiceItem{
-			DisplayName: "IPv6-Rotate",
-			UnitName:    rotUnit,
-			Active:      rotActive,
-			PID:         rotPID,
-			Status:      rotStatus,
-			Enabled:     checkUnitEnabled(rotUnit),
-			Description: "Privileged IPv6 subnet address rotator",
-		})
+		list[i] = ManagedServiceItem{
+			DisplayName: st.DisplayName,
+			UnitName:    st.UnitName,
+			Active:      st.Active,
+			PID:         st.PID,
+			Status:      status,
+			Enabled:     st.Enabled,
+			Description: st.Description,
+		}
 	}
-
-	// 4. Subscription service
-	subUnit := "xray-proxya-sub.service"
-	subActive, subPID := checkUnitState(subUnit)
-	subStatus := "Stopped"
-	if subActive {
-		subStatus = "Running"
-	}
-	list = append(list, ManagedServiceItem{
-		DisplayName: "Sub",
-		UnitName:    subUnit,
-		Active:      subActive,
-		PID:         subPID,
-		Status:      subStatus,
-		Enabled:     checkUnitEnabled(subUnit),
-		Description: "Subscription server",
-	})
-
 	return list
 }
 
@@ -173,49 +117,3 @@ func BuildServiceReport(item ManagedServiceItem) string {
 	return strings.TrimSpace(b.String())
 }
 
-func checkUnitState(unit string) (bool, int) {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false, 0
-	}
-	args := append(xray.SystemdScopeArgs(), "is-active", unit)
-	if err := exec.Command("systemctl", args...).Run(); err != nil {
-		return false, 0
-	}
-	showArgs := append(xray.SystemdScopeArgs(), "show", "-p", "MainPID", "--value", unit)
-	out, err := exec.Command("systemctl", showArgs...).Output()
-	if err != nil {
-		return true, 0
-	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(out)))
-	return true, pid
-}
-
-func checkUnitEnabled(unit string) bool {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	args := append(xray.SystemdScopeArgs(), "is-enabled", unit)
-	out, err := exec.Command("systemctl", args...).Output()
-	if err != nil {
-		return false
-	}
-	res := strings.TrimSpace(string(out))
-	return res == "enabled"
-}
-
-func findUnitPath(unit string) string {
-	if os.Geteuid() != 0 {
-		p := filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", unit)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-		return ""
-	}
-	for _, dir := range []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"} {
-		p := filepath.Join(dir, unit)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-	}
-	return ""
-}

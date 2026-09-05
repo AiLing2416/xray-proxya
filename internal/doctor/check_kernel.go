@@ -1,38 +1,22 @@
 package doctor
 
 import (
-	"bufio"
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strings"
 	"syscall"
 	"time"
 
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/tune"
 )
 
 // CheckKernel inspects kernel module availability and sysctl parameters.
 func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 	var results []CheckResult
 
-	// Load present kernel modules (from /proc/modules and builtin)
-	loadedModules, builtinModules := readKernelModuleSets()
-
-	isModuleAvailable := func(name string) (bool, string) {
-		if loadedModules[name] {
-			return true, "loaded"
-		}
-		if builtinModules[name] {
-			return true, "builtin"
-		}
-		// Test if module exists on disk via modprobe dry-run
-		if err := exec.Command("modprobe", "-n", name).Run(); err == nil {
-			return true, "available"
-		}
-		return false, "missing"
-	}
+	// Inspect present kernel modules using unified module registry
+	moduleRegistry := tune.NewModuleRegistry()
 
 	// 1. Check Gateway Modules (tun, nf_tables, nft_tproxy, nft_nat, nft_masq, nf_conntrack)
 	gwModStart := time.Now()
@@ -50,11 +34,11 @@ func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 		var missing []string
 		var loadedDesc []string
 		for _, mod := range gwModules {
-			ok, status := isModuleAvailable(mod)
-			if !ok {
+			info := moduleRegistry.Inspect(mod)
+			if !info.Present {
 				missing = append(missing, mod)
 			} else {
-				loadedDesc = append(loadedDesc, fmt.Sprintf("%s (%s)", mod, status))
+				loadedDesc = append(loadedDesc, fmt.Sprintf("%s (%s)", mod, info.Status))
 			}
 		}
 
@@ -80,7 +64,7 @@ func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 		// Generic host without specific role
 		var missing []string
 		for _, mod := range gwModules {
-			if ok, _ := isModuleAvailable(mod); !ok {
+			if info := moduleRegistry.Inspect(mod); !info.Present {
 				missing = append(missing, mod)
 			}
 		}
@@ -106,14 +90,14 @@ func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 
 	// 2. Check BBR Congestion Control
 	bbrStart := time.Now()
-	ok, status := isModuleAvailable("tcp_bbr")
-	if ok {
-		if status == "loaded" || status == "builtin" {
+	bbrInfo := moduleRegistry.Inspect("tcp_bbr")
+	if bbrInfo.Present {
+		if bbrInfo.Status == tune.ModuleStatusLoaded || bbrInfo.Status == tune.ModuleStatusBuiltin {
 			results = append(results, CheckResult{
 				Category:   "Kernel Capabilities",
 				Name:       "TCP BBR Congestion",
 				Status:     StatusPass,
-				Detail:     fmt.Sprintf("tcp_bbr is %s and ready", status),
+				Detail:     fmt.Sprintf("tcp_bbr is %s and ready", bbrInfo.Status),
 				DurationMs: time.Since(bbrStart).Milliseconds(),
 			})
 		} else {
@@ -148,7 +132,7 @@ func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 			DurationMs: time.Since(ipfStart).Milliseconds(),
 		})
 	} else {
-		val := readSysctlString("/proc/sys/net/ipv4/ip_forward")
+		val, _ := tune.ReadSysctl("net.ipv4.ip_forward")
 		if val == "1" {
 			results = append(results, CheckResult{
 				Category:   "Kernel & Limits",
@@ -202,69 +186,4 @@ func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 	}
 
 	return results
-}
-
-func readKernelModuleSets() (map[string]bool, map[string]bool) {
-	loaded := make(map[string]bool)
-	builtin := make(map[string]bool)
-
-	// Read loaded modules from /proc/modules
-	if file, err := os.Open("/proc/modules"); err == nil {
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			fields := strings.Fields(scanner.Text())
-			if len(fields) > 0 {
-				modName := strings.ReplaceAll(fields[0], "-", "_")
-				loaded[modName] = true
-				loaded[fields[0]] = true
-			}
-		}
-		file.Close()
-	}
-
-	// Read builtin modules
-	var release string
-	var uname syscall.Utsname
-	if err := syscall.Uname(&uname); err == nil {
-		var buf []byte
-		for _, b := range uname.Release {
-			if b == 0 {
-				break
-			}
-			buf = append(buf, byte(b))
-		}
-		release = string(buf)
-	}
-
-	builtinPaths := []string{
-		fmt.Sprintf("/lib/modules/%s/modules.builtin", release),
-		"/lib/modules/modules.builtin",
-	}
-
-	for _, path := range builtinPaths {
-		if file, err := os.Open(path); err == nil {
-			scanner := bufio.NewScanner(file)
-			for scanner.Scan() {
-				line := strings.TrimSpace(scanner.Text())
-				if strings.HasSuffix(line, ".ko") {
-					parts := strings.Split(line, "/")
-					base := strings.TrimSuffix(parts[len(parts)-1], ".ko")
-					base = strings.ReplaceAll(base, "-", "_")
-					builtin[base] = true
-				}
-			}
-			file.Close()
-			break
-		}
-	}
-
-	return loaded, builtin
-}
-
-func readSysctlString(path string) string {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
 }

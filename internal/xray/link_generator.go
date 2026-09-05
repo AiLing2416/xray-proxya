@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/sharelink"
 )
 
 func splitAddresses(raw string) []string {
@@ -145,38 +146,8 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 }
 
 func rewritePrimaryRemark(link string, remark string) (string, bool) {
-	switch {
-	case strings.HasPrefix(link, "vmess://"):
-		return rewriteVMessRemark(link, remark)
-	case strings.HasPrefix(link, "vless://"), strings.HasPrefix(link, "ss://"):
-		return rewriteFragmentRemark(link, remark), true
-	default:
-		return link, false
+	if strings.HasPrefix(link, "vmess://") || strings.HasPrefix(link, "vless://") || strings.HasPrefix(link, "ss://") {
+		return sharelink.RewriteRemark(link, remark), true
 	}
-}
-
-func rewriteVMessRemark(link string, remark string) (string, bool) {
-	raw := strings.TrimPrefix(link, "vmess://")
-	data, err := base64.StdEncoding.DecodeString(raw)
-	if err != nil {
-		return link, false
-	}
-	var payload map[string]interface{}
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return link, false
-	}
-	payload["ps"] = remark
-	updated, err := json.Marshal(payload)
-	if err != nil {
-		return link, false
-	}
-	return "vmess://" + base64.StdEncoding.EncodeToString(updated), true
-}
-
-func rewriteFragmentRemark(link string, remark string) string {
-	escaped := url.PathEscape(remark)
-	if idx := strings.Index(link, "#"); idx >= 0 {
-		return link[:idx+1] + escaped
-	}
-	return link + "#" + escaped
+	return link, false
 }

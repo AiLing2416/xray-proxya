@@ -1,20 +1,12 @@
 package applyops
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"reflect"
-	"strings"
-	"syscall"
-	"time"
 	"xray-proxya/internal/config"
-	"xray-proxya/internal/gateway"
-	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/presets"
-	"xray-proxya/internal/xray"
+	"xray-proxya/internal/service"
 )
 
 type Impact struct {
@@ -67,192 +59,36 @@ func applyPendingLocked(opts Options) ([]string, error) {
 
 	impact := BuildImpact(activeCfg, cfg)
 	gatewaySyncRequired := cfg.Role == config.RoleGateway && impact.GatewayRuntimeChanged
+
+	actx := &ApplyContext{
+		Options:             opts,
+		ActiveCfg:           activeCfg,
+		StagingCfg:          cfg,
+		Impact:              impact,
+		GatewaySyncRequired: gatewaySyncRequired,
+		Lines:               make([]string, 0, 16),
+	}
+
+	// Record validation hints
 	validateXray := opts.Full || impact.XrayConfigChanged
-	lines := make([]string, 0, 16)
+	if opts.Force {
+		actx.AppendLine("⚠️  Skipping validation due to --force flag.")
+	} else if !validateXray {
+		actx.AppendLine("ℹ️  No Xray-facing changes detected; skipping Xray validation.")
+	}
 
-	if !opts.Force && validateXray {
-		testOverrides := map[string]int{"gateway-tun-disabled": 1}
-		lines = append(lines, "🔍 Stage 1: Static Validation...")
+	pipeline := NewApplyPipeline()
+	if err := pipeline.Execute(actx); err != nil {
+		return actx.Lines, err
+	}
 
-		// Invariant and online validation for changed/newly-enabled REALITY presets
-		for _, m := range cfg.Presets {
-			if !m.Enabled {
-				continue
-			}
-			if m.Mode == config.ModeVLESSVision || m.Mode == config.ModeVLESSReality {
-				isLocalDest := strings.HasPrefix(m.Dest, "127.0.0.1:") || strings.HasPrefix(m.Dest, "localhost:")
-				if m.Skin != "" && isLocalDest {
-					cert := cfg.FindCert(m.SNI)
-					if cert == nil && m.SkinDomain != "" {
-						cert = cfg.FindCert(m.SkinDomain)
-					}
-					if cert == nil {
-						return lines, fmt.Errorf("REALITY preset %s has skin enabled for domain %s, but certificate is not registered", m.Mode, m.SNI)
-					}
-				} else {
-					if _, _, err := config.ValidateRealitySNIAndDest(m.SNI, m.Dest); err != nil {
-						return lines, fmt.Errorf("REALITY preset %s configuration invalid: %w", m.Mode, err)
-					}
-					var activeM *config.ModeInfo
-					if activeCfg != nil {
-						for j := range activeCfg.Presets {
-							if activeCfg.Presets[j].Mode == m.Mode {
-								activeM = &activeCfg.Presets[j]
-								break
-							}
-						}
-					}
-					needsOnlineValidation := activeM == nil || !activeM.Enabled || activeM.SNI != m.SNI || activeM.Dest != m.Dest
-					if needsOnlineValidation {
-						lines = append(lines, fmt.Sprintf("🔍 Validating REALITY target for preset %s: %s (%s)...", m.Mode, m.SNI, m.Dest))
-						if _, err := config.ValidateRealityTarget(m.Dest, 5*time.Second); err != nil {
-							return lines, fmt.Errorf("REALITY target %s (%s) validation failed during apply: %w", m.SNI, m.Dest, err)
-						}
-						lines = append(lines, fmt.Sprintf("✅ REALITY target validated for preset %s.", m.Mode))
-					}
-				}
-			}
-		}
-
-		jsonData, err := xray.GenerateXrayJSON(cfg, testOverrides, "")
-		if err != nil {
-			return lines, fmt.Errorf("static configuration generation failed: %w", err)
-		}
-		if err := xray.ValidateConfig(jsonData); err != nil {
-			return lines, fmt.Errorf("static validation failed: %w", err)
-		}
-		lines = append(lines, "✅ Syntax OK.")
-
-		lines = append(lines, "🔍 Stage 2: Runtime Isolation Test...")
-		testSocksPort, _ := xray.GetFreePort()
-		apiPort, _ := xray.GetFreePort()
-		overrides := map[string]int{"test-socks": testSocksPort, "api": apiPort, "gateway-tun-disabled": 1}
-		for _, m := range cfg.Presets {
-			if m.Enabled {
-				p, _ := xray.GetFreePort()
-				overrides[string(m.Mode)] = p
-			}
-		}
-		for _, co := range cfg.CustomOutbounds {
-			if co.InternalProxyPort > 0 {
-				p, _ := xray.GetFreePort()
-				overrides["outbound-"+co.Alias] = p
-				if co.InternalHttpPort > 0 {
-					hp, _ := xray.GetFreePort()
-					overrides["outbound-http-"+co.Alias] = hp
-				}
-			}
-		}
-		testJSON, _ := xray.GenerateXrayJSON(cfg, overrides, "")
-		cmd, cleanup, err := xray.StartXrayTemp(testJSON)
-		if err != nil {
-			return lines, fmt.Errorf("runtime isolation test failed: %w", err)
-		}
-		// Give it a tiny bit of time to start and check if it is still running
-		time.Sleep(100 * time.Millisecond)
-		if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
-			cleanup()
-			return lines, fmt.Errorf("runtime isolation test failed: temporary xray instance exited prematurely")
-		}
-		cleanup()
-		lines = append(lines, "✅ Runtime isolation test passed (using randomized ports).")
-	} else if opts.Force {
-		lines = append(lines, "⚠️  Skipping validation due to --force flag.")
+	if !actx.XrayRestarted && !actx.SubRestarted {
+		actx.AppendLine("✅ Changes committed without service restart.")
 	} else {
-		lines = append(lines, "ℹ️  No Xray-facing changes detected; skipping Xray validation.")
+		actx.AppendLine("✅ All changes applied.")
 	}
 
-	lines = append(lines, "🚀 Stage 3: Committing changes...")
-	if err := config.CommitStaging(); err != nil {
-		return lines, fmt.Errorf("failed to commit: %w", err)
-	}
-	if len(impact.ChangedSections) > 0 {
-		lines = append(lines, fmt.Sprintf("ℹ️  Changed sections: %v", impact.ChangedSections))
-	}
-	if impact.PathdConfigChanged {
-		pathdWasActive := IsPathdServiceActive()
-		if err := syncPathdConfig(cfg); err != nil {
-			return lines, fmt.Errorf("synchronize Pathd configuration: %w", err)
-		}
-		if pathdWasActive {
-			lines = append(lines, "✅ Pathd configuration synchronized and active service restarted.")
-		} else {
-			lines = append(lines, "✅ Pathd configuration synchronized (service is stopped; skipping restart).")
-		}
-	}
-	if impact.IPv6RotationChanged {
-		if IsIPv6RotateServiceActive() {
-			if err := RestartIPv6RotateServiceIfInstalled(); err != nil {
-				lines = append(lines, fmt.Sprintf("❌ Error reloading IPv6 rotation service: %v", err))
-			} else {
-				lines = append(lines, "🔄 IPv6 rotation service reloaded.")
-			}
-		} else {
-			lines = append(lines, "ℹ️  IPv6 rotation service is stopped; skipping reload.")
-		}
-	}
-
-	xrayActive := xray.IsServiceActive()
-	xrayRestarted := false
-	if opts.Full || impact.XrayConfigChanged {
-		if !xrayActive {
-			lines = append(lines, "ℹ️  Xray service is stopped; skipping restart.")
-		} else if gatewaySyncRequired {
-			lines = append(lines, "🔄 Restarting Xray and synchronizing Gateway runtime...")
-		} else {
-			lines = append(lines, "🔄 Restarting Xray service...")
-			if err := xray.RestartXrayServiceWithoutHook(); err != nil {
-				lines = append(lines, fmt.Sprintf("❌ Error restarting Xray service: %v", err))
-			} else {
-				if err := gateway.RestoreTunStateLocked(cfg); err != nil {
-					lines = append(lines, fmt.Sprintf("❌ Error restoring Gateway runtime: %v", err))
-					return lines, fmt.Errorf("failed to restore gateway runtime: %w", err)
-				}
-				xrayRestarted = true
-			}
-		}
-	} else {
-		lines = append(lines, "ℹ️  Xray restart skipped: no Xray-facing changes detected.")
-	}
-
-	subRestarted := false
-	if opts.Full || impact.SubListenerChanged {
-		if HasSubServiceInstalled() {
-			if AnySubServiceActive() {
-				lines = append(lines, "🔄 Restarting active subscription service...")
-				if err := RestartSubServiceIfInstalled(); err != nil {
-					lines = append(lines, fmt.Sprintf("❌ Error restarting subscription service: %v", err))
-				} else {
-					subRestarted = true
-				}
-			} else {
-				lines = append(lines, "ℹ️  Subscription service is stopped; skipping restart.")
-			}
-		} else if impact.SubListenerChanged {
-			lines = append(lines, "ℹ️  Subscription listener changed, but no installed subscription service was found.")
-		}
-	} else if impact.SubContentChanged {
-		lines = append(lines, "ℹ️  Subscription content updated; no restart needed because the sub server reloads config on each request.")
-	}
-
-	if gatewaySyncRequired {
-		if !xrayActive {
-			lines = append(lines, "ℹ️  Gateway runtime synchronization skipped: Xray service is stopped.")
-		} else if err := gateway.SyncDesiredLocked(cfg); err != nil {
-			lines = append(lines, fmt.Sprintf("❌ Failed to synchronize gateway runtime: %v", err))
-			return lines, fmt.Errorf("failed to synchronize gateway runtime: %w", err)
-		} else {
-			xrayRestarted = true
-			lines = append(lines, "✅ Gateway runtime synchronized with active configuration.")
-		}
-	}
-	if !xrayRestarted && !subRestarted {
-		lines = append(lines, "✅ Changes committed without service restart.")
-	} else {
-		lines = append(lines, "✅ All changes applied.")
-	}
-
-	return lines, nil
+	return actx.Lines, nil
 }
 
 func ClearPending() error {
@@ -447,9 +283,9 @@ func syncPathdConfig(cfg *config.UserConfig) error {
 	if cfg == nil || cfg.Role != config.RoleServer {
 		return nil
 	}
-	path := filepath.Join(config.GetConfigDir(), "pathd.json")
+	path := service.PathdConfigPath()
 	if cfg.Path.Token == "" {
-		if os.Geteuid() == 0 && exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-pathd.service").Run() == nil {
+		if os.Geteuid() == 0 && service.IsUnitActive(service.PathdUnit) {
 			return fmt.Errorf("Pathd is active; disable or stop it with the service command before removing its configuration")
 		}
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
@@ -457,42 +293,11 @@ func syncPathdConfig(cfg *config.UserConfig) error {
 		}
 		return nil
 	}
-	if cfg.Path.Listen == "" || cfg.Path.IdleSeconds <= 0 {
-		return fmt.Errorf("incomplete Pathd configuration")
-	}
-	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
+	if err := service.WritePathdConfig(cfg); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(struct {
-		Listen      string `json:"listen"`
-		Token       string `json:"token"`
-		IdleSeconds int    `json:"idle_seconds"`
-	}{cfg.Path.Listen, cfg.Path.Token, cfg.Path.IdleSeconds}, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".pathd.json-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		return err
-	}
-	if os.Geteuid() == 0 && exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-pathd.service").Run() == nil {
-		if err := exec.Command("systemctl", "restart", "xray-proxya-pathd.service").Run(); err != nil {
+	if os.Geteuid() == 0 && service.IsUnitActive(service.PathdUnit) {
+		if err := service.Restart(service.PathdUnit); err != nil {
 			return fmt.Errorf("restart active Pathd service: %w", err)
 		}
 	}
@@ -500,63 +305,39 @@ func syncPathdConfig(cfg *config.UserConfig) error {
 }
 
 func HasSubServiceInstalled() bool {
-	return fileExists(subServicePath())
+	return service.IsUnitInstalled(service.SubUnit)
 }
 
 func RestartSubServiceIfInstalled() error {
 	if !HasSubServiceInstalled() {
 		return nil
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil
-	}
-	args := []string{"try-restart", "xray-proxya-sub.service"}
-	if os.Geteuid() != 0 {
-		args = append([]string{"--user"}, args...)
-	}
-	_ = exec.Command("systemctl", args...).Run()
-	return nil
+	return service.Restart(service.SubUnit)
 }
 
 func RestartIPv6RotateServiceIfInstalled() error {
-	if os.Geteuid() != 0 || !fileExists(ipv6RotateServicePath()) {
+	if os.Geteuid() != 0 || !service.IsUnitInstalled(service.RotateUnit) {
 		return nil
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil
-	}
-	return exec.Command("systemctl", "try-restart", "xray-proxya-ipv6-rotate.service").Run()
+	return service.Restart(service.RotateUnit)
 }
 
 func AnySubServiceActive() bool {
-	if !HasSubServiceInstalled() {
-		return false
-	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	args := append(xray.SystemdScopeArgs(), "is-active", "--quiet", "xray-proxya-sub.service")
-	return exec.Command("systemctl", args...).Run() == nil
+	return service.IsUnitActive(service.SubUnit)
 }
 
 func IsIPv6RotateServiceActive() bool {
-	if os.Geteuid() != 0 || !fileExists(ipv6RotateServicePath()) {
+	if os.Geteuid() != 0 {
 		return false
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	return exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-ipv6-rotate.service").Run() == nil
+	return service.IsUnitActive(service.RotateUnit)
 }
 
 func IsPathdServiceActive() bool {
 	if os.Geteuid() != 0 {
 		return false
 	}
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	return exec.Command("systemctl", "is-active", "--quiet", "xray-proxya-pathd.service").Run() == nil
+	return service.IsUnitActive(service.PathdUnit)
 }
 
 func fileExists(path string) bool {
@@ -565,15 +346,12 @@ func fileExists(path string) bool {
 }
 
 func subServicePath() string {
-	if os.Geteuid() == 0 {
-		return "/etc/systemd/system/xray-proxya-sub.service"
-	}
-	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub.service")
+	return service.ManagedUnitPath(service.SubUnit)
 }
 
 func ipv6RotateServicePath() string {
 	if os.Geteuid() == 0 {
-		return "/etc/systemd/system/xray-proxya-ipv6-rotate.service"
+		return service.ManagedUnitPath(service.RotateUnit)
 	}
 	return ""
 }

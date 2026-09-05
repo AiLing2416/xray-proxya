@@ -57,3 +57,46 @@ func TestReadSysctl(t *testing.T) {
 		t.Errorf("Expected ErrUnsupported for invalid key, got: %v", err)
 	}
 }
+
+func TestNormalizeModuleName(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"nf-tables", "nf_tables"},
+		{"nft_tproxy", "nft_tproxy"},
+		{"  tcp_bbr  ", "tcp_bbr"},
+		{"nft-masq", "nft_masq"},
+	}
+
+	for _, tc := range tests {
+		actual := NormalizeModuleName(tc.input)
+		if actual != tc.expected {
+			t.Errorf("NormalizeModuleName(%q) = %q; want %q", tc.input, actual, tc.expected)
+		}
+	}
+}
+
+func TestIsIPv4ForwardingEnabled(t *testing.T) {
+	// Should not panic and return boolean
+	_ = IsIPv4ForwardingEnabled()
+}
+
+func TestInspectModules(t *testing.T) {
+	registry := NewModuleRegistry()
+	if registry == nil {
+		t.Fatal("NewModuleRegistry returned nil")
+	}
+
+	// Non-existent fictitious module should be reported as missing
+	info := registry.Inspect("non_existent_fake_module_12345")
+	if info.Status != ModuleStatusMissing || info.Present {
+		t.Errorf("expected non-existent module to be missing, got status=%s present=%v", info.Status, info.Present)
+	}
+
+	// InspectAll should return results for all keys
+	batch := registry.InspectAll([]string{"tun", "non_existent_fake_module_12345"})
+	if len(batch) != 2 {
+		t.Errorf("expected 2 results, got %d", len(batch))
+	}
+}

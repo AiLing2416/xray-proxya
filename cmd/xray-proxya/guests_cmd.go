@@ -65,47 +65,15 @@ func findGuest(cfg *config.UserConfig, alias string) (int, *config.GuestConfig) 
 }
 
 func formatGuestQuota(value float64) string {
-	switch {
-	case value < 0:
-		return "Unlimited"
-	case value == 0:
-		return "Paused"
-	case value >= 10:
-		return fmt.Sprintf("%.1fGB", value)
-	case value >= 1:
-		return fmt.Sprintf("%.2fGB", value)
-	default:
-		return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.3f", value), "0"), ".") + "GB"
-	}
+	return quota.FormatQuota(value)
 }
 
 func guestStateLabel(guest config.GuestConfig) string {
-	if guest.Enabled {
-		return "ON"
-	}
-	switch guest.DisabledReason {
-	case config.GuestDisabledQuotaReached:
-		return "QUOTA"
-	case config.GuestDisabledQuotaZero:
-		return "PAUSED"
-	case config.GuestDisabledManual:
-		return "PAUSED"
-	default:
-		return "OFF"
-	}
+	return quota.GuestStateLabel(guest)
 }
 
 func guestReasonLabel(guest config.GuestConfig) string {
-	switch guest.DisabledReason {
-	case config.GuestDisabledManual:
-		return "manual"
-	case config.GuestDisabledQuotaReached:
-		return "quota reached"
-	case config.GuestDisabledQuotaZero:
-		return "quota=0"
-	default:
-		return "-"
-	}
+	return quota.GuestReasonLabel(guest)
 }
 
 func ensureGuestSubListenerConfig(cfg *config.UserConfig) {
@@ -141,15 +109,10 @@ var guestsListCmd = &cobra.Command{
 		}
 		fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY")
 		fmt.Println("----------------------------------------------------------------------------------------------------------------")
-		for _, g := range cfg.Guests {
-			state := guestStateLabel(g)
-			limit := config.FormatByteSize(g.EffectiveLimitBytes())
-			used := config.FormatByteSize(g.UsedBytes)
-			out := "direct"
-			if g.OutboundLink != "" {
-				out = "custom-link"
-			}
-			fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-s\n", g.Alias, state, guestReasonLabel(g), used+"/"+limit, g.ResetDay, out)
+		for _, v := range quota.BuildAllGuestViews(cfg.Guests, time.Now()) {
+			limit := config.FormatByteSize(v.LimitBytes)
+			used := config.FormatByteSize(v.UsedBytes)
+			fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-s\n", v.Alias, v.StateLabel, v.ReasonLabel, used+"/"+limit, v.ResetDay, v.RelayLabel)
 		}
 		fmt.Println()
 	},
@@ -418,39 +381,36 @@ var guestsInfoCmd = &cobra.Command{
 			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
 			return
 		}
-		out := "direct"
-		if guest.OutboundLink != "" {
-			out = "custom-link"
-		}
-		lastReset := guest.LastResetYM
+		view := quota.BuildGuestView(*guest, time.Now())
+		lastReset := view.LastResetYM
 		if lastReset == "" {
 			lastReset = "-"
 		}
-		webhook := guest.NotifyWebhook
+		webhook := view.NotifyWebhook
 		if webhook == "" {
 			webhook = "-"
 		}
 		triggers := "-"
-		if len(guest.NotifyTrigger) > 0 {
-			triggers = strings.Join(guest.NotifyTrigger, ", ")
+		if len(view.NotifyTriggers) > 0 {
+			triggers = strings.Join(view.NotifyTriggers, ", ")
 		}
 		alerted := "-"
-		if len(guest.AlertedTriggers) > 0 {
-			alerted = strings.Join(guest.AlertedTriggers, ", ")
+		if len(view.AlertedTriggers) > 0 {
+			alerted = strings.Join(view.AlertedTriggers, ", ")
 		}
-		fmt.Printf("\nGuest: %s\n", guest.Alias)
-		fmt.Printf("UUID: %s\n", guest.UUID)
-		fmt.Printf("State: %s\n", guestStateLabel(*guest))
-		fmt.Printf("Reason: %s\n", guestReasonLabel(*guest))
-		fmt.Printf("Limit: %s\n", config.FormatByteSize(guest.EffectiveLimitBytes()))
-		fmt.Printf("Used: %s\n", config.FormatByteSize(guest.UsedBytes))
-		fmt.Printf("Reset Day: %d\n", guest.ResetDay)
+		fmt.Printf("\nGuest: %s\n", view.Alias)
+		fmt.Printf("UUID: %s\n", view.UUID)
+		fmt.Printf("State: %s\n", view.StateLabel)
+		fmt.Printf("Reason: %s\n", view.ReasonLabel)
+		fmt.Printf("Limit: %s\n", config.FormatByteSize(view.LimitBytes))
+		fmt.Printf("Used: %s\n", config.FormatByteSize(view.UsedBytes))
+		fmt.Printf("Reset Day: %d\n", view.ResetDay)
 		fmt.Printf("Last Reset Month: %s\n", lastReset)
 		fmt.Printf("Notify: %s\n", guest.NormalizedNotifyMode())
 		fmt.Printf("Notify Webhook: %s\n", webhook)
 		fmt.Printf("Notify Trigger: %s\n", triggers)
 		fmt.Printf("Alerted Triggers: %s\n", alerted)
-		fmt.Printf("Relay: %s\n\n", out)
+		fmt.Printf("Relay: %s\n\n", view.RelayLabel)
 	},
 }
 

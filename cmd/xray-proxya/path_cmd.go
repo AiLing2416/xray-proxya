@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
+	"xray-proxya/internal/service"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -39,83 +39,11 @@ func pathdBinaryPath() string {
 func pathdUnitPath() string { return "/etc/systemd/system/" + pathdUnit + ".service" }
 
 func buildPathdSystemdServiceContent(binaryPath, configPath string) string {
-	return fmt.Sprintf(`[Unit]
-Description=Xray-Proxya PathLink Agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-# pathd needs only raw ICMP; it never changes routing, firewall, or files.
-User=root
-ExecStart=%s serve --config %s
-Restart=on-failure
-RestartSec=2
-UMask=0077
-CapabilityBoundingSet=CAP_NET_RAW
-AmbientCapabilities=CAP_NET_RAW
-NoNewPrivileges=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectSystem=strict
-ProtectHome=read-only
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-RestrictNamespaces=true
-LockPersonality=true
-MemoryDenyWriteExecute=true
-SystemCallArchitectures=native
-
-[Install]
-WantedBy=multi-user.target
-`, binaryPath, configPath)
+	return service.BuildPathdServiceContent(binaryPath, configPath)
 }
 
 func writePathdConfig(cfg *config.UserConfig) error {
-	if cfg == nil || cfg.Role != config.RoleServer {
-		return fmt.Errorf("pathd configuration is available only on a Server")
-	}
-	if cfg.Path.Listen == "" {
-		return fmt.Errorf("pathd listen address is not configured; run 'path set --listen <address>'")
-	}
-	if err := pathd.ValidateListenAddress(cfg.Path.Listen); err != nil {
-		return err
-	}
-	if cfg.Path.IdleSeconds <= 0 {
-		return fmt.Errorf("pathd idle timeout is invalid")
-	}
-	if cfg.Path.Token == "" {
-		return fmt.Errorf("pathd token is not configured; run 'path set --token <token>'")
-	}
-	data, err := json.MarshalIndent(struct {
-		Listen      string `json:"listen"`
-		Token       string `json:"token"`
-		IdleSeconds int    `json:"idle_seconds"`
-	}{cfg.Path.Listen, cfg.Path.Token, cfg.Path.IdleSeconds}, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := pathdConfigPath()
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".pathd.json-*")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if err := tmp.Chmod(0600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpName, path)
+	return service.WritePathdConfig(cfg)
 }
 
 var pathCmd = &cobra.Command{Use: "path", Short: "Manage the root-only loopback PathLink ICMP agent", PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -264,7 +192,7 @@ var pathUnsetCmd = &cobra.Command{Use: "unset", Short: "Remove a relay PathLink 
 			fmt.Println("❌", err)
 			return
 		}
-		if exec.Command("systemctl", "is-active", "--quiet", pathdUnit).Run() == nil {
+		if service.IsUnitActive(service.PathdUnit) {
 			fmt.Println("❌ Stop or disable xray-proxya-pathd with the service command before removing its configuration.")
 			return
 		}
@@ -304,13 +232,13 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 	}
 	serviceState := "unknown"
 	serviceEnabled := "unknown"
-	if os.Geteuid() == 0 && exec.Command("systemctl", "is-active", "--quiet", pathdUnit).Run() == nil {
-		serviceState = "active"
-	} else if os.Geteuid() == 0 {
-		serviceState = "inactive"
-	}
 	if os.Geteuid() == 0 {
-		if exec.Command("systemctl", "is-enabled", "--quiet", pathdUnit).Run() == nil {
+		if service.IsUnitActive(service.PathdUnit) {
+			serviceState = "active"
+		} else {
+			serviceState = "inactive"
+		}
+		if service.IsUnitEnabled(service.PathdUnit) {
 			serviceEnabled = "enabled"
 		} else {
 			serviceEnabled = "disabled"

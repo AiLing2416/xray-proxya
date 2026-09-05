@@ -26,3 +26,20 @@ func TestExtractSHA256SupportsOfficialSHA2Format(t *testing.T) {
 		t.Fatalf("extractSHA256 returned %q, want %q", actual, expected)
 	}
 }
+
+func TestValidateRuntimeNilConfig(t *testing.T) {
+	err := ValidateRuntime(nil)
+	if err == nil {
+		t.Fatalf("expected error when validating nil config")
+	}
+}
+
+func TestGetFreePortReturnsValidPort(t *testing.T) {
+	port, err := GetFreePort()
+	if err != nil {
+		t.Fatalf("GetFreePort failed: %v", err)
+	}
+	if port <= 0 || port > 65535 {
+		t.Fatalf("invalid port returned: %d", port)
+	}
+}
