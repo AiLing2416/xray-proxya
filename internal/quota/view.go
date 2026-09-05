@@ -88,7 +88,9 @@ func BuildGuestView(g config.GuestConfig, now time.Time) GuestQuotaView {
 	remainingBytes := int64(0)
 	percent := float64(-1)
 
-	if limitBytes > 0 {
+	if limitBytes < 0 {
+		remainingBytes = -1
+	} else if limitBytes > 0 {
 		if usedBytes < limitBytes {
 			remainingBytes = limitBytes - usedBytes
 		}

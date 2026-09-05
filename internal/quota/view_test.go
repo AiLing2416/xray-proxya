@@ -87,7 +87,7 @@ func TestBuildGuestView(t *testing.T) {
 	if view1.Alias != "alice" || view1.StateLabel != "ON" || view1.RelayLabel != "direct" {
 		t.Errorf("unexpected unlimited view: %+v", view1)
 	}
-	if view1.LimitBytes != -1 || view1.UsagePercent != -1 || view1.QuotaFormatted != "Unlimited" {
+	if view1.LimitBytes != -1 || view1.UsagePercent != -1 || view1.QuotaFormatted != "Unlimited" || view1.RemainingBytes != -1 || view1.RemainingFormatted != "Unlimited" {
 		t.Errorf("unexpected metrics for unlimited guest: %+v", view1)
 	}
 
