@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
@@ -41,5 +42,18 @@ func TestGetFreePortReturnsValidPort(t *testing.T) {
 	}
 	if port <= 0 || port > 65535 {
 		t.Fatalf("invalid port returned: %d", port)
+	}
+}
+
+func TestStartXrayTempWithOutput(t *testing.T) {
+	var stderr bytes.Buffer
+	cmd, cleanup, err := StartXrayTempWithOutput([]byte("{}"), &stderr)
+	if err != nil {
+		t.Fatalf("StartXrayTempWithOutput failed: %v", err)
+	}
+	defer cleanup()
+
+	if cmd.Stderr != &stderr {
+		t.Errorf("expected cmd.Stderr to be assigned, got %v", cmd.Stderr)
 	}
 }

@@ -116,6 +116,12 @@ func createTempConfigFile(jsonData []byte) (string, error) {
 
 // StartXrayTemp starts a temporary Xray process using the provided JSON config data.
 func StartXrayTemp(jsonData []byte) (*exec.Cmd, func(), error) {
+	return StartXrayTempWithOutput(jsonData, nil)
+}
+
+// StartXrayTempWithOutput starts a temporary Xray process using the provided JSON config data
+// and redirects stderr to the specified writer if provided.
+func StartXrayTempWithOutput(jsonData []byte, stderr io.Writer) (*exec.Cmd, func(), error) {
 	tmpFile, err := createTempConfigFile(jsonData)
 	if err != nil {
 		return nil, nil, err
@@ -124,8 +130,9 @@ func StartXrayTemp(jsonData []byte) (*exec.Cmd, func(), error) {
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "run", "-c", tmpFile)
 	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
-	var stderrBuf bytes.Buffer
-	cmd.Stderr = &stderrBuf
+	if stderr != nil {
+		cmd.Stderr = stderr
+	}
 
 	if err := cmd.Start(); err != nil {
 		os.Remove(tmpFile)
@@ -199,7 +206,8 @@ func ValidateRuntime(cfg *config.UserConfig) error {
 		return fmt.Errorf("generate runtime test json: %w", err)
 	}
 
-	cmd, cleanup, err := StartXrayTemp(testJSON)
+	var stderrBuf bytes.Buffer
+	cmd, cleanup, err := StartXrayTempWithOutput(testJSON, &stderrBuf)
 	if err != nil {
 		return err
 	}
@@ -208,6 +216,10 @@ func ValidateRuntime(cfg *config.UserConfig) error {
 	// Give it a tiny bit of time to start and check if it is still running
 	time.Sleep(100 * time.Millisecond)
 	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		out := strings.TrimSpace(stderrBuf.String())
+		if out != "" {
+			return fmt.Errorf("temporary xray instance exited prematurely: %s", out)
+		}
 		return fmt.Errorf("temporary xray instance exited prematurely")
 	}
 	return nil
