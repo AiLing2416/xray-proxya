@@ -34,7 +34,11 @@ type ServiceProperty struct {
 // extractSubInstance retrieves the instance name from a systemd unit name like "xray-proxya-sub@default.service".
 func extractSubInstance(unitName string) string {
 	s := strings.TrimSuffix(unitName, ".service")
-	return strings.TrimPrefix(s, "xray-proxya-sub@")
+	inst := strings.TrimPrefix(s, "xray-proxya-sub@")
+	if inst == "xray-proxya-sub" || inst == "" {
+		return "default"
+	}
+	return inst
 }
 
 // isConfigurableService reports whether the service exposes configurable parameters in the SERVICE tab.
@@ -42,7 +46,7 @@ func isConfigurableService(item ManagedServiceItem) bool {
 	if item.DisplayName == "Core" {
 		return false
 	}
-	if item.DisplayName == "Pathd" || item.DisplayName == "IPv6-Rotate" || strings.HasPrefix(item.DisplayName, "Sub@") {
+	if item.DisplayName == "Pathd" || item.DisplayName == "IPv6-Rotate" || item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@") {
 		return true
 	}
 	return false
@@ -236,7 +240,7 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 			BoolVal: rot.EnableNDP,
 		})
 
-	case strings.HasPrefix(item.DisplayName, "Sub@"):
+	case item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@"):
 		inst := extractSubInstance(item.UnitName)
 		sub := getSubConfig(cfg, inst)
 
@@ -379,7 +383,7 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 		}
 		setIPv6Config(cfg, rot)
 
-	case strings.HasPrefix(item.DisplayName, "Sub@"):
+	case item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@"):
 		inst := extractSubInstance(item.UnitName)
 		sub := getSubConfig(cfg, inst)
 		switch prop.Key {

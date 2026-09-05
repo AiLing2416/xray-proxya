@@ -55,6 +55,7 @@ import (
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/relaysub"
 	"xray-proxya/internal/relaytest"
+	"xray-proxya/internal/sub"
 	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -2332,9 +2333,5 @@ func runeLen(s string) int {
 }
 
 func guestSubURL(host string, port int, token string) string {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	return fmt.Sprintf("https://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
+	return sub.FormatSubURL(host, port, token)
 }

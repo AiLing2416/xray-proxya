@@ -368,6 +368,10 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubContentChanged = true
 		mark("guest_sub_address")
 	}
+	if activeCfg.AddressSub != stagingCfg.AddressSub || activeCfg.AddressNode != stagingCfg.AddressNode {
+		impact.SubContentChanged = true
+		mark("address_sub_node")
+	}
 	if !reflect.DeepEqual(activeCfg.Subscriptions, stagingCfg.Subscriptions) {
 		impact.SubContentChanged = true
 		mark("subscriptions")
@@ -506,25 +510,11 @@ func RestartSubServiceIfInstalled() error {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil
 	}
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return nil
+	args := []string{"try-restart", "xray-proxya-sub.service"}
+	if os.Geteuid() != 0 {
+		args = append([]string{"--user"}, args...)
 	}
-	instances := []string{"default"}
-	if cfg.SubscriptionInstances != nil {
-		for inst := range cfg.SubscriptionInstances {
-			if inst != "default" {
-				instances = append(instances, inst)
-			}
-		}
-	}
-	for _, inst := range instances {
-		args := []string{"try-restart", fmt.Sprintf("xray-proxya-sub@%s.service", inst)}
-		if os.Geteuid() != 0 {
-			args = append([]string{"--user"}, args...)
-		}
-		_ = exec.Command("systemctl", args...).Run()
-	}
+	_ = exec.Command("systemctl", args...).Run()
 	return nil
 }
 
@@ -545,25 +535,8 @@ func AnySubServiceActive() bool {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return false
 	}
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return false
-	}
-	instances := []string{"default"}
-	if cfg.SubscriptionInstances != nil {
-		for inst := range cfg.SubscriptionInstances {
-			if inst != "default" {
-				instances = append(instances, inst)
-			}
-		}
-	}
-	for _, inst := range instances {
-		args := append(xray.SystemdScopeArgs(), "is-active", "--quiet", fmt.Sprintf("xray-proxya-sub@%s.service", inst))
-		if exec.Command("systemctl", args...).Run() == nil {
-			return true
-		}
-	}
-	return false
+	args := append(xray.SystemdScopeArgs(), "is-active", "--quiet", "xray-proxya-sub.service")
+	return exec.Command("systemctl", args...).Run() == nil
 }
 
 func IsIPv6RotateServiceActive() bool {
@@ -593,9 +566,9 @@ func fileExists(path string) bool {
 
 func subServicePath() string {
 	if os.Geteuid() == 0 {
-		return "/etc/systemd/system/xray-proxya-sub@.service"
+		return "/etc/systemd/system/xray-proxya-sub.service"
 	}
-	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub@.service")
+	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user", "xray-proxya-sub.service")
 }
 
 func ipv6RotateServicePath() string {

@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -28,39 +29,19 @@ func StartSubServer(instance config.SubscriptionServiceConfig) error {
 	if ip := net.ParseIP(listen); ip == nil || !ip.IsLoopback() {
 		return fmt.Errorf("subscription listener must bind to a loopback IP")
 	}
-	adminMux := http.NewServeMux()
-	adminMux.HandleFunc("/sub/", httpAdminSubHandler(instance.AdminSub))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", httpUnifiedSubHandler(instance.AdminSub))
 
-	guestMux := http.NewServeMux()
-	guestMux.HandleFunc("/guest-sub/", httpGuestSubHandler())
-
-	errCh := make(chan error, 2)
-
-	go func() {
-		addr := net.JoinHostPort(listen, strconv.Itoa(instance.Port))
-		fmt.Printf("🔓 Admin subscription server listening on http://%s\n", addr)
-		errCh <- http.ListenAndServe(addr, adminMux)
-	}()
-
-	if instance.GuestPort > 0 {
-		if err := validatePrivateBindAddress(instance.GuestBind); err != nil {
-			return err
-		}
-		addr := net.JoinHostPort(instance.GuestBind, strconv.Itoa(instance.GuestPort))
-		go func() {
-			fmt.Printf("🔓 Guest subscription server listening on http://%s\n", addr)
-			errCh <- http.ListenAndServe(addr, guestMux)
-		}()
-	}
-
-	return <-errCh
+	addr := net.JoinHostPort(listen, strconv.Itoa(instance.Port))
+	fmt.Printf("🔓 Subscription server listening on http://%s\n", addr)
+	return http.ListenAndServe(addr, mux)
 }
 
-func httpAdminSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
+func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.URL.Path, "/sub/")
+		token := strings.Trim(r.URL.Path, "/")
 		if token == "" {
-			http.Error(w, "Token required", http.StatusBadRequest)
+			http.NotFound(w, r)
 			return
 		}
 
@@ -70,34 +51,40 @@ func httpAdminSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 			return
 		}
 
-		if admin.Token != "" && admin.Token == token {
+		// 1. Match Admin Token
+		adminToken := admin.Token
+		if adminToken == "" {
+			adminToken = cfg.AdminSub.Token
+		}
+		if adminToken != "" && adminToken == token {
 			handleAdminSubRequest(w, cfg, admin)
 			return
 		}
 
-		var legacySub config.Subscription
-		found := false
-		for _, s := range cfg.Subscriptions {
-			if s.Token == token {
-				legacySub = s
-				found = true
-				break
+		// 2. Match Guest UUID (or SubToken)
+		for i := range cfg.Guests {
+			g := &cfg.Guests[i]
+			if (g.UUID != "" && g.UUID == token) || (g.SubToken != "" && g.SubToken == token) {
+				handleGuestSubRequest(w, cfg, g)
+				return
 			}
 		}
 
-		if !found {
-			http.Error(w, "Invalid token", http.StatusNotFound)
-			return
+		// 3. Match legacy custom subscriptions
+		for _, s := range cfg.Subscriptions {
+			if s.Token != "" && s.Token == token {
+				handleLegacySubscriptionRequest(w, cfg, s)
+				return
+			}
 		}
-		handleLegacySubscriptionRequest(w, cfg, legacySub)
+
+		// 4. Not found
+		http.NotFound(w, r)
 	}
 }
 
 func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin config.AdminSubConfig) {
-	addr := admin.Address
-	if addr == "" {
-		addr = utils.GetSmartIP(false)
-	}
+	addr := ResolveNodeAddress(cfg, admin.AddressNode)
 	if admin.IPv6Rotation != "" {
 		rotated, err := ipv6rotate.Next(ipv6rotate.SocketPath(admin.IPv6Rotation))
 		if err != nil {
@@ -118,11 +105,50 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 	w.Write([]byte(encoded))
 }
 
-func handleLegacySubscriptionRequest(w http.ResponseWriter, cfg *config.UserConfig, sub config.Subscription) {
-	addr := sub.Address
-	if addr == "" {
-		addr = utils.GetSmartIP(false)
+func handleGuestSubRequest(w http.ResponseWriter, cfg *config.UserConfig, guest *config.GuestConfig) {
+	now := time.Now()
+
+	// If guest is disabled by admin, ONLY output the memorial node
+	if !guest.Enabled {
+		memorialNode := GenerateMemorialShadowsocksNodeWithRemark(*guest, fmt.Sprintf("%s is disabled", guest.Alias))
+		encoded := base64.StdEncoding.EncodeToString([]byte(memorialNode))
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(encoded))
+		return
 	}
+
+	// Guest is enabled: output regular proxy nodes
+	addr := ResolveNodeAddress(cfg, guest.OutboundLink)
+	links := xray.GenerateGuestLinks(cfg, addr, guest.UUID, guest.Alias)
+	if len(links) == 0 {
+		http.Error(w, "No links generated for this guest", http.StatusInternalServerError)
+		return
+	}
+
+	notifyMode := guest.NormalizedNotifyMode()
+	if notifyMode == config.GuestNotifyHeader || notifyMode == config.GuestNotifyAll {
+		totalBytes := guest.EffectiveLimitBytes()
+		if totalBytes < 0 {
+			totalBytes = 0
+		}
+		expire := guest.NextResetTimestamp(now)
+		w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d", guest.UsedBytes, totalBytes, expire))
+		w.Header().Set("Profile-Update-Interval", "12")
+		w.Header().Set("Profile-Title", fmt.Sprintf("Guest-%s", guest.Alias))
+	}
+
+	if notifyMode == config.GuestNotifyRemark || notifyMode == config.GuestNotifyAll {
+		memorialNode := GenerateMemorialShadowsocksNode(*guest, now)
+		links = append([]string{memorialNode}, links...)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte(encoded))
+}
+
+func handleLegacySubscriptionRequest(w http.ResponseWriter, cfg *config.UserConfig, sub config.Subscription) {
+	addr := ResolveNodeAddress(cfg, sub.Address)
 	links := generateSubscriptionLinks(cfg, sub.TargetType, sub.TargetAlias, addr)
 	if len(links) == 0 {
 		http.Error(w, "No links generated for this subscription", http.StatusInternalServerError)
@@ -163,74 +189,65 @@ func generateSubscriptionLinks(cfg *config.UserConfig, targetType string, target
 	return nil
 }
 
-func httpGuestSubHandler() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimPrefix(r.URL.Path, "/guest-sub/")
-		if token == "" {
-			http.Error(w, "Token required", http.StatusBadRequest)
-			return
-		}
-
-		cfg, err := config.LoadConfig()
-		if err != nil {
-			http.Error(w, "Failed to load config", http.StatusInternalServerError)
-			return
-		}
-
-		var targetGuest *config.GuestConfig
-		for i := range cfg.Guests {
-			if cfg.Guests[i].SubToken == token {
-				targetGuest = &cfg.Guests[i]
-				break
-			}
-		}
-		if targetGuest == nil {
-			http.Error(w, "Invalid token", http.StatusNotFound)
-			return
-		}
-
-		addr := resolveGuestSubAddress(cfg)
-		links := xray.GenerateGuestLinks(cfg, addr, targetGuest.UUID, targetGuest.Alias)
-		if len(links) == 0 {
-			http.Error(w, "No links generated for this guest", http.StatusInternalServerError)
-			return
-		}
-
-		notifyMode := targetGuest.NormalizedNotifyMode()
-		now := time.Now()
-
-		if notifyMode == config.GuestNotifyHeader || notifyMode == config.GuestNotifyAll {
-			totalBytes := targetGuest.EffectiveLimitBytes()
-			if totalBytes < 0 {
-				totalBytes = 0
-			}
-			expire := targetGuest.NextResetTimestamp(now)
-			w.Header().Set("Subscription-Userinfo", fmt.Sprintf("upload=0; download=%d; total=%d; expire=%d", targetGuest.UsedBytes, totalBytes, expire))
-			w.Header().Set("Profile-Update-Interval", "12")
-			w.Header().Set("Profile-Title", fmt.Sprintf("Guest-%s", targetGuest.Alias))
-		}
-
-		if notifyMode == config.GuestNotifyRemark || notifyMode == config.GuestNotifyAll {
-			memorialNode := GenerateMemorialShadowsocksNode(*targetGuest, now)
-			links = append([]string{memorialNode}, links...)
-		}
-
-		encoded := base64.StdEncoding.EncodeToString([]byte(strings.Join(links, "\n")))
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte(encoded))
+func ResolveNodeAddress(cfg *config.UserConfig, override ...string) string {
+	if len(override) > 0 && strings.TrimSpace(override[0]) != "" {
+		return strings.TrimSpace(override[0])
 	}
-}
-
-func resolveGuestSubAddress(cfg *config.UserConfig) string {
 	if cfg != nil {
-		if addr := strings.TrimSpace(cfg.GuestSubAddress); addr != "" {
+		if addr := strings.TrimSpace(cfg.AddressNode); addr != "" {
+			return addr
+		}
+		if addr := strings.TrimSpace(cfg.AdminSub.AddressNode); addr != "" {
 			return addr
 		}
 		if addr := strings.TrimSpace(cfg.AdminSub.Address); addr != "" {
 			return addr
 		}
+		if addr := strings.TrimSpace(cfg.GuestSubAddress); addr != "" {
+			return addr
+		}
 	}
 	return utils.GetSmartIP(false)
+}
+
+func ResolveSubAddress(cfg *config.UserConfig, override ...string) string {
+	if len(override) > 0 && strings.TrimSpace(override[0]) != "" {
+		return strings.TrimSpace(override[0])
+	}
+	if cfg != nil {
+		if addr := strings.TrimSpace(cfg.AddressSub); addr != "" {
+			return addr
+		}
+		if addr := strings.TrimSpace(cfg.AdminSub.AddressSub); addr != "" {
+			return addr
+		}
+		if addr := strings.TrimSpace(cfg.AdminSub.Address); addr != "" {
+			return addr
+		}
+		if addr := strings.TrimSpace(cfg.GuestSubAddress); addr != "" {
+			return addr
+		}
+	}
+	return utils.GetSmartIP(false)
+}
+
+func FormatSubURL(hostOrURL string, port int, tokenOrUUID string) string {
+	raw := strings.TrimSpace(hostOrURL)
+	if raw == "" {
+		raw = utils.GetSmartIP(false)
+	}
+	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
+		u, err := url.Parse(raw)
+		if err == nil {
+			u.Path = path.Join(u.Path, tokenOrUUID)
+			return u.String()
+		}
+	}
+	hostPart := raw
+	if _, _, err := net.SplitHostPort(hostPart); err != nil && port > 0 {
+		hostPart = net.JoinHostPort(hostPart, strconv.Itoa(port))
+	}
+	return fmt.Sprintf("http://%s/%s", hostPart, tokenOrUUID)
 }
 
 func ValidatePrivateBindAddress(bind string) error {
@@ -249,34 +266,34 @@ func ValidatePrivateBindAddress(bind string) error {
 	return errors.New("guest subscription bind address must be loopback or private")
 }
 
-func validatePrivateBindAddress(bind string) error {
-	return ValidatePrivateBindAddress(bind)
-}
-
 const (
 	MemorialSSCipher   = "aes-256-gcm"
 	MemorialSSPassword = "jun-04-1989"
 	MemorialSSAddress  = "127.0.0.1:1"
 )
 
-func GenerateMemorialShadowsocksNode(guest config.GuestConfig, now time.Time) string {
+func GenerateMemorialShadowsocksNodeWithRemark(guest config.GuestConfig, remark string) string {
 	auth := base64.StdEncoding.EncodeToString([]byte(MemorialSSCipher + ":" + MemorialSSPassword))
-	remark := formatGuestSubRemark(guest, now)
 	return fmt.Sprintf("ss://%s@%s#%s", auth, MemorialSSAddress, url.PathEscape(remark))
 }
 
+func GenerateMemorialShadowsocksNode(guest config.GuestConfig, now time.Time) string {
+	remark := formatGuestSubRemark(guest, now)
+	return GenerateMemorialShadowsocksNodeWithRemark(guest, remark)
+}
+
 func formatGuestSubRemark(guest config.GuestConfig, now time.Time) string {
+	if !guest.Enabled {
+		return fmt.Sprintf("%s is disabled", guest.Alias)
+	}
 	days := guest.DaysUntilReset(now)
 	limitBytes := guest.EffectiveLimitBytes()
-	usedGB := float64(guest.UsedBytes) / float64(config.GigaByte)
-	limitGB := float64(limitBytes) / float64(config.GigaByte)
-	if !guest.Enabled {
-		if guest.DisabledReason == config.GuestDisabledQuotaReached {
-			return fmt.Sprintf("EXPIRED: Quota Exceeded (%.2fGB / %.2fGB) | Reset in %dd", usedGB, limitGB, days)
-		}
-		return "PAUSED: Account Disabled"
+	usedStr := config.FormatByteSize(guest.UsedBytes)
+	limitStr := config.FormatByteSize(limitBytes)
+	if limitBytes > 0 && guest.UsedBytes >= limitBytes {
+		return fmt.Sprintf("EXPIRED: Quota Exceeded (%s / %s) | Reset in %dd", usedStr, limitStr, days)
 	}
-	return fmt.Sprintf("TRAFFIC: %.2fGB / %.2fGB | RESET: %dd", usedGB, limitGB, days)
+	return fmt.Sprintf("TRAFFIC: %s / %s | RESET: %dd", usedStr, limitStr, days)
 }
 
 func FormatGuestSubRemarkForDisplay(guest config.GuestConfig, now time.Time) string {

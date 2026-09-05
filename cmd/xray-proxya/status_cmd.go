@@ -186,39 +186,29 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 		}
 	}
 
-	// Sub instances
-	subInstances := make(map[string]config.AdminSubConfig)
-	if cfg.SubscriptionInstances != nil && len(cfg.SubscriptionInstances) > 0 {
-		subInstances = cfg.SubscriptionInstances
-	} else if cfg.AdminSub.Token != "" {
-		subInstances["default"] = cfg.AdminSub
+	// Subscription service
+	port := cfg.SubPort
+	if port <= 0 {
+		port = cfg.AdminSub.Port
 	}
-
-	if len(subInstances) == 0 {
-		fmt.Printf("   ○ %-30s [Inactive] (Not configured)\n", "xray-proxya-sub@default")
+	subConfigured := cfg.AdminSub.Token != "" || port > 0
+	unitName := "xray-proxya-sub.service"
+	if !subConfigured {
+		fmt.Printf("   ○ %-30s [Inactive] (Not configured)\n", "xray-proxya-sub")
 	} else {
-		instNames := make([]string, 0, len(subInstances))
-		for name := range subInstances {
-			instNames = append(instNames, name)
-		}
-		sort.Strings(instNames)
-		for _, inst := range instNames {
-			entry := subInstances[inst]
-			unitName := fmt.Sprintf("xray-proxya-sub@%s.service", inst)
-			subRootOnly := (entry.IPv6Rotation != "" || entry.Port <= 1024)
-			if !isRoot && subRootOnly {
-				fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", unitName)
+		subRootOnly := (cfg.AdminSub.IPv6Rotation != "" || port <= 1024)
+		if !isRoot && subRootOnly {
+			fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", "xray-proxya-sub")
+		} else {
+			active, pid, status := querySystemdUnitState(unitName)
+			icon := "●"
+			if !active {
+				icon = "○"
+			}
+			if active && pid > 0 {
+				fmt.Printf("   %s %-30s %-12s Port: %-5d PID: %-7d\n", icon, "xray-proxya-sub", status, port, pid)
 			} else {
-				active, pid, status := querySystemdUnitState(unitName)
-				icon := "●"
-				if !active {
-					icon = "○"
-				}
-				if active {
-					fmt.Printf("   %s %-30s %-12s Port: %-5d PID: %-7d\n", icon, unitName, status, entry.Port, pid)
-				} else {
-					fmt.Printf("   %s %-30s %s (Port: %d)\n", icon, unitName, status, entry.Port)
-				}
+				fmt.Printf("   %s %-30s %s (Port: %d)\n", icon, "xray-proxya-sub", status, port)
 			}
 		}
 	}

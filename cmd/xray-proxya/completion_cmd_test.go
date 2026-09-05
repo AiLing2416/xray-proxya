@@ -168,7 +168,7 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 	}
 
 	// 3. Verify sub commands have ValidArgsFunction registered
-	for _, subCommand := range []*cobra.Command{subSetCmd, subShowCmd, subDelCmd, subResetCmd, subRunCmd, subValidateCmd} {
+	for _, subCommand := range []*cobra.Command{subSetCmd, subShowCmd, subRunCmd, subValidateCmd} {
 		if subCommand.ValidArgsFunction == nil {
 			t.Errorf("sub command %q missing ValidArgsFunction for positional arg completion", subCommand.Name())
 		}

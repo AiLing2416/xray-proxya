@@ -7,18 +7,56 @@ import (
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
-	"xray-proxya/pkg/utils"
 )
 
 func TestFormatGuestSubRemark(t *testing.T) {
 	now := time.Date(2026, 5, 9, 8, 0, 0, 0, time.UTC)
-	guest := config.GuestConfig{
+
+	// 1. Normal GB usage
+	guest1 := config.GuestConfig{
+		Alias:     "alice",
 		UsedBytes: 2 * config.GigaByte,
 		QuotaGB:   5,
 		ResetDay:  15,
 		Enabled:   true,
 	}
-	if got, want := formatGuestSubRemark(guest, now), "TRAFFIC: 2.00GB / 5.00GB | RESET: 6d"; got != want {
+	if got, want := formatGuestSubRemark(guest1, now), "TRAFFIC: 2.00GB / 5.00GB | RESET: 6d"; got != want {
+		t.Fatalf("formatGuestSubRemark = %q, want %q", got, want)
+	}
+
+	// 2. Dynamic MB usage
+	guest2 := config.GuestConfig{
+		Alias:     "bob",
+		UsedBytes: 50 * config.MegaByte,
+		QuotaGB:   5,
+		ResetDay:  15,
+		Enabled:   true,
+	}
+	if got, want := formatGuestSubRemark(guest2, now), "TRAFFIC: 50.00MB / 5.00GB | RESET: 6d"; got != want {
+		t.Fatalf("formatGuestSubRemark = %q, want %q", got, want)
+	}
+
+	// 3. Quota exceeded
+	guest3 := config.GuestConfig{
+		Alias:     "charlie",
+		UsedBytes: 6 * config.GigaByte,
+		QuotaGB:   5,
+		ResetDay:  15,
+		Enabled:   true,
+	}
+	if got, want := formatGuestSubRemark(guest3, now), "EXPIRED: Quota Exceeded (6.00GB / 5.00GB) | Reset in 6d"; got != want {
+		t.Fatalf("formatGuestSubRemark = %q, want %q", got, want)
+	}
+
+	// 4. Admin disabled guest
+	guest4 := config.GuestConfig{
+		Alias:     "dave",
+		UsedBytes: 1 * config.GigaByte,
+		QuotaGB:   5,
+		ResetDay:  15,
+		Enabled:   false,
+	}
+	if got, want := formatGuestSubRemark(guest4, now), "dave is disabled"; got != want {
 		t.Fatalf("formatGuestSubRemark = %q, want %q", got, want)
 	}
 }
@@ -50,158 +88,58 @@ func TestDaysUntilResetClampsMonthEnd(t *testing.T) {
 	}
 }
 
-func TestResolveGuestSubAddress(t *testing.T) {
-	// 1. GuestSubAddress has highest precedence
+func TestResolveSubAndNodeAddresses(t *testing.T) {
 	cfg1 := &config.UserConfig{
-		GuestSubAddress: "guest.example.com",
-		AdminSub:        config.AdminSubConfig{Address: "admin.example.com"},
+		AddressSub:  "sub.example.com",
+		AddressNode: "node.example.com",
 	}
-	if got, want := resolveGuestSubAddress(cfg1), "guest.example.com"; got != want {
-		t.Fatalf("resolveGuestSubAddress = %q, want %q", got, want)
+	if got, want := ResolveSubAddress(cfg1), "sub.example.com"; got != want {
+		t.Fatalf("ResolveSubAddress = %q, want %q", got, want)
+	}
+	if got, want := ResolveNodeAddress(cfg1), "node.example.com"; got != want {
+		t.Fatalf("ResolveNodeAddress = %q, want %q", got, want)
 	}
 
-	// 2. AdminSub.Address fallback
 	cfg2 := &config.UserConfig{
-		AdminSub: config.AdminSubConfig{Address: "admin.example.com"},
-	}
-	if got, want := resolveGuestSubAddress(cfg2), "admin.example.com"; got != want {
-		t.Fatalf("resolveGuestSubAddress = %q, want %q", got, want)
-	}
-
-	// 3. Fallback to public/smart IP
-	cfg3 := &config.UserConfig{}
-	smartIP := utils.GetSmartIP(false)
-	if got, want := resolveGuestSubAddress(cfg3), smartIP; got != want {
-		t.Fatalf("resolveGuestSubAddress = %q, want %q", got, want)
-	}
-}
-
-func TestValidatePrivateBindAddress(t *testing.T) {
-	valid := []string{"127.0.0.1", "10.0.0.5", "192.168.1.9", "localhost"}
-	for _, bind := range valid {
-		if err := validatePrivateBindAddress(bind); err != nil {
-			t.Fatalf("validatePrivateBindAddress(%q) unexpected error: %v", bind, err)
-		}
-	}
-	if err := validatePrivateBindAddress("8.8.8.8"); err == nil {
-		t.Fatalf("expected public bind address to fail validation")
-	}
-}
-
-func TestGuestSubHandlerNotifyModes(t *testing.T) {
-	tempHome := t.TempDir()
-	t.Setenv("HOME", tempHome)
-	cfg := &config.UserConfig{
-		Role:            config.RoleServer,
-		UUID:            "server-uuid",
-		GuestSubBind:    "127.0.0.1",
-		GuestSubAddress: "sub.example.com",
-		Presets: []config.ModeInfo{{
-			Mode:    config.ModeVLESSVision,
-			Enabled: true,
-			Port:    443,
-			SNI:     "example.com",
-			Settings: config.Settings{
-				PublicKey: "pub",
-				ShortID:   "abcd",
-			},
-		}},
-		Guests: []config.GuestConfig{
-			{
-				Alias:    "alice-off",
-				UUID:     "uuid-off",
-				Enabled:  true,
-				QuotaGB:  5,
-				ResetDay: 20,
-				SubToken: "token-off",
-				Notify:   config.GuestNotifyOff,
-			},
-			{
-				Alias:    "alice-all",
-				UUID:     "uuid-all",
-				Enabled:  true,
-				QuotaGB:  5,
-				ResetDay: 20,
-				SubToken: "token-all",
-				Notify:   config.GuestNotifyAll,
-			},
+		AdminSub: config.AdminSubConfig{
+			AddressSub:  "admin-sub.example.com",
+			AddressNode: "admin-node.example.com",
 		},
 	}
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("save config: %v", err)
+	if got, want := ResolveSubAddress(cfg2), "admin-sub.example.com"; got != want {
+		t.Fatalf("ResolveSubAddress = %q, want %q", got, want)
 	}
-
-	handler := httpGuestSubHandler()
-
-	// Test default / off mode: no header, no memorial node, real nodes clean
-	{
-		req := httptest.NewRequest("GET", "http://127.0.0.1/guest-sub/token-off", nil)
-		req.Host = "sub.example.com"
-		rec := httptest.NewRecorder()
-		handler(rec, req)
-
-		if rec.Code != 200 {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		if rec.Header().Get("Subscription-Userinfo") != "" {
-			t.Fatalf("expected no Subscription-Userinfo header in off mode")
-		}
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
-		if err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		body := string(decoded)
-		for _, line := range strings.Split(strings.TrimSpace(body), "\n") {
-			if strings.HasPrefix(line, "ss://") {
-				t.Fatalf("expected no memorial ss node in off mode, got %q", line)
-			}
-		}
-		if !strings.Contains(body, "@sub.example.com:443?") {
-			t.Fatalf("expected real node in generated links, got %q", body)
-		}
-	}
-
-	// Test all mode: has Subscription-Userinfo header AND memorial ss node prepended
-	{
-		req := httptest.NewRequest("GET", "http://127.0.0.1/guest-sub/token-all", nil)
-		req.Host = "sub.example.com"
-		rec := httptest.NewRecorder()
-		handler(rec, req)
-
-		if rec.Code != 200 {
-			t.Fatalf("status = %d, want 200", rec.Code)
-		}
-		userInfo := rec.Header().Get("Subscription-Userinfo")
-		if !strings.Contains(userInfo, "download=0") || !strings.Contains(userInfo, "total=5000000000") {
-			t.Fatalf("expected Subscription-Userinfo header, got %q", userInfo)
-		}
-		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
-		if err != nil {
-			t.Fatalf("decode body: %v", err)
-		}
-		body := string(decoded)
-		lines := strings.Split(strings.TrimSpace(body), "\n")
-		if len(lines) < 2 {
-			t.Fatalf("expected at least 2 lines (memorial node + real node), got %d", len(lines))
-		}
-		if !strings.HasPrefix(lines[0], "ss://") || !strings.Contains(lines[0], "@127.0.0.1:1#") {
-			t.Fatalf("expected memorial node on first line, got %q", lines[0])
-		}
-		if !strings.Contains(lines[1], "@sub.example.com:443?") {
-			t.Fatalf("expected real node on second line, got %q", lines[1])
-		}
+	if got, want := ResolveNodeAddress(cfg2), "admin-node.example.com"; got != want {
+		t.Fatalf("ResolveNodeAddress = %q, want %q", got, want)
 	}
 }
 
-func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
+func TestFormatSubURL(t *testing.T) {
+	// Scheme preserved
+	if got, want := FormatSubURL("https://sub.example.com", 8443, "mytoken"), "https://sub.example.com/mytoken"; got != want {
+		t.Fatalf("FormatSubURL = %q, want %q", got, want)
+	}
+	// Host without scheme attaches port
+	if got, want := FormatSubURL("sub.example.com", 8443, "mytoken"), "http://sub.example.com:8443/mytoken"; got != want {
+		t.Fatalf("FormatSubURL = %q, want %q", got, want)
+	}
+	// Host with explicit port
+	if got, want := FormatSubURL("sub.example.com:9443", 8443, "mytoken"), "http://sub.example.com:9443/mytoken"; got != want {
+		t.Fatalf("FormatSubURL = %q, want %q", got, want)
+	}
+}
+
+func TestUnifiedSubHandler(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 	cfg := &config.UserConfig{
-		Role: config.RoleServer,
+		Role:        config.RoleServer,
+		UUID:        "server-uuid",
+		AddressNode: "node.example.com",
+		AddressSub:  "https://sub.example.com",
 		AdminSub: config.AdminSubConfig{
 			Token:      "admintoken",
 			Port:       8443,
-			Address:    "sub.example.com",
 			TargetType: "direct",
 		},
 		Presets: []config.ModeInfo{{
@@ -214,23 +152,105 @@ func TestAdminSubHandlerPrefersAdminSubConfig(t *testing.T) {
 				ShortID:   "abcd",
 			},
 		}},
+		Guests: []config.GuestConfig{
+			{
+				Alias:    "alice-active",
+				UUID:     "uuid-alice",
+				Enabled:  true,
+				QuotaGB:  5,
+				ResetDay: 20,
+				Notify:   config.GuestNotifyAll,
+			},
+			{
+				Alias:    "bob-disabled",
+				UUID:     "uuid-bob",
+				Enabled:  false,
+				QuotaGB:  5,
+				ResetDay: 20,
+				Notify:   config.GuestNotifyAll,
+			},
+		},
 	}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 
-	req := httptest.NewRequest("GET", "http://127.0.0.1/sub/admintoken", nil)
-	rec := httptest.NewRecorder()
-	httpAdminSubHandler(cfg.AdminSub)(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("status = %d, want 200", rec.Code)
+	handler := httpUnifiedSubHandler(cfg.AdminSub)
+
+	// 1. Admin Token request
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/admintoken", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("admin sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode admin body: %v", err)
+		}
+		if !strings.Contains(string(decoded), "@node.example.com:443?") {
+			t.Fatalf("expected node address in admin sub, got %q", string(decoded))
+		}
 	}
-	decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
-	if err != nil {
-		t.Fatalf("decode body: %v", err)
+
+	// 2. Active Guest UUID request: contains real node and memorial node
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/uuid-alice", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("guest sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode guest body: %v", err)
+		}
+		body := string(decoded)
+		lines := strings.Split(strings.TrimSpace(body), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("expected memorial + real node lines, got %d", len(lines))
+		}
+		if !strings.HasPrefix(lines[0], "ss://") {
+			t.Fatalf("expected memorial node on first line, got %q", lines[0])
+		}
+		if !strings.Contains(lines[1], "@node.example.com:443?") {
+			t.Fatalf("expected real proxy node on second line, got %q", lines[1])
+		}
 	}
-	body := string(decoded)
-	if !strings.Contains(body, "@sub.example.com:443?") {
-		t.Fatalf("expected admin_sub address in body, got %q", body)
+
+	// 3. Disabled Guest UUID request: ONLY memorial node with "bob-disabled is disabled", NO real proxy nodes
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/uuid-bob", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("disabled guest sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode disabled guest body: %v", err)
+		}
+		body := string(decoded)
+		lines := strings.Split(strings.TrimSpace(body), "\n")
+		if len(lines) != 1 {
+			t.Fatalf("expected exactly 1 memorial node for disabled guest, got %d lines: %q", len(lines), body)
+		}
+		if !strings.HasPrefix(lines[0], "ss://") {
+			t.Fatalf("expected memorial node, got %q", lines[0])
+		}
+		if !strings.Contains(lines[0], "bob-disabled%20is%20disabled") && !strings.Contains(lines[0], "bob-disabled+is+disabled") {
+			t.Fatalf("expected 'bob-disabled is disabled' remark in link, got %q", lines[0])
+		}
+	}
+
+	// 4. Unknown token -> 404
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/nonexistent", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 404 {
+			t.Fatalf("expected 404 for unknown token, got %d", rec.Code)
+		}
 	}
 }

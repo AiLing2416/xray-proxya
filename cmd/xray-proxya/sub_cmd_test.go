@@ -24,7 +24,7 @@ func TestManagedSubURLUsesOverrideAddress(t *testing.T) {
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}
 	subEntry := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com"}
 	got := managedSubURL(cfg, subEntry)
-	want := "http://sub.example.com:8443/sub/abc123"
+	want := "http://sub.example.com:8443/abc123"
 	if got != want {
 		t.Fatalf("managedSubURL = %q, want %q", got, want)
 	}
@@ -34,7 +34,19 @@ func TestManagedSubURLHandlesHostWithPort(t *testing.T) {
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}
 	subEntry := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com:9443"}
 	got := managedSubURL(cfg, subEntry)
-	want := "http://sub.example.com:9443/sub/abc123"
+	want := "http://sub.example.com:9443/abc123"
+	if got != want {
+		t.Fatalf("managedSubURL = %q, want %q", got, want)
+	}
+}
+
+func TestManagedSubURLSupportsAddressSubWithScheme(t *testing.T) {
+	cfg := &config.UserConfig{
+		AddressSub: "https://sub.example.com",
+		AdminSub:   config.AdminSubConfig{Port: 8443, Token: "abc123"},
+	}
+	got := managedSubURL(cfg, &cfg.AdminSub)
+	want := "https://sub.example.com/abc123"
 	if got != want {
 		t.Fatalf("managedSubURL = %q, want %q", got, want)
 	}
@@ -56,12 +68,13 @@ func TestManagedSubscriptionReusesExistingEntry(t *testing.T) {
 	if subEntry.Token != "existing" {
 		t.Fatalf("token = %q, want existing", subEntry.Token)
 	}
-	if count := strings.Count(managedSubURL(&config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}, subEntry), "/sub/"); count != 1 {
-		t.Fatalf("expected managed URL path once")
+	url := managedSubURL(&config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}, subEntry)
+	if !strings.HasSuffix(url, "/existing") {
+		t.Fatalf("expected managed URL path to end with /existing, got %q", url)
 	}
 }
 
-func TestMultiInstanceSubscriptionManagement(t *testing.T) {
+func TestSubscriptionServiceManagement(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
 	cfg := &config.UserConfig{
@@ -70,34 +83,16 @@ func TestMultiInstanceSubscriptionManagement(t *testing.T) {
 			Token: "default-tok",
 			Port:  8443,
 		},
-		SubscriptionInstances: map[string]config.AdminSubConfig{
-			"default": {
-				Token: "default-tok",
-				Port:  8443,
-			},
-			"vip": {
-				Token:      "vip-tok",
-				Port:       8444,
-				TargetType: "direct",
-			},
-		},
 	}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
 
-	defSub, err := subscriptionInstance("default")
-	if err != nil || defSub.Port != 8443 {
-		t.Fatalf("load default sub: %v, port: %d", err, defSub.Port)
+	subServ, err := subscriptionInstance()
+	if err != nil || subServ.Port != 8443 {
+		t.Fatalf("load sub: %v, port: %d", err, subServ.Port)
 	}
-
-	vipSub, err := subscriptionInstance("vip")
-	if err != nil || vipSub.Port != 8444 || vipSub.AdminSub.Token != "vip-tok" {
-		t.Fatalf("load vip sub: %v, entry: %+v", err, vipSub)
-	}
-
-	if _, err := subscriptionInstance("nonexistent"); err == nil {
-		t.Fatalf("expected error for nonexistent instance")
+	if subServ.AdminSub.Token != "default-tok" {
+		t.Fatalf("token = %q, want default-tok", subServ.AdminSub.Token)
 	}
 }
-

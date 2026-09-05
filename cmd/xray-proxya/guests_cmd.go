@@ -2,8 +2,6 @@ package main
 
 import (
 	"fmt"
-	"net"
-	"strconv"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
@@ -130,14 +128,7 @@ func ensureGuestSubListenerConfig(cfg *config.UserConfig) {
 }
 
 func guestSubURL(host string, port int, token string) string {
-	host = strings.TrimSpace(host)
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return fmt.Sprintf("http://%s/guest-sub/%s", host, token)
-	}
-	return fmt.Sprintf("http://%s/guest-sub/%s", net.JoinHostPort(host, strconv.Itoa(port)), token)
+	return sub.FormatSubURL(host, port, token)
 }
 
 var guestsListCmd = &cobra.Command{
@@ -583,24 +574,21 @@ var guestsSubShowCmd = &cobra.Command{
 			fmt.Printf("❌ Guest '%s' not found.\n", args[0])
 			return
 		}
-		if guest.SubToken == "" {
+		tokenOrUUID := guest.UUID
+		if tokenOrUUID == "" {
+			tokenOrUUID = guest.SubToken
+		}
+		if tokenOrUUID == "" {
 			fmt.Printf("❌ Guest sub is not enabled for '%s'.\n", args[0])
 			return
 		}
-		ensureGuestSubListenerConfig(cfg)
 		host := guestSubShowAddr
 		if host == "" {
-			host = strings.TrimSpace(cfg.GuestSubAddress)
+			host = sub.ResolveSubAddress(cfg)
 		}
-		if host == "" {
-			host = strings.TrimSpace(cfg.AdminSub.Address)
-		}
-		if host == "" {
-			if ip := net.ParseIP(cfg.GuestSubBind); ip != nil && (ip.IsLoopback() || ip.IsUnspecified()) {
-				host = utils.GetSmartIP(false)
-			} else {
-				host = cfg.GuestSubBind
-			}
+		port := cfg.SubPort
+		if port <= 0 {
+			port = cfg.AdminSub.Port
 		}
 		fmt.Printf("\nGuest: %s\n", guest.Alias)
 		fmt.Printf("State: %s\n", guestStateLabel(*guest))
@@ -611,9 +599,7 @@ var guestsSubShowCmd = &cobra.Command{
 		if guest.NormalizedNotifyMode() == config.GuestNotifyRemark || guest.NormalizedNotifyMode() == config.GuestNotifyAll {
 			fmt.Printf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(*guest, time.Now()))
 		}
-		fmt.Printf("Listener: %s:%d\n", cfg.GuestSubBind, cfg.GuestSubPort)
-		fmt.Printf("Path: /guest-sub/%s\n", guest.SubToken)
-		fmt.Printf("URL: %s\n\n", guestSubURL(host, cfg.GuestSubPort, guest.SubToken))
+		fmt.Printf("URL: %s\n\n", guestSubURL(host, port, tokenOrUUID))
 	},
 }
 

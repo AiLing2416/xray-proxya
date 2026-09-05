@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
@@ -79,45 +78,22 @@ func QueryManagedServices(cfg *config.UserConfig) []ManagedServiceItem {
 		})
 	}
 
-	// 4. Dynamic Subscriptions (Sub@<inst>)
-	subInstances := make(map[string]struct{})
-	if cfg != nil {
-		if cfg.SubscriptionInstances != nil {
-			for name := range cfg.SubscriptionInstances {
-				subInstances[name] = struct{}{}
-			}
-		}
-		if cfg.AdminSub.Token != "" {
-			subInstances["default"] = struct{}{}
-		}
+	// 4. Subscription service
+	subUnit := "xray-proxya-sub.service"
+	subActive, subPID := checkUnitState(subUnit)
+	subStatus := "Stopped"
+	if subActive {
+		subStatus = "Running"
 	}
-	if len(subInstances) == 0 {
-		subInstances["default"] = struct{}{}
-	}
-
-	var subNames []string
-	for name := range subInstances {
-		subNames = append(subNames, name)
-	}
-	sort.Strings(subNames)
-
-	for _, name := range subNames {
-		subUnit := fmt.Sprintf("xray-proxya-sub@%s.service", name)
-		subActive, subPID := checkUnitState(subUnit)
-		subStatus := "Stopped"
-		if subActive {
-			subStatus = "Running"
-		}
-		list = append(list, ManagedServiceItem{
-			DisplayName: fmt.Sprintf("Sub@%s", name),
-			UnitName:    subUnit,
-			Active:      subActive,
-			PID:         subPID,
-			Status:      subStatus,
-			Enabled:     checkUnitEnabled(subUnit),
-			Description: fmt.Sprintf("Subscription server instance (%s)", name),
-		})
-	}
+	list = append(list, ManagedServiceItem{
+		DisplayName: "Sub",
+		UnitName:    subUnit,
+		Active:      subActive,
+		PID:         subPID,
+		Status:      subStatus,
+		Enabled:     checkUnitEnabled(subUnit),
+		Description: "Subscription server",
+	})
 
 	return list
 }

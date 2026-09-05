@@ -122,3 +122,35 @@ func TestGenerateLinksOutputsConfiguredFingerprintAndStable(t *testing.T) {
 		}
 	}
 }
+
+func TestGenerateLinksMultiAddressGrouping(t *testing.T) {
+	cfg := &config.UserConfig{
+		UUID: "12345678-1234-1234-1234-123456789012",
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "example.com",
+				Settings: config.Settings{
+					PublicKey: "pub",
+					ShortID:   "abcd",
+				},
+			},
+		},
+	}
+
+	links := GenerateLinks(cfg, "1.1.2.2, 2006:9999::8844, proxy.example.com")
+	if len(links) != 3 {
+		t.Fatalf("expected 3 links for 3 addresses, got %d", len(links))
+	}
+	if !strings.Contains(links[0], "@1.1.2.2:443") {
+		t.Errorf("expected 1.1.2.2 in first link, got %q", links[0])
+	}
+	if !strings.Contains(links[1], "@[2006:9999::8844]:443") {
+		t.Errorf("expected [2006:9999::8844] in second link, got %q", links[1])
+	}
+	if !strings.Contains(links[2], "@proxy.example.com:443") {
+		t.Errorf("expected proxy.example.com in third link, got %q", links[2])
+	}
+}

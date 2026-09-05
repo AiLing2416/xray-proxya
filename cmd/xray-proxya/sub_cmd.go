@@ -13,23 +13,22 @@ import (
 )
 
 const defaultSubInstance = "default"
-const managedSubAlias = "admin"
 
 var (
-	subListen, subAddress, subToken, subTargetType, subTargetAlias, subRotation, subInstance string
-	subPort                                                                                  int
-	subShowGuest, subShowRelay, subResetGuest, subResetRelay                                 string
+	subListen, subAddress, subAddressSub, subAddressNode, subToken, subTargetType, subTargetAlias, subRotation string
+	subPort                                                                                                    int
+	subShowGuest                                                                                               string
 )
 
 var subCmd = &cobra.Command{
 	Use:   "sub",
 	Short: "Configure subscriptions; systemd controls their lifecycle",
-	Long: `Configure multi-instance subscription servers and manage distribution URLs in STAGING.
-Each subscription instance runs on its own port and token, and can distribute direct server nodes,
+	Long: `Configure subscription server and manage distribution URLs in STAGING.
+The subscription server runs on its own port and token, and distributes direct server nodes,
 guest nodes, or outbound relay chains.
 
-Use 'xray-proxya apply' to commit staged changes, then manage their background
-systemd lifecycle using 'xray-proxya service start/stop xray-proxya-sub@<instance>'.`,
+Use 'xray-proxya apply' to commit staged changes, then manage its background
+systemd lifecycle using 'xray-proxya service start/stop xray-proxya-sub'.`,
 }
 
 func requireServerSubscription(cfg *config.UserConfig) error {
@@ -112,7 +111,13 @@ func managedSubURL(cfg *config.UserConfig, entry *config.AdminSubConfig) string 
 	if cfg == nil || entry == nil || entry.Token == "" {
 		return ""
 	}
-	host := strings.TrimSpace(entry.Address)
+	host := entry.AddressSub
+	if host == "" {
+		host = cfg.AddressSub
+	}
+	if host == "" {
+		host = entry.Address
+	}
 	if host == "" {
 		host = utils.GetSmartIP(false)
 	}
@@ -120,32 +125,22 @@ func managedSubURL(cfg *config.UserConfig, entry *config.AdminSubConfig) string 
 	if port <= 0 {
 		port = cfg.AdminSub.Port
 	}
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return fmt.Sprintf("http://%s/sub/%s", host, entry.Token)
+	if port <= 0 {
+		port = cfg.SubPort
 	}
-	return fmt.Sprintf("http://%s/sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", port)), entry.Token)
+	return sub.FormatSubURL(host, port, entry.Token)
 }
 
-func subGuestSubURL(cfg *config.UserConfig, token string) string {
-	host := strings.TrimSpace(cfg.GuestSubAddress)
-	if host == "" {
-		host = strings.TrimSpace(cfg.AdminSub.Address)
+func subGuestSubURL(cfg *config.UserConfig, tokenOrUUID string) string {
+	if cfg == nil || tokenOrUUID == "" {
+		return ""
 	}
-	if host == "" {
-		host = utils.GetSmartIP(false)
-	}
-	port := cfg.GuestSubPort
+	host := sub.ResolveSubAddress(cfg)
+	port := cfg.SubPort
 	if port <= 0 {
 		port = cfg.AdminSub.Port
 	}
-	if _, _, err := net.SplitHostPort(host); err == nil {
-		return fmt.Sprintf("http://%s/guest-sub/%s", host, token)
-	}
-	return fmt.Sprintf("http://%s/guest-sub/%s", net.JoinHostPort(host, fmt.Sprintf("%d", port)), token)
-}
-
-func customSubURL(cfg *config.UserConfig, token string) string {
-	return managedSubURL(cfg, &config.AdminSubConfig{Token: token, Address: cfg.AdminSub.Address, Port: cfg.AdminSub.Port})
+	return sub.FormatSubURL(host, port, tokenOrUUID)
 }
 
 func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -170,17 +165,6 @@ func completeGuestAliases(cmd *cobra.Command, args []string, toComplete string) 
 	res := []string{"all"}
 	for _, g := range cfg.Guests {
 		res = append(res, g.Alias)
-	}
-	return res, cobra.ShellCompDirectiveNoFileComp
-}
-func completeRelayAliases(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	res := []string{"all"}
-	for _, o := range cfg.CustomOutbounds {
-		res = append(res, o.Alias)
 	}
 	return res, cobra.ShellCompDirectiveNoFileComp
 }
@@ -275,12 +259,8 @@ func reconcileSubscriptions(cfg *config.UserConfig) bool {
 	return changed
 }
 
-// subscriptionInstance reads the active config for the requested instance.
+// subscriptionInstance reads the active config for the subscription server.
 func subscriptionInstance(name ...string) (config.SubscriptionServiceConfig, error) {
-	inst := defaultSubInstance
-	if len(name) > 0 && strings.TrimSpace(name[0]) != "" {
-		inst = strings.TrimSpace(name[0])
-	}
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return config.SubscriptionServiceConfig{}, fmt.Errorf("load active configuration: %w", err)
@@ -288,52 +268,72 @@ func subscriptionInstance(name ...string) (config.SubscriptionServiceConfig, err
 	if err := requireServerSubscription(cfg); err != nil {
 		return config.SubscriptionServiceConfig{}, err
 	}
-	var entry config.AdminSubConfig
-	found := false
-	if cfg.SubscriptionInstances != nil {
-		if subEntry, ok := cfg.SubscriptionInstances[inst]; ok && subEntry.Token != "" {
-			entry = subEntry
-			found = true
+	instanceName := defaultSubInstance
+	if len(name) > 0 && strings.TrimSpace(name[0]) != "" {
+		instanceName = strings.TrimSpace(name[0])
+	}
+	if instanceName != defaultSubInstance {
+		if cfg.SubscriptionInstances == nil {
+			return config.SubscriptionServiceConfig{}, fmt.Errorf("subscription instance %q is not configured", instanceName)
+		}
+		inst, ok := cfg.SubscriptionInstances[instanceName]
+		if !ok || inst.Token == "" {
+			return config.SubscriptionServiceConfig{}, fmt.Errorf("subscription instance %q is not configured", instanceName)
+		}
+		port := inst.Port
+		if port <= 0 {
+			port = cfg.SubPort
+		}
+		if port <= 0 {
+			port = cfg.AdminSub.Port
+		}
+		listen := inst.Listen
+		if listen == "" {
+			listen = "127.0.0.1"
+		}
+		inst.Port = port
+		return config.SubscriptionServiceConfig{Listen: listen, Port: port, AdminSub: inst}, nil
+	}
+	entry := cfg.AdminSub
+	if entry.Token == "" && cfg.SubscriptionInstances != nil {
+		if def, ok := cfg.SubscriptionInstances[defaultSubInstance]; ok {
+			entry = def
 		}
 	}
-	if !found && inst == defaultSubInstance && cfg.AdminSub.Token != "" {
-		entry = cfg.AdminSub
-		found = true
+	port := entry.Port
+	if port <= 0 {
+		port = cfg.SubPort
 	}
-	if !found || entry.Token == "" || entry.Port <= 0 {
-		return config.SubscriptionServiceConfig{}, fmt.Errorf("subscription instance %q is not configured; use 'sub set %s', then apply", inst, inst)
+	if entry.Token == "" || port <= 0 {
+		return config.SubscriptionServiceConfig{}, fmt.Errorf("subscription service is not configured; use 'sub set', then apply")
 	}
 	listen := entry.Listen
 	if listen == "" {
 		listen = "127.0.0.1"
 	}
-	guestBind := cfg.GuestSubBind
-	if guestBind == "" {
-		guestBind = "127.0.0.1"
-	}
-	return config.SubscriptionServiceConfig{Listen: listen, Port: entry.Port, GuestBind: guestBind, GuestPort: cfg.GuestSubPort, AdminSub: entry}, nil
+	entry.Port = port
+	return config.SubscriptionServiceConfig{Listen: listen, Port: port, AdminSub: entry}, nil
 }
 
 func validateSubInstance(name ...string) error { _, err := subscriptionInstance(name...); return err }
 
 var subSetCmd = &cobra.Command{
 	Use:   "set [instance]",
-	Short: "Set subscription instance parameters in STAGING",
-	Long: `Configure or update subscription instance parameters in the STAGING configuration.
-If [instance] is omitted, it defaults to the 'default' instance.
+	Short: "Set subscription parameters in STAGING",
+	Long: `Configure or update subscription server parameters in the STAGING configuration.
 
 Supported target types:
   - direct:   Distribute local server inbounds (default)
   - outbound: Distribute custom outbound relay nodes (specify with --target <relay-alias>)
   - guest:    Distribute guest tenant credentials (specify with --target <guest-alias>)`,
-	Example: `  # Configure the default subscription instance on port 18443
-  xray-proxya sub set default --port 18443 --token mytoken
+	Example: `  # Configure subscription server on port 8443
+  xray-proxya sub set --port 8443 --token mytoken
 
-  # Configure a named subscription instance with IPv6 address rotation
-  xray-proxya sub set vip --port 8444 --token viptoken --ipv6-rotation default
+  # Configure advertised subscription URL and proxy node addresses
+  xray-proxya sub set --address-sub https://sub.example.com --address-node 1.1.2.2,2006:9999::8844,proxy.example.com
 
-  # Configure a subscription instance targeting a specific outbound relay
-  xray-proxya sub set hk-relay --port 8445 --token relaytok --target-type outbound --target hk-node`,
+  # Configure a subscription instance with IPv6 address rotation
+  xray-proxya sub set --ipv6-rotation default`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
@@ -346,11 +346,6 @@ Supported target types:
 		inst := defaultSubInstance
 		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
 			inst = strings.TrimSpace(args[0])
-		} else if subInstance != "" {
-			inst = subInstance
-		}
-		if !systemdInstanceName.MatchString(inst) {
-			return fmt.Errorf("invalid subscription instance name %q", inst)
 		}
 		entry := *ensureSubscriptionInstance(cfg, inst)
 		changed := false
@@ -358,8 +353,22 @@ Supported target types:
 			entry.Listen = strings.TrimSpace(subListen)
 			changed = true
 		}
+		if cmd.Flags().Changed("address-sub") {
+			entry.AddressSub = strings.TrimSpace(subAddressSub)
+			cfg.AddressSub = entry.AddressSub
+			changed = true
+		}
 		if cmd.Flags().Changed("address") {
 			entry.Address = strings.TrimSpace(subAddress)
+			if entry.AddressSub == "" {
+				entry.AddressSub = entry.Address
+				cfg.AddressSub = entry.Address
+			}
+			changed = true
+		}
+		if cmd.Flags().Changed("address-node") {
+			entry.AddressNode = strings.TrimSpace(subAddressNode)
+			cfg.AddressNode = entry.AddressNode
 			changed = true
 		}
 		if cmd.Flags().Changed("token") {
@@ -371,6 +380,7 @@ Supported target types:
 				return fmt.Errorf("port must be between 1 and 65535")
 			}
 			entry.Port = subPort
+			cfg.SubPort = subPort
 			changed = true
 		}
 		if cmd.Flags().Changed("target-type") {
@@ -396,7 +406,7 @@ Supported target types:
 			entry.IPv6Rotation = subRotation
 			changed = true
 		}
-		if !changed && !cmd.Flags().Changed("instance") && len(args) == 0 {
+		if !changed {
 			return fmt.Errorf("no parameter supplied")
 		}
 		if cfg.SubscriptionInstances == nil {
@@ -411,7 +421,7 @@ Supported target types:
 		if err := cfg.SaveEx(true); err != nil {
 			return err
 		}
-		fmt.Printf("✅ Subscription instance %q updated in STAGING. Run 'apply', then control it with 'service start xray-proxya-sub@%s'.\n", inst, inst)
+		fmt.Println("✅ Subscription configuration updated in STAGING. Run 'apply', then control it with 'service start xray-proxya-sub'.")
 		return nil
 	},
 }
@@ -429,145 +439,40 @@ var subShowCmd = &cobra.Command{
 		if reconcileSubscriptions(cfg) {
 			_ = cfg.SaveEx(true)
 		}
-		filterInstance := ""
-		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
-			filterInstance = strings.TrimSpace(args[0])
-		}
-		if !cmd.Flags().Changed("guest") && !cmd.Flags().Changed("relay") {
-			allSubs := make(map[string]config.AdminSubConfig)
-			if cfg.SubscriptionInstances != nil {
-				for k, v := range cfg.SubscriptionInstances {
-					if v.Token != "" {
-						allSubs[k] = v
-					}
-				}
-			}
-			if cfg.AdminSub.Token != "" {
-				if _, ok := allSubs[defaultSubInstance]; !ok {
-					allSubs[defaultSubInstance] = cfg.AdminSub
-				}
-			}
-			if len(allSubs) == 0 {
-				fmt.Println("ℹ️  No subscription instances configured. Use 'sub set'.")
-			} else {
-				fmt.Println("\n--- Subscription Instances ---")
-				keys := make([]string, 0, len(allSubs))
-				for k := range allSubs {
-					if filterInstance == "" || filterInstance == k {
-						keys = append(keys, k)
-					}
-				}
-				sort.Strings(keys)
-				if len(keys) == 0 && filterInstance != "" {
-					fmt.Printf("ℹ️  Subscription instance %q is not configured.\n", filterInstance)
-				}
-				for _, name := range keys {
-					s := allSubs[name]
-					fmt.Printf("Instance: %-15s Listen: %s:%-5d Target: %-8s URL: %s\n", name, s.Listen, s.Port, s.TargetType, managedSubURL(cfg, &s))
-					if s.IPv6Rotation != "" {
-						fmt.Printf("          └─ IPv6 rotation: enabled (%s)\n", s.IPv6Rotation)
-					}
-				}
-			}
-		}
-		if filterInstance == "" {
-			if !cmd.Flags().Changed("relay") {
-				fmt.Println("\n--- Guest Subscriptions ---")
-				for _, g := range cfg.Guests {
-					fmt.Printf("Guest: %-15s URL: %s\n", g.Alias, subGuestSubURL(cfg, g.SubToken))
-				}
-			}
-			if !cmd.Flags().Changed("guest") {
-				fmt.Println("\n--- Relay Subscriptions ---")
-				for _, s := range cfg.Subscriptions {
-					if s.TargetType == "outbound" {
-						fmt.Printf("Relay: %-15s URL: %s\n", s.TargetAlias, customSubURL(cfg, s.Token))
-					}
-				}
-			}
-		}
-	},
-}
 
-var subDelCmd = &cobra.Command{
-	Use:     "del <instance>",
-	Aliases: []string{"delete", "rm"},
-	Short:   "Delete a subscription instance in STAGING",
-	Args:    cobra.ExactArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfigEx(true)
-		if err != nil {
-			return err
+		adminSub := ensureManagedSubscription(cfg)
+		if adminSub.Token == "" {
+			fmt.Println("ℹ️  No subscription configured. Use 'sub set'.")
+		} else {
+			fmt.Println("\n--- Admin Subscription ---")
+			fmt.Printf("Listen: %s:%-5d Target: %-8s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, managedSubURL(cfg, adminSub))
+			if adminSub.AddressNode != "" {
+				fmt.Printf("          └─ Node Address: %s\n", adminSub.AddressNode)
+			}
+			if adminSub.IPv6Rotation != "" {
+				fmt.Printf("          └─ IPv6 rotation: enabled (%s)\n", adminSub.IPv6Rotation)
+			}
 		}
-		if err := requireServerSubscription(cfg); err != nil {
-			return err
-		}
-		inst := strings.TrimSpace(args[0])
-		if cfg.SubscriptionInstances == nil {
-			return fmt.Errorf("subscription instance %q not found", inst)
-		}
-		if _, ok := cfg.SubscriptionInstances[inst]; !ok && (inst != defaultSubInstance || cfg.AdminSub.Token == "") {
-			return fmt.Errorf("subscription instance %q not found", inst)
-		}
-		delete(cfg.SubscriptionInstances, inst)
-		if inst == defaultSubInstance {
-			cfg.AdminSub = config.AdminSubConfig{}
-		}
-		if err := cfg.SaveEx(true); err != nil {
-			return err
-		}
-		fmt.Printf("✅ Subscription instance %q deleted in STAGING. Run 'apply' to commit.\n", inst)
-		return nil
-	},
-}
 
-var subResetCmd = &cobra.Command{
-	Use:   "reset [instance]",
-	Short: "Rotate subscription token(s) in STAGING",
-	Args:  cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfigEx(true)
-		if err != nil {
-			return err
-		}
-		if err := requireServerSubscription(cfg); err != nil {
-			return err
-		}
-		reconcileSubscriptions(cfg)
-		inst := defaultSubInstance
-		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
-			inst = strings.TrimSpace(args[0])
-		}
-		if !cmd.Flags().Changed("guest") && !cmd.Flags().Changed("relay") {
-			entry := ensureSubscriptionInstance(cfg, inst)
-			entry.Token = utils.GenerateRandomString(24)
-			cfg.SubscriptionInstances[inst] = *entry
-			if inst == defaultSubInstance {
-				cfg.AdminSub = *entry
+		if len(cfg.Guests) > 0 {
+			fmt.Println("\n--- Guest Subscriptions ---")
+			fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
+			fmt.Println("-----------------------------------------------------------------------------------------")
+			for _, g := range cfg.Guests {
+				if subShowGuest != "" && g.Alias != subShowGuest {
+					continue
+				}
+				state := "active"
+				if !g.Enabled {
+					state = "disabled"
+				}
+				limit := config.FormatByteSize(g.EffectiveLimitBytes())
+				used := config.FormatByteSize(g.UsedBytes)
+				url := subGuestSubURL(cfg, g.UUID)
+				fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", g.Alias, state, used+"/"+limit, g.ResetDay, url)
 			}
-			if err := cfg.SaveEx(true); err != nil {
-				return err
-			}
-			fmt.Printf("✅ Subscription token for instance %q rotated in STAGING: /sub/%s\n", inst, entry.Token)
-			return nil
+			fmt.Println()
 		}
-		changed := false
-		for i := range cfg.Guests {
-			if cmd.Flags().Changed("guest") && (subResetGuest == "" || subResetGuest == "all" || cfg.Guests[i].Alias == subResetGuest) {
-				cfg.Guests[i].SubToken = utils.GenerateRandomString(24)
-				changed = true
-			}
-		}
-		for i := range cfg.Subscriptions {
-			if cmd.Flags().Changed("relay") && cfg.Subscriptions[i].TargetType == "outbound" && (subResetRelay == "" || subResetRelay == "all" || cfg.Subscriptions[i].TargetAlias == subResetRelay) {
-				cfg.Subscriptions[i].Token = utils.GenerateRandomString(24)
-				changed = true
-			}
-		}
-		if changed {
-			return cfg.SaveEx(true)
-		}
-		return fmt.Errorf("no matching subscription")
 	},
 }
 
@@ -576,13 +481,7 @@ var subRunCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		inst := defaultSubInstance
-		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
-			inst = strings.TrimSpace(args[0])
-		} else if subInstance != "" {
-			inst = subInstance
-		}
-		instance, err := subscriptionInstance(inst)
+		instance, err := subscriptionInstance()
 		if err != nil {
 			return err
 		}
@@ -598,18 +497,15 @@ var subValidateCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		inst := defaultSubInstance
-		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
-			inst = strings.TrimSpace(args[0])
-		}
-		return validateSubInstance(inst)
+		return validateSubInstance()
 	},
 }
 
 func init() {
-	subSetCmd.Flags().StringVar(&subInstance, "instance", "", "Subscription instance name (default: 'default')")
 	subSetCmd.Flags().StringVarP(&subListen, "listen", "l", "", "Loopback listener address")
-	subSetCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Advertised hostname or address")
+	subSetCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Advertised address (alias to --address-sub)")
+	subSetCmd.Flags().StringVar(&subAddressSub, "address-sub", "", "Advertised hostname or URL for subscription links")
+	subSetCmd.Flags().StringVar(&subAddressNode, "address-node", "", "Advertised hostname(s) or IP(s) for proxy nodes (comma-separated)")
 	subSetCmd.Flags().StringVarP(&subToken, "token", "t", "", "Subscription access token")
 	subSetCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTP port")
 	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "direct, outbound, or guest")
@@ -617,31 +513,17 @@ func init() {
 	subSetCmd.Flags().StringVar(&subRotation, "ipv6-rotation", "", "IPv6 rotation (e.g. 'default', or 'none')")
 	subSetCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 	subSetCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
-	subSetCmd.RegisterFlagCompletionFunc("instance", completeSubscriptionInstances)
 	subSetCmd.RegisterFlagCompletionFunc("target-type", completeTargetTypes)
 	subSetCmd.RegisterFlagCompletionFunc("target", completeTargetAliases)
 	subSetCmd.RegisterFlagCompletionFunc("ipv6-rotation", completeIPv6Rotations)
 
 	subShowCmd.ValidArgsFunction = completeSubscriptionInstanceArg
-	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Show guest subscription URL(s)")
-	subShowCmd.Flags().StringVarP(&subShowRelay, "relay", "r", "", "Show relay subscription URL(s)")
+	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Filter by guest alias")
 	subShowCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
-	subShowCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
-
-	subDelCmd.ValidArgsFunction = completeSubscriptionInstanceArg
-
-	subResetCmd.ValidArgsFunction = completeSubscriptionInstanceArg
-	subResetCmd.Flags().StringVarP(&subResetGuest, "guest", "g", "", "Reset guest token(s)")
-	subResetCmd.Flags().StringVarP(&subResetRelay, "relay", "r", "", "Reset relay token(s)")
-	subResetCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
-	subResetCmd.RegisterFlagCompletionFunc("relay", completeRelayAliases)
 
 	subRunCmd.ValidArgsFunction = completeSubscriptionInstanceArg
-	subRunCmd.Flags().StringVar(&subInstance, "instance", defaultSubInstance, "subscription instance")
-	subRunCmd.RegisterFlagCompletionFunc("instance", completeSubscriptionInstances)
-
 	subValidateCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 
-	subCmd.AddCommand(subSetCmd, subShowCmd, subDelCmd, subResetCmd, subRunCmd, subValidateCmd)
+	subCmd.AddCommand(subSetCmd, subShowCmd, subRunCmd, subValidateCmd)
 	rootCmd.AddCommand(subCmd)
 }

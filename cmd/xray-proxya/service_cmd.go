@@ -19,6 +19,7 @@ import (
 
 const (
 	pathdServiceUnit  = "xray-proxya-pathd.service"
+	subServiceUnit    = "xray-proxya-sub.service"
 	subTemplateUnit   = "xray-proxya-sub@.service"
 	rotateServiceUnit = "xray-proxya-ipv6-rotate.service"
 	rootManagerBinary = "/root/.local/bin/xray-proxya"
@@ -35,13 +36,13 @@ Managed units include:
   - xray-proxya:               Main Xray-Core proxy service
   - xray-proxya-pathd:         PathLink ICMP health & latency probe daemon
   - xray-proxya-ipv6-rotate:   Privileged IPv6 address rotation service
-  - xray-proxya-sub@<inst>:    Subscription server instances (e.g. xray-proxya-sub@default)`,
+  - xray-proxya-sub:           Subscription server service`,
 	Example: `  # Install unit files for current user or root
   xray-proxya service install
 
-  # Start the main proxy service and default subscription instance
+  # Start the main proxy service and subscription service
   xray-proxya service start xray-proxya
-  xray-proxya service start xray-proxya-sub@default
+  xray-proxya service start xray-proxya-sub
 
   # Query status of all managed units
   xray-proxya service status`,
@@ -158,7 +159,7 @@ WantedBy=%s
 `, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, assetDir, capabilityLines, wantedBy)
 }
 
-func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string, system bool) string {
+func buildSubServiceContent(binPath, workDir, configDir, assetDir string, system bool) string {
 	userLine := ""
 	wantedBy := "default.target"
 	capabilityLines := ""
@@ -168,14 +169,14 @@ func buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir string
 		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"
 	}
 	return fmt.Sprintf(`[Unit]
-Description=Xray-Proxya Subscription Server (%%i)
+Description=Xray-Proxya Subscription Server
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-%sExecStartPre=%s sub validate %%i
-ExecStart=%s sub run %%i
+%sExecStartPre=%s sub validate
+ExecStart=%s sub run
 Restart=on-failure
 RestartSec=2
 WorkingDirectory=%s
@@ -278,8 +279,8 @@ func serviceInstall() error {
 	if err := os.WriteFile(managedUnitPath(xray.MainServiceUnit), []byte(buildSystemdServiceContent(binPath, workDir, assetDir, configDir, mainUnitCapabilities(cfg), system, privateDevices)), 0644); err != nil {
 		return fmt.Errorf("write %s: %w", xray.MainServiceUnit, err)
 	}
-	if err := os.WriteFile(managedUnitPath(subTemplateUnit), []byte(buildSubTemplateServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
-		return fmt.Errorf("write %s: %w", subTemplateUnit, err)
+	if err := os.WriteFile(managedUnitPath(subServiceUnit), []byte(buildSubServiceContent(binPath, workDir, configDir, assetDir, system)), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", subServiceUnit, err)
 	}
 	if system {
 		if err := os.WriteFile(managedUnitPath(rotateServiceUnit), []byte(buildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir)), 0644); err != nil {
@@ -301,7 +302,7 @@ func activeManagedUnits() ([]string, error) {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		return nil, fmt.Errorf("systemctl is required: %w", err)
 	}
-	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, "xray-proxya-sub@*.service", rotateServiceUnit)
+	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units", xray.MainServiceUnit, pathdServiceUnit, subServiceUnit, "xray-proxya-sub@*.service", rotateServiceUnit)
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
@@ -329,7 +330,7 @@ func serviceUninstall() error {
 	if len(active) > 0 {
 		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
 	}
-	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subTemplateUnit, rotateServiceUnit} {
+	for _, unit := range []string{xray.MainServiceUnit, pathdServiceUnit, subServiceUnit, subTemplateUnit, rotateServiceUnit} {
 		if err := os.Remove(managedUnitPath(unit)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", unit, err)
 		}
@@ -348,37 +349,18 @@ func normalizedManagedUnit(input string) (string, error) {
 		return rotateServiceUnit, nil
 	}
 	name := strings.TrimSuffix(input, ".service")
-	if name == "xray-proxya-sub" {
-		return "xray-proxya-sub@default.service", nil
+	if name == "xray-proxya-sub" || name == "sub" || strings.HasPrefix(name, "xray-proxya-sub@") {
+		return subServiceUnit, nil
 	}
-	if strings.HasPrefix(name, "xray-proxya-sub@") {
-		instance := strings.TrimPrefix(name, "xray-proxya-sub@")
-		if systemdInstanceName.MatchString(instance) {
-			return "xray-proxya-sub@" + instance + ".service", nil
-		}
-	}
-	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, xray-proxya-ipv6-rotate, or xray-proxya-sub@<instance>")
+	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, xray-proxya-ipv6-rotate, or xray-proxya-sub")
 }
 
 func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	units := []string{
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
+		"xray-proxya-sub\tsubscription service",
 		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
-	}
-	cfg, err := config.LoadConfigEx(true)
-	if err == nil {
-		if cfg.SubscriptionInstances != nil {
-			for inst := range cfg.SubscriptionInstances {
-				units = append(units, fmt.Sprintf("xray-proxya-sub@%s\tsubscription instance %s", inst, inst))
-			}
-		}
-		if cfg.AdminSub.Token != "" && (cfg.SubscriptionInstances == nil || cfg.SubscriptionInstances["default"].Token == "") {
-			units = append(units, "xray-proxya-sub@default\tsubscription instance default")
-		}
-	}
-	if len(units) == 3 {
-		units = append(units, "xray-proxya-sub@default\tsubscription instance")
 	}
 	return units, cobra.ShellCompDirectiveNoFileComp
 }
@@ -411,7 +393,7 @@ func systemctlWrapper(action string) *cobra.Command {
 					return err
 				}
 			}
-			if strings.HasPrefix(unit, "xray-proxya-sub@") && (action == "start" || action == "restart" || (action == "enable" && now)) {
+			if (unit == subServiceUnit || strings.HasPrefix(unit, "xray-proxya-sub@")) && (action == "start" || action == "restart" || (action == "enable" && now)) {
 				if err := validateSubscriptionServiceStart(unit); err != nil {
 					return err
 				}
@@ -457,21 +439,18 @@ func validateSubscriptionServiceStart(unit string) error {
 	if cfg.Role != config.RoleServer {
 		return fmt.Errorf("%s can run only on a Server", unit)
 	}
-	inst := strings.TrimSuffix(strings.TrimPrefix(unit, "xray-proxya-sub@"), ".service")
-	var entry config.AdminSubConfig
-	found := false
-	if cfg.SubscriptionInstances != nil {
-		if subEntry, ok := cfg.SubscriptionInstances[inst]; ok && subEntry.Token != "" {
-			entry = subEntry
-			found = true
+	entry := cfg.AdminSub
+	if entry.Token == "" && cfg.SubscriptionInstances != nil {
+		if def, ok := cfg.SubscriptionInstances[defaultSubInstance]; ok {
+			entry = def
 		}
 	}
-	if !found && inst == defaultSubInstance && cfg.AdminSub.Token != "" {
-		entry = cfg.AdminSub
-		found = true
+	port := entry.Port
+	if port <= 0 {
+		port = cfg.SubPort
 	}
-	if !found || entry.Token == "" || entry.Port <= 0 {
-		return fmt.Errorf("configure subscription instance %q first with 'sub set %s', then apply", inst, inst)
+	if entry.Token == "" || port <= 0 {
+		return fmt.Errorf("configure subscription first with 'sub set', then apply")
 	}
 	if entry.IPv6Rotation != "" && os.Geteuid() != 0 {
 		return fmt.Errorf("IPv6-rotate subscriptions require a root system service")

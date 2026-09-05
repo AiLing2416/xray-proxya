@@ -142,6 +142,8 @@ type UserConfig struct {
 	GuestSubPort    int                   `json:"guest_sub_port,omitempty"`
 	GuestSubBind    string                `json:"guest_sub_bind,omitempty"`
 	GuestSubAddress string                `json:"guest_sub_address,omitempty"`
+	AddressSub      string                `json:"address_sub,omitempty"`
+	AddressNode     string                `json:"address_node,omitempty"`
 	IPv6Pool        IPv6Config            `json:"ipv6_pool"`
 	Certs         []ManagedCert         `json:"certs,omitempty"`
 	SkinPort      int                   `json:"skin_port,omitempty"`
@@ -203,6 +205,8 @@ type AdminSubConfig struct {
 	Listen       string `json:"listen,omitempty"`
 	Token        string `json:"token,omitempty"`
 	Address      string `json:"address,omitempty"`
+	AddressSub   string `json:"address_sub,omitempty"`
+	AddressNode  string `json:"address_node,omitempty"`
 	Port         int    `json:"port,omitempty"`
 	TargetType   string `json:"target_type,omitempty"`
 	TargetAlias  string `json:"target_alias,omitempty"`
@@ -213,10 +217,8 @@ type AdminSubConfig struct {
 	legacyIPv6Rotate IPv6Config
 }
 
-// SubscriptionServiceConfig is the private, per-instance runtime
-// configuration consumed by xray-proxya-sub@<instance>.service. Link content
-// is still generated from the active application configuration, while every
-// listener, token and target selection has an independently owned file.
+// SubscriptionServiceConfig is the private runtime configuration consumed by
+// xray-proxya-sub.service.
 type SubscriptionServiceConfig struct {
 	Listen    string         `json:"listen"`
 	Port      int            `json:"port"`
@@ -241,6 +243,8 @@ func (a *AdminSubConfig) UnmarshalJSON(data []byte) error {
 		Listen       string     `json:"listen"`
 		Token        string     `json:"token"`
 		Address      string     `json:"address"`
+		AddressSub   string     `json:"address_sub"`
+		AddressNode  string     `json:"address_node"`
 		Port         int        `json:"port"`
 		TargetType   string     `json:"target_type"`
 		TargetAlias  string     `json:"target_alias"`
@@ -253,7 +257,20 @@ func (a *AdminSubConfig) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &v); err != nil {
 		return err
 	}
-	*a = AdminSubConfig{Listen: v.Listen, Token: v.Token, Address: v.Address, Port: v.Port, TargetType: v.TargetType, TargetAlias: v.TargetAlias, IPv6Rotation: v.IPv6Rotation, legacyEnabled: v.Enabled, legacyMode: v.Mode, legacyIPv6Rotate: v.IPv6Rotate}
+	*a = AdminSubConfig{
+		Listen:           v.Listen,
+		Token:            v.Token,
+		Address:          v.Address,
+		AddressSub:       v.AddressSub,
+		AddressNode:      v.AddressNode,
+		Port:             v.Port,
+		TargetType:       v.TargetType,
+		TargetAlias:      v.TargetAlias,
+		IPv6Rotation:     v.IPv6Rotation,
+		legacyEnabled:    v.Enabled,
+		legacyMode:       v.Mode,
+		legacyIPv6Rotate: v.IPv6Rotate,
+	}
 	return nil
 }
 

@@ -10,16 +10,51 @@ import (
 	"xray-proxya/internal/config"
 )
 
+func splitAddresses(raw string) []string {
+	var addrs []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			addrs = append(addrs, part)
+		}
+	}
+	return addrs
+}
+
 func GenerateLinks(cfg *config.UserConfig, ip string) []string {
-	return generateAllLinks(cfg, ip, cfg.UUID, "")
+	addrs := splitAddresses(ip)
+	if len(addrs) == 0 {
+		return nil
+	}
+	var all []string
+	for _, addr := range addrs {
+		all = append(all, generateAllLinks(cfg, addr, cfg.UUID, "")...)
+	}
+	return all
 }
 
 func GenerateRelayLinks(cfg *config.UserConfig, ip string, relay config.CustomOutbound) []string {
-	return generateAllLinks(cfg, ip, relay.UserUUID, "Relay-"+relay.Alias)
+	addrs := splitAddresses(ip)
+	if len(addrs) == 0 {
+		return nil
+	}
+	var all []string
+	for _, addr := range addrs {
+		all = append(all, generateAllLinks(cfg, addr, relay.UserUUID, "Relay-"+relay.Alias)...)
+	}
+	return all
 }
 
 func GenerateGuestLinks(cfg *config.UserConfig, ip string, guestUUID string, alias string) []string {
-	return generateAllLinks(cfg, ip, guestUUID, "Guest-"+alias)
+	addrs := splitAddresses(ip)
+	if len(addrs) == 0 {
+		return nil
+	}
+	var all []string
+	for _, addr := range addrs {
+		all = append(all, generateAllLinks(cfg, addr, guestUUID, "Guest-"+alias)...)
+	}
+	return all
 }
 
 func WithPrimaryRemark(links []string, remark string) []string {

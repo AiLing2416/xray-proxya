@@ -120,7 +120,7 @@ func TestSubConfigValidation(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,
 	}
-	item := ManagedServiceItem{DisplayName: "Sub@default", UnitName: "xray-proxya-sub@default.service"}
+	item := ManagedServiceItem{DisplayName: "Sub", UnitName: "xray-proxya-sub.service"}
 
 	props := loadServiceProperties(cfg, item)
 	if len(props) != 7 {

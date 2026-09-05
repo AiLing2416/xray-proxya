@@ -50,11 +50,11 @@ func TestGatewayServiceStartUsesLifecycleRecovery(t *testing.T) {
 	}
 }
 
-func TestBuildSubTemplateUsesInstanceConfiguration(t *testing.T) {
-	content := buildSubTemplateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
+func TestBuildSubServiceContent(t *testing.T) {
+	content := buildSubServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
 	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya sub validate %i",
-		"ExecStart=/root/.local/bin/xray-proxya sub run %i",
+		"ExecStartPre=/root/.local/bin/xray-proxya sub validate",
+		"ExecStart=/root/.local/bin/xray-proxya sub run",
 		"NoNewPrivileges=yes", "ProtectSystem=strict",
 	} {
 		if !strings.Contains(content, required) {
@@ -95,8 +95,8 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	if _, err := normalizedManagedUnit("ssh.service"); err == nil {
 		t.Fatal("foreign unit was accepted")
 	}
-	unit, err := normalizedManagedUnit("xray-proxya-sub@mysub")
-	if err != nil || unit != "xray-proxya-sub@mysub.service" {
+	unit, err := normalizedManagedUnit("xray-proxya-sub")
+	if err != nil || unit != "xray-proxya-sub.service" {
 		t.Fatalf("sub unit = %q, %v", unit, err)
 	}
 	unit, err = normalizedManagedUnit("xray-proxya-ipv6-rotate")
@@ -113,7 +113,7 @@ func TestManagedServiceUnitCompletionIncludesDefaultSubscription(t *testing.T) {
 	for _, want := range []string{
 		"xray-proxya\tmain Xray-Proxya service",
 		"xray-proxya-pathd\tPathLink ICMP agent",
-		"xray-proxya-sub@default\tsubscription instance",
+		"xray-proxya-sub\tsubscription service",
 		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
 	} {
 		if !containsCompletion(units, want) {
