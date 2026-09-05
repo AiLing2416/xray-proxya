@@ -151,15 +151,18 @@ func (m *Manager) ExecuteAction(action, unitInput string, now bool) error {
 			return xray.RestartXrayService()
 		}
 		if action == "stop" || (action == "disable" && now) {
-			return config.WithLifecycleLock(func() error {
-				cleanupErr := gateway.CleanupFirewall()
-				return errors.Join(cleanupErr, runSystemctlAction(action, unit, now))
-			})
+			if os.Geteuid() == 0 {
+				return config.WithLifecycleLock(func() error {
+					cleanupErr := gateway.CleanupFirewall()
+					return errors.Join(cleanupErr, runSystemctlAction(action, unit, now))
+				})
+			}
+			return runSystemctlAction(action, unit, now)
 		}
 		if err := runSystemctlAction(action, unit, now); err != nil {
 			return err
 		}
-		if action == "start" || (action == "enable" && now) {
+		if (action == "start" || (action == "enable" && now)) && os.Geteuid() == 0 {
 			cfg, err := config.LoadConfig()
 			if err != nil {
 				return fmt.Errorf("load active config after service start: %w", err)
