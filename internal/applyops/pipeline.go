@@ -1,6 +1,7 @@
 package applyops
 
 import (
+	"os"
 	"xray-proxya/internal/config"
 )
 
@@ -14,6 +15,9 @@ type ApplyContext struct {
 	XrayRestarted       bool
 	SubRestarted        bool
 	GatewaySyncRequired bool
+	Committed           bool
+	ActiveBackupRaw     []byte
+	StagingBackupRaw    []byte
 }
 
 // AppendLine appends a user-facing log or status line to the context.
@@ -53,6 +57,13 @@ func (p *ApplyPipeline) Execute(actx *ApplyContext) error {
 	for _, step := range p.steps {
 		if step.ShouldRun(actx) {
 			if err := step.Run(actx); err != nil {
+				if actx.Committed && len(actx.ActiveBackupRaw) > 0 {
+					_ = os.WriteFile(config.GetConfigPath(), actx.ActiveBackupRaw, 0600)
+					if len(actx.StagingBackupRaw) > 0 {
+						_ = os.WriteFile(config.GetConfigPathEx(true), actx.StagingBackupRaw, 0600)
+					}
+					actx.AppendLine("⚠️ Apply failed after commit. Automatically rolled back active configuration to protect system state.")
+				}
 				return err
 			}
 		}

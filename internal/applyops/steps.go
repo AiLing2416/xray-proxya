@@ -2,6 +2,7 @@ package applyops
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -112,9 +113,17 @@ func (s *CommitStagingStep) ShouldRun(ctx *ApplyContext) bool {
 
 func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 	ctx.AppendLine("🚀 Stage 3: Committing changes...")
+	if data, err := os.ReadFile(config.GetConfigPath()); err == nil {
+		ctx.ActiveBackupRaw = data
+	}
+	if data, err := os.ReadFile(config.GetConfigPathEx(true)); err == nil {
+		ctx.StagingBackupRaw = data
+	}
+
 	if err := config.CommitStaging(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
+	ctx.Committed = true
 	if len(ctx.Impact.ChangedSections) > 0 {
 		ctx.AppendLine(fmt.Sprintf("ℹ️  Changed sections: %v", ctx.Impact.ChangedSections))
 	}
@@ -160,9 +169,9 @@ func (s *IPv6RotateSyncStep) Run(ctx *ApplyContext) error {
 	if IsIPv6RotateServiceActive() {
 		if err := RestartIPv6RotateServiceIfInstalled(); err != nil {
 			ctx.AppendLine(fmt.Sprintf("❌ Error reloading IPv6 rotation service: %v", err))
-		} else {
-			ctx.AppendLine("🔄 IPv6 rotation service reloaded.")
+			return fmt.Errorf("reload IPv6 rotation service: %w", err)
 		}
+		ctx.AppendLine("🔄 IPv6 rotation service reloaded.")
 	} else {
 		ctx.AppendLine("ℹ️  IPv6 rotation service is stopped; skipping reload.")
 	}
@@ -195,13 +204,15 @@ func (s *XrayGatewaySyncStep) Run(ctx *ApplyContext) error {
 			ctx.AppendLine("🔄 Restarting Xray service...")
 			if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 				ctx.AppendLine(fmt.Sprintf("❌ Error restarting Xray service: %v", err))
-			} else {
+				return fmt.Errorf("restart Xray service: %w", err)
+			}
+			if cfg.Role == config.RoleGateway {
 				if err := gateway.RestoreTunStateLocked(cfg); err != nil {
 					ctx.AppendLine(fmt.Sprintf("❌ Error restoring Gateway runtime: %v", err))
 					return fmt.Errorf("failed to restore gateway runtime: %w", err)
 				}
-				ctx.XrayRestarted = true
 			}
+			ctx.XrayRestarted = true
 		}
 	} else {
 		ctx.AppendLine("ℹ️  Xray restart skipped: no Xray-facing changes detected.")
@@ -242,9 +253,9 @@ func (s *SubServiceSyncStep) Run(ctx *ApplyContext) error {
 				ctx.AppendLine("🔄 Restarting active subscription service...")
 				if err := RestartSubServiceIfInstalled(); err != nil {
 					ctx.AppendLine(fmt.Sprintf("❌ Error restarting subscription service: %v", err))
-				} else {
-					ctx.SubRestarted = true
+					return fmt.Errorf("restart subscription service: %w", err)
 				}
+				ctx.SubRestarted = true
 			} else {
 				ctx.AppendLine("ℹ️  Subscription service is stopped; skipping restart.")
 			}

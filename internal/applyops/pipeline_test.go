@@ -2,6 +2,7 @@ package applyops
 
 import (
 	"errors"
+	"os"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -110,3 +111,52 @@ func TestDefaultPipelineStepsCount(t *testing.T) {
 		t.Fatalf("expected 7 default apply steps, got %d", len(p.steps))
 	}
 }
+
+func TestPipelineRollbackOnFailureAfterCommit(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	activePath := config.GetConfigPath()
+	stagingPath := config.GetConfigPathEx(true)
+
+	origActive := []byte(`{"role":"server","uuid":"orig-active"}`)
+	origStaging := []byte(`{"role":"server","uuid":"orig-staging"}`)
+
+	if err := os.WriteFile(activePath, []byte(`{"role":"server","uuid":"overwritten-by-commit"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	pipeline := &ApplyPipeline{
+		steps: []ApplyStep{
+			&mockStep{name: "step-fail", shouldRun: true, runErr: errors.New("post-commit sync failed")},
+		},
+	}
+
+	actx := &ApplyContext{
+		Committed:        true,
+		ActiveBackupRaw:  origActive,
+		StagingBackupRaw: origStaging,
+	}
+
+	err := pipeline.Execute(actx)
+	if err == nil {
+		t.Fatal("expected pipeline error, got nil")
+	}
+
+	restoredActive, err := os.ReadFile(activePath)
+	if err != nil {
+		t.Fatalf("read active after rollback: %v", err)
+	}
+	if string(restoredActive) != string(origActive) {
+		t.Fatalf("active config not rolled back: got %s, want %s", string(restoredActive), string(origActive))
+	}
+
+	restoredStaging, err := os.ReadFile(stagingPath)
+	if err != nil {
+		t.Fatalf("read staging after rollback: %v", err)
+	}
+	if string(restoredStaging) != string(origStaging) {
+		t.Fatalf("staging config not rolled back: got %s, want %s", string(restoredStaging), string(origStaging))
+	}
+}
+

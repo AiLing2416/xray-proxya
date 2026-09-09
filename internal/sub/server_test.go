@@ -253,4 +253,25 @@ func TestUnifiedSubHandler(t *testing.T) {
 			t.Fatalf("expected 404 for unknown token, got %d", rec.Code)
 		}
 	}
+
+	// 5. Dynamic config reload without restarting handler
+	{
+		cfg.AdminSub.AddressNode = "updated-node.example.com"
+		if err := cfg.Save(); err != nil {
+			t.Fatalf("save updated config: %v", err)
+		}
+		req := httptest.NewRequest("GET", "http://127.0.0.1/admintoken", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("admin sub code after update = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode admin body after update: %v", err)
+		}
+		if !strings.Contains(string(decoded), "@updated-node.example.com:443?") {
+			t.Fatalf("expected dynamically updated node address in admin sub, got %q", string(decoded))
+		}
+	}
 }

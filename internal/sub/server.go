@@ -1,6 +1,7 @@
 package sub
 
 import (
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -37,6 +38,13 @@ func StartSubServer(instance config.SubscriptionServiceConfig) error {
 	return http.ListenAndServe(addr, mux)
 }
 
+func constantTimeEquals(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := strings.Trim(r.URL.Path, "/")
@@ -51,20 +59,20 @@ func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 			return
 		}
 
-		// 1. Match Admin Token
-		adminToken := admin.Token
-		if adminToken == "" {
-			adminToken = cfg.AdminSub.Token
+		// 1. Match Admin Token using freshly loaded AdminSub configuration
+		effectiveAdmin := cfg.AdminSub
+		if effectiveAdmin.Token == "" {
+			effectiveAdmin = admin
 		}
-		if adminToken != "" && adminToken == token {
-			handleAdminSubRequest(w, cfg, admin)
+		if effectiveAdmin.Token != "" && constantTimeEquals(effectiveAdmin.Token, token) {
+			handleAdminSubRequest(w, cfg, effectiveAdmin)
 			return
 		}
 
 		// 2. Match Guest UUID (or SubToken)
 		for i := range cfg.Guests {
 			g := &cfg.Guests[i]
-			if (g.UUID != "" && g.UUID == token) || (g.SubToken != "" && g.SubToken == token) {
+			if (g.UUID != "" && constantTimeEquals(g.UUID, token)) || (g.SubToken != "" && constantTimeEquals(g.SubToken, token)) {
 				handleGuestSubRequest(w, cfg, g)
 				return
 			}
@@ -72,7 +80,7 @@ func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 
 		// 3. Match legacy custom subscriptions
 		for _, s := range cfg.Subscriptions {
-			if s.Token != "" && s.Token == token {
+			if s.Token != "" && constantTimeEquals(s.Token, token) {
 				handleLegacySubscriptionRequest(w, cfg, s)
 				return
 			}
