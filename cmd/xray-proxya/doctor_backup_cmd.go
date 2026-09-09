@@ -16,17 +16,16 @@ var (
 )
 
 var doctorBackupCmd = &cobra.Command{
-	Use:   "backup [output-path]",
+	Use:   "backup",
 	Short: "Create a single archive backup of configurations, or rollback from an existing backup",
 	Long: `Create a single self-contained .tar.gz archive containing active configurations,
 certificates, and metadata, or rollback to a previous state using -r/--roll.
 
 Examples:
   xray-proxya doctor backup                         # Create a timestamped backup in config dir
-  xray-proxya doctor backup /tmp/my-backup.tar.gz   # Create backup at custom destination
-  xray-proxya doctor backup -r backup-20260909.tar.gz  # Rollback using a backup in config dir
+  xray-proxya doctor backup -r backup-xxx.tar.gz    # Rollback using a backup file
   xray-proxya doctor backup --roll /path/to/bak.tar.gz # Rollback from absolute path`,
-	Args: cobra.MaximumNArgs(1),
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		configDir := config.GetConfigDir()
 
@@ -45,13 +44,8 @@ Examples:
 			return nil
 		}
 
-		// Backup mode
-		targetPath := ""
-		if len(args) > 0 {
-			targetPath = args[0]
-		}
-
-		res, err := doctor.CreateBackup(configDir, targetPath)
+		// Backup mode: auto-named backup
+		res, err := doctor.CreateBackup(configDir, "")
 		if err != nil {
 			return fmt.Errorf("backup failed: %w", err)
 		}

@@ -42,7 +42,7 @@ func CreateBackup(configDir, targetPath string) (*BackupResult, error) {
 	destPath := strings.TrimSpace(targetPath)
 	if destPath == "" {
 		timestamp := time.Now().Format("20060102-150405")
-		destPath = filepath.Join(configDir, fmt.Sprintf("backup-%s.tar.gz", timestamp))
+		destPath = filepath.Join(configDir, fmt.Sprintf("xray-proxya-backup-%s.tar.gz", timestamp))
 	} else if !filepath.IsAbs(destPath) && !strings.Contains(destPath, string(filepath.Separator)) {
 		destPath = filepath.Join(configDir, destPath)
 	}

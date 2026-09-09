@@ -59,6 +59,9 @@ func TestDoctorBackupCmd_ExecutionAndRollback(t *testing.T) {
 	if backupFile == "" {
 		t.Fatal("no backup file found in tempDir")
 	}
+	if !strings.HasPrefix(backupFile, "xray-proxya-backup-") {
+		t.Fatalf("expected backup filename to start with 'xray-proxya-backup-', got %s", backupFile)
+	}
 
 	// 2. Corrupt or change config.json
 	if err := os.WriteFile(filepath.Join(tempDir, "config.json"), []byte(`{"role":"corrupted"}`), 0600); err != nil {
@@ -88,4 +91,24 @@ func TestDoctorBackupCmd_ExecutionAndRollback(t *testing.T) {
 
 	// Reset flag
 	doctorBackupRollPath = ""
+}
+
+func TestDoctorBackupCmd_RejectsPositionalArgs(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	testCfg := `{"role":"server","api_inbound":10085,"uuid":"test-uuid-123"}`
+	if err := os.WriteFile(filepath.Join(tempDir, "config.json"), []byte(testCfg), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if doctorBackupCmd.Args == nil {
+		t.Fatal("doctorBackupCmd.Args must not be nil")
+	}
+	if err := doctorBackupCmd.Args(doctorBackupCmd, []string{"my-backup.tar.gz"}); err == nil {
+		t.Fatal("expected error when positional argument passed to doctor backup, got nil")
+	}
+	if err := doctorBackupCmd.Args(doctorBackupCmd, []string{}); err != nil {
+		t.Fatalf("expected nil error for 0 args, got: %v", err)
+	}
 }
