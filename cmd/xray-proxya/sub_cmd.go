@@ -157,6 +157,49 @@ func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete str
 	return res, cobra.ShellCompDirectiveNoFileComp
 }
 
+func completeIPListenAddresses(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	candidates := []string{
+		"127.0.0.1\tLocal loopback",
+		"0.0.0.0\tAll IPv4 interfaces",
+		"::\tAll IPv6 interfaces",
+	}
+
+	seen := map[string]bool{
+		"127.0.0.1": true,
+		"0.0.0.0":   true,
+		"::":        true,
+	}
+
+	ifaces, err := net.Interfaces()
+	if err == nil {
+		for _, iface := range ifaces {
+			addrs, err := iface.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, addr := range addrs {
+				var ip net.IP
+				switch v := addr.(type) {
+				case *net.IPNet:
+					ip = v.IP
+				case *net.IPAddr:
+					ip = v.IP
+				}
+				if ip == nil {
+					continue
+				}
+				ipStr := ip.String()
+				if !seen[ipStr] {
+					seen[ipStr] = true
+					candidates = append(candidates, fmt.Sprintf("%s\tInterface %s", ipStr, iface.Name))
+				}
+			}
+		}
+	}
+
+	return candidates, cobra.ShellCompDirectiveNoFileComp
+}
+
 func completeGuestAliases(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil {
@@ -512,7 +555,7 @@ func init() {
 	subSetCmd.Flags().StringVar(&subTargetAlias, "target", "", "Target alias for outbound or guest")
 	subSetCmd.Flags().StringVar(&subRotation, "ipv6-rotation", "", "IPv6 rotation (e.g. 'default', or 'none')")
 	subSetCmd.ValidArgsFunction = completeSubscriptionInstanceArg
-	subSetCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
+	subSetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 	subSetCmd.RegisterFlagCompletionFunc("target-type", completeTargetTypes)
 	subSetCmd.RegisterFlagCompletionFunc("target", completeTargetAliases)
 	subSetCmd.RegisterFlagCompletionFunc("ipv6-rotation", completeIPv6Rotations)

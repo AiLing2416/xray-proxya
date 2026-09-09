@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -252,6 +253,43 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 	for _, flag := range []string{"relay", "lan", "state", "bypass-countries"} {
 		if fn, ok := gatewaySetCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
 			t.Errorf("gateway set missing --%s completion", flag)
+		}
+	}
+}
+
+func TestListenFlagCompletionReturnsIPAddresses(t *testing.T) {
+	for _, cmd := range []*cobra.Command{proxySetCmd, proxyRunCmd, subSetCmd} {
+		fn, ok := cmd.GetFlagCompletionFunc("listen")
+		if !ok || fn == nil {
+			t.Fatalf("command %s missing --listen completion", cmd.Name())
+		}
+		candidates, directive := fn(cmd, nil, "")
+		if directive != cobra.ShellCompDirectiveNoFileComp {
+			t.Errorf("command %s unexpected directive: %v", cmd.Name(), directive)
+		}
+
+		containsIP := func(ip string) bool {
+			for _, c := range candidates {
+				parts := strings.SplitN(c, "\t", 2)
+				if parts[0] == ip {
+					return true
+				}
+			}
+			return false
+		}
+
+		if !containsIP("127.0.0.1") {
+			t.Errorf("command %s candidates missing 127.0.0.1: %v", cmd.Name(), candidates)
+		}
+		if !containsIP("0.0.0.0") {
+			t.Errorf("command %s candidates missing 0.0.0.0: %v", cmd.Name(), candidates)
+		}
+		for _, c := range candidates {
+			parts := strings.SplitN(c, "\t", 2)
+			ipStr := parts[0]
+			if net.ParseIP(ipStr) == nil {
+				t.Errorf("command %s candidate %q is not a valid IP address", cmd.Name(), ipStr)
+			}
 		}
 	}
 }

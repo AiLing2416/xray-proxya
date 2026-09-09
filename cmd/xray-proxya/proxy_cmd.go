@@ -529,13 +529,13 @@ func init() {
 	proxySetCmd.Flags().IntVar(&proxySocksPort, "socks-port", 0, "Specific SOCKS port")
 	proxySetCmd.Flags().IntVar(&proxyHttpPort, "http-port", 0, "Specific HTTP port")
 	proxySetCmd.Flags().StringVarP(&proxyListenIP, "listen", "l", "127.0.0.1", "IP address to listen on")
-	proxySetCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
+	proxySetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
 	proxyRunCmd.Flags().IntVarP(&proxySocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
 	proxyRunCmd.Flags().IntVar(&proxySocksPort, "socks-port", 0, "Specific SOCKS port")
 	proxyRunCmd.Flags().IntVar(&proxyHttpPort, "http-port", 0, "Specific HTTP port")
 	proxyRunCmd.Flags().StringVarP(&proxyListenIP, "listen", "l", "", "IP address to listen on")
-	proxyRunCmd.RegisterFlagCompletionFunc("listen", completeNetworkInterfaces)
+	proxyRunCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
 	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd)
 	rootCmd.AddCommand(proxyCmd)
