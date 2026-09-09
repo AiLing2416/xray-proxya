@@ -147,4 +147,115 @@ func TestGuestsSetLimitAndTriggerValidation(t *testing.T) {
 	}
 }
 
+func TestGuestsSetRelayAndRelayLink(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Guests: []config.GuestConfig{{
+			Alias:   "guest-bob",
+			UUID:    "uuid-bob",
+			Enabled: true,
+		}},
+		CustomOutbounds: []config.CustomOutbound{{
+			Alias:   "us-node",
+			Enabled: true,
+			Config:  map[string]interface{}{"protocol": "freedom"},
+		}},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	defer func() {
+		relayStr = ""
+		relayLinkStr = ""
+		outboundStr = ""
+		limitStr = ""
+		quotaStr = ""
+		notifyStr = ""
+		notifyWebhookStr = ""
+		notifyTriggerStr = ""
+		guestsSetCmd.Flags().Lookup("relay").Changed = false
+		guestsSetCmd.Flags().Lookup("relay-link").Changed = false
+		guestsSetCmd.Flags().Lookup("limit").Changed = false
+		guestsSetCmd.Flags().Lookup("quota").Changed = false
+		guestsSetCmd.Flags().Lookup("notify-trigger").Changed = false
+		guestsSetCmd.Flags().Lookup("notify").Changed = false
+		guestsSetCmd.Flags().Lookup("notify-webhook").Changed = false
+	}()
+
+	limitStr = ""
+	quotaStr = ""
+	notifyStr = ""
+	notifyWebhookStr = ""
+	notifyTriggerStr = ""
+	guestsSetCmd.Flags().Lookup("limit").Changed = false
+	guestsSetCmd.Flags().Lookup("quota").Changed = false
+	guestsSetCmd.Flags().Lookup("notify-trigger").Changed = false
+	guestsSetCmd.Flags().Lookup("notify").Changed = false
+	guestsSetCmd.Flags().Lookup("notify-webhook").Changed = false
+
+	// 1. Valid relay alias
+	relayStr = "us-node"
+	_ = guestsSetCmd.Flags().Set("relay", "us-node")
+	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+
+	staged1, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if staged1.Guests[0].OutboundLink != "us-node" || staged1.Guests[0].OutboundConf == nil {
+		t.Fatalf("expected outbound link 'us-node' with non-nil config, got link=%q conf=%v", staged1.Guests[0].OutboundLink, staged1.Guests[0].OutboundConf)
+	}
+
+	// 2. Set to direct
+	relayStr = "direct"
+	_ = guestsSetCmd.Flags().Set("relay", "direct")
+	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+
+	staged2, _ := config.LoadConfigEx(true)
+	if staged2.Guests[0].OutboundLink != "" || staged2.Guests[0].OutboundConf != nil {
+		t.Fatalf("expected direct (empty link and nil conf), got link=%q conf=%v", staged2.Guests[0].OutboundLink, staged2.Guests[0].OutboundConf)
+	}
+
+	// 3. Invalid relay alias
+	relayStr = "nonexistent-alias"
+	_ = guestsSetCmd.Flags().Set("relay", "nonexistent-alias")
+	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+
+	staged3, _ := config.LoadConfigEx(true)
+	if staged3.Guests[0].OutboundLink != "" {
+		t.Fatalf("expected config unchanged for invalid relay alias, got %q", staged3.Guests[0].OutboundLink)
+	}
+
+	// 4. Raw relay link via --relay-link
+	guestsSetCmd.Flags().Lookup("relay").Changed = false
+	relayStr = ""
+	validLink := "vless://11111111-2222-3333-4444-555555555555@example.com:443?type=tcp&security=reality&pbk=1111111111111111111111111111111111111111111=&fp=chrome&sni=example.com#test-node"
+	relayLinkStr = validLink
+	_ = guestsSetCmd.Flags().Set("relay-link", validLink)
+	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+
+	staged4, _ := config.LoadConfigEx(true)
+	if staged4.Guests[0].OutboundLink != validLink || staged4.Guests[0].OutboundConf == nil {
+		t.Fatalf("expected validLink and non-nil OutboundConf, got link=%q conf=%v", staged4.Guests[0].OutboundLink, staged4.Guests[0].OutboundConf)
+	}
+
+	// 5. Mutual exclusivity: both --relay and --relay-link specified
+	relayStr = "us-node"
+	_ = guestsSetCmd.Flags().Set("relay", "us-node")
+	relayLinkStr = validLink
+	_ = guestsSetCmd.Flags().Set("relay-link", validLink)
+	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+
+	staged5, _ := config.LoadConfigEx(true)
+	// Must not change from staged4 because error was reported
+	if staged5.Guests[0].OutboundLink != validLink {
+		t.Fatalf("config changed despite mutual exclusion error: got %q", staged5.Guests[0].OutboundLink)
+	}
+}
+
+
 

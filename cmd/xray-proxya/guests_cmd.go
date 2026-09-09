@@ -19,6 +19,7 @@ var (
 	limitStr         string
 	quotaStr         string
 	relayStr         string
+	relayLinkStr     string
 	outboundStr      string
 	resetDay         int
 	guestSubShowAddr string
@@ -266,25 +267,55 @@ var guestsSetCmd = &cobra.Command{
 			}
 			success = true
 		}
-		targetRelay := relayStr
-		if targetRelay == "" {
-			targetRelay = outboundStr
+		hasRelay := (cmd != nil && (cmd.Flags().Changed("relay") || cmd.Flags().Changed("outbound"))) || relayStr != "" || outboundStr != ""
+		hasRelayLink := (cmd != nil && cmd.Flags().Changed("relay-link")) || relayLinkStr != ""
+
+		if hasRelay && hasRelayLink {
+			fmt.Println("❌ Error: Cannot specify both --relay and --relay-link")
+			return
 		}
-		if targetRelay != "" {
+
+		if hasRelayLink {
+			rawLink := strings.TrimSpace(relayLinkStr)
+			if rawLink == "" {
+				fmt.Println("❌ Error: --relay-link cannot be empty")
+				return
+			}
+			conf, err := xray.ParseProxyLink(rawLink)
+			if err != nil {
+				fmt.Printf("❌ Failed to parse link: %v\n", err)
+				return
+			}
+			cfg.Guests[idx].OutboundLink = rawLink
+			cfg.Guests[idx].OutboundConf = conf
+			fmt.Printf("✅ Relay for '%s' updated via link.\n", alias)
+			success = true
+		} else if hasRelay {
+			targetRelay := strings.TrimSpace(relayStr)
+			if targetRelay == "" {
+				targetRelay = strings.TrimSpace(outboundStr)
+			}
 			if targetRelay == "direct" {
 				cfg.Guests[idx].OutboundLink = ""
 				cfg.Guests[idx].OutboundConf = nil
 				fmt.Printf("✅ Relay for '%s' set to direct.\n", alias)
 				success = true
 			} else {
-				conf, err := xray.ParseProxyLink(targetRelay)
-				if err == nil {
-					cfg.Guests[idx].OutboundLink = targetRelay
-					cfg.Guests[idx].OutboundConf = conf
-					fmt.Printf("✅ Relay for '%s' updated via link.\n", alias)
+				var found *config.CustomOutbound
+				for _, co := range cfg.CustomOutbounds {
+					if co.Alias == targetRelay {
+						found = &co
+						break
+					}
+				}
+				if found != nil {
+					cfg.Guests[idx].OutboundLink = found.Alias
+					cfg.Guests[idx].OutboundConf = found.Config
+					fmt.Printf("✅ Relay for '%s' set to '%s'.\n", alias, found.Alias)
 					success = true
 				} else {
-					fmt.Printf("❌ Failed to parse link: %v\n", err)
+					fmt.Printf("❌ Relay '%s' not found.\n", targetRelay)
+					return
 				}
 			}
 		}
@@ -620,7 +651,8 @@ func init() {
 	guestsSetCmd.Flags().StringVarP(&limitStr, "limit", "l", "", "Set usage limit (e.g. 500MB, 10GB, 1TiB, -1, 0, or 'reset')")
 	guestsSetCmd.Flags().StringVarP(&quotaStr, "quota", "q", "", "Set usage limit (deprecated, alias to --limit)")
 	guestsSetCmd.Flags().MarkHidden("quota")
-	guestsSetCmd.Flags().StringVar(&relayStr, "relay", "", "Set relay node to a proxy link or 'direct'")
+	guestsSetCmd.Flags().StringVar(&relayStr, "relay", "", "Bind guest to a configured relay alias or 'direct'")
+	guestsSetCmd.Flags().StringVar(&relayLinkStr, "relay-link", "", "Set relay outbound to a raw proxy link (e.g. vless://...)")
 	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct' (deprecated)")
 	guestsSetCmd.Flags().MarkHidden("outbound")
 	guestsSetCmd.Flags().IntVarP(&resetDay, "reset", "r", 1, "Monthly reset day (1-31)")
