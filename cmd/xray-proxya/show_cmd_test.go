@@ -206,11 +206,98 @@ func TestShowCmd_ExecutionMultiIPAndHeaders(t *testing.T) {
 	_, _ = io.Copy(&buf, r)
 	output := buf.String()
 
-	if !strings.Contains(output, "=== Address: 198.51.100.1 ===") {
-		t.Errorf("output missing IPv4 section header: %s", output)
+	if !strings.Contains(output, "Sharing Links for Admin, Using IP 198.51.100.1") {
+		t.Errorf("output missing IPv4 atomic group header: %s", output)
 	}
-	if !strings.Contains(output, "=== Address: 2001:db8::1 ===") {
-		t.Errorf("output missing IPv6 section header: %s", output)
+	if !strings.Contains(output, "Sharing Links for Admin, Using IP [2001:db8::1]") {
+		t.Errorf("output missing IPv6 atomic group header: %s", output)
+	}
+	if !strings.Contains(output, showDivider) {
+		t.Errorf("output missing 59-char divider: %s", output)
+	}
+	if strings.Contains(output, "🚀 SHARING LINKS") {
+		t.Errorf("output should not contain old banner: %s", output)
+	}
+	if strings.Contains(output, "=== Address:") {
+		t.Errorf("output should not contain nested address header: %s", output)
+	}
+	if strings.Contains(output, "# DIRECT") {
+		t.Errorf("output should not contain old direct header: %s", output)
+	}
+}
+
+func TestShowCmd_GuestAndRelayAtomicHeaders(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", dir)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid-show-5678",
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "mock.com",
+				Dest:    "mock.com:443",
+			},
+		},
+		Guests: []config.GuestConfig{
+			{Alias: "Tom", UUID: "uuid-tom", Enabled: true},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "exti-1", Enabled: true, UserUUID: "uuid-relay", Config: map[string]interface{}{"protocol": "freedom"}},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	origV4 := getPublicIPv4Func
+	defer func() {
+		getPublicIPv4Func = origV4
+		showGuest = ""
+		showRelay = ""
+	}()
+	getPublicIPv4Func = func() string { return "87.229.95.124" }
+
+	// Test Guest
+	showGuest = "Tom"
+	showRelay = ""
+	origStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := showCmd.RunE(showCmd, []string{})
+	w.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("showCmd.RunE guest failed: %v", err)
+	}
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	guestOut := buf.String()
+	if !strings.Contains(guestOut, "Sharing Links for Guest Tom, Using IP 87.229.95.124") {
+		t.Errorf("expected Guest Tom header, got: %s", guestOut)
+	}
+
+	// Test Relay
+	showGuest = ""
+	showRelay = "exti-1"
+	r2, w2, _ := os.Pipe()
+	os.Stdout = w2
+
+	err = showCmd.RunE(showCmd, []string{})
+	w2.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("showCmd.RunE relay failed: %v", err)
+	}
+	buf.Reset()
+	_, _ = io.Copy(&buf, r2)
+	relayOut := buf.String()
+	if !strings.Contains(relayOut, "Sharing Links for Relay exti-1, Using IP 87.229.95.124") {
+		t.Errorf("expected Relay exti-1 header, got: %s", relayOut)
 	}
 }
 

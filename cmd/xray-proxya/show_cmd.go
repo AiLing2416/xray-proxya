@@ -2,12 +2,28 @@ package main
 
 import (
 	"fmt"
+	"net"
+	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
+
+const showDivider = "==========================================================="
+
+func formatAddressDisplay(rawAddr string) (addrType string, displayAddr string) {
+	addr := strings.TrimSpace(rawAddr)
+	unbracketed := strings.Trim(addr, "[]")
+	if parsed := net.ParseIP(unbracketed); parsed != nil {
+		if parsed.To4() != nil {
+			return "IP", parsed.String()
+		}
+		return "IP", fmt.Sprintf("[%s]", parsed.String())
+	}
+	return "Hostname", addr
+}
 
 var (
 	showIPv4     bool
@@ -87,20 +103,28 @@ func runShow(cmd *cobra.Command, args []string) error {
 
 	showDirect := !showAll && targetRelay == "" && showGuest == ""
 
-	for i, ip := range ips {
-		if i > 0 {
+	first := true
+	printGroup := func(target string, addr string, links []string) {
+		if showAll && len(links) == 0 {
+			return
+		}
+		if !first {
 			fmt.Println()
 		}
-		fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ip)
-		fmt.Println("============================================================")
-		fmt.Printf("=== Address: %s ===\n", ip)
+		first = false
 
+		addrType, displayAddr := formatAddressDisplay(addr)
+		fmt.Printf("Sharing Links for %s, Using %s %s\n", target, addrType, displayAddr)
+		fmt.Println(showDivider)
+		for _, link := range links {
+			fmt.Println(link)
+		}
+	}
+
+	for _, ip := range ips {
 		if showAll || showDirect {
-			fmt.Println("# DIRECT (PRESET) LINKS")
 			links := xray.GenerateLinks(cfg, ip)
-			for _, link := range links {
-				fmt.Println(link)
-			}
+			printGroup("Admin", ip, links)
 		}
 
 		if showAll || showGuest != "" {
@@ -113,21 +137,15 @@ func runShow(cmd *cobra.Command, args []string) error {
 					}
 				}
 				if target != nil {
-					fmt.Printf("\n# GUEST LINKS: %s\n", target.Alias)
 					links := xray.GenerateGuestLinks(cfg, ip, target.UUID, target.Alias)
-					for _, link := range links {
-						fmt.Println(link)
-					}
+					printGroup("Guest "+target.Alias, ip, links)
 				} else {
-					fmt.Printf("❌ Guest '%s' not found.\n", showGuest)
+					return fmt.Errorf("❌ Guest '%s' not found.", showGuest)
 				}
 			} else if len(cfg.Guests) > 0 {
-				fmt.Println("\n# ALL GUEST LINKS")
 				for _, g := range cfg.Guests {
 					links := xray.GenerateGuestLinks(cfg, ip, g.UUID, g.Alias)
-					for _, link := range links {
-						fmt.Println(link)
-					}
+					printGroup("Guest "+g.Alias, ip, links)
 				}
 			}
 		}
@@ -142,29 +160,22 @@ func runShow(cmd *cobra.Command, args []string) error {
 					}
 				}
 				if target != nil {
-					fmt.Printf("\n# RELAY LINKS: %s\n", target.Alias)
 					links := xray.GenerateRelayLinks(cfg, ip, *target)
-					for _, link := range links {
-						fmt.Println(link)
-					}
+					printGroup("Relay "+target.Alias, ip, links)
 				} else {
-					fmt.Printf("❌ Relay '%s' not found.\n", targetRelay)
+					return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
 				}
 			} else if len(cfg.CustomOutbounds) > 0 {
-				fmt.Println("\n# ALL RELAY LINKS")
 				for _, co := range cfg.CustomOutbounds {
 					if !co.Enabled {
 						continue
 					}
 					links := xray.GenerateRelayLinks(cfg, ip, co)
-					for _, link := range links {
-						fmt.Println(link)
-					}
+					printGroup("Relay "+co.Alias, ip, links)
 				}
 			}
 		}
 	}
-	fmt.Println()
 	return nil
 }
 
