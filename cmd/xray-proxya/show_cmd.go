@@ -19,51 +19,81 @@ var (
 	showAll      bool
 )
 
-var showCmd = &cobra.Command{
-	Use:   "show",
-	Short: "Show sharing links for active modes",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfig()
-		if err != nil {
-			fmt.Println("❌ Configuration not found. Please run 'init' first.")
-			return
-		}
+var (
+	getPublicIPv4Func = utils.GetPublicIPv4
+	getPublicIPv6Func = utils.GetPublicIPv6
+	getLocalIPFunc    = utils.GetLocalIP
+)
 
-		var ips []string
-		if showAddr != "" {
-			ips = []string{showAddr}
-		} else {
-			if showIPv4 {
-				if ip := utils.GetPublicIPv4(); ip != "" {
-					ips = append(ips, ip)
-				}
-			}
-			if showIPv6 {
-				if ip := utils.GetPublicIPv6(); ip != "" {
-					ips = append(ips, ip)
-				}
-			}
-			// Fallback to local if no public IP found
-			if len(ips) == 0 {
-				ips = []string{utils.GetLocalIP()}
-			}
-		}
+func resolveShowIPs(cmd *cobra.Command) []string {
+	if showAddr != "" {
+		return []string{showAddr}
+	}
 
-		if len(ips) == 0 {
-			fmt.Println("❌ Could not determine any IP address. Use -a to specify manually.")
-			return
-		}
+	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
+	ipv6Changed := cmd != nil && cmd.Flags().Changed("ipv6")
 
-		ip := ips[0]
+	useIPv4 := false
+	useIPv6 := false
+
+	if ipv4Changed && ipv6Changed {
+		useIPv4 = showIPv4
+		useIPv6 = showIPv6
+	} else if ipv6Changed && !ipv4Changed {
+		useIPv6 = showIPv6
+	} else if ipv4Changed && !ipv6Changed {
+		useIPv4 = showIPv4
+	} else {
+		useIPv4 = true
+	}
+
+	var ips []string
+	if useIPv4 {
+		if ip := getPublicIPv4Func(); ip != "" {
+			ips = append(ips, ip)
+		}
+	}
+	if useIPv6 {
+		if ip := getPublicIPv6Func(); ip != "" {
+			ips = append(ips, ip)
+		}
+	}
+
+	// Fallback to local if no public IP found, only when IPv4 was requested and IPv6 was not requested
+	if len(ips) == 0 && useIPv4 && !useIPv6 {
+		if local := getLocalIPFunc(); local != "" {
+			ips = append(ips, local)
+		}
+	}
+
+	return ips
+}
+
+func runShow(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("❌ Configuration not found. Please run 'init' first.")
+	}
+
+	ips := resolveShowIPs(cmd)
+	if len(ips) == 0 {
+		return fmt.Errorf("❌ Could not determine any IP address. Use -a to specify manually.")
+	}
+
+	targetRelay := showRelay
+	if targetRelay == "" {
+		targetRelay = showOutbound
+	}
+
+	showDirect := !showAll && targetRelay == "" && showGuest == ""
+
+	for i, ip := range ips {
+		if i > 0 {
+			fmt.Println()
+		}
 		fmt.Printf("\n🚀 SHARING LINKS (Address: %s)\n", ip)
 		fmt.Println("============================================================")
-
-		targetRelay := showRelay
-		if targetRelay == "" {
-			targetRelay = showOutbound
-		}
-
-		showDirect := !showAll && targetRelay == "" && showGuest == ""
+		fmt.Printf("=== Address: %s ===\n", ip)
 
 		if showAll || showDirect {
 			fmt.Println("# DIRECT (PRESET) LINKS")
@@ -133,8 +163,15 @@ var showCmd = &cobra.Command{
 				}
 			}
 		}
-		fmt.Println()
-	},
+	}
+	fmt.Println()
+	return nil
+}
+
+var showCmd = &cobra.Command{
+	Use:   "show",
+	Short: "Show sharing links for active modes",
+	RunE:  runShow,
 }
 
 func init() {
