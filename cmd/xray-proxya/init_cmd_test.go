@@ -220,3 +220,119 @@ func TestServerInitPreflightFailureDoesNotCallCleanupOrOverwrite(t *testing.T) {
 		t.Errorf("existing config was overwritten: got %q, want %q", string(content), string(initialContent))
 	}
 }
+
+func TestInitPositionalRoleGateway(t *testing.T) {
+	setupTestConfigDir(t)
+
+	origCleanup := prepareFreshInitFunc
+	origEnsure := ensureXrayBinaryFunc
+	t.Cleanup(func() {
+		prepareFreshInitFunc = origCleanup
+		ensureXrayBinaryFunc = origEnsure
+		forceInit = false
+		roleStr = "server"
+	})
+	prepareFreshInitFunc = func() {}
+	ensureXrayBinaryFunc = func() error { return nil }
+
+	forceInit = true
+	roleStr = "server" // default flag value
+
+	// Pass "gateway" as positional argument
+	err := runInit(nil, []string{"gateway"})
+	if err != nil {
+		t.Fatalf("runInit with positional 'gateway' failed: %v", err)
+	}
+
+	cfg, err := config.LoadConfigEx(false)
+	if err != nil {
+		t.Fatalf("LoadConfigEx failed: %v", err)
+	}
+	if cfg.Role != config.RoleGateway {
+		t.Errorf("Role = %q, want %q", cfg.Role, config.RoleGateway)
+	}
+}
+
+func TestInitInvalidRoleFails(t *testing.T) {
+	setupTestConfigDir(t)
+
+	origCleanup := prepareFreshInitFunc
+	origEnsure := ensureXrayBinaryFunc
+	t.Cleanup(func() {
+		prepareFreshInitFunc = origCleanup
+		ensureXrayBinaryFunc = origEnsure
+		forceInit = false
+		roleStr = "server"
+	})
+	prepareFreshInitFunc = func() {}
+	ensureXrayBinaryFunc = func() error { return nil }
+
+	forceInit = true
+
+	// Test positional invalid role
+	err := runInit(nil, []string{"client"})
+	if err == nil {
+		t.Fatal("expected error for invalid positional role 'client', got nil")
+	}
+
+	// Test flag invalid role
+	roleStr = "unknown"
+	err = runInit(nil, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid flag role 'unknown', got nil")
+	}
+}
+
+func TestInitRoleConflictFails(t *testing.T) {
+	setupTestConfigDir(t)
+
+	origCleanup := prepareFreshInitFunc
+	origEnsure := ensureXrayBinaryFunc
+	t.Cleanup(func() {
+		prepareFreshInitFunc = origCleanup
+		ensureXrayBinaryFunc = origEnsure
+		forceInit = false
+		roleStr = "server"
+		initCmd.Flags().Lookup("role").Changed = false
+	})
+	prepareFreshInitFunc = func() {}
+	ensureXrayBinaryFunc = func() error { return nil }
+
+	forceInit = true
+	roleStr = "server"
+	initCmd.Flags().Lookup("role").Changed = true
+
+	// Positional argument "gateway" conflicts with flag "server"
+	err := runInit(initCmd, []string{"gateway"})
+	if err == nil {
+		t.Fatal("expected error for conflicting positional and flag roles, got nil")
+	}
+}
+
+func TestInitConfigExistsWithoutForceFails(t *testing.T) {
+	configDir := setupTestConfigDir(t)
+
+	existingConfigFile := filepath.Join(configDir, "config.json")
+	if err := os.WriteFile(existingConfigFile, []byte(`{"role":"server"}`), 0600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	forceInit = false
+	roleStr = "server"
+
+	err := runInit(nil, nil)
+	if err == nil {
+		t.Fatal("expected error when config already exists without force, got nil")
+	}
+}
+
+func TestInitForceShorthandFlag(t *testing.T) {
+	flag := initCmd.Flags().Lookup("force")
+	if flag == nil {
+		t.Fatal("flag --force not found on initCmd")
+	}
+	if flag.Shorthand != "f" {
+		t.Fatalf("flag --force shorthand = %q, want %q", flag.Shorthand, "f")
+	}
+}
+

@@ -77,13 +77,28 @@ func runInit(cmd *cobra.Command, args []string) error {
 	configPath := config.GetConfigPath()
 	if _, err := os.Stat(configPath); err == nil && !forceInit {
 		fmt.Println("⚠️  Configuration already exists at", configPath)
-		fmt.Println("🚀 Use '--force' to overwrite (this will reset ALL settings, keys, and UUIDs).")
-		return nil
+		fmt.Println("🚀 Use '--force' or '-f' to overwrite (this will reset ALL settings, keys, and UUIDs).")
+		return fmt.Errorf("configuration already exists at %s", configPath)
 	}
 
-	role := config.RoleServer
-	if roleStr == "gateway" {
+	targetRoleStr := roleStr
+	if len(args) == 1 {
+		if cmd != nil && cmd.Flags().Changed("role") && roleStr != args[0] {
+			fmt.Printf("❌ Role specified in positional argument (%s) conflicts with --role flag (%s)\n", args[0], roleStr)
+			return fmt.Errorf("role conflict: positional argument %q conflicts with --role flag %q", args[0], roleStr)
+		}
+		targetRoleStr = args[0]
+	}
+
+	var role config.AppRole
+	switch targetRoleStr {
+	case string(config.RoleServer):
+		role = config.RoleServer
+	case string(config.RoleGateway):
 		role = config.RoleGateway
+	default:
+		fmt.Printf("❌ Invalid role: %q (allowed: server, gateway)\n", targetRoleStr)
+		return fmt.Errorf("invalid role: %q", targetRoleStr)
 	}
 
 	var selectedSNI, selectedDest string
@@ -205,10 +220,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 }
 
 var initCmd = &cobra.Command{
-	Use:   "init",
-	Short: "Initialize Xray-Proxya with a specific role (server or gateway)",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runInit(cmd, args)
+	Use:       "init [role]",
+	Short:     "Initialize Xray-Proxya with a specific role (server or gateway)",
+	Args:      cobra.MaximumNArgs(1),
+	ValidArgs: []string{"server", "gateway"},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runInit(cmd, args)
 	},
 }
 
@@ -236,7 +253,7 @@ func prepareFreshInit() {
 
 func init() {
 	initCmd.Flags().StringVarP(&roleStr, "role", "r", "server", "Application role: server or gateway")
-	initCmd.Flags().BoolVar(&forceInit, "force", false, "Force initialization (overwrites existing config)")
+	initCmd.Flags().BoolVarP(&forceInit, "force", "f", false, "Force initialization (overwrites existing config)")
 	initCmd.RegisterFlagCompletionFunc("role", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"server", "gateway"}, cobra.ShellCompDirectiveNoFileComp
 	})
