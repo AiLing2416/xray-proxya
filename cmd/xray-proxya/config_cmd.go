@@ -21,6 +21,61 @@ var configCmd = &cobra.Command{
 	Short: "Inspect and upgrade configuration files",
 }
 
+func runConfigUpgrade(cmd *cobra.Command, args []string) error {
+	staging := configUpgradeStaging
+	path := config.GetConfigPathEx(staging)
+	if staging && !config.StagingExists() {
+		return fmt.Errorf("❌ No staging config found.")
+	}
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("❌ Config file not found: %s", path)
+	}
+
+	cfg, err := config.LoadConfigFile(path, false)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to load config: %w", err)
+	}
+
+	changes := cfg.BackfillDefaults()
+	if len(changes) == 0 {
+		fmt.Printf("ℹ️ No upgrade changes needed for %s.\n", path)
+		return nil
+	}
+	if configUpgradeDryRun {
+		label := "ACTIVE"
+		if staging {
+			label = "STAGING"
+		}
+		fmt.Printf("🔎 Dry run for %s config: %s\n", label, path)
+		fmt.Println("Pending changes:")
+		for _, change := range changes {
+			fmt.Printf(" - %s\n", change)
+		}
+		fmt.Println("No files were modified.")
+		return nil
+	}
+
+	backupPath, err := backupConfigFile(path)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to create backup: %w", err)
+	}
+	if err := cfg.SaveEx(staging); err != nil {
+		return fmt.Errorf("❌ Failed to write upgraded config: %w", err)
+	}
+
+	label := "ACTIVE"
+	if staging {
+		label = "STAGING"
+	}
+	fmt.Printf("✅ Upgraded %s config: %s\n", label, path)
+	fmt.Printf("🗂️ Backup: %s\n", backupPath)
+	fmt.Println("Applied changes:")
+	for _, change := range changes {
+		fmt.Printf(" - %s\n", change)
+	}
+	return nil
+}
+
 var configUpgradeCmd = &cobra.Command{
 	Use:   "upgrade",
 	Short: "Backfill missing configuration fields and rewrite the config file",
@@ -40,63 +95,9 @@ Use --dry-run to preview the upgrade without modifying the file.
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	},
 	Run: func(cmd *cobra.Command, args []string) {
-		staging := configUpgradeStaging
-		path := config.GetConfigPathEx(staging)
-		if staging && !config.StagingExists() {
-			fmt.Println("❌ No staging config found.")
-			return
-		}
-		if _, err := os.Stat(path); err != nil {
-			fmt.Printf("❌ Config file not found: %s\n", path)
-			return
-		}
-
-		cfg, err := config.LoadConfigFile(path, false)
-		if err != nil {
-			fmt.Printf("❌ Failed to load config: %v\n", err)
-			return
-		}
-
-		changes := cfg.BackfillDefaults()
-		if len(changes) == 0 {
-			fmt.Printf("ℹ️ No upgrade changes needed for %s.\n", path)
-			return
-		}
-		if configUpgradeDryRun {
-			label := "ACTIVE"
-			if staging {
-				label = "STAGING"
-			}
-			fmt.Printf("🔎 Dry run for %s config: %s\n", label, path)
-			fmt.Println("Pending changes:")
-			for _, change := range changes {
-				fmt.Printf(" - %s\n", change)
-			}
-			fmt.Println("No files were modified.")
-			return
-		}
-
-		backupPath, err := backupConfigFile(path)
-		if err != nil {
-			fmt.Printf("❌ Failed to create backup: %v\n", err)
-			return
-		}
-		if err := cfg.SaveEx(staging); err != nil {
-			fmt.Printf("❌ Failed to write upgraded config: %v\n", err)
-			return
-		}
-
-		label := "ACTIVE"
-		if staging {
-			label = "STAGING"
-		}
-		fmt.Printf("✅ Upgraded %s config: %s\n", label, path)
-		fmt.Printf("🗂️ Backup: %s\n", backupPath)
-		fmt.Println("Applied changes:")
-		for _, change := range changes {
-			fmt.Printf(" - %s\n", change)
-		}
+		_ = runConfigUpgrade(cmd, args)
 	},
+	RunE: runConfigUpgrade,
 }
 
 func backupConfigFile(path string) (string, error) {

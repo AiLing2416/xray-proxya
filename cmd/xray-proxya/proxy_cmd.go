@@ -193,6 +193,84 @@ func checkProxyPortConflict(cfg *config.UserConfig, alias string, listenIP strin
 	return nil
 }
 
+func runProxySet(cmd *cobra.Command, args []string) error {
+	alias := args[0]
+
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+
+	for i, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			socksPort := proxySocksPort
+			httpPort := proxyHttpPort
+
+			// Validate IP address format if provided
+			listenIP := proxyListenIP
+			if listenIP != "" {
+				if ip := net.ParseIP(listenIP); ip == nil {
+					return fmt.Errorf("❌ Invalid listen IP address: %s", listenIP)
+				}
+			} else {
+				listenIP = "127.0.0.1"
+			}
+
+			// Validate SOCKS port selection
+			if socksPort == 0 {
+				for {
+					p, _ := xray.GetFreePort()
+					if p > 0 && p < 65535 &&
+						utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
+						utils.IsPortFree(p+1) &&
+						checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
+						socksPort = p
+						break
+					}
+				}
+			}
+
+			// Validate HTTP port selection
+			if httpPort == 0 {
+				httpPort = socksPort + 1
+			}
+
+			if socksPort < 1 || socksPort > 65535 {
+				return fmt.Errorf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)", socksPort)
+			}
+			if httpPort < 1 || httpPort > 65535 {
+				return fmt.Errorf("❌ Invalid HTTP port: %d (must be between 1 and 65535)", httpPort)
+			}
+
+			if err := checkProxyPortConflict(cfg, alias, listenIP, socksPort, httpPort); err != nil {
+				return fmt.Errorf("❌ Port conflict: %w", err)
+			}
+
+			if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
+				return fmt.Errorf("❌ SOCKS Port %d is in use on the host.", socksPort)
+			}
+			if !utils.IsPortFree(httpPort) {
+				return fmt.Errorf("❌ HTTP Port %d is in use on the host.", httpPort)
+			}
+
+			cfg.CustomOutbounds[i].InternalProxyPort = socksPort
+			cfg.CustomOutbounds[i].InternalHttpPort = httpPort
+			cfg.CustomOutbounds[i].InternalListenAddr = listenIP
+
+			if err := cfg.SaveEx(true); err != nil {
+				return fmt.Errorf("❌ Failed to save staging config: %w", err)
+			}
+			fmt.Printf("✅ Configured local proxy for '%s' in STAGING:\n", alias)
+			fmt.Printf("   SOCKS Port: %d\n", socksPort)
+			fmt.Printf("   HTTP Port:  %d\n", httpPort)
+			fmt.Printf("   Listen IP:  %s\n", listenIP)
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+			return nil
+		}
+	}
+	return fmt.Errorf("❌ Relay '%s' not found.", alias)
+}
+
 var proxySetCmd = &cobra.Command{
 	Use:   "set [alias]",
 	Short: "Configure local SOCKS/HTTP proxy for a relay in STAGING",
@@ -204,87 +282,35 @@ var proxySetCmd = &cobra.Command{
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
-		alias := args[0]
-
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-
-		for i, co := range cfg.CustomOutbounds {
-			if co.Alias == alias {
-				socksPort := proxySocksPort
-				httpPort := proxyHttpPort
-
-				// Validate IP address format if provided
-				listenIP := proxyListenIP
-				if listenIP != "" {
-					if ip := net.ParseIP(listenIP); ip == nil {
-						fmt.Printf("❌ Invalid listen IP address: %s\n", listenIP)
-						return
-					}
-				} else {
-					listenIP = "127.0.0.1"
-				}
-
-				// Validate SOCKS port selection
-				if socksPort == 0 {
-					for {
-						p, _ := xray.GetFreePort()
-						if p > 0 && p < 65535 &&
-							utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
-							utils.IsPortFree(p+1) &&
-							checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
-							socksPort = p
-							break
-						}
-					}
-				}
-
-				// Validate HTTP port selection
-				if httpPort == 0 {
-					httpPort = socksPort + 1
-				}
-
-				if socksPort < 1 || socksPort > 65535 {
-					fmt.Printf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)\n", socksPort)
-					return
-				}
-				if httpPort < 1 || httpPort > 65535 {
-					fmt.Printf("❌ Invalid HTTP port: %d (must be between 1 and 65535)\n", httpPort)
-					return
-				}
-
-				if err := checkProxyPortConflict(cfg, alias, listenIP, socksPort, httpPort); err != nil {
-					fmt.Printf("❌ Port conflict: %v\n", err)
-					return
-				}
-
-				if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
-					fmt.Printf("❌ SOCKS Port %d is in use on the host.\n", socksPort)
-					return
-				}
-				if !utils.IsPortFree(httpPort) {
-					fmt.Printf("❌ HTTP Port %d is in use on the host.\n", httpPort)
-					return
-				}
-
-				cfg.CustomOutbounds[i].InternalProxyPort = socksPort
-				cfg.CustomOutbounds[i].InternalHttpPort = httpPort
-				cfg.CustomOutbounds[i].InternalListenAddr = listenIP
-
-				if err := cfg.SaveEx(true); err == nil {
-					fmt.Printf("✅ Configured local proxy for '%s' in STAGING:\n", alias)
-					fmt.Printf("   SOCKS Port: %d\n", socksPort)
-					fmt.Printf("   HTTP Port:  %d\n", httpPort)
-					fmt.Printf("   Listen IP:  %s\n", listenIP)
-					fmt.Println("🚀 Run 'apply' to commit changes.")
-				}
-				return
-			}
-		}
-		fmt.Printf("❌ Relay '%s' not found.\n", alias)
+		_ = runProxySet(cmd, args)
 	},
+	RunE: runProxySet,
+}
+
+func runProxyUnset(cmd *cobra.Command, args []string) error {
+	alias := args[0]
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+	for i, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			if co.InternalProxyPort <= 0 {
+				fmt.Printf("ℹ️ Local proxy for '%s' was not configured.\n", alias)
+				return nil
+			}
+			cfg.CustomOutbounds[i].InternalProxyPort = 0
+			cfg.CustomOutbounds[i].InternalHttpPort = 0
+			cfg.CustomOutbounds[i].InternalListenAddr = ""
+			if err := cfg.SaveEx(true); err != nil {
+				return fmt.Errorf("❌ Failed to save staging config: %w", err)
+			}
+			fmt.Printf("✅ Disabled local proxy for '%s' in STAGING.\n", alias)
+			fmt.Println("🚀 Run 'apply' to commit changes.")
+			return nil
+		}
+	}
+	return fmt.Errorf("❌ Relay '%s' not found.", alias)
 }
 
 var proxyUnsetCmd = &cobra.Command{
@@ -296,29 +322,9 @@ var proxyUnsetCmd = &cobra.Command{
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
-		alias := args[0]
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		for i, co := range cfg.CustomOutbounds {
-			if co.Alias == alias {
-				if co.InternalProxyPort <= 0 {
-					fmt.Printf("ℹ️ Local proxy for '%s' was not configured.\n", alias)
-					return
-				}
-				cfg.CustomOutbounds[i].InternalProxyPort = 0
-				cfg.CustomOutbounds[i].InternalHttpPort = 0
-				cfg.CustomOutbounds[i].InternalListenAddr = ""
-				if err := cfg.SaveEx(true); err == nil {
-					fmt.Printf("✅ Disabled local proxy for '%s' in STAGING.\n", alias)
-					fmt.Println("🚀 Run 'apply' to commit changes.")
-				}
-				return
-			}
-		}
-		fmt.Printf("❌ Relay '%s' not found.\n", alias)
+		_ = runProxyUnset(cmd, args)
 	},
+	RunE: runProxyUnset,
 }
 
 var proxyRunCmd = &cobra.Command{
@@ -460,69 +466,71 @@ var proxyRunCmd = &cobra.Command{
 	},
 }
 
+func runProxyTest(cmd *cobra.Command, args []string) error {
+	alias := args[0]
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+
+	var targetCO *config.CustomOutbound
+	for _, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			targetCO = &co
+			break
+		}
+	}
+	if targetCO == nil {
+		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	}
+
+	if targetCO.InternalProxyPort <= 0 {
+		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
+	}
+
+	socksPort := targetCO.InternalProxyPort
+	listenIP := targetCO.InternalListenAddr
+	if listenIP == "" {
+		listenIP = "127.0.0.1"
+	}
+
+	socksAddr := fmt.Sprintf("%s:%d", listenIP, socksPort)
+	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to create SOCKS dialer: %w", err)
+	}
+
+	fmt.Printf("🔍 Testing local proxy at %s...\n", socksAddr)
+
+	// We'll test TCP connection to a public IP
+	conn, err := dialer.Dial("tcp", "8.8.8.8:53")
+	if err != nil {
+		return fmt.Errorf("❌ TCP test failed: %w", err)
+	}
+	conn.Close()
+	fmt.Println("✅ TCP connectivity OK.")
+
+	// Test UDP query/ping if supported
+	duration, err := xray.TestUDP(socksAddr, "user-"+alias, "test")
+	if err == nil {
+		fmt.Printf("✅ UDP connectivity OK (%dms).\n", duration.Milliseconds())
+	} else {
+		fmt.Printf("⚠️  UDP test failed: %v\n", err)
+	}
+	return nil
+}
+
 var proxyTestCmd = &cobra.Command{
-	Use:   "test [alias]",
-	Short: "Test connectivity of a configured local proxy",
+	Use:               "test [alias]",
+	Short:             "Test connectivity of a configured local proxy",
 	Example: `  # Test connectivity of configured local proxy
   xray-proxya proxy test node-us`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
-		alias := args[0]
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-
-		var targetCO *config.CustomOutbound
-		for _, co := range cfg.CustomOutbounds {
-			if co.Alias == alias {
-				targetCO = &co
-				break
-			}
-		}
-		if targetCO == nil {
-			fmt.Printf("❌ Relay '%s' not found.\n", alias)
-			return
-		}
-
-		if targetCO.InternalProxyPort <= 0 {
-			fmt.Printf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.\n", alias, alias)
-			return
-		}
-
-		socksPort := targetCO.InternalProxyPort
-		listenIP := targetCO.InternalListenAddr
-		if listenIP == "" {
-			listenIP = "127.0.0.1"
-		}
-
-		socksAddr := fmt.Sprintf("%s:%d", listenIP, socksPort)
-		dialer, err := utils.NewSOCKS5Dialer(socksAddr)
-		if err != nil {
-			fmt.Printf("❌ Failed to create SOCKS dialer: %v\n", err)
-			return
-		}
-
-		fmt.Printf("🔍 Testing local proxy at %s...\n", socksAddr)
-
-		// We'll test TCP connection to a public IP
-		conn, err := dialer.Dial("tcp", "8.8.8.8:53")
-		if err != nil {
-			fmt.Printf("❌ TCP test failed: %v\n", err)
-			return
-		}
-		conn.Close()
-		fmt.Println("✅ TCP connectivity OK.")
-
-		// Test UDP query/ping if supported
-		duration, err := xray.TestUDP(socksAddr, "user-"+alias, "test")
-		if err == nil {
-			fmt.Printf("✅ UDP connectivity OK (%dms).\n", duration.Milliseconds())
-		} else {
-			fmt.Printf("⚠️  UDP test failed: %v\n", err)
-		}
+		_ = runProxyTest(cmd, args)
 	},
+	RunE: runProxyTest,
 }
 
 func init() {

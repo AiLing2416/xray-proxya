@@ -133,39 +133,43 @@ var tuneUseCmd = &cobra.Command{
 	},
 }
 
+func runTuneVerify(cmd *cobra.Command, args []string) error {
+	profile, ok := tune.GetProfile(args[0])
+	if !ok {
+		return fmt.Errorf("❌ Unknown profile '%s'.", args[0])
+	}
+	fmt.Printf("Profile: %s\n\n", profile.Name)
+	fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")
+	fmt.Println("----------------------------------------------------------------------------------------------------------------")
+	mismatch := false
+	for _, entry := range tune.VerifyProfile(profile) {
+		current := entry.Current
+		if current == "" {
+			current = "-"
+		}
+		if entry.Error != "" {
+			current = entry.Error
+		}
+		if entry.Status != "ok" {
+			mismatch = true
+		}
+		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", entry.Key, entry.Status, current, entry.Target)
+	}
+	if mismatch {
+		return fmt.Errorf("⚠️  Profile is not fully active.")
+	}
+	fmt.Println("\n✅ Profile is active.")
+	return nil
+}
+
 var tuneVerifyCmd = &cobra.Command{
 	Use:   "verify [profile]",
 	Short: "Verify whether current kernel values match a tuning profile",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		profile, ok := tune.GetProfile(args[0])
-		if !ok {
-			fmt.Printf("❌ Unknown profile '%s'.\n", args[0])
-			return
-		}
-		fmt.Printf("Profile: %s\n\n", profile.Name)
-		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------")
-		mismatch := false
-		for _, entry := range tune.VerifyProfile(profile) {
-			current := entry.Current
-			if current == "" {
-				current = "-"
-			}
-			if entry.Error != "" {
-				current = entry.Error
-			}
-			if entry.Status != "ok" {
-				mismatch = true
-			}
-			fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", entry.Key, entry.Status, current, entry.Target)
-		}
-		if mismatch {
-			fmt.Println("\n⚠️  Profile is not fully active.")
-			return
-		}
-		fmt.Println("\n✅ Profile is active.")
+		_ = runTuneVerify(cmd, args)
 	},
+	RunE: runTuneVerify,
 }
 
 var tuneRollbackCmd = &cobra.Command{

@@ -19,16 +19,14 @@ import (
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show unified systemd services, network state, and traffic overview",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
-			fmt.Println("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
-			os.Exit(1)
+			return fmt.Errorf("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 		}
 
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			fmt.Printf("❌ Failed to load active config: %v\n", err)
-			return
+			return fmt.Errorf("❌ Failed to load active config: %w", err)
 		}
 
 		isRoot := os.Geteuid() == 0
@@ -96,7 +94,7 @@ var statusCmd = &cobra.Command{
 			fmt.Println("\n📊 Traffic Statistics (gRPC API):")
 			fmt.Println("   (Xray Core service is inactive; traffic statistics unavailable)")
 			fmt.Println("============================================================")
-			return
+			return nil
 		}
 
 		allStats, err := xray.GetXrayStats(cfg.APIInbound)
@@ -104,7 +102,7 @@ var statusCmd = &cobra.Command{
 			fmt.Println("\n📊 Traffic Statistics (gRPC API):")
 			fmt.Printf("   ⚠️ Failed to query API traffic stats (port %d): %v\n", cfg.APIInbound, err)
 			fmt.Println("============================================================")
-			return
+			return nil
 		}
 
 		fmt.Println("\n📊 Traffic Statistics (gRPC API):")
@@ -119,6 +117,7 @@ var statusCmd = &cobra.Command{
 		printGuestStatsWithDetails(summary.GuestStats, cfg.Guests)
 
 		fmt.Println("============================================================")
+		return nil
 	},
 }
 
