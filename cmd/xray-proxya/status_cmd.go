@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -16,6 +17,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var statusJSON bool
+
 var statusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show unified systemd services, network state, and traffic overview",
@@ -30,6 +33,10 @@ var statusCmd = &cobra.Command{
 		}
 
 		isRoot := os.Geteuid() == 0
+
+		if statusJSON {
+			return outputStatusJSON(cfg, isRoot)
+		}
 
 		fmt.Printf("\n🛰️  XRAY-PROXYA RUNTIME OVERVIEW (Role: %s)\n", strings.ToUpper(string(cfg.Role)))
 		fmt.Println("============================================================")
@@ -274,6 +281,121 @@ func summarizeStats(allStats map[string]int64) (int64, int64, map[string]int64, 
 	return summary.Direct, summary.Relay, summary.ServiceStats, summary.RelayStats, summary.GuestStats, summary.InboundStats
 }
 
+type StatusJSONOutput struct {
+	Role            string                 `json:"role"`
+	ManagedServices []service.Status       `json:"managed_services"`
+	NetworkState    map[string]interface{} `json:"network_state"`
+	Traffic         *TrafficJSONOutput     `json:"traffic,omitempty"`
+	StagingClean    bool                   `json:"staging_clean"`
+}
+
+type TrafficJSONOutput struct {
+	Direct       int64                       `json:"direct_bytes"`
+	Relay        int64                       `json:"relay_bytes"`
+	Inbounds     map[string]int64            `json:"inbounds"`
+	ServiceUsage map[string]int64            `json:"service_usage"`
+	RelayUsage   map[string]int64            `json:"relay_usage"`
+	Guests       map[string]GuestTrafficJSON `json:"guests"`
+}
+
+type GuestTrafficJSON struct {
+	UsedBytes  int64   `json:"used_bytes"`
+	LimitBytes int64   `json:"limit_bytes"`
+	QuotaGB    float64 `json:"quota_gb"`
+	State      string  `json:"state"`
+	Reason     string  `json:"reason"`
+}
+
+func outputStatusJSON(cfg *config.UserConfig, isRoot bool) error {
+	managedServices, _ := service.ListManagedServices(cfg)
+	if len(managedServices) == 0 {
+		managedServices = []service.Status{
+			service.GetUnitStatus(service.MainUnit),
+			service.GetUnitStatus(service.PathdUnit),
+			service.GetUnitStatus(service.SubUnit),
+		}
+		if cfg.Role == config.RoleServer {
+			managedServices = append(managedServices, service.GetUnitStatus(service.RotateUnit))
+		}
+	}
+
+	networkState := make(map[string]interface{})
+	if cfg.Role == config.RoleGateway {
+		gwState := cfg.Gateway.State
+		if gwState == "" {
+			gwState = "proxy"
+		}
+		relayStr := cfg.Gateway.RelayAlias
+		if relayStr == "" {
+			relayStr = "direct"
+		}
+		networkState["gateway_state"] = gwState
+		networkState["gateway_mode"] = cfg.Gateway.Mode
+		networkState["local_enabled"] = cfg.Gateway.LocalEnabled
+		networkState["lan_enabled"] = cfg.Gateway.LANEnabled
+		networkState["lan_interface"] = cfg.Gateway.LANInterface
+		networkState["active_relay"] = relayStr
+	} else {
+		networkState["sub_port"] = cfg.SubPort
+		networkState["guest_sub_port"] = cfg.GuestSubPort
+		networkState["guest_sub_bind"] = cfg.GuestSubBind
+	}
+
+	activePresets := 0
+	for _, p := range cfg.Presets {
+		if p.Enabled {
+			activePresets++
+		}
+	}
+	networkState["active_presets"] = activePresets
+	networkState["total_presets"] = len(cfg.Presets)
+	networkState["relays_count"] = len(cfg.CustomOutbounds)
+	networkState["guests_count"] = len(cfg.Guests)
+
+	var trafficOutput *TrafficJSONOutput
+	allStats, err := xray.GetXrayStats(cfg.APIInbound)
+	if err == nil && allStats != nil {
+		summary := trafficstats.Summarize(allStats)
+		guestTrafficMap := make(map[string]GuestTrafficJSON)
+		now := time.Now()
+		for _, g := range cfg.Guests {
+			used := summary.GuestStats[g.Alias]
+			view := quota.BuildGuestView(g, now)
+			guestTrafficMap[g.Alias] = GuestTrafficJSON{
+				UsedBytes:  used,
+				LimitBytes: g.EffectiveLimitBytes(),
+				QuotaGB:    g.QuotaGB,
+				State:      view.StateLabel,
+				Reason:     view.ReasonLabel,
+			}
+		}
+		trafficOutput = &TrafficJSONOutput{
+			Direct:       summary.Direct,
+			Relay:        summary.Relay,
+			Inbounds:     summary.InboundStats,
+			ServiceUsage: summary.ServiceStats,
+			RelayUsage:   summary.RelayStats,
+			Guests:       guestTrafficMap,
+		}
+	}
+
+	output := StatusJSONOutput{
+		Role:            string(cfg.Role),
+		ManagedServices: managedServices,
+		NetworkState:    networkState,
+		Traffic:         trafficOutput,
+		StagingClean:    !config.StagingExists(),
+	}
+
+	data, err := json.MarshalIndent(output, "", "  ")
+	if err != nil {
+		return fmt.Errorf("❌ Failed to serialize status JSON: %w", err)
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
 func init() {
+	statusCmd.Flags().BoolVar(&statusJSON, "json", false, "Output status in JSON format")
 	rootCmd.AddCommand(statusCmd)
 }

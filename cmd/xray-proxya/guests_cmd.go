@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ var (
 	notifyStr        string
 	notifyWebhookStr string
 	notifyTriggerStr string
+	guestsListJSON   bool
 )
 
 var guestsCmd = &cobra.Command{
@@ -100,24 +102,43 @@ func guestSubURL(host string, port int, token string) string {
 	return sub.FormatSubURL(host, port, token)
 }
 
+func runGuestsList(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfig()
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load active config.")
+	}
+	views := quota.BuildAllGuestViews(cfg.Guests, time.Now())
+	if guestsListJSON {
+		if views == nil {
+			views = []quota.GuestQuotaView{}
+		}
+		data, err := json.MarshalIndent(views, "", "  ")
+		if err != nil {
+			return fmt.Errorf("❌ Failed to serialize guests JSON: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY")
+	fmt.Println("----------------------------------------------------------------------------------------------------------------")
+	for _, v := range views {
+		limit := config.FormatByteSize(v.LimitBytes)
+		used := config.FormatByteSize(v.UsedBytes)
+		fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-s\n", v.Alias, v.StateLabel, v.ReasonLabel, used+"/"+limit, v.ResetDay, v.RelayLabel)
+	}
+	fmt.Println()
+	return nil
+}
+
 var guestsListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "Show all guests status and quota",
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfig()
-		if cfg == nil {
-			return
-		}
-		fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------")
-		for _, v := range quota.BuildAllGuestViews(cfg.Guests, time.Now()) {
-			limit := config.FormatByteSize(v.LimitBytes)
-			used := config.FormatByteSize(v.UsedBytes)
-			fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-s\n", v.Alias, v.StateLabel, v.ReasonLabel, used+"/"+limit, v.ResetDay, v.RelayLabel)
-		}
-		fmt.Println()
+		_ = runGuestsList(cmd, args)
 	},
+	RunE: runGuestsList,
 }
 
 func runGuestsAdd(cmd *cobra.Command, args []string) error {
@@ -778,6 +799,7 @@ func init() {
 	guestsSubSetCmd.Flags().IntVarP(&guestSubSetPort, "port", "p", 0, "Guest subscription listener port (1-65535)")
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
 
+	guestsListCmd.Flags().BoolVar(&guestsListJSON, "json", false, "Output guests list in JSON format")
 	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd, guestsSubSetCmd)
 	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsRemoveCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)

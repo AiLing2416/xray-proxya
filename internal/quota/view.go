@@ -12,28 +12,28 @@ import (
 
 // GuestQuotaView represents the comprehensive computed state of a guest's quota and runtime status.
 type GuestQuotaView struct {
-	Alias              string
-	UUID               string
-	StateLabel         string // "ON", "QUOTA", "PAUSED", "OFF"
-	ReasonLabel        string // "manual", "quota reached", "quota=0", "-"
-	QuotaFormatted     string
-	UsedBytes          int64
-	UsedFormatted      string
-	LimitBytes         int64
-	LimitFormatted     string
-	RemainingBytes     int64
-	RemainingFormatted string
-	UsagePercent       float64 // 0~100 (or -1 if unlimited)
-	ResetDay           int
-	DaysUntilReset     int
-	RelayLabel         string // "direct", "custom-link"
-	OutboundLink       string
-	SubToken           string
-	NotifyWebhook      string
-	NotifyTriggers     []string
-	AlertedTriggers    []string
-	LastResetYM        string
-	AlertedYM          string
+	Alias              string   `json:"alias"`
+	UUID               string   `json:"uuid"`
+	StateLabel         string   `json:"state"` // "ON", "QUOTA", "PAUSED", "OFF"
+	ReasonLabel        string   `json:"reason"` // "manual", "quota reached", "quota=0", "-"
+	QuotaFormatted     string   `json:"quota_formatted"`
+	UsedBytes          int64    `json:"used_bytes"`
+	UsedFormatted      string   `json:"used_formatted"`
+	LimitBytes         int64    `json:"limit_bytes"`
+	LimitFormatted     string   `json:"limit_formatted"`
+	RemainingBytes     int64    `json:"remaining_bytes"`
+	RemainingFormatted string   `json:"remaining_formatted"`
+	UsagePercent       float64  `json:"usage_percent"` // 0~100 (or -1 if unlimited)
+	ResetDay           int      `json:"reset_day"`
+	DaysUntilReset     int      `json:"days_until_reset"`
+	RelayLabel         string   `json:"relay"` // "direct", "custom-link"
+	OutboundLink       string   `json:"outbound_link,omitempty"`
+	SubToken           string   `json:"sub_token,omitempty"`
+	NotifyWebhook      string   `json:"notify_webhook,omitempty"`
+	NotifyTriggers     []string `json:"notify_triggers,omitempty"`
+	AlertedTriggers    []string `json:"alerted_triggers,omitempty"`
+	LastResetYM        string   `json:"last_reset_ym,omitempty"`
+	AlertedYM          string   `json:"alerted_ym,omitempty"`
 }
 
 // GuestStateLabel returns standard state indicator for a guest ("ON", "QUOTA", "PAUSED", "OFF").

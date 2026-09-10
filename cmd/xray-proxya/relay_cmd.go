@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -22,6 +23,7 @@ import (
 )
 
 var (
+	relayListJSON        bool
 	relayTestFull        bool
 	relayTestJSON        bool
 	relayTestConcurrency int
@@ -112,22 +114,31 @@ var addOutboundCmd = &cobra.Command{
 	RunE: runAddOutbound,
 }
 
-var listOutboundCmd = &cobra.Command{
-	Use:     "list",
-	Aliases: []string{"ls"},
-	Short:   "List relay nodes with remote endpoint and local bind details",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		fmt.Printf("\n%-3s | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n", "ID", "ALIAS", "STATE", "PROTO", "REMOTE", "TRANSPORT", "INTERNAL", "PRIVATE", "DNS")
-		fmt.Println("---------------------------------------------------------------------------------------------------------------------------------------------------")
+type RelayListItemJSON struct {
+	ID                  int      `json:"id"`
+	Alias               string   `json:"alias"`
+	Enabled             bool     `json:"enabled"`
+	Protocol            string   `json:"protocol"`
+	Remote              string   `json:"remote"`
+	Transport           string   `json:"transport"`
+	InternalProxy       string   `json:"internal_proxy"`
+	InternalProxyPort   int      `json:"internal_proxy_port,omitempty"`
+	InternalHttpPort    int      `json:"internal_http_port,omitempty"`
+	InternalListenAddr  string   `json:"internal_listen_addr,omitempty"`
+	AllowPrivateTargets bool     `json:"allow_private_targets"`
+	DNSStrategy         string   `json:"dns_strategy"`
+	DNSServers          []string `json:"dns_servers,omitempty"`
+}
+
+func runListOutbound(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+
+	if relayListJSON {
+		items := make([]RelayListItemJSON, 0, len(cfg.CustomOutbounds))
 		for i, co := range cfg.CustomOutbounds {
-			status := "OFF"
-			if co.Enabled {
-				status = "ON"
-			}
 			internal := "-"
 			if co.InternalProxyPort > 0 {
 				internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, co.InternalProxyPort+1)
@@ -136,25 +147,74 @@ var listOutboundCmd = &cobra.Command{
 			if strategy == "" {
 				strategy = "default"
 			}
-			privateTargets := "BLOCKED"
-			if co.AllowPrivateTargets {
-				privateTargets = "ALLOWED"
-			}
-			fmt.Printf(
-				"%-3d | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n",
-				i+1,
-				co.Alias,
-				status,
-				outboundProtocol(co),
-				outboundRemoteSummary(co),
-				outboundTransportSummary(co),
-				internal,
-				privateTargets,
-				outboundDNSSummary(co, strategy),
-			)
+			items = append(items, RelayListItemJSON{
+				ID:                  i + 1,
+				Alias:               co.Alias,
+				Enabled:             co.Enabled,
+				Protocol:            outboundProtocol(co),
+				Remote:              outboundRemoteSummary(co),
+				Transport:           outboundTransportSummary(co),
+				InternalProxy:       internal,
+				InternalProxyPort:   co.InternalProxyPort,
+				InternalHttpPort:    co.InternalHttpPort,
+				InternalListenAddr:  co.InternalListenAddr,
+				AllowPrivateTargets: co.AllowPrivateTargets,
+				DNSStrategy:         strategy,
+				DNSServers:          co.DNSServers,
+			})
 		}
-		fmt.Println()
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return fmt.Errorf("❌ Failed to serialize relay JSON: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("\n%-3s | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n", "ID", "ALIAS", "STATE", "PROTO", "REMOTE", "TRANSPORT", "INTERNAL", "PRIVATE", "DNS")
+	fmt.Println("---------------------------------------------------------------------------------------------------------------------------------------------------")
+	for i, co := range cfg.CustomOutbounds {
+		status := "OFF"
+		if co.Enabled {
+			status = "ON"
+		}
+		internal := "-"
+		if co.InternalProxyPort > 0 {
+			internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, co.InternalProxyPort+1)
+		}
+		strategy := co.DNSStrategy
+		if strategy == "" {
+			strategy = "default"
+		}
+		privateTargets := "BLOCKED"
+		if co.AllowPrivateTargets {
+			privateTargets = "ALLOWED"
+		}
+		fmt.Printf(
+			"%-3d | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n",
+			i+1,
+			co.Alias,
+			status,
+			outboundProtocol(co),
+			outboundRemoteSummary(co),
+			outboundTransportSummary(co),
+			internal,
+			privateTargets,
+			outboundDNSSummary(co, strategy),
+		)
+	}
+	fmt.Println()
+	return nil
+}
+
+var listOutboundCmd = &cobra.Command{
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List relay nodes with remote endpoint and local bind details",
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = runListOutbound(cmd, args)
 	},
+	RunE: runListOutbound,
 }
 
 func outboundProtocol(co config.CustomOutbound) string {
@@ -1001,6 +1061,7 @@ func init() {
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
+	listOutboundCmd.Flags().BoolVar(&relayListJSON, "json", false, "Output relay list in JSON format")
 	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, removeOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -12,9 +13,10 @@ import (
 )
 
 var (
-	certEmail   string
-	certSkipDNS bool
-	certForce   bool
+	certEmail    string
+	certSkipDNS  bool
+	certForce    bool
+	certListJSON bool
 )
 
 var certCmd = &cobra.Command{
@@ -75,6 +77,15 @@ var certAddCmd = &cobra.Command{
 	},
 }
 
+type CertListItemJSON struct {
+	Domain          string   `json:"domain"`
+	Issuer          string   `json:"issuer"`
+	IssuedAt        string   `json:"issued_at"`
+	ExpiresAt       string   `json:"expires_at"`
+	DaysRemaining   int      `json:"days_remaining"`
+	AttachedPresets []string `json:"attached_presets"`
+}
+
 var certListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
@@ -83,6 +94,49 @@ var certListCmd = &cobra.Command{
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
+		}
+
+		if certListJSON {
+			list := make([]CertListItemJSON, 0, len(cfg.Certs))
+			for _, c := range cfg.Certs {
+				issuer := c.Issuer
+				if issuer == "" {
+					issuer = "Let's Encrypt"
+				}
+				issuedStr := "-"
+				if !c.IssuedAt.IsZero() {
+					issuedStr = c.IssuedAt.Format("2006-01-02 15:04:05")
+				}
+				expiresStr := "-"
+				daysRemaining := 0
+				if !c.ExpiresAt.IsZero() {
+					expiresStr = c.ExpiresAt.Format("2006-01-02 15:04:05")
+					daysRemaining = int(time.Until(c.ExpiresAt).Hours() / 24)
+				}
+				var attached []string
+				for i, p := range cfg.Presets {
+					if strings.EqualFold(p.SkinDomain, c.Domain) || (p.Skin != "" && strings.EqualFold(p.SNI, c.Domain)) {
+						attached = append(attached, fmt.Sprintf("#%d (%s)", i+1, p.Mode))
+					}
+				}
+				if attached == nil {
+					attached = []string{}
+				}
+				list = append(list, CertListItemJSON{
+					Domain:          c.Domain,
+					Issuer:          issuer,
+					IssuedAt:        issuedStr,
+					ExpiresAt:       expiresStr,
+					DaysRemaining:   daysRemaining,
+					AttachedPresets: attached,
+				})
+			}
+			data, err := json.MarshalIndent(list, "", "  ")
+			if err != nil {
+				return fmt.Errorf("❌ Failed to serialize cert JSON: %w", err)
+			}
+			fmt.Println(string(data))
+			return nil
 		}
 
 		if len(cfg.Certs) == 0 {
@@ -218,6 +272,7 @@ func init() {
 	certAddCmd.Flags().StringVar(&certEmail, "email", "", "Contact email for ACME account registration")
 	certAddCmd.Flags().BoolVar(&certSkipDNS, "skip-dns", false, "Skip DNS pre-validation check")
 	certRenewCmd.Flags().BoolVarP(&certForce, "force", "f", false, "Force renewal regardless of expiration date")
+	certListCmd.Flags().BoolVar(&certListJSON, "json", false, "Output certificate list in JSON format")
 
 	certCmd.AddCommand(certAddCmd, certListCmd, certRemoveCmd, certRenewCmd)
 	rootCmd.AddCommand(certCmd)
