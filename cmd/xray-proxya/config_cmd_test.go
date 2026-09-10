@@ -58,19 +58,19 @@ func captureStdout(t *testing.T, fn func()) string {
 		t.Fatalf("os.Pipe() error = %v", err)
 	}
 	os.Stdout = w
-	defer func() {
-		os.Stdout = oldStdout
+
+	outC := make(chan []byte)
+	go func() {
+		data, _ := io.ReadAll(r)
+		outC <- data
 	}()
 
 	fn()
 
-	if err := w.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	data, err := io.ReadAll(r)
+	_ = w.Close()
+	os.Stdout = oldStdout
+	data := <-outC
 	_ = r.Close()
-	if err != nil {
-		t.Fatalf("ReadAll() error = %v", err)
-	}
+
 	return string(data)
 }

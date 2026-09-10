@@ -10,10 +10,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func TestDoctorCompletionIsRegisteredAndLegacyTopLevelCommandIsRemoved(t *testing.T) {
-	if !rootCmd.CompletionOptions.DisableDefaultCmd {
-		t.Fatal("Cobra's default top-level completion command must be disabled")
-	}
+func TestTopLevelCompletionRegisteredAndStdoutSupported(t *testing.T) {
 	command, _, err := doctorCmd.Find([]string{"completion"})
 	if err != nil {
 		t.Fatalf("find doctor completion: %v", err)
@@ -21,10 +18,29 @@ func TestDoctorCompletionIsRegisteredAndLegacyTopLevelCommandIsRemoved(t *testin
 	if command != doctorCompletionCmd {
 		t.Fatalf("doctor completion command = %q, want %q", command.Name(), doctorCompletionCmd.Name())
 	}
-	for _, command := range rootCmd.Commands() {
-		if command.Name() == "completion" {
-			t.Fatal("legacy top-level completion command is still registered")
+
+	topCmd, _, err := rootCmd.Find([]string{"completion"})
+	if err != nil {
+		t.Fatalf("find top-level completion: %v", err)
+	}
+	if topCmd != completionCmd {
+		t.Fatalf("top-level completion command = %v, want %v", topCmd, completionCmd)
+	}
+
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		output := captureStdout(t, func() {
+			if err := completionCmd.RunE(completionCmd, []string{shell}); err != nil {
+				t.Fatalf("completionCmd error for %s: %v", shell, err)
+			}
+		})
+		if len(output) == 0 || !strings.Contains(output, "xray-proxya") {
+			t.Fatalf("expected valid %s completion script, got %d bytes", shell, len(output))
 		}
+	}
+
+	// Unsupported shell should return error
+	if err := completionCmd.RunE(completionCmd, []string{"unsupported-shell"}); err == nil {
+		t.Fatal("expected error for unsupported shell")
 	}
 }
 

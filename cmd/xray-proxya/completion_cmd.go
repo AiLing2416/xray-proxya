@@ -250,6 +250,44 @@ func stripLegacyCompletionProfile(content string, layout completionLayout) strin
 	return strings.Join(kept, "\n")
 }
 
+var completionCmd = &cobra.Command{
+	Use:   "completion [bash|zsh|fish]",
+	Short: "Generate shell completion script for stdout",
+	Long: strings.TrimSpace(`
+Generate shell completion script for the specified shell (bash, zsh, or fish) to stdout.
+
+Examples:
+  # Load completion in current bash session
+  source <(xray-proxya completion bash)
+
+  # Load completion in current zsh session
+  source <(xray-proxya completion zsh)
+
+  # Load completion in current fish session
+  xray-proxya completion fish | source
+
+  # For persistent setup without manual file editing, use:
+  xray-proxya doctor completion install
+`),
+	DisableFlagsInUseLine: true,
+	ValidArgs:             []string{"bash", "zsh", "fish"},
+	Args:                  cobra.ExactValidArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out := cmd.OutOrStdout()
+		switch args[0] {
+		case "bash":
+			return rootCmd.GenBashCompletion(out)
+		case "zsh":
+			return rootCmd.GenZshCompletion(out)
+		case "fish":
+			return rootCmd.GenFishCompletion(out, true)
+		default:
+			return fmt.Errorf("unsupported shell type %q (supported: bash, zsh, fish)", args[0])
+		}
+	},
+}
+
 func init() {
 	doctorCompletionCmd.AddCommand(doctorCompletionInstallCmd, doctorCompletionUninstallCmd)
+	rootCmd.AddCommand(completionCmd)
 }
