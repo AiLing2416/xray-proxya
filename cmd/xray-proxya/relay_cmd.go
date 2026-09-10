@@ -72,21 +72,77 @@ func completeRelayAliasesArg(cmd *cobra.Command, args []string, toComplete strin
 	return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 }
 
+func aliasExists(cfg *config.UserConfig, alias string) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			return true
+		}
+	}
+	return false
+}
+
+func nextAvailableRelayAlias(cfg *config.UserConfig, prefix string) string {
+	for n := 1; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", prefix, n)
+		if !aliasExists(cfg, candidate) {
+			return candidate
+		}
+	}
+}
+
 func runAddOutbound(cmd *cobra.Command, args []string) error {
-	alias, link := args[0], args[1]
+	var explicitAlias bool
+	var alias, link string
+	if len(args) == 1 {
+		link = strings.TrimSpace(args[0])
+		explicitAlias = false
+	} else {
+		explicitAlias = true
+		if strings.Contains(args[0], "://") && !strings.Contains(args[1], "://") {
+			link = strings.TrimSpace(args[0])
+			alias = strings.TrimSpace(args[1])
+		} else {
+			alias = strings.TrimSpace(args[0])
+			link = strings.TrimSpace(args[1])
+		}
+	}
+
 	cfg, _ := config.LoadConfigEx(true)
 	if cfg == nil {
 		cfg = &config.UserConfig{UUID: uuid.New().String(), Role: config.RoleServer}
 	}
-	for _, co := range cfg.CustomOutbounds {
-		if co.Alias == alias {
-			return fmt.Errorf("❌ Alias '%s' already exists.", alias)
-		}
-	}
-	out, err := xray.ParseProxyLink(link)
+
+	out, remark, err := xray.ParseProxyLinkWithRemark(link)
 	if err != nil {
 		return fmt.Errorf("❌ Failed to parse link: %w", err)
 	}
+
+	if !explicitAlias {
+		cleanedRemark := strings.TrimSpace(remark)
+		if cleanedRemark != "" {
+			alias = cleanedRemark
+		} else {
+			alias = nextAvailableRelayAlias(cfg, "Relay")
+		}
+	}
+
+	if aliasExists(cfg, alias) {
+		if explicitAlias {
+			return fmt.Errorf("❌ Alias '%s' already exists.", alias)
+		}
+		base := alias
+		for i := 2; ; i++ {
+			candidate := fmt.Sprintf("%s-%d", base, i)
+			if !aliasExists(cfg, candidate) {
+				alias = candidate
+				break
+			}
+		}
+	}
+
 	newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
 	cfg.CustomOutbounds = append(cfg.CustomOutbounds, newCO)
 	fmt.Printf("🔍 Testing node '%s' connectivity...\n", alias)
@@ -100,14 +156,19 @@ func runAddOutbound(cmd *cobra.Command, args []string) error {
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("❌ Failed to save staging config: %w", err)
 	}
-	fmt.Println("✅ Added to STAGING. Run 'apply' to commit.")
+	fmt.Printf("✅ Relay node '%s' added to STAGING. Run 'apply' to commit.\n", alias)
 	return nil
 }
 
 var addOutboundCmd = &cobra.Command{
 	Use:   "add [alias] [link]",
 	Short: "Import a relay node from a link (STAGING)",
-	Args:  cobra.ExactArgs(2),
+	Long: strings.TrimSpace(`
+Import a proxy node into STAGING from a proxy link (e.g. vless://, vmess://, ss://).
+The alias is optional. If omitted, the remark in the link will be used as the alias;
+if no remark is present, an alias like Relay-1 will be automatically generated.
+`),
+	Args: cobra.RangeArgs(1, 2),
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = runAddOutbound(cmd, args)
 	},

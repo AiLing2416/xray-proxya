@@ -256,3 +256,89 @@ func TestRelaySetCommand(t *testing.T) {
 		t.Fatalf("expected relay not found error, got %v", err)
 	}
 }
+
+func TestRelayAddAutoAlias(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role:            config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	linkWithRemark := "vless://a3f6c8d2-1111-4b1a-9a99-999999999999@1.2.3.4:443?security=none#HongKong-01"
+	bareLink1 := "vless://a3f6c8d2-1111-4b1a-9a99-999999999999@1.2.3.4:443?security=none"
+	bareLink2 := "vless://a3f6c8d2-2222-4b1a-9a99-999999999999@1.2.3.5:443?security=none"
+
+	// 1. Single arg with remark -> alias = HongKong-01
+	err := runAddOutbound(addOutboundCmd, []string{linkWithRemark})
+	if err != nil {
+		t.Fatalf("add with remark failed: %v", err)
+	}
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil || len(loaded.CustomOutbounds) != 1 {
+		t.Fatalf("expected 1 outbound, got %d (err: %v)", len(loaded.CustomOutbounds), err)
+	}
+	if loaded.CustomOutbounds[0].Alias != "HongKong-01" {
+		t.Fatalf("expected alias HongKong-01, got %q", loaded.CustomOutbounds[0].Alias)
+	}
+
+	// 2. Single arg bare link -> alias = Relay-1
+	err = runAddOutbound(addOutboundCmd, []string{bareLink1})
+	if err != nil {
+		t.Fatalf("add bare link 1 failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.CustomOutbounds) != 2 || loaded.CustomOutbounds[1].Alias != "Relay-1" {
+		t.Fatalf("expected alias Relay-1, got %v", loaded.CustomOutbounds[1].Alias)
+	}
+
+	// 3. Single arg bare link 2 -> alias = Relay-2
+	err = runAddOutbound(addOutboundCmd, []string{bareLink2})
+	if err != nil {
+		t.Fatalf("add bare link 2 failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.CustomOutbounds) != 3 || loaded.CustomOutbounds[2].Alias != "Relay-2" {
+		t.Fatalf("expected alias Relay-2, got %v", loaded.CustomOutbounds[2].Alias)
+	}
+
+	// 4. Two args explicit alias -> alias = explicit-node
+	err = runAddOutbound(addOutboundCmd, []string{"explicit-node", bareLink1})
+	if err != nil {
+		t.Fatalf("add explicit alias failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.CustomOutbounds) != 4 || loaded.CustomOutbounds[3].Alias != "explicit-node" {
+		t.Fatalf("expected alias explicit-node, got %v", loaded.CustomOutbounds[3].Alias)
+	}
+
+	// 5. Two args inverted (link first, alias second) -> alias = inverted-node
+	err = runAddOutbound(addOutboundCmd, []string{bareLink1, "inverted-node"})
+	if err != nil {
+		t.Fatalf("add inverted args failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.CustomOutbounds) != 5 || loaded.CustomOutbounds[4].Alias != "inverted-node" {
+		t.Fatalf("expected alias inverted-node, got %v", loaded.CustomOutbounds[4].Alias)
+	}
+
+	// 6. Explicit duplicate alias -> error
+	err = runAddOutbound(addOutboundCmd, []string{"explicit-node", bareLink1})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected already exists error, got %v", err)
+	}
+
+	// 7. Auto remark duplicate -> automatically appends -2
+	err = runAddOutbound(addOutboundCmd, []string{linkWithRemark})
+	if err != nil {
+		t.Fatalf("add duplicate auto remark failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.CustomOutbounds) != 6 || loaded.CustomOutbounds[5].Alias != "HongKong-01-2" {
+		t.Fatalf("expected alias HongKong-01-2, got %v", loaded.CustomOutbounds[5].Alias)
+	}
+}
