@@ -268,8 +268,9 @@ var relaySubUpdateCmd = &cobra.Command{
 }
 
 var relaySubListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List configured subscription sources and node statistics",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List configured subscription sources and node statistics",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil || len(cfg.RelaySubs) == 0 {

@@ -108,8 +108,9 @@ var addOutboundCmd = &cobra.Command{
 }
 
 var listOutboundCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List relay nodes with remote endpoint and local bind details",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List relay nodes with remote endpoint and local bind details",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {

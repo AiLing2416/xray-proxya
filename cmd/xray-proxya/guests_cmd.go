@@ -101,8 +101,9 @@ func guestSubURL(host string, port int, token string) string {
 }
 
 var guestsListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "Show all guests status and quota",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "Show all guests status and quota",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
 		if cfg == nil {

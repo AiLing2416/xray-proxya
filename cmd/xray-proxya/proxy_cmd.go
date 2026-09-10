@@ -39,8 +39,9 @@ var proxyCmd = &cobra.Command{
 }
 
 var proxyListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all configured local SOCKS/HTTP proxies",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List all configured local SOCKS/HTTP proxies",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
