@@ -45,7 +45,7 @@ func completeRelaySubNamesArg(cmd *cobra.Command, args []string, toComplete stri
 }
 
 var relaySubAddCmd = &cobra.Command{
-	Use:   "add [airport-name] [subscription-url]",
+	Use:   "add [provider-name] [subscription-url]",
 	Short: "Add and pull relay nodes from a subscription link into STAGING",
 	Args:  cobra.ExactArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -53,7 +53,7 @@ var relaySubAddCmd = &cobra.Command{
 		subURL := strings.TrimSpace(args[1])
 
 		if name == "" || strings.Contains(name, "/") || strings.Contains(name, " ") {
-			fmt.Println("❌ Invalid airport name. It must not be empty or contain '/' or spaces.")
+			fmt.Println("❌ Invalid provider name. It must not be empty or contain '/' or spaces.")
 			return
 		}
 
@@ -153,7 +153,7 @@ var relaySubAddCmd = &cobra.Command{
 }
 
 var relaySubUpdateCmd = &cobra.Command{
-	Use:               "update [airport-name]",
+	Use:               "update [provider-name]",
 	Short:             "Refresh relay nodes from subscription link(s) into STAGING",
 	ValidArgsFunction: completeRelaySubNamesArg,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -286,7 +286,7 @@ var relaySubListCmd = &cobra.Command{
 		}
 		sort.Strings(names)
 
-		fmt.Printf("\n%-16s | %-8s | %-8s | %s\n", "AIRPORT", "STAGING", "ACTIVE", "SUBSCRIPTION URL")
+		fmt.Printf("\n%-16s | %-8s | %-8s | %s\n", "PROVIDER", "STAGING", "ACTIVE", "SUBSCRIPTION URL")
 		fmt.Println("-----------------+----------+----------+------------------------------------------------")
 		for _, name := range names {
 			prefix := name + "/"
@@ -314,7 +314,7 @@ var relaySubListCmd = &cobra.Command{
 }
 
 var relaySubRemoveCmd = &cobra.Command{
-	Use:               "remove [airport-name]",
+	Use:               "remove [provider-name]",
 	Aliases:           []string{"rm", "delete", "del"},
 	Short:             "Remove a subscription source and its relay nodes from STAGING",
 	Args:              cobra.ExactArgs(1),

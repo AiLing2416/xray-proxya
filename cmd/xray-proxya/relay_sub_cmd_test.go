@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
 
@@ -139,5 +141,66 @@ func TestRelaySubLifecycle(t *testing.T) {
 	}
 	if len(cfg.CustomOutbounds) != 1 || cfg.CustomOutbounds[0].Alias != "manual-vps" {
 		t.Fatalf("expected only manual-vps remaining, got %v", cfg.CustomOutbounds)
+	}
+}
+
+func TestRelaySubTerminologyStandardization(t *testing.T) {
+	if !strings.Contains(relaySubAddCmd.Use, "[provider-name]") || strings.Contains(relaySubAddCmd.Use, "airport") {
+		t.Errorf("relaySubAddCmd.Use = %q, want '[provider-name]' without 'airport'", relaySubAddCmd.Use)
+	}
+	if !strings.Contains(relaySubUpdateCmd.Use, "[provider-name]") || strings.Contains(relaySubUpdateCmd.Use, "airport") {
+		t.Errorf("relaySubUpdateCmd.Use = %q, want '[provider-name]' without 'airport'", relaySubUpdateCmd.Use)
+	}
+	if !strings.Contains(relaySubRemoveCmd.Use, "[provider-name]") || strings.Contains(relaySubRemoveCmd.Use, "airport") {
+		t.Errorf("relaySubRemoveCmd.Use = %q, want '[provider-name]' without 'airport'", relaySubRemoveCmd.Use)
+	}
+
+	tmpDir := t.TempDir()
+	t.Setenv("HOME", tmpDir)
+
+	origStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	relaySubAddCmd.Run(relaySubAddCmd, []string{"invalid/name", "https://example.com/sub"})
+
+	w.Close()
+	os.Stdout = origStdout
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	out := buf.String()
+
+	if !strings.Contains(out, "Invalid provider name") {
+		t.Errorf("expected 'Invalid provider name' in output, got: %s", out)
+	}
+	if strings.Contains(strings.ToLower(out), "airport") {
+		t.Errorf("output should not contain 'airport', got: %s", out)
+	}
+
+	r2, w2, _ := os.Pipe()
+	os.Stdout = w2
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		RelaySubs: map[string]string{
+			"p1": "https://example.com/sub",
+		},
+	}
+	_ = cfg.SaveEx(true)
+	relaySubListCmd.Run(relaySubListCmd, []string{})
+
+	w2.Close()
+	os.Stdout = origStdout
+
+	var buf2 bytes.Buffer
+	buf2.ReadFrom(r2)
+	listOut := buf2.String()
+
+	if !strings.Contains(listOut, "PROVIDER") {
+		t.Errorf("expected 'PROVIDER' in relay sub list output, got: %s", listOut)
+	}
+	if strings.Contains(listOut, "AIRPORT") {
+		t.Errorf("relay sub list output should not contain 'AIRPORT', got: %s", listOut)
 	}
 }
