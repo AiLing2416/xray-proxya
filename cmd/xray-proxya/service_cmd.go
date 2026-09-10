@@ -22,16 +22,20 @@ var serviceCmd = &cobra.Command{
 	Long: `Install, start, stop, restart, enable, disable, and query managed systemd units.
 
 Managed units include:
-  - xray-proxya:               Main Xray-Core proxy service
-  - xray-proxya-pathd:         PathLink ICMP health & latency probe daemon
-  - xray-proxya-ipv6-rotate:   Privileged IPv6 address rotation service
-  - xray-proxya-sub:           Subscription server service`,
+  - core / xray-proxya:               Main Xray-Core proxy service
+  - sub / xray-proxya-sub:             Subscription server service
+  - pathd / xray-proxya-pathd:         PathLink ICMP health & latency probe daemon
+  - rotate / xray-proxya-ipv6-rotate:  Privileged IPv6 address rotation service`,
 	Example: `  # Install unit files for current user or root
   xray-proxya service install
 
   # Start the main proxy service and subscription service
-  xray-proxya service start xray-proxya
-  xray-proxya service start xray-proxya-sub
+  xray-proxya service start core
+  xray-proxya service start sub
+
+  # View service logs
+  xray-proxya service logs core -n 50
+  xray-proxya service logs sub -f
 
   # Query status of all managed units
   xray-proxya service status`,
