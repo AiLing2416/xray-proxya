@@ -483,12 +483,12 @@ var resolveOutboundCmd = &cobra.Command{
 Start a temporary Xray instance with the selected relay and send explicit DNS
 queries through that relay's configured DNS path.
 
-This is useful for verifying per-relay DNS overrides from 'outbound set-dns'
+This is useful for verifying per-relay DNS overrides from 'relay set-dns'
 without changing the running service.
 `),
 	Example: strings.TrimSpace(`
-  xray-proxya outbound resolve test1 openai.com
-  xray-proxya outbound resolve via-a-test1 example.org
+  xray-proxya relay resolve test1 openai.com
+  xray-proxya relay resolve via-a-test1 example.org
 `),
 	Args: cobra.ExactArgs(2),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -815,10 +815,10 @@ clear the relay-specific override with --reset. After reset, the relay falls
 back to the global default DNS behavior generated from the active config.
 `),
 	Example: strings.TrimSpace(`
-  xray-proxya outbound set-dns test1 --strategy UseIPv4
-  xray-proxya outbound set-dns test1 --servers 1.1.1.1,8.8.8.8
-  xray-proxya outbound set-dns test1 --strategy UseIP --servers https://dns.google/dns-query
-  xray-proxya outbound set-dns test1 --reset
+  xray-proxya relay set-dns test1 --strategy UseIPv4
+  xray-proxya relay set-dns test1 --servers 1.1.1.1,8.8.8.8
+  xray-proxya relay set-dns test1 --strategy UseIP --servers https://dns.google/dns-query
+  xray-proxya relay set-dns test1 --reset
 `),
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
@@ -870,8 +870,8 @@ Set this to true only when the next hop intentionally exposes a private
 service through this relay, such as a remote PathLink agent on 127.0.0.1.
 `),
 	Example: strings.TrimSpace(`
-  xray-proxya outbound set-private-targets remote true
-  xray-proxya outbound set-private-targets remote false
+  xray-proxya relay set-private-targets remote true
+  xray-proxya relay set-private-targets remote false
 `),
 	Args: cobra.ExactArgs(2),
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {

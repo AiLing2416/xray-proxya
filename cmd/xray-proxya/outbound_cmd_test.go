@@ -1,9 +1,12 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func TestSetRelayPrivateTargets(t *testing.T) {
@@ -157,5 +160,17 @@ func TestRelayRemoveAliases(t *testing.T) {
 	stagedFinal, _ := config.LoadConfigEx(true)
 	if len(stagedFinal.CustomOutbounds) != 0 {
 		t.Fatalf("expected 0 outbounds after all removals, got %d", len(stagedFinal.CustomOutbounds))
+	}
+}
+
+func TestRelayHelpAndExamplesNoObsoleteOutbound(t *testing.T) {
+	cmds := []*cobra.Command{resolveOutboundCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd}
+	for _, cmd := range cmds {
+		if strings.Contains(cmd.Example, "xray-proxya outbound") {
+			t.Errorf("command %q Example contains obsolete 'xray-proxya outbound': %s", cmd.Name(), cmd.Example)
+		}
+		if strings.Contains(cmd.Long, "'outbound ") {
+			t.Errorf("command %q Long contains obsolete ''outbound ': %s", cmd.Name(), cmd.Long)
+		}
 	}
 }
