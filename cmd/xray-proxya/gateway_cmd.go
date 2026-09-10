@@ -1,19 +1,31 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	proxyaSELinux "xray-proxya/internal/selinux"
 	"xray-proxya/internal/tui"
+	"xray-proxya/internal/tune"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+)
+
+var (
+	gatewayEnableNow  bool
+	gatewayDisableNow bool
+	gatewayStatusJSON bool
+
+	applyPendingFunc         = applyops.ApplyPending
+	runGatewayManagementFunc = runGatewayManagement
 )
 
 var gatewayCmd = &cobra.Command{
@@ -28,65 +40,243 @@ var gatewayCmd = &cobra.Command{
 	},
 }
 
+type GatewayConfigJSON struct {
+	LocalEnabled bool   `json:"local_enabled"`
+	LANEnabled   bool   `json:"lan_enabled"`
+	Relay        string `json:"relay"`
+	Interface    string `json:"interface"`
+	State        string `json:"state"`
+}
+
+type GatewayRuntimeJSON struct {
+	TunPresent bool     `json:"tun_present"`
+	TunUp      bool     `json:"tun_up"`
+	IPForward  bool     `json:"ip_forward"`
+	Problems   []string `json:"problems"`
+}
+
+type GatewayStatusJSON struct {
+	Active  *GatewayConfigJSON `json:"active"`
+	Staging *GatewayConfigJSON `json:"staging"`
+	Runtime GatewayRuntimeJSON `json:"runtime"`
+}
+
+func toGatewayConfigJSON(cfg *config.UserConfig) *GatewayConfigJSON {
+	if cfg == nil {
+		return nil
+	}
+	state := cfg.Gateway.State
+	if state == "" {
+		state = "proxy"
+	}
+	return &GatewayConfigJSON{
+		LocalEnabled: cfg.Gateway.LocalEnabled,
+		LANEnabled:   cfg.Gateway.LANEnabled,
+		Relay:        cfg.Gateway.RelayAlias,
+		Interface:    cfg.Gateway.LANInterface,
+		State:        state,
+	}
+}
+
+func formatGatewayBoolState(enabled bool) string {
+	if enabled {
+		return "ENABLED"
+	}
+	return "DISABLED"
+}
+
+func getEffectiveGatewayState(cfg *config.UserConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if cfg.Gateway.State != "" {
+		return cfg.Gateway.State
+	}
+	return "proxy"
+}
+
 var gatewayStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show current gateway configuration and system state",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, err := config.LoadConfigEx(true)
+	RunE:  runGatewayStatus,
+}
+
+func runGatewayStatus(cmd *cobra.Command, args []string) error {
+	activeCfg, _ := config.LoadConfigEx(false)
+	stagingCfg, _ := config.LoadConfigEx(true)
+	if activeCfg == nil && stagingCfg == nil {
+		return fmt.Errorf("❌ Failed to load gateway configuration")
+	}
+
+	iface, err := net.InterfaceByName("proxya-tun")
+	tunPresent := (err == nil)
+	tunUp := tunPresent && (iface.Flags&net.FlagUp != 0)
+	ipForward := tune.IsIPv4ForwardingEnabled()
+
+	var problems []string
+	if activeCfg != nil {
+		problems = gateway.Verify(activeCfg)
+	} else if stagingCfg != nil {
+		problems = gateway.Verify(stagingCfg)
+	}
+	if problems == nil {
+		problems = []string{}
+	}
+
+	if gatewayStatusJSON {
+		out := GatewayStatusJSON{
+			Active:  toGatewayConfigJSON(activeCfg),
+			Staging: toGatewayConfigJSON(stagingCfg),
+			Runtime: GatewayRuntimeJSON{
+				TunPresent: tunPresent,
+				TunUp:      tunUp,
+				IPForward:  ipForward,
+				Problems:   problems,
+			},
+		}
+		data, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
-			fmt.Printf("❌ Failed to load gateway configuration: %v\n", err)
-			return
+			return fmt.Errorf("failed to encode JSON: %w", err)
 		}
-		fmt.Println("\n🛰️ GATEWAY CONFIGURATION (STAGING)")
-		fmt.Println("--------------------------------------------------")
-		localState := "DISABLED"
-		if cfg.Gateway.LocalEnabled {
-			localState = "ENABLED"
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Println("\n🛰️ GATEWAY CONFIGURATION")
+	fmt.Println("--------------------------------------------------")
+	if activeCfg != nil {
+		fmt.Println("ACTIVE:")
+		fmt.Printf("  Local Proxy: %s\n", formatGatewayBoolState(activeCfg.Gateway.LocalEnabled))
+		fmt.Printf("  LAN Gateway: %s\n", formatGatewayBoolState(activeCfg.Gateway.LANEnabled))
+		fmt.Printf("  Relay:       %s\n", activeCfg.Gateway.RelayAlias)
+		fmt.Printf("  LAN Iface:   %s\n", activeCfg.Gateway.LANInterface)
+		fmt.Printf("  State:       %s\n", getEffectiveGatewayState(activeCfg))
+	} else {
+		fmt.Println("ACTIVE:      (not initialized)")
+	}
+	if stagingCfg != nil {
+		fmt.Println("STAGING:")
+		fmt.Printf("  Local Proxy: %s\n", formatGatewayBoolState(stagingCfg.Gateway.LocalEnabled))
+		fmt.Printf("  LAN Gateway: %s\n", formatGatewayBoolState(stagingCfg.Gateway.LANEnabled))
+		fmt.Printf("  Relay:       %s\n", stagingCfg.Gateway.RelayAlias)
+		fmt.Printf("  LAN Iface:   %s\n", stagingCfg.Gateway.LANInterface)
+		fmt.Printf("  State:       %s\n", getEffectiveGatewayState(stagingCfg))
+		if len(stagingCfg.Gateway.BypassDNS) > 0 {
+			fmt.Printf("  Bypass DNS:  %s\n", strings.Join(stagingCfg.Gateway.BypassDNS, ", "))
 		}
-		lanState := "DISABLED"
-		if cfg.Gateway.LANEnabled {
-			lanState = "ENABLED"
+		if len(stagingCfg.Gateway.BypassCountries) > 0 {
+			fmt.Printf("  Bypass Geo:  %s\n", strings.Join(stagingCfg.Gateway.BypassCountries, ", "))
 		}
-		fmt.Printf("Local Proxy: %s\n", localState)
-		fmt.Printf("LAN Gateway: %s\n", lanState)
-		fmt.Printf("Relay:       %s\n", cfg.Gateway.RelayAlias)
-		fmt.Printf("LAN Iface:   %s\n", cfg.Gateway.LANInterface)
-		fmt.Printf("State:       %s\n", cfg.Gateway.State)
-		fmt.Printf("Bypass DNS:  %s\n", strings.Join(cfg.Gateway.BypassDNS, ", "))
-		fmt.Printf("Bypass Geo:  %s\n\n", strings.Join(cfg.Gateway.BypassCountries, ", "))
-	},
+	}
+
+	fmt.Println("\n🛰️ RUNTIME STATE")
+	fmt.Println("--------------------------------------------------")
+	tunStatus := "NOT FOUND"
+	if tunPresent {
+		if tunUp {
+			tunStatus = "UP"
+		} else {
+			tunStatus = "DOWN"
+		}
+	}
+	fmt.Printf("TUN Interface: proxya-tun (%s)\n", tunStatus)
+
+	nftStatus := "INACTIVE"
+	if exec.Command("nft", "list", "table", "inet", "xray_proxya").Run() == nil {
+		nftStatus = "ACTIVE (table inet xray_proxya)"
+	}
+	fmt.Printf("nftables:      %s\n", nftStatus)
+
+	forwardStatus := "DISABLED"
+	if ipForward {
+		forwardStatus = "ENABLED"
+	}
+	fmt.Printf("IPv4 Forward:  %s\n", forwardStatus)
+
+	if len(problems) == 0 {
+		fmt.Println("Verification:  OK (Ready)")
+	} else {
+		fmt.Println("Verification:  Issues Found:")
+		for _, p := range problems {
+			fmt.Printf("  - %s\n", p)
+		}
+	}
+	fmt.Println()
+	return nil
 }
 
 var gatewayEnableCmd = &cobra.Command{
 	Use:   "enable",
 	Short: "Turn on transparent gateway (local & lan) in staging",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.LocalEnabled = true
-		cfg.Gateway.LANEnabled = true
-		cfg.Gateway.Mode = "tun"
-		cfg.SaveEx(true)
+	RunE:  runGatewayEnable,
+}
+
+func runGatewayEnable(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("failed to load staging config: %v", err)
+	}
+	cfg.Gateway.LocalEnabled = true
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.Mode = "tun"
+	if err := cfg.SaveEx(true); err != nil {
+		return fmt.Errorf("failed to save staging config: %w", err)
+	}
+
+	if !gatewayEnableNow {
 		fmt.Println("✅ Gateway ENABLED in STAGING. Run 'apply' to commit, then 'gateway up' to update runtime rules.")
-	},
+		return nil
+	}
+
+	lines, err := applyPendingFunc(applyops.Options{Start: true})
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to apply configuration: %w", err)
+	}
+	if err := runGatewayManagementFunc("system-up"); err != nil {
+		return fmt.Errorf("failed to bring gateway runtime up: %w", err)
+	}
+	fmt.Println("✅ Gateway ENABLED and runtime rules are UP.")
+	return nil
 }
 
 var gatewayDisableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "Turn off transparent gateway (local & lan) in staging",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-		cfg.Gateway.LocalEnabled = false
-		cfg.Gateway.LANEnabled = false
-		cfg.Gateway.Mode = "tun"
-		cfg.SaveEx(true)
+	RunE:  runGatewayDisable,
+}
+
+func runGatewayDisable(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("failed to load staging config: %v", err)
+	}
+	cfg.Gateway.LocalEnabled = false
+	cfg.Gateway.LANEnabled = false
+	cfg.Gateway.Mode = "tun"
+	if err := cfg.SaveEx(true); err != nil {
+		return fmt.Errorf("failed to save staging config: %w", err)
+	}
+
+	if !gatewayDisableNow {
 		fmt.Println("✅ Gateway DISABLED in STAGING. Run 'apply' to commit, then 'gateway down' to remove runtime rules.")
-	},
+		return nil
+	}
+
+	lines, err := applyPendingFunc(applyops.Options{})
+	for _, line := range lines {
+		fmt.Println(line)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to apply configuration: %w", err)
+	}
+	if err := runGatewayManagementFunc("system-down"); err != nil {
+		return fmt.Errorf("failed to bring gateway runtime down: %w", err)
+	}
+	fmt.Println("✅ Gateway DISABLED and runtime rules are DOWN.")
+	return nil
 }
 
 var gatewaySetCmd = &cobra.Command{
@@ -429,6 +619,10 @@ var gatewayTestCmd = &cobra.Command{
 }
 
 func init() {
+	gatewayEnableCmd.Flags().BoolVar(&gatewayEnableNow, "now", false, "Immediately commit changes and bring gateway runtime up")
+	gatewayDisableCmd.Flags().BoolVar(&gatewayDisableNow, "now", false, "Immediately commit changes and bring gateway runtime down")
+	gatewayStatusCmd.Flags().BoolVar(&gatewayStatusJSON, "json", false, "Output in JSON format")
+
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name")
 	gatewaySetCmd.Flags().String("lan-interface", "", "LAN interface name")
