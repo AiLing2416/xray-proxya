@@ -238,35 +238,9 @@ func performACMEHttp01(ctx context.Context, domain, email, certDir string) (*con
 		return nil, fmt.Errorf("create order cert: %w", err)
 	}
 
-	certPath := filepath.Join(certDir, "fullchain.pem")
-	keyPath := filepath.Join(certDir, "privkey.pem")
-
-	// Save certs
-	certFile, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	certPath, keyPath, err := saveCertificateFiles(certDir, derCerts, certPrivKey)
 	if err != nil {
-		return nil, fmt.Errorf("save fullchain.pem: %w", err)
-	}
-	defer certFile.Close()
-
-	for _, b := range derCerts {
-		if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: b}); err != nil {
-			return nil, fmt.Errorf("encode certificate: %w", err)
-		}
-	}
-
-	// Save private key
-	keyBytes, err := x509.MarshalECPrivateKey(certPrivKey)
-	if err != nil {
-		return nil, fmt.Errorf("marshal EC private key: %w", err)
-	}
-	keyFile, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		return nil, fmt.Errorf("save privkey.pem: %w", err)
-	}
-	defer keyFile.Close()
-
-	if err := pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
-		return nil, fmt.Errorf("encode private key: %w", err)
+		return nil, err
 	}
 
 	// Parse first certificate to get metadata
@@ -284,6 +258,41 @@ func performACMEHttp01(ctx context.Context, domain, email, certDir string) (*con
 		Issuer:    leafCert.Issuer.CommonName,
 		AutoRenew: true,
 	}, nil
+}
+
+func saveCertificateFiles(certDir string, derCerts [][]byte, certPrivKey *ecdsa.PrivateKey) (string, string, error) {
+	certPath := filepath.Join(certDir, "fullchain.pem")
+	keyPath := filepath.Join(certDir, "privkey.pem")
+
+	// Save certs with tightened 0600 permissions
+	certFile, err := os.OpenFile(certPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", "", fmt.Errorf("save fullchain.pem: %w", err)
+	}
+	defer certFile.Close()
+
+	for _, b := range derCerts {
+		if err := pem.Encode(certFile, &pem.Block{Type: "CERTIFICATE", Bytes: b}); err != nil {
+			return "", "", fmt.Errorf("encode certificate: %w", err)
+		}
+	}
+
+	// Save private key (0600)
+	keyBytes, err := x509.MarshalECPrivateKey(certPrivKey)
+	if err != nil {
+		return "", "", fmt.Errorf("marshal EC private key: %w", err)
+	}
+	keyFile, err := os.OpenFile(keyPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		return "", "", fmt.Errorf("save privkey.pem: %w", err)
+	}
+	defer keyFile.Close()
+
+	if err := pem.Encode(keyFile, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		return "", "", fmt.Errorf("encode private key: %w", err)
+	}
+
+	return certPath, keyPath, nil
 }
 
 func getOrCreatePrivateKey(keyPath string) (crypto.Signer, error) {

@@ -2,6 +2,12 @@ package certmanager
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -57,7 +63,7 @@ func TestCheckAndRenewCerts(t *testing.T) {
 	_ = os.MkdirAll(certDir, 0700)
 	certPath := filepath.Join(certDir, "fullchain.pem")
 	keyPath := filepath.Join(certDir, "privkey.pem")
-	_ = os.WriteFile(certPath, []byte("fake cert"), 0644)
+	_ = os.WriteFile(certPath, []byte("fake cert"), 0600)
 	_ = os.WriteFile(keyPath, []byte("fake key"), 0600)
 
 	cfg := &config.UserConfig{
@@ -154,7 +160,7 @@ func TestRemoveCertificate(t *testing.T) {
 	_ = os.MkdirAll(certDir, 0700)
 	certPath := filepath.Join(certDir, "fullchain.pem")
 	keyPath := filepath.Join(certDir, "privkey.pem")
-	_ = os.WriteFile(certPath, []byte("cert"), 0644)
+	_ = os.WriteFile(certPath, []byte("cert"), 0600)
 	_ = os.WriteFile(keyPath, []byte("key"), 0600)
 
 	cfg := &config.UserConfig{
@@ -205,5 +211,51 @@ func TestRemoveCertificate(t *testing.T) {
 
 	if _, err := os.Stat(certDir); !os.IsNotExist(err) {
 		t.Errorf("Cert directory should be deleted")
+	}
+}
+
+func TestSaveCertificateFilesPermissions(t *testing.T) {
+	tempDir := t.TempDir()
+	certDir := filepath.Join(tempDir, "certs", "test.example.com")
+	if err := os.MkdirAll(certDir, 0700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	// Create dummy certificate
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test.example.com"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+	}
+	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privKey.PublicKey, privKey)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+
+	certPath, keyPath, err := saveCertificateFiles(certDir, [][]byte{derBytes}, privKey)
+	if err != nil {
+		t.Fatalf("saveCertificateFiles: %v", err)
+	}
+
+	certInfo, err := os.Stat(certPath)
+	if err != nil {
+		t.Fatalf("stat cert: %v", err)
+	}
+	if perm := certInfo.Mode().Perm(); perm != 0600 {
+		t.Fatalf("cert file perm = %o, want 0600", perm)
+	}
+
+	keyInfo, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatalf("stat key: %v", err)
+	}
+	if perm := keyInfo.Mode().Perm(); perm != 0600 {
+		t.Fatalf("key file perm = %o, want 0600", perm)
 	}
 }
