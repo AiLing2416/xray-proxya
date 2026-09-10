@@ -55,7 +55,7 @@ func TestParseSubscriptionAndDeduplication(t *testing.T) {
 	combined := strings.Join([]string{link1, link2, link3, link4}, "\n")
 	encoded := base64.StdEncoding.EncodeToString([]byte(combined))
 
-	nodes, skipped, err := ParseSubscription("myair", []byte(encoded))
+	nodes, skipped, err := ParseSubscription("myprovider", []byte(encoded))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -68,45 +68,45 @@ func TestParseSubscriptionAndDeduplication(t *testing.T) {
 		t.Fatalf("expected 3 valid nodes, got %d", len(nodes))
 	}
 
-	if nodes[0].Alias != "myair/HK-01" {
-		t.Errorf("expected first node alias 'myair/HK-01', got %q", nodes[0].Alias)
+	if nodes[0].Alias != "myprovider/HK-01" {
+		t.Errorf("expected first node alias 'myprovider/HK-01', got %q", nodes[0].Alias)
 	}
-	if nodes[1].Alias != "myair/HK-01-2" {
-		t.Errorf("expected duplicate node alias 'myair/HK-01-2', got %q", nodes[1].Alias)
+	if nodes[1].Alias != "myprovider/HK-01-2" {
+		t.Errorf("expected duplicate node alias 'myprovider/HK-01-2', got %q", nodes[1].Alias)
 	}
-	if nodes[2].Alias != "myair/US-01" {
-		t.Errorf("expected third node alias 'myair/US-01', got %q", nodes[2].Alias)
+	if nodes[2].Alias != "myprovider/US-01" {
+		t.Errorf("expected third node alias 'myprovider/US-01', got %q", nodes[2].Alias)
 	}
 }
 
 func TestComputeDiff(t *testing.T) {
 	currentOutbounds := []config.CustomOutbound{
 		{Alias: "manual-vps", Enabled: true, Config: map[string]interface{}{"port": 1111}},
-		{Alias: "air/HK-01", Enabled: true, Config: map[string]interface{}{"port": 2222}},
-		{Alias: "air/Old-Node", Enabled: true, Config: map[string]interface{}{"port": 3333}},
+		{Alias: "prov/HK-01", Enabled: true, Config: map[string]interface{}{"port": 2222}},
+		{Alias: "prov/Old-Node", Enabled: true, Config: map[string]interface{}{"port": 3333}},
 	}
 
 	newNodes := []ParsedNode{
 		{
-			Alias:  "air/HK-01",
+			Alias:  "prov/HK-01",
 			Config: map[string]interface{}{"port": 2222}, // Unchanged
 		},
 		{
-			Alias:  "air/New-Node",
+			Alias:  "prov/New-Node",
 			Config: map[string]interface{}{"port": 4444}, // Added
 		},
 	}
 
-	diff := ComputeDiff("air", currentOutbounds, newNodes)
+	diff := ComputeDiff("prov", currentOutbounds, newNodes)
 
-	if len(diff.Unchanged) != 1 || diff.Unchanged[0].Alias != "air/HK-01" {
-		t.Errorf("expected 1 unchanged node (air/HK-01)")
+	if len(diff.Unchanged) != 1 || diff.Unchanged[0].Alias != "prov/HK-01" {
+		t.Errorf("expected 1 unchanged node (prov/HK-01)")
 	}
-	if len(diff.Added) != 1 || diff.Added[0].Alias != "air/New-Node" {
-		t.Errorf("expected 1 added node (air/New-Node)")
+	if len(diff.Added) != 1 || diff.Added[0].Alias != "prov/New-Node" {
+		t.Errorf("expected 1 added node (prov/New-Node)")
 	}
-	if len(diff.Removed) != 1 || diff.Removed[0].Alias != "air/Old-Node" {
-		t.Errorf("expected 1 removed node (air/Old-Node)")
+	if len(diff.Removed) != 1 || diff.Removed[0].Alias != "prov/Old-Node" {
+		t.Errorf("expected 1 removed node (prov/Old-Node)")
 	}
 
 	// Verify merged outbounds contains manual-vps + HK-01 + New-Node

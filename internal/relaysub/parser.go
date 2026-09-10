@@ -20,15 +20,15 @@ func DecodePayload(body []byte) ([]string, error) {
 	return sharelink.DecodePayload(body)
 }
 
-// ParseSubscription parses raw subscription body bytes for an airport into a slice of ParsedNode.
+// ParseSubscription parses raw subscription body bytes for a provider into a slice of ParsedNode.
 // It skips non-proxy links (such as trojan, announcements, or invalid lines) and reports the count.
-func ParseSubscription(airportName string, body []byte) (nodes []ParsedNode, skippedCount int, err error) {
-	airportName = strings.TrimSpace(airportName)
-	if airportName == "" {
-		return nil, 0, fmt.Errorf("airport alias cannot be empty")
+func ParseSubscription(providerName string, body []byte) (nodes []ParsedNode, skippedCount int, err error) {
+	providerName = strings.TrimSpace(providerName)
+	if providerName == "" {
+		return nil, 0, fmt.Errorf("provider alias cannot be empty")
 	}
-	if strings.Contains(airportName, "/") {
-		return nil, 0, fmt.Errorf("airport alias cannot contain '/'")
+	if strings.Contains(providerName, "/") {
+		return nil, 0, fmt.Errorf("provider alias cannot contain '/'")
 	}
 
 	lines, err := DecodePayload(body)
@@ -59,7 +59,7 @@ func ParseSubscription(airportName string, body []byte) (nodes []ParsedNode, ski
 			cleanRemark = fmt.Sprintf("node-%d", idx+1)
 		}
 
-		baseAlias := fmt.Sprintf("%s/%s", airportName, cleanRemark)
+		baseAlias := fmt.Sprintf("%s/%s", providerName, cleanRemark)
 		alias := baseAlias
 		if count, exists := seenAliases[baseAlias]; exists {
 			alias = fmt.Sprintf("%s-%d", baseAlias, count+1)

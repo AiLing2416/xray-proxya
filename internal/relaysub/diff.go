@@ -19,11 +19,11 @@ type DiffResult struct {
 	MergedOutbounds []config.CustomOutbound
 }
 
-// ComputeDiff calculates the diff between current staging outbounds and newly parsed nodes for airportName.
-// It preserves other manual or other-airport outbounds, and retains existing attributes (UUID, ports, DNS)
+// ComputeDiff calculates the diff between current staging outbounds and newly parsed nodes for providerName.
+// It preserves other manual or other-provider outbounds, and retains existing attributes (UUID, ports, DNS)
 // for existing nodes that are updated or unchanged.
-func ComputeDiff(airportName string, currentOutbounds []config.CustomOutbound, newNodes []ParsedNode) DiffResult {
-	prefix := airportName + "/"
+func ComputeDiff(providerName string, currentOutbounds []config.CustomOutbound, newNodes []ParsedNode) DiffResult {
+	prefix := providerName + "/"
 	var otherOutbounds []config.CustomOutbound
 	oldMap := make(map[string]config.CustomOutbound)
 
@@ -39,19 +39,19 @@ func ComputeDiff(airportName string, currentOutbounds []config.CustomOutbound, n
 	var res DiffResult
 
 	// Process new nodes
-	var airportMerged []config.CustomOutbound
+	var providerMerged []config.CustomOutbound
 	for _, node := range newNodes {
 		newMap[node.Alias] = node
 		if old, exists := oldMap[node.Alias]; exists {
 			if configsEqual(old.Config, node.Config) {
 				res.Unchanged = append(res.Unchanged, old)
-				airportMerged = append(airportMerged, old)
+				providerMerged = append(providerMerged, old)
 			} else {
 				// Updated config, preserve custom outbound settings
 				updated := old
 				updated.Config = node.Config
 				res.Updated = append(res.Updated, updated)
-				airportMerged = append(airportMerged, updated)
+				providerMerged = append(providerMerged, updated)
 			}
 		} else {
 			// Newly added
@@ -62,7 +62,7 @@ func ComputeDiff(airportName string, currentOutbounds []config.CustomOutbound, n
 				Config:   node.Config,
 			}
 			res.Added = append(res.Added, newCO)
-			airportMerged = append(airportMerged, newCO)
+			providerMerged = append(providerMerged, newCO)
 		}
 	}
 
@@ -73,8 +73,8 @@ func ComputeDiff(airportName string, currentOutbounds []config.CustomOutbound, n
 		}
 	}
 
-	// Merged: other outbounds + new airport outbounds
-	res.MergedOutbounds = append(append([]config.CustomOutbound{}, otherOutbounds...), airportMerged...)
+	// Merged: other outbounds + new provider outbounds
+	res.MergedOutbounds = append(append([]config.CustomOutbound{}, otherOutbounds...), providerMerged...)
 	return res
 }
 

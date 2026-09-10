@@ -75,27 +75,27 @@ func TestRelaySubLifecycle(t *testing.T) {
 	defer server.Close()
 
 	// 1. Test relay sub add
-	relaySubAddCmd.Run(relaySubAddCmd, []string{"myair", server.URL})
+	relaySubAddCmd.Run(relaySubAddCmd, []string{"myprovider", server.URL})
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil {
 		t.Fatalf("failed to reload staging config: %v", err)
 	}
-	if cfg.RelaySubs["myair"] != server.URL {
-		t.Errorf("expected RelaySubs[myair] = %q, got %q", server.URL, cfg.RelaySubs["myair"])
+	if cfg.RelaySubs["myprovider"] != server.URL {
+		t.Errorf("expected RelaySubs[myprovider] = %q, got %q", server.URL, cfg.RelaySubs["myprovider"])
 	}
-	if len(cfg.CustomOutbounds) != 3 { // manual-vps + myair/HK-01 + myair/US-01
+	if len(cfg.CustomOutbounds) != 3 { // manual-vps + myprovider/HK-01 + myprovider/US-01
 		t.Fatalf("expected 3 custom outbounds, got %d", len(cfg.CustomOutbounds))
 	}
 
 	// Verify completion functions
 	names := getRelaySubNames()
-	if len(names) != 1 || names[0] != "myair" {
-		t.Errorf("expected getRelaySubNames() = ['myair'], got %v", names)
+	if len(names) != 1 || names[0] != "myprovider" {
+		t.Errorf("expected getRelaySubNames() = ['myprovider'], got %v", names)
 	}
 	comp, _ := completeRelaySubNamesArg(&cobra.Command{}, nil, "")
-	if len(comp) != 1 || comp[0] != "myair" {
-		t.Errorf("expected completion = ['myair'], got %v", comp)
+	if len(comp) != 1 || comp[0] != "myprovider" {
+		t.Errorf("expected completion = ['myprovider'], got %v", comp)
 	}
 
 	// 2. Test relay sub update (with updated payload)
@@ -103,41 +103,41 @@ func TestRelaySubLifecycle(t *testing.T) {
 	link4 := "ss://YWVzLTEyOC1nY206cGFzc3dvcmQ=@9.9.9.9:8388#JP-01"                      // new (US-01 removed)
 	payload = base64.StdEncoding.EncodeToString([]byte(link3 + "\n" + link4))
 
-	relaySubUpdateCmd.Run(relaySubUpdateCmd, []string{"myair"})
+	relaySubUpdateCmd.Run(relaySubUpdateCmd, []string{"myprovider"})
 
 	cfg, err = config.LoadConfigEx(true)
 	if err != nil {
 		t.Fatalf("failed to reload staging config: %v", err)
 	}
-	if len(cfg.CustomOutbounds) != 3 { // manual-vps + myair/HK-01 + myair/JP-01
+	if len(cfg.CustomOutbounds) != 3 { // manual-vps + myprovider/HK-01 + myprovider/JP-01
 		t.Fatalf("expected 3 custom outbounds after update, got %d", len(cfg.CustomOutbounds))
 	}
 	foundJP := false
 	foundUS := false
 	for _, co := range cfg.CustomOutbounds {
-		if co.Alias == "myair/JP-01" {
+		if co.Alias == "myprovider/JP-01" {
 			foundJP = true
 		}
-		if co.Alias == "myair/US-01" {
+		if co.Alias == "myprovider/US-01" {
 			foundUS = true
 		}
 	}
 	if !foundJP {
-		t.Errorf("expected myair/JP-01 to be present after update")
+		t.Errorf("expected myprovider/JP-01 to be present after update")
 	}
 	if foundUS {
-		t.Errorf("expected myair/US-01 to be removed after update")
+		t.Errorf("expected myprovider/US-01 to be removed after update")
 	}
 
 	// 3. Test relay sub remove
-	relaySubRemoveCmd.Run(relaySubRemoveCmd, []string{"myair"})
+	relaySubRemoveCmd.Run(relaySubRemoveCmd, []string{"myprovider"})
 
 	cfg, err = config.LoadConfigEx(true)
 	if err != nil {
 		t.Fatalf("failed to reload staging config: %v", err)
 	}
-	if _, exists := cfg.RelaySubs["myair"]; exists {
-		t.Errorf("expected myair removed from RelaySubs")
+	if _, exists := cfg.RelaySubs["myprovider"]; exists {
+		t.Errorf("expected myprovider removed from RelaySubs")
 	}
 	if len(cfg.CustomOutbounds) != 1 || cfg.CustomOutbounds[0].Alias != "manual-vps" {
 		t.Fatalf("expected only manual-vps remaining, got %v", cfg.CustomOutbounds)

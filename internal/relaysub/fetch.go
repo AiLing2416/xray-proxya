@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	// DefaultUserAgent uses v2rayN for broad airport compatibility.
+	// DefaultUserAgent uses v2rayN for broad provider compatibility.
 	DefaultUserAgent = "v2rayN/6.23"
 	// MaxSubscriptionBodyBytes limits subscription payload to 5MB to prevent memory exhaustion.
 	MaxSubscriptionBodyBytes = 5 * 1024 * 1024
