@@ -27,6 +27,8 @@ func Execute() {
 }
 
 func init() {
+	rootCmd.Version = Version
+	rootCmd.SetVersionTemplate("Xray-Proxya v{{.Version}}\n")
 	rootCmd.AddCommand(versionCmd)
 }
 
@@ -34,6 +36,6 @@ var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print the version",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("Xray-Proxya v%s\n", Version)
+		cmd.Printf("Xray-Proxya v%s\n", Version)
 	},
 }
