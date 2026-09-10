@@ -98,7 +98,7 @@ ausearch -m AVC,USER_AVC -ts recent -i
 ```bash
 xray-proxya init --role gateway
 xray-proxya doctor selinux
-xray-proxya outbound add remote 'vless://...'
+xray-proxya relay add remote 'vless://...'
 xray-proxya gateway set --relay remote --lan eth0
 xray-proxya apply
 xray-proxya gateway up

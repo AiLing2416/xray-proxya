@@ -76,9 +76,9 @@ Here the interface is `eth0`.
 ## Import The Upstream Node
 
 ```bash
-xray-proxya outbound add remote-v029 "vless://..."
+xray-proxya relay add remote-v029 "vless://..."
 xray-proxya apply
-xray-proxya outbound test remote-v029
+xray-proxya relay test remote-v029
 ```
 
 Expected result:
@@ -89,7 +89,7 @@ UDP: OK
 DNS: OK
 ```
 
-If `outbound test` fails, fix the upstream first before enabling transparent gateway rules.
+If `relay test` fails, fix the upstream first before enabling transparent gateway rules.
 
 ## Configure Transparent Gateway
 
@@ -269,8 +269,8 @@ journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
 ## Command Summary
 
 ```bash
-xray-proxya outbound add remote-v029 "vless://..."
-xray-proxya outbound test remote-v029
+xray-proxya relay add remote-v029 "vless://..."
+xray-proxya relay test remote-v029
 
 xray-proxya gateway set --relay remote-v029 --lan eth0
 xray-proxya gateway enable

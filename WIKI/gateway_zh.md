@@ -76,9 +76,9 @@ default via 10.47.0.1 dev eth0 proto static
 ## 导入上游节点
 
 ```bash
-xray-proxya outbound add remote-v029 "vless://..."
+xray-proxya relay add remote-v029 "vless://..."
 xray-proxya apply
-xray-proxya outbound test remote-v029
+xray-proxya relay test remote-v029
 ```
 
 期望看到：
@@ -89,7 +89,7 @@ UDP: OK
 DNS: OK
 ```
 
-如果 `outbound test` 不通过，不要继续配置透明网关，先修复上游节点。
+如果 `relay test` 不通过，不要继续配置透明网关，先修复上游节点。
 
 ## 配置透明网关
 
@@ -269,8 +269,8 @@ journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
 ## 命令速查
 
 ```bash
-xray-proxya outbound add remote-v029 "vless://..."
-xray-proxya outbound test remote-v029
+xray-proxya relay add remote-v029 "vless://..."
+xray-proxya relay test remote-v029
 
 xray-proxya gateway set --relay remote-v029 --lan eth0
 xray-proxya gateway enable

@@ -18,8 +18,8 @@ Xray-Proxya is a Go-based Xray manager for two main jobs: running a role-based p
 - **ACME Certificate Automation (`cert`)**:
   - Native Let's Encrypt TLS issuance and automated renewal with root-shell protection.
 - **Upstream Subscription Lifecycle (`relay sub`)**:
-  - Add, update, diff, and remove upstream airport subscriptions directly in STAGING.
-  - Automatic base64 decoding, node remark sanitization (`<airport>/<node>`), and active gateway relay protection.
+  - Add, update, diff, and remove upstream provider subscriptions directly in STAGING.
+  - Automatic base64 decoding, node remark sanitization (`<provider>/<node>`), and active gateway relay protection.
 - **Multi-Tenant Guest Isolation & Notifications**:
   - Create multiple guests with separate UUIDs.
   - Unit-aware quotas supporting Base-10 (KB, MB, GB, TB) and Base-2 (KiB, MiB, GiB, TiB).
@@ -97,8 +97,8 @@ xray-proxya apply
 
 ### 3. Upstream Subscriptions & Relay Nodes
 ```bash
-# Import an airport subscription into STAGING
-xray-proxya relay sub add myairport "https://sub.example.com/api/v1/..."
+# Import an upstream subscription provider into STAGING
+xray-proxya relay sub add myprovider "https://sub.example.com/api/v1/..."
 
 # Or add a single relay node manually
 xray-proxya relay add hk-node "vless://..."
@@ -200,7 +200,7 @@ xray-proxya path mtu 1.1.1.1
 - `cert`: Manage ACME / Let's Encrypt TLS certificates (root-only: add, list, renew, remove).
 - `presets`: Manage pre-defined inbound protocols (Reality, Vision, KEM, etc.) and Web camouflage (`--skin`, `--skin-domain`, `--sni`).
 - `relay`: Manage relay nodes, upstream subscriptions (`relay sub`), physical interface bindings, and test suites (`test`, `info`, `speed`).
-- `guests`: Manage multi-tenant users, unit-aware quotas, staged alert triggers, and dedicated outbounds.
+- `guests`: Manage multi-tenant users, unit-aware quotas, staged alert triggers, and dedicated relays.
 - `gateway`: Configure transparent proxy settings and dual-stack forwarding.
 - `doctor`: Run automated health diagnostics (`doctor check`) and manage shell completion (`doctor completion`).
 - `tui`: Full-screen terminal dashboard for real-time monitoring and configuration.

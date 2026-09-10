@@ -88,7 +88,7 @@ The transparent Gateway is strictly root-managed. Configure your upstream relay 
 ```bash
 xray-proxya init --role gateway
 xray-proxya doctor selinux
-xray-proxya outbound add remote 'vless://...'
+xray-proxya relay add remote 'vless://...'
 xray-proxya gateway set --relay remote --lan eth0
 xray-proxya apply
 xray-proxya gateway up
