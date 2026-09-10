@@ -3,9 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/pflag"
 )
 
 func TestValidateManualTargetUsesSNIAndDefaultHTTPSPort(t *testing.T) {
@@ -365,5 +368,35 @@ func TestPresetsSetMinVer(t *testing.T) {
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[3].MinClientVer != "" {
 		t.Errorf("unsupported mode got MinClientVer = %q, want empty", loaded.Presets[3].MinClientVer)
+	}
+}
+
+func TestPresetsSetOnOffConflict(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSReality, Enabled: true, Port: 443},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	presetOn = false
+	presetOff = false
+
+	if err := presetsSetCmd.ParseFlags([]string{"--on", "--off"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+
+	err := presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
+	if err == nil || !strings.Contains(err.Error(), "Cannot specify both --on and --off") {
+		t.Fatalf("expected conflict error, got %v", err)
 	}
 }

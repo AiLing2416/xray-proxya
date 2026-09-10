@@ -176,306 +176,296 @@ Web camouflage skin highlights:
 `),
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
-		id, _ := strconv.Atoi(args[0])
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
+		if err := runPresetsSet(cmd, args); err != nil {
+			fmt.Println(err)
 		}
-		if id < 1 || id > len(cfg.Presets) {
-			fmt.Printf("❌ Invalid ID: %d\n", id)
-			return
+	},
+	RunE: runPresetsSet,
+}
+
+func runPresetsSet(cmd *cobra.Command, args []string) error {
+	if cmd.Flags().Changed("on") && cmd.Flags().Changed("off") {
+		return fmt.Errorf("❌ Error: Cannot specify both --on and --off")
+	}
+
+	id, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("❌ Invalid ID: %s", args[0])
+	}
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+	}
+	if id < 1 || id > len(cfg.Presets) {
+		return fmt.Errorf("❌ Invalid ID: %d", id)
+	}
+
+	idx := id - 1
+	m := &cfg.Presets[idx]
+
+	selectors := 0
+	if presetSNIAWS {
+		selectors++
+	}
+	if presetSNIGCP {
+		selectors++
+	}
+	if presetSNIOracle {
+		selectors++
+	}
+	if presetSNIVendor != "" {
+		selectors++
+	}
+	if presetSNIManual != "" || presetSNI != "" {
+		selectors++
+	}
+
+	if selectors > 1 {
+		return fmt.Errorf("❌ Error: Conflicting SNI target flags specified. Please specify only one target selection option.")
+	}
+
+	hasRealityReq := presetSNICheck || selectors > 0 || presetDest != ""
+	if hasRealityReq && !supportsReality(m.Mode) {
+		return fmt.Errorf("❌ Error: Mode [%s] does not support REALITY target/SNI configuration (requires VLESS Reality or Vision).", m.Mode)
+	}
+
+	if presetOff {
+		m.Enabled = false
+	}
+	if presetOn {
+		m.Enabled = true
+	}
+	if presetPort > 0 {
+		m.Port = presetPort
+	}
+	if presetRegen {
+		m.RegenFlag = true
+	}
+
+	// 1. Manual SNI mode
+	if presetSNIManual != "" || presetSNI != "" {
+		manualDomain := presetSNIManual
+		if manualDomain == "" {
+			manualDomain = presetSNI
+		}
+		normHost, _, _, err := config.NormalizeRealityTarget(manualDomain)
+		if err != nil {
+			return fmt.Errorf("❌ Error: Invalid domain %q: %v", manualDomain, err)
+		}
+		dest := presetDest
+		if dest == "" {
+			dest = net.JoinHostPort(normHost, "443")
+		} else {
+			destHost, _, normDest, err := config.NormalizeRealityTarget(dest)
+			if err != nil {
+				return fmt.Errorf("❌ Error: Invalid --dest %q: %v", dest, err)
+			}
+			if destHost != normHost {
+				return fmt.Errorf("❌ Error: --dest host (%s) must match --sni host (%s)", destHost, normHost)
+			}
+			dest = normDest
 		}
 
-		idx := id - 1
-		m := &cfg.Presets[idx]
-
-		selectors := 0
-		if presetSNIAWS {
-			selectors++
+		// Security risk inspection
+		if isRisky, reason := config.InspectRealityDomainRisk(normHost); isRisky {
+			fmt.Printf("⚠️  WARNING: Target domain %q is flagged as risky:\n    -> %s\n", normHost, reason)
+			if !presetSNIForce {
+				confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", normHost))
+				if !confirmed {
+					return fmt.Errorf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.")
+				}
+				fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
+			} else {
+				fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
+			}
 		}
+
+		fmt.Printf("🔍 Validating manual REALITY target %s (%s)...\n", normHost, dest)
+		if err := validateManualTarget(normHost, dest); err != nil {
+			return fmt.Errorf("❌ Error: Target %s failed qualification: %v", dest, err)
+		}
+		m.SNI = normHost
+		m.Dest = dest
+		fmt.Printf("🎯 Validated manual REALITY target: %s (%s)\n", normHost, dest)
+	} else if selectors > 0 {
+		// 2. Specific Cloud Vendor Pool
+		vendor := config.VendorAWS
 		if presetSNIGCP {
-			selectors++
-		}
-		if presetSNIOracle {
-			selectors++
-		}
-		if presetSNIVendor != "" {
-			selectors++
-		}
-		if presetSNIManual != "" || presetSNI != "" {
-			selectors++
+			vendor = config.VendorGCP
+		} else if presetSNIOracle {
+			vendor = config.VendorOracle
+		} else if presetSNIVendor != "" {
+			vendor = config.NormalizeVendor(presetSNIVendor)
 		}
 
-		if selectors > 1 {
-			fmt.Println("❌ Error: Conflicting SNI target flags specified. Please specify only one target selection option.")
-			return
+		if !config.IsValidCloudVendor(vendor) {
+			return fmt.Errorf("❌ Error: Unknown cloud vendor %q", presetSNIVendor)
 		}
 
-		hasRealityReq := presetSNICheck || selectors > 0 || presetDest != ""
-		if hasRealityReq && !supportsReality(m.Mode) {
-			fmt.Printf("❌ Error: Mode [%s] does not support REALITY target/SNI configuration (requires VLESS Reality or Vision).\n", m.Mode)
-			return
+		domains, err := config.GetCloudVendorDomains(vendor)
+		if err != nil {
+			return fmt.Errorf("❌ Error obtaining [%s] domain pool: %v", vendor, err)
+		}
+		fmt.Printf("🔍 Probing and benchmarking [%s] candidate pool (%d domains)...\n", vendor, len(domains))
+		bestDomain, rtt, err := config.BenchmarkDomains(domains, 5*time.Second)
+		if err != nil {
+			return fmt.Errorf("❌ Error benchmarking [%s] domains: %v", vendor, err)
+		}
+		m.SNI = bestDomain
+		m.Dest = net.JoinHostPort(bestDomain, "443")
+		fmt.Printf("🎯 Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
+	} else if presetDest != "" {
+		// 3. Adjust dest port only for existing SNI
+		if m.SNI == "" {
+			return fmt.Errorf("❌ Error: Current preset has no SNI configured. Please specify --sni.")
+		}
+		destHost, _, normDest, err := config.NormalizeRealityTarget(presetDest)
+		if err != nil {
+			return fmt.Errorf("❌ Error: Invalid --dest %q: %v", presetDest, err)
+		}
+		if destHost != m.SNI {
+			return fmt.Errorf("❌ Error: --dest host (%s) must match current SNI (%s)", destHost, m.SNI)
 		}
 
-		if presetOff {
-			m.Enabled = false
-		}
-		if presetOn {
-			m.Enabled = true
-		}
-		if presetPort > 0 {
-			m.Port = presetPort
-		}
-		if presetRegen {
-			m.RegenFlag = true
-		}
-
-		// 1. Manual SNI mode
-		if presetSNIManual != "" || presetSNI != "" {
-			manualDomain := presetSNIManual
-			if manualDomain == "" {
-				manualDomain = presetSNI
-			}
-			normHost, _, _, err := config.NormalizeRealityTarget(manualDomain)
-			if err != nil {
-				fmt.Printf("❌ Error: Invalid domain %q: %v\n", manualDomain, err)
-				return
-			}
-			dest := presetDest
-			if dest == "" {
-				dest = net.JoinHostPort(normHost, "443")
+		if isRisky, reason := config.InspectRealityDomainRisk(destHost); isRisky {
+			fmt.Printf("⚠️  WARNING: Target destination %q is flagged as risky:\n    -> %s\n", destHost, reason)
+			if !presetSNIForce {
+				confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", destHost))
+				if !confirmed {
+					return fmt.Errorf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.")
+				}
+				fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
 			} else {
-				destHost, _, normDest, err := config.NormalizeRealityTarget(dest)
-				if err != nil {
-					fmt.Printf("❌ Error: Invalid --dest %q: %v\n", dest, err)
-					return
-				}
-				if destHost != normHost {
-					fmt.Printf("❌ Error: --dest host (%s) must match --sni host (%s)\n", destHost, normHost)
-					return
-				}
-				dest = normDest
+				fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
 			}
-
-			// Security risk inspection
-			if isRisky, reason := config.InspectRealityDomainRisk(normHost); isRisky {
-				fmt.Printf("⚠️  WARNING: Target domain %q is flagged as risky:\n    -> %s\n", normHost, reason)
-				if !presetSNIForce {
-					confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", normHost))
-					if !confirmed {
-						fmt.Printf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.\n")
-						return
-					}
-					fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
-				} else {
-					fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
-				}
-			}
-
-			fmt.Printf("🔍 Validating manual REALITY target %s (%s)...\n", normHost, dest)
-			if err := validateManualTarget(normHost, dest); err != nil {
-				fmt.Printf("❌ Error: Target %s failed qualification: %v\n", dest, err)
-				return
-			}
-			m.SNI = normHost
-			m.Dest = dest
-			fmt.Printf("🎯 Validated manual REALITY target: %s (%s)\n", normHost, dest)
-		} else if selectors > 0 {
-			// 2. Specific Cloud Vendor Pool
-			vendor := config.VendorAWS
-			if presetSNIGCP {
-				vendor = config.VendorGCP
-			} else if presetSNIOracle {
-				vendor = config.VendorOracle
-			} else if presetSNIVendor != "" {
-				vendor = config.NormalizeVendor(presetSNIVendor)
-			}
-
-			if !config.IsValidCloudVendor(vendor) {
-				fmt.Printf("❌ Error: Unknown cloud vendor %q\n", presetSNIVendor)
-				return
-			}
-
-			domains, err := config.GetCloudVendorDomains(vendor)
-			if err != nil {
-				fmt.Printf("❌ Error obtaining [%s] domain pool: %v\n", vendor, err)
-				return
-			}
-			fmt.Printf("🔍 Probing and benchmarking [%s] candidate pool (%d domains)...\n", vendor, len(domains))
-			bestDomain, rtt, err := config.BenchmarkDomains(domains, 5*time.Second)
-			if err != nil {
-				fmt.Printf("❌ Error benchmarking [%s] domains: %v\n", vendor, err)
-				return
-			}
-			m.SNI = bestDomain
-			m.Dest = net.JoinHostPort(bestDomain, "443")
-			fmt.Printf("🎯 Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
-		} else if presetDest != "" {
-			// 3. Adjust dest port only for existing SNI
-			if m.SNI == "" {
-				fmt.Println("❌ Error: Current preset has no SNI configured. Please specify --sni.")
-				return
-			}
-			destHost, _, normDest, err := config.NormalizeRealityTarget(presetDest)
-			if err != nil {
-				fmt.Printf("❌ Error: Invalid --dest %q: %v\n", presetDest, err)
-				return
-			}
-			if destHost != m.SNI {
-				fmt.Printf("❌ Error: --dest host (%s) must match current SNI (%s)\n", destHost, m.SNI)
-				return
-			}
-
-			if isRisky, reason := config.InspectRealityDomainRisk(destHost); isRisky {
-				fmt.Printf("⚠️  WARNING: Target destination %q is flagged as risky:\n    -> %s\n", destHost, reason)
-				if !presetSNIForce {
-					confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", destHost))
-					if !confirmed {
-						fmt.Printf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.\n")
-						return
-					}
-					fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
-				} else {
-					fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
-				}
-			}
-
-			fmt.Printf("🔍 Validating REALITY destination %s...\n", normDest)
-			if err := checkTargetAvailability(normDest); err != nil {
-				fmt.Printf("❌ Error: Target %s failed qualification: %v\n", normDest, err)
-				return
-			}
-			m.Dest = normDest
-			fmt.Printf("🎯 Validated REALITY destination: %s\n", normDest)
-		} else if presetSNICheck {
-			// 4. Validate current SNI/Dest without changing
-			if m.SNI == "" {
-				fmt.Println("❌ Error: Current preset has no SNI configured.")
-				return
-			}
-			target := m.Dest
-			if target == "" {
-				target = net.JoinHostPort(m.SNI, "443")
-			}
-			fmt.Printf("🔍 Validating current REALITY target %s (%s)...\n", m.SNI, target)
-			if err := checkTargetAvailability(target); err != nil {
-				fmt.Printf("❌ Error: Current REALITY target %s failed qualification: %v\n", target, err)
-				return
-			}
-			m.Dest = target
-			fmt.Printf("🎯 Validated current REALITY target: %s (%s)\n", m.SNI, target)
 		}
 
-		// 4.5. Web camouflage skin port configuration
-		if cmd.Flags().Changed("skin-port") {
-			if presetSkinPort < 1024 || presetSkinPort > 65535 {
-				fmt.Printf("❌ Error: Invalid --skin-port %d. Must be between 1024 and 65535.\n", presetSkinPort)
-				return
-			}
-			cfg.SkinPort = presetSkinPort
-			for i := range cfg.Presets {
-				if cfg.Presets[i].Skin != "" && (strings.HasPrefix(cfg.Presets[i].Dest, "127.0.0.1:") || strings.HasPrefix(cfg.Presets[i].Dest, "localhost:")) {
-					cfg.Presets[i].Dest = fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
-				}
-			}
-			fmt.Printf("🎨 Configured Web Skin port to %d.\n", cfg.SkinPort)
+		fmt.Printf("🔍 Validating REALITY destination %s...\n", normDest)
+		if err := checkTargetAvailability(normDest); err != nil {
+			return fmt.Errorf("❌ Error: Target %s failed qualification: %v", normDest, err)
 		}
+		m.Dest = normDest
+		fmt.Printf("🎯 Validated REALITY destination: %s\n", normDest)
+	} else if presetSNICheck {
+		// 4. Validate current SNI/Dest without changing
+		if m.SNI == "" {
+			return fmt.Errorf("❌ Error: Current preset has no SNI configured.")
+		}
+		target := m.Dest
+		if target == "" {
+			target = net.JoinHostPort(m.SNI, "443")
+		}
+		fmt.Printf("🔍 Validating current REALITY target %s (%s)...\n", m.SNI, target)
+		if err := checkTargetAvailability(target); err != nil {
+			return fmt.Errorf("❌ Error: Current REALITY target %s failed qualification: %v", target, err)
+		}
+		m.Dest = target
+		fmt.Printf("🎯 Validated current REALITY target: %s (%s)\n", m.SNI, target)
+	}
 
-		// 5. Web camouflage skin configuration
-		if cmd.Flags().Changed("skin") && presetSkin != "" {
-			if !supportsSkin(m.Mode) {
-				fmt.Printf("❌ Error: Mode [%s] does not support Web camouflage skin.\n", m.Mode)
-				return
+	// 4.5. Web camouflage skin port configuration
+	if cmd.Flags().Changed("skin-port") {
+		if presetSkinPort < 1024 || presetSkinPort > 65535 {
+			return fmt.Errorf("❌ Error: Invalid --skin-port %d. Must be between 1024 and 65535.", presetSkinPort)
+		}
+		cfg.SkinPort = presetSkinPort
+		for i := range cfg.Presets {
+			if cfg.Presets[i].Skin != "" && (strings.HasPrefix(cfg.Presets[i].Dest, "127.0.0.1:") || strings.HasPrefix(cfg.Presets[i].Dest, "localhost:")) {
+				cfg.Presets[i].Dest = fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
 			}
-			st := strings.ToLower(strings.TrimSpace(presetSkin))
-			if st == "off" || st == "none" {
-				m.Skin = ""
-				m.SkinDomain = ""
-				if strings.HasPrefix(m.Dest, "127.0.0.1:") && m.SNI != "" {
-					m.Dest = net.JoinHostPort(m.SNI, "443")
-				}
-				fmt.Printf("🎨 Disabled Web Skin for preset [%s].\n", m.Mode)
-			} else {
-				if !config.IsValidSkin(st) {
-					fmt.Printf("❌ Error: Unknown skin %q. Available skins: %s\n", presetSkin, strings.Join(config.SupportedSkins, ", "))
-					return
-				}
-				effectiveDomain := presetSkinDomain
-				if effectiveDomain == "" {
-					if m.SkinDomain != "" {
-						effectiveDomain = m.SkinDomain
-					} else if m.SNI != "" {
-						effectiveDomain = m.SNI
-					}
-				}
-				effectiveDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(effectiveDomain)), ".")
-				if effectiveDomain == "" {
-					fmt.Println("❌ Error: Setting --skin requires a valid domain. Please specify --skin-domain <domain> or run 'xray-proxya cert add <domain>' first.")
-					return
-				}
-				cert := cfg.FindCert(effectiveDomain)
-				if cert == nil {
-					fmt.Printf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.\n", effectiveDomain, effectiveDomain)
-					return
-				}
-				m.Skin = st
-				m.SkinDomain = effectiveDomain
-				skinPort := cfg.EnsureSkinPort()
-				if supportsReality(m.Mode) {
-					m.SNI = effectiveDomain
-					m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
-				}
-				fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
-					m.Skin, m.SkinDomain, skinPort, cert.ExpiresAt.Format("2006-01-02"))
+		}
+		fmt.Printf("🎨 Configured Web Skin port to %d.\n", cfg.SkinPort)
+	}
+
+	// 5. Web camouflage skin configuration
+	if cmd.Flags().Changed("skin") && presetSkin != "" {
+		if !supportsSkin(m.Mode) {
+			return fmt.Errorf("❌ Error: Mode [%s] does not support Web camouflage skin.", m.Mode)
+		}
+		st := strings.ToLower(strings.TrimSpace(presetSkin))
+		if st == "off" || st == "none" {
+			m.Skin = ""
+			m.SkinDomain = ""
+			if strings.HasPrefix(m.Dest, "127.0.0.1:") && m.SNI != "" {
+				m.Dest = net.JoinHostPort(m.SNI, "443")
 			}
-		} else if cmd.Flags().Changed("skin-domain") {
-			if m.Skin == "" {
-				fmt.Println("❌ Error: Cannot set --skin-domain without setting --skin.")
-				return
+			fmt.Printf("🎨 Disabled Web Skin for preset [%s].\n", m.Mode)
+		} else {
+			if !config.IsValidSkin(st) {
+				return fmt.Errorf("❌ Error: Unknown skin %q. Available skins: %s", presetSkin, strings.Join(config.SupportedSkins, ", "))
 			}
-			effectiveDomain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSkinDomain)), ".")
+			effectiveDomain := presetSkinDomain
+			if effectiveDomain == "" {
+				if m.SkinDomain != "" {
+					effectiveDomain = m.SkinDomain
+				} else if m.SNI != "" {
+					effectiveDomain = m.SNI
+				}
+			}
+			effectiveDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(effectiveDomain)), ".")
+			if effectiveDomain == "" {
+				return fmt.Errorf("❌ Error: Setting --skin requires a valid domain. Please specify --skin-domain <domain> or run 'xray-proxya cert add <domain>' first.")
+			}
 			cert := cfg.FindCert(effectiveDomain)
 			if cert == nil {
-				fmt.Printf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.\n", effectiveDomain, effectiveDomain)
-				return
+				return fmt.Errorf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
 			}
+			m.Skin = st
 			m.SkinDomain = effectiveDomain
+			skinPort := cfg.EnsureSkinPort()
 			if supportsReality(m.Mode) {
 				m.SNI = effectiveDomain
+				m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
 			}
-			fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+			fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
+				m.Skin, m.SkinDomain, skinPort, cert.ExpiresAt.Format("2006-01-02"))
 		}
-
-		if cmd.Flags().Changed("min-ver") {
-			if !supportsReality(m.Mode) {
-				fmt.Printf("❌ Error: Mode [%s] does not support REALITY min-ver configuration (requires VLESS Reality or Vision).\n", m.Mode)
-				return
-			}
-			normVer, err := config.NormalizeMinClientVersion(presetMinVer)
-			if err != nil {
-				fmt.Printf("❌ Error: Invalid --min-ver %q: %v\n", presetMinVer, err)
-				return
-			}
-			m.MinClientVer = normVer
+	} else if cmd.Flags().Changed("skin-domain") {
+		if m.Skin == "" {
+			return fmt.Errorf("❌ Error: Cannot set --skin-domain without setting --skin.")
 		}
-
-		cfg.SaveEx(true)
-		status := "OFF"
-		if m.Enabled {
-			status = "ON"
+		effectiveDomain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSkinDomain)), ".")
+		cert := cfg.FindCert(effectiveDomain)
+		if cert == nil {
+			return fmt.Errorf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
 		}
-		extraInfo := ""
+		m.SkinDomain = effectiveDomain
 		if supportsReality(m.Mode) {
-			extraInfo = fmt.Sprintf(", MinVer: %s", config.ResolveMinClientVersion(m))
+			m.SNI = effectiveDomain
 		}
-		skinInfo := ""
-		if m.Skin != "" {
-			skinInfo = fmt.Sprintf(", Skin: %s (%s)", m.Skin, m.SkinDomain)
+		fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+	}
+
+	if cmd.Flags().Changed("min-ver") {
+		if !supportsReality(m.Mode) {
+			return fmt.Errorf("❌ Error: Mode [%s] does not support REALITY min-ver configuration (requires VLESS Reality or Vision).", m.Mode)
 		}
-		fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s%s [STAGING]\n",
-			m.Mode, status, m.Port, m.SNI, m.Dest, extraInfo, skinInfo)
-		fmt.Println("🚀 Run 'apply' to commit changes.")
-	},
+		normVer, err := config.NormalizeMinClientVersion(presetMinVer)
+		if err != nil {
+			return fmt.Errorf("❌ Error: Invalid --min-ver %q: %v", presetMinVer, err)
+		}
+		m.MinClientVer = normVer
+	}
+
+	if err := cfg.SaveEx(true); err != nil {
+		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+	}
+	status := "OFF"
+	if m.Enabled {
+		status = "ON"
+	}
+	extraInfo := ""
+	if supportsReality(m.Mode) {
+		extraInfo = fmt.Sprintf(", MinVer: %s", config.ResolveMinClientVersion(m))
+	}
+	skinInfo := ""
+	if m.Skin != "" {
+		skinInfo = fmt.Sprintf(", Skin: %s (%s)", m.Skin, m.SkinDomain)
+	}
+	fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s%s [STAGING]\n",
+		m.Mode, status, m.Port, m.SNI, m.Dest, extraInfo, skinInfo)
+	fmt.Println("🚀 Run 'apply' to commit changes.")
+	return nil
 }
 
 func getPresetIDs() []string {
