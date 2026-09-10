@@ -21,16 +21,69 @@ import (
 const pathdUnit = "xray-proxya-pathd"
 
 var (
-	pathListen    string
-	pathToken     string
-	pathIdle      int
-	pathRelay     string
-	pathGenerate  bool
-	pathPingTTL   int
-	pathTraceHops int
-	pathMTUMin    int
-	pathMTUMax    int
+	pathListen     string
+	pathToken      string
+	pathIdle       int
+	pathRelay      string
+	pathGenerate   bool
+	pathPingTTL    int
+	pathTraceHops  int
+	pathMTUMin     int
+	pathMTUMax     int
+	pathStatusJSON bool
+	pathPingJSON   bool
+	pathTraceJSON  bool
+	pathMTUJSON    bool
 )
+
+type PathStatusJSON struct {
+	Role           string `json:"role"`
+	ServiceState   string `json:"service_state"`
+	ServiceEnabled string `json:"service_enabled"`
+	Listen         string `json:"listen,omitempty"`
+	Relay          string `json:"relay,omitempty"`
+	Connected      bool   `json:"connected"`
+	InFlight       int    `json:"in_flight"`
+	LastActivity   string `json:"last_activity,omitempty"`
+	LastRTTMs      int64  `json:"last_rtt_ms,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+}
+
+type PathPingJSON struct {
+	TargetIP   string `json:"target_ip"`
+	Relay      string `json:"relay"`
+	Success    bool   `json:"success"`
+	Echo       bool   `json:"echo"`
+	RTTMs      int64  `json:"rtt_ms"`
+	DurationMs int64  `json:"duration_ms"`
+	Error      string `json:"error,omitempty"`
+}
+
+type PathTraceHopJSON struct {
+	TTL       int    `json:"ttl"`
+	Responder string `json:"responder"`
+	RTTMs     int64  `json:"rtt_ms"`
+	Echo      bool   `json:"echo"`
+	Status    string `json:"status"`
+}
+
+type PathTraceJSON struct {
+	TargetIP string             `json:"target_ip"`
+	Relay    string             `json:"relay"`
+	MaxHops  int                `json:"max_hops"`
+	Reached  bool               `json:"reached"`
+	Hops     []PathTraceHopJSON `json:"hops"`
+}
+
+type PathMTUJSON struct {
+	TargetIP      string `json:"target_ip"`
+	Relay         string `json:"relay"`
+	MinMTU        int    `json:"min_mtu"`
+	MaxMTU        int    `json:"max_mtu"`
+	DiscoveredMTU int    `json:"discovered_mtu"`
+	ProbeKind     string `json:"probe_kind"`
+	Success       bool   `json:"success"`
+}
 
 func pathdConfigPath() string { return filepath.Join(config.GetConfigDir(), "pathd.json") }
 func pathdBinaryPath() string {
@@ -224,11 +277,10 @@ var pathUnsetCmd = &cobra.Command{Use: "unset", Short: "Remove a relay PathLink 
 	}
 	fmt.Println("✅ PathLink configuration removed from STAGING. Run 'apply'.")
 }}
-var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service state", Run: func(cmd *cobra.Command, args []string) {
+var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service state", RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	serviceState := "unknown"
 	serviceEnabled := "unknown"
@@ -244,26 +296,75 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 			serviceEnabled = "disabled"
 		}
 	}
-	fmt.Printf("Role: %s\n", cfg.Role)
+
+	var statusJSON PathStatusJSON
+	statusJSON.Role = string(cfg.Role)
+	statusJSON.ServiceState = serviceState
+	statusJSON.ServiceEnabled = serviceEnabled
+
 	if cfg.Role == config.RoleServer {
+		statusJSON.Listen = cfg.Path.Listen
+		if pathStatusJSON {
+			data, err := json.MarshalIndent(statusJSON, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Printf("Role: %s\n", cfg.Role)
 		if cfg.Path.Token == "" {
 			fmt.Printf("Agent: %s (%s); configuration: missing\n", serviceState, serviceEnabled)
-			return
+			return nil
 		}
 		fmt.Printf("Agent: %s (%s), %s\n", serviceState, serviceEnabled, cfg.Path.Listen)
-		return
+		return nil
 	}
 	if cfg.Role != config.RoleGateway {
-		return
+		if pathStatusJSON {
+			data, _ := json.MarshalIndent(statusJSON, "", "  ")
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Printf("Role: %s\n", cfg.Role)
+		return nil
 	}
+
+	statusJSON.Relay = cfg.Gateway.RelayAlias
+	endpoint, relay, pathErr := selectedGatewayPath(cfg)
+	if pathErr == nil && endpoint != nil {
+		statusJSON.Listen = endpoint.Listen
+	}
+
+	state, runtimeErr := readPathRuntime()
+	if runtimeErr == nil {
+		statusJSON.Connected = state.Connected
+		statusJSON.InFlight = state.InFlight
+		if !state.LastActivity.IsZero() {
+			statusJSON.LastActivity = time.Since(state.LastActivity).Round(time.Second).String()
+		}
+		statusJSON.LastRTTMs = state.LastRTTMs
+		statusJSON.LastError = state.LastError
+	}
+
+	if pathStatusJSON {
+		data, err := json.MarshalIndent(statusJSON, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("Role: %s\n", cfg.Role)
 	fmt.Printf("Relay: %s\n", cfg.Gateway.RelayAlias)
-	if endpoint, relay, err := selectedGatewayPath(cfg); err != nil {
-		fmt.Printf("PathLink credentials: unavailable (%v)\n", err)
-		return
-	} else {
-		fmt.Printf("PathLink credentials: configured for %s (%s)\n", relay, endpoint.Listen)
+	if pathErr != nil {
+		fmt.Printf("PathLink credentials: unavailable (%v)\n", pathErr)
+		return nil
 	}
-	if state, err := readPathRuntime(); err == nil {
+	fmt.Printf("PathLink credentials: configured for %s (%s)\n", relay, endpoint.Listen)
+
+	if runtimeErr == nil {
 		connection := "idle/disconnected"
 		if state.Connected {
 			connection = "connected"
@@ -278,9 +379,10 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 		if state.LastError != "" {
 			fmt.Printf("Last error: %s\n", state.LastError)
 		}
-		return
+		return nil
 	}
 	fmt.Println("PathLink runtime: unavailable (run gateway up with PathLink credentials configured)")
+	return nil
 }}
 
 func selectedGatewayPath(cfg *config.UserConfig) (*config.PathConfig, string, error) {
@@ -319,82 +421,150 @@ func selectedGatewayPath(cfg *config.UserConfig) (*config.PathConfig, string, er
 	return nil, "", fmt.Errorf("selected relay %q does not exist", cfg.Gateway.RelayAlias)
 }
 
-var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one real ICMP echo through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
-	if os.Geteuid() != 0 {
-		fmt.Println("❌ path ping requires root on the Gateway.")
-		return
-	}
+var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one real ICMP echo through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
+	}
+	if cfg.Role == config.RoleServer {
+		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("❌ path ping requires root on the Gateway.")
 	}
 	endpoint, relay, err := selectedGatewayPath(cfg)
 	if err != nil {
-		fmt.Printf("❌ path ping requires Gateway PathLink credentials: %v\n", err)
-		return
+		return fmt.Errorf("❌ path ping requires Gateway PathLink credentials: %w", err)
 	}
 	ip, err := resolvePublicTarget(args[0])
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	socks, err := activePathdSOCKSAddress()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
 	started := time.Now()
-	probe, err := client.ProbeTTL(ip, pathPingTTL)
-	if err != nil {
-		fmt.Printf("❌ %s through %s: %v\n", ip, relay, err)
-		return
+	probe, probeErr := client.ProbeTTL(ip, pathPingTTL)
+	duration := time.Since(started)
+
+	if pathPingJSON {
+		out := PathPingJSON{
+			TargetIP:   ip.String(),
+			Relay:      relay,
+			DurationMs: duration.Milliseconds(),
+		}
+		if probeErr != nil {
+			out.Success = false
+			out.Error = probeErr.Error()
+			data, _ := json.MarshalIndent(out, "", "  ")
+			fmt.Println(string(data))
+			return fmt.Errorf("probe failed: %w", probeErr)
+		}
+		out.Echo = probe.Echo
+		out.Success = probe.Echo
+		out.RTTMs = probe.RTT.Milliseconds()
+		if !probe.Echo {
+			if probe.Error() != nil {
+				out.Error = probe.Error().Error()
+			} else {
+				out.Error = "no echo reply received"
+			}
+			data, _ := json.MarshalIndent(out, "", "  ")
+			fmt.Println(string(data))
+			return fmt.Errorf("probe did not receive echo reply: %s", out.Error)
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	if probeErr != nil {
+		return fmt.Errorf("❌ %s through %s: %w", ip, relay, probeErr)
 	}
 	if !probe.Echo {
-		fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, time.Since(started).Round(time.Millisecond), probe.Error())
-		return
+		fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, duration.Round(time.Millisecond), probe.Error())
+		return fmt.Errorf("probe did not receive echo reply: %v", probe.Error())
 	}
-	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, time.Since(started).Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
+	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, duration.Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
+	return nil
 }}
 
-var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace remote ICMP hops through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
-	if os.Geteuid() != 0 {
-		fmt.Println("❌ path trace requires root on the Gateway.")
-		return
-	}
-	if pathTraceHops < 1 || pathTraceHops > 255 {
-		fmt.Println("❌ --max-hops must be between 1 and 255.")
-		return
-	}
+var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace remote ICMP hops through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
+	}
+	if cfg.Role == config.RoleServer {
+		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("❌ path trace requires root on the Gateway.")
+	}
+	if pathTraceHops < 1 || pathTraceHops > 255 {
+		return fmt.Errorf("❌ --max-hops must be between 1 and 255.")
 	}
 	endpoint, relay, err := selectedGatewayPath(cfg)
 	if err != nil {
-		fmt.Printf("❌ path trace requires Gateway PathLink credentials: %v\n", err)
-		return
+		return fmt.Errorf("❌ path trace requires Gateway PathLink credentials: %w", err)
 	}
 	ip, err := resolvePublicTarget(args[0])
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	socks, err := activePathdSOCKSAddress()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
+
+	if pathTraceJSON {
+		traceJSON := PathTraceJSON{
+			TargetIP: ip.String(),
+			Relay:    relay,
+			MaxHops:  pathTraceHops,
+			Hops:     []PathTraceHopJSON{},
+		}
+		for ttl := 1; ttl <= pathTraceHops; ttl++ {
+			probe, probeErr := client.ProbeTTL(ip, ttl)
+			hop := PathTraceHopJSON{
+				TTL: ttl,
+			}
+			if probeErr != nil {
+				hop.Status = probeErr.Error()
+				traceJSON.Hops = append(traceJSON.Hops, hop)
+				continue
+			}
+			if probe.Responder != nil {
+				hop.Responder = probe.Responder.String()
+			}
+			hop.Echo = probe.Echo
+			hop.RTTMs = probe.RTT.Milliseconds()
+			if probe.Echo {
+				hop.Status = "echo reply"
+				traceJSON.Reached = true
+				traceJSON.Hops = append(traceJSON.Hops, hop)
+				break
+			}
+			hop.Status = pathDiagnosticLabel(probe)
+			traceJSON.Hops = append(traceJSON.Hops, hop)
+		}
+		data, _ := json.MarshalIndent(traceJSON, "", "  ")
+		fmt.Println(string(data))
+		if !traceJSON.Reached {
+			return fmt.Errorf("trace stopped after %d hops without an echo reply", pathTraceHops)
+		}
+		return nil
+	}
+
 	fmt.Printf("Path trace to %s through %s (max %d hops)\n", ip, relay, pathTraceHops)
 	for ttl := 1; ttl <= pathTraceHops; ttl++ {
-		probe, err := client.ProbeTTL(ip, ttl)
-		if err != nil {
-			fmt.Printf("%2d  *  %v\n", ttl, err)
+		probe, probeErr := client.ProbeTTL(ip, ttl)
+		if probeErr != nil {
+			fmt.Printf("%2d  *  %v\n", ttl, probeErr)
 			continue
 		}
 		responder := "unknown"
@@ -403,11 +573,12 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 		}
 		if probe.Echo {
 			fmt.Printf("%2d  %-39s  %s  echo reply\n", ttl, responder, probe.RTT.Round(time.Millisecond))
-			return
+			return nil
 		}
 		fmt.Printf("%2d  %-39s  %s  %s\n", ttl, responder, probe.RTT.Round(time.Millisecond), pathDiagnosticLabel(probe))
 	}
 	fmt.Printf("Trace stopped after %d hops without an echo reply.\n", pathTraceHops)
+	return fmt.Errorf("trace stopped after %d hops without an echo reply", pathTraceHops)
 }}
 
 func pathDiagnosticLabel(probe pathd.ProbeResult) string {
@@ -420,25 +591,24 @@ func pathDiagnosticLabel(probe pathd.ProbeResult) string {
 	return probe.Error().Error()
 }
 
-var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively discover path MTU through the selected relay", Args: cobra.ExactArgs(1), Run: func(cmd *cobra.Command, args []string) {
-	if os.Geteuid() != 0 {
-		fmt.Println("❌ path mtu requires root on the Gateway.")
-		return
-	}
+var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively discover path MTU through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
+	}
+	if cfg.Role == config.RoleServer {
+		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("❌ path mtu requires root on the Gateway.")
 	}
 	endpoint, relay, err := selectedGatewayPath(cfg)
 	if err != nil {
-		fmt.Printf("❌ path mtu requires Gateway PathLink credentials: %v\n", err)
-		return
+		return fmt.Errorf("❌ path mtu requires Gateway PathLink credentials: %w", err)
 	}
 	ip, err := resolvePublicTarget(args[0])
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	minimum := pathMTUMin
 	if minimum == 0 {
@@ -448,13 +618,11 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 		}
 	}
 	if pathMTUMax < minimum || minimum < 28 || pathMTUMax > 65535 {
-		fmt.Println("❌ invalid --min/--max MTU range.")
-		return
+		return fmt.Errorf("❌ invalid --min/--max MTU range.")
 	}
 	socks, err := activePathdSOCKSAddress()
 	if err != nil {
-		fmt.Println("❌", err)
-		return
+		return fmt.Errorf("❌ %w", err)
 	}
 	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
@@ -466,28 +634,50 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 	if minimum < ipHeader+icmpHeader {
 		minimum = ipHeader + icmpHeader
 	}
-	fmt.Printf("Active PMTU to %s through %s (%d–%d bytes)\n", ip, relay, minimum, pathMTUMax)
+	probeKind := map[bool]string{true: "IPv4 DF", false: "IPv6"}[ip.To4() != nil]
+
+	if !pathMTUJSON {
+		fmt.Printf("Active PMTU to %s through %s (%d–%d bytes)\n", ip, relay, minimum, pathMTUMax)
+	}
 	low, high, best := minimum, pathMTUMax, 0
 	for low <= high {
 		candidate := low + (high-low)/2
 		probe, probeErr := client.ProbeWithOptions(ip, pathd.ProbeOptions{TTL: 64, PayloadSize: candidate - ipHeader - icmpHeader, DontFragment: ip.To4() != nil})
 		if probeErr != nil {
 			if strings.Contains(strings.ToLower(probeErr.Error()), "message too long") {
-				fmt.Printf("  %d bytes: too large\n", candidate)
+				if !pathMTUJSON {
+					fmt.Printf("  %d bytes: too large\n", candidate)
+				}
 				high = candidate - 1
 				continue
 			}
-			fmt.Printf("❌ probe at %d bytes failed: %v\n", candidate, probeErr)
-			return
+			if pathMTUJSON {
+				out := PathMTUJSON{
+					TargetIP:      ip.String(),
+					Relay:         relay,
+					MinMTU:        minimum,
+					MaxMTU:        pathMTUMax,
+					DiscoveredMTU: best,
+					ProbeKind:     probeKind,
+					Success:       false,
+				}
+				data, _ := json.MarshalIndent(out, "", "  ")
+				fmt.Println(string(data))
+			}
+			return fmt.Errorf("❌ probe at %d bytes failed: %w", candidate, probeErr)
 		}
 		if probe.Echo {
-			fmt.Printf("  %d bytes: reply (%s)\n", candidate, probe.RTT.Round(time.Millisecond))
+			if !pathMTUJSON {
+				fmt.Printf("  %d bytes: reply (%s)\n", candidate, probe.RTT.Round(time.Millisecond))
+			}
 			best = candidate
 			low = candidate + 1
 			continue
 		}
 		if probe.IsPacketTooBig(ip) {
-			fmt.Printf("  %d bytes: packet too big%s\n", candidate, pathReportedMTU(probe))
+			if !pathMTUJSON {
+				fmt.Printf("  %d bytes: packet too big%s\n", candidate, pathReportedMTU(probe))
+			}
 			if probe.MTU > 0 && probe.MTU < candidate {
 				high = probe.MTU
 			} else {
@@ -495,19 +685,60 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 			}
 			continue
 		}
-		fmt.Printf("❌ probe at %d bytes returned %s\n", candidate, pathDiagnosticLabel(probe))
-		return
+		if pathMTUJSON {
+			out := PathMTUJSON{
+				TargetIP:      ip.String(),
+				Relay:         relay,
+				MinMTU:        minimum,
+				MaxMTU:        pathMTUMax,
+				DiscoveredMTU: best,
+				ProbeKind:     probeKind,
+				Success:       false,
+			}
+			data, _ := json.MarshalIndent(out, "", "  ")
+			fmt.Println(string(data))
+		}
+		return fmt.Errorf("❌ probe at %d bytes returned %s", candidate, pathDiagnosticLabel(probe))
 	}
+
 	if best == 0 {
-		fmt.Printf("❌ no successful probe in %d–%d bytes.\n", minimum, pathMTUMax)
-		return
+		if pathMTUJSON {
+			out := PathMTUJSON{
+				TargetIP:      ip.String(),
+				Relay:         relay,
+				MinMTU:        minimum,
+				MaxMTU:        pathMTUMax,
+				DiscoveredMTU: 0,
+				ProbeKind:     probeKind,
+				Success:       false,
+			}
+			data, _ := json.MarshalIndent(out, "", "  ")
+			fmt.Println(string(data))
+		}
+		return fmt.Errorf("❌ no successful probe in %d–%d bytes", minimum, pathMTUMax)
 	}
-	probeKind := map[bool]string{true: "IPv4 DF", false: "IPv6"}[ip.To4() != nil]
+
+	if pathMTUJSON {
+		out := PathMTUJSON{
+			TargetIP:      ip.String(),
+			Relay:         relay,
+			MinMTU:        minimum,
+			MaxMTU:        pathMTUMax,
+			DiscoveredMTU: best,
+			ProbeKind:     probeKind,
+			Success:       true,
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
 	if best == pathMTUMax {
 		fmt.Printf("✅ Path MTU: at least %d bytes (no limit found in the requested range; active %s probe)\n", best, probeKind)
-		return
+		return nil
 	}
 	fmt.Printf("✅ Path MTU: %d bytes (active %s probe)\n", best, probeKind)
+	return nil
 }}
 
 func pathReportedMTU(probe pathd.ProbeResult) string {
@@ -581,12 +812,16 @@ func init() {
 	noFileComp := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	pathStatusCmd.Flags().BoolVar(&pathStatusJSON, "json", false, "output in JSON format")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
+	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "output in JSON format")
 	pathPingCmd.ValidArgsFunction = noFileComp
 	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
+	pathTraceCmd.Flags().BoolVar(&pathTraceJSON, "json", false, "output in JSON format")
 	pathTraceCmd.ValidArgsFunction = noFileComp
 	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
 	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "largest IP packet MTU to probe")
+	pathMTUCmd.Flags().BoolVar(&pathMTUJSON, "json", false, "output in JSON format")
 	pathMTUCmd.ValidArgsFunction = noFileComp
 
 	pathCmd.AddCommand(pathSetCmd, pathUnsetCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
