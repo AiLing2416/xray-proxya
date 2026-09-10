@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -170,3 +171,45 @@ func TestBuildApplyImpactGuestSubListenerChange(t *testing.T) {
 		t.Fatalf("expected guest sub listener change to restart sub listener")
 	}
 }
+
+func TestApplyCmdFlagsAndDryRun(t *testing.T) {
+	// 1. Verify flags registered
+	if applyCmd.Flags().Lookup("dry-run") == nil {
+		t.Fatal("expected --dry-run flag on applyCmd")
+	}
+	if applyCmd.Flags().Lookup("start") == nil {
+		t.Fatal("expected --start flag on applyCmd")
+	}
+
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	active := &config.UserConfig{Role: config.RoleServer, UUID: "orig-uuid"}
+	staging := &config.UserConfig{Role: config.RoleServer, UUID: "new-uuid"}
+	if err := active.SaveEx(false); err != nil {
+		t.Fatalf("save active: %v", err)
+	}
+	if err := staging.SaveEx(true); err != nil {
+		t.Fatalf("save staging: %v", err)
+	}
+
+	dryRunApply = true
+	t.Cleanup(func() { dryRunApply = false })
+
+	out := captureStdout(t, func() {
+		if err := applyCmd.RunE(applyCmd, nil); err != nil {
+			t.Fatalf("applyCmd.RunE failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "DRY-RUN: Changes preview") {
+		t.Fatalf("expected dry-run preview in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "uuid") {
+		t.Fatalf("expected uuid in changed sections, got:\n%s", out)
+	}
+	if !config.StagingExists() {
+		t.Fatal("staging file should still exist after apply --dry-run")
+	}
+}
+

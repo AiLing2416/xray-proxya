@@ -20,8 +20,10 @@ type Impact struct {
 }
 
 type Options struct {
-	Force bool
-	Full  bool
+	Force  bool
+	Full   bool
+	DryRun bool
+	Start  bool
 }
 
 func ApplyPending(opts Options) ([]string, error) {
@@ -50,6 +52,12 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		return nil, fmt.Errorf("failed to load STAGING config: %w", err)
 	}
 
+	impact := BuildImpact(activeCfg, cfg)
+
+	if opts.DryRun {
+		return BuildDryRunPreview(activeCfg, cfg, impact, opts), nil
+	}
+
 	if err := presets.RegenerateMarkedModes(cfg); err != nil {
 		return nil, fmt.Errorf("failed to regenerate preset secrets: %w", err)
 	}
@@ -57,7 +65,6 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		return nil, fmt.Errorf("failed to persist regenerated STAGING config: %w", err)
 	}
 
-	impact := BuildImpact(activeCfg, cfg)
 	gatewaySyncRequired := cfg.Role == config.RoleGateway && impact.GatewayRuntimeChanged
 
 	actx := &ApplyContext{
@@ -385,3 +392,88 @@ func guestsAffectGuestSub(activeGuests, stagingGuests []config.GuestConfig) bool
 	}
 	return false
 }
+
+// BuildDryRunPreview formats the dry-run inspection output without altering any system state.
+func BuildDryRunPreview(activeCfg, stagingCfg *config.UserConfig, impact Impact, opts Options) []string {
+	lines := []string{
+		"🔎 DRY-RUN: Changes preview (No files modified, no services affected)",
+		"----------------------------------------------------------------------",
+	}
+
+	sectionsStr := fmt.Sprintf("%v", impact.ChangedSections)
+	if len(impact.ChangedSections) == 0 {
+		sectionsStr = "[]"
+	}
+	lines = append(lines, fmt.Sprintf("Changed Sections : %s", sectionsStr))
+	lines = append(lines, "Service Actions:")
+
+	var actions []string
+
+	// 1. Core Service
+	if opts.Full || impact.XrayConfigChanged {
+		coreActive := service.IsUnitActive(service.MainUnit)
+		if coreActive {
+			actions = append(actions, "  - Core Service        : [State: Active]  -> Will RESTART")
+		} else {
+			if opts.Start {
+				actions = append(actions, "  - Core Service        : [State: Stopped] -> Will START (--start requested)")
+			} else {
+				actions = append(actions, "  - Core Service        : [State: Stopped] -> Will keep STOPPED (config only)")
+			}
+		}
+	}
+
+	// 2. Subscription Service
+	if opts.Full || impact.SubListenerChanged {
+		subActive := service.IsUnitActive(service.SubUnit)
+		if subActive {
+			actions = append(actions, "  - Subscription Service: [State: Active]  -> Will RESTART")
+		} else {
+			if opts.Start {
+				actions = append(actions, "  - Subscription Service: [State: Stopped] -> Will START (--start requested)")
+			} else {
+				actions = append(actions, "  - Subscription Service: [State: Stopped] -> Will keep STOPPED (config only)")
+			}
+		}
+	} else if impact.SubContentChanged {
+		actions = append(actions, "  - Subscription Service: (Hot-reload on next request, no restart needed)")
+	}
+
+	// 3. Pathd Service
+	if impact.PathdConfigChanged {
+		pathdActive := service.IsUnitActive(service.PathdUnit)
+		if pathdActive {
+			actions = append(actions, "  - Pathd Service       : [State: Active]  -> Will RESTART")
+		} else {
+			if opts.Start {
+				actions = append(actions, "  - Pathd Service       : [State: Stopped] -> Will START (--start requested)")
+			} else {
+				actions = append(actions, "  - Pathd Service       : [State: Stopped] -> Will keep STOPPED (config only)")
+			}
+		}
+	}
+
+	// 4. IPv6 Rotate Service
+	if impact.IPv6RotationChanged {
+		rotateActive := service.IsUnitActive(service.RotateUnit)
+		if rotateActive {
+			actions = append(actions, "  - IPv6-Rotate Service : [State: Active]  -> Will RESTART")
+		} else {
+			if opts.Start {
+				actions = append(actions, "  - IPv6-Rotate Service : [State: Stopped] -> Will START (--start requested)")
+			} else {
+				actions = append(actions, "  - IPv6-Rotate Service : [State: Stopped] -> Will keep STOPPED (config only)")
+			}
+		}
+	}
+
+	if len(actions) == 0 {
+		lines = append(lines, "  (No services affected; configuration changes take effect without restart)")
+	} else {
+		lines = append(lines, actions...)
+	}
+
+	lines = append(lines, "----------------------------------------------------------------------")
+	return lines
+}
+

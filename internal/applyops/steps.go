@@ -8,6 +8,7 @@ import (
 
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/service"
 	"xray-proxya/internal/xray"
 )
 
@@ -148,6 +149,12 @@ func (s *PathdSyncStep) Run(ctx *ApplyContext) error {
 	}
 	if pathdWasActive {
 		ctx.AppendLine("✅ Pathd configuration synchronized and active service restarted.")
+	} else if ctx.Options.Start && os.Geteuid() == 0 && service.IsUnitInstalled(service.PathdUnit) {
+		ctx.AppendLine("🚀 Starting Pathd service (--start requested)...")
+		if err := service.Start(service.PathdUnit); err != nil {
+			return fmt.Errorf("start Pathd service: %w", err)
+		}
+		ctx.AppendLine("✅ Pathd service started.")
 	} else {
 		ctx.AppendLine("✅ Pathd configuration synchronized (service is stopped; skipping restart).")
 	}
@@ -172,6 +179,12 @@ func (s *IPv6RotateSyncStep) Run(ctx *ApplyContext) error {
 			return fmt.Errorf("reload IPv6 rotation service: %w", err)
 		}
 		ctx.AppendLine("🔄 IPv6 rotation service reloaded.")
+	} else if ctx.Options.Start && os.Geteuid() == 0 && service.IsUnitInstalled(service.RotateUnit) {
+		ctx.AppendLine("🚀 Starting IPv6 rotation service (--start requested)...")
+		if err := service.Start(service.RotateUnit); err != nil {
+			return fmt.Errorf("start IPv6 rotation service: %w", err)
+		}
+		ctx.AppendLine("✅ IPv6 rotation service started.")
 	} else {
 		ctx.AppendLine("ℹ️  IPv6 rotation service is stopped; skipping reload.")
 	}
@@ -197,7 +210,19 @@ func (s *XrayGatewaySyncStep) Run(ctx *ApplyContext) error {
 
 	if opts.Full || impact.XrayConfigChanged {
 		if !xrayActive {
-			ctx.AppendLine("ℹ️  Xray service is stopped; skipping restart.")
+			if opts.Start {
+				ctx.AppendLine("🚀 Starting Xray service (--start requested)...")
+				if err := service.Start(service.MainUnit); err != nil {
+					ctx.AppendLine(fmt.Sprintf("❌ Error starting Xray service: %v", err))
+					return fmt.Errorf("start Xray service: %w", err)
+				}
+				xrayActive = true
+				ctx.XrayRestarted = true
+			} else {
+				ctx.AppendLine("ℹ️  Xray service is currently stopped (skipping restart).")
+				ctx.AppendLine("   💡 Hint: To start the service with new configuration, run:")
+				ctx.AppendLine("      xray-proxya service start core")
+			}
 		} else if ctx.GatewaySyncRequired {
 			ctx.AppendLine("🔄 Restarting Xray and synchronizing Gateway runtime...")
 		} else {
@@ -257,7 +282,18 @@ func (s *SubServiceSyncStep) Run(ctx *ApplyContext) error {
 				}
 				ctx.SubRestarted = true
 			} else {
-				ctx.AppendLine("ℹ️  Subscription service is stopped; skipping restart.")
+				if opts.Start {
+					ctx.AppendLine("🚀 Starting subscription service (--start requested)...")
+					if err := service.Start(service.SubUnit); err != nil {
+						ctx.AppendLine(fmt.Sprintf("❌ Error starting subscription service: %v", err))
+						return fmt.Errorf("start subscription service: %w", err)
+					}
+					ctx.SubRestarted = true
+				} else {
+					ctx.AppendLine("ℹ️  Subscription service is currently stopped (skipping restart).")
+					ctx.AppendLine("   💡 Hint: To start the service with new configuration, run:")
+					ctx.AppendLine("      xray-proxya service start sub")
+				}
 			}
 		} else if impact.SubListenerChanged {
 			ctx.AppendLine("ℹ️  Subscription listener changed, but no installed subscription service was found.")
