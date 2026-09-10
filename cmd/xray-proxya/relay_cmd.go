@@ -964,9 +964,64 @@ func runSetPrivateTargetsRelay(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+var setOutboundCmd = &cobra.Command{
+	Use:               "set [alias]",
+	Short:             "Configure parameters for a relay node in STAGING",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE:              runSetOutbound,
+}
+
+func runSetOutbound(cmd *cobra.Command, args []string) error {
+	alias := args[0]
+	hasPrivate := cmd.Flags().Changed("private")
+	hasNoPrivate := cmd.Flags().Changed("no-private")
+
+	if !hasPrivate && !hasNoPrivate {
+		return fmt.Errorf("❌ Error: No parameter supplied")
+	}
+	if hasPrivate && hasNoPrivate {
+		return fmt.Errorf("❌ Error: Conflicting flags specified")
+	}
+
+	var allow bool
+	if hasPrivate {
+		val, err := cmd.Flags().GetBool("private")
+		if err != nil {
+			return err
+		}
+		allow = val
+	} else {
+		val, err := cmd.Flags().GetBool("no-private")
+		if err != nil {
+			return err
+		}
+		allow = !val
+	}
+
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return fmt.Errorf("❌ %w", err)
+	}
+	if !setRelayPrivateTargets(cfg, alias, allow) {
+		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		return fmt.Errorf("❌ %w", err)
+	}
+	state := "blocked"
+	if allow {
+		state = "allowed"
+	}
+	fmt.Printf("✅ Private targets are %s for relay '%s' in STAGING.\n", state, alias)
+	fmt.Println("🚀 Run 'apply' to commit changes.")
+	return nil
+}
+
 var setPrivateTargetsRelayCmd = &cobra.Command{
-	Use:   "set-private-targets [alias] [true|false]",
-	Short: "Allow or block relay access to next-hop private addresses (STAGING)",
+	Use:    "set-private-targets [alias] [true|false]",
+	Hidden: true,
+	Short:  "Allow or block relay access to next-hop private addresses (STAGING)",
 	Long: strings.TrimSpace(`
 Each relay link authenticates as the user associated with its outbound. By
 default, that user cannot forward loopback or private-address requests to the
@@ -1061,7 +1116,9 @@ func init() {
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
+	setOutboundCmd.Flags().BoolP("private", "p", false, "Allow relay access to next-hop private addresses")
+	setOutboundCmd.Flags().Bool("no-private", false, "Block relay access to next-hop private addresses")
 	listOutboundCmd.Flags().BoolVar(&relayListJSON, "json", false, "Output relay list in JSON format")
-	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, removeOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, probeLocalOutboundCmd, resolveOutboundCmd)
+	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, removeOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setOutboundCmd, setPrivateTargetsRelayCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }

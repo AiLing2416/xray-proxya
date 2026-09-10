@@ -164,7 +164,7 @@ func TestRelayRemoveAliases(t *testing.T) {
 }
 
 func TestRelayHelpAndExamplesNoObsoleteOutbound(t *testing.T) {
-	cmds := []*cobra.Command{resolveOutboundCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd}
+	cmds := []*cobra.Command{resolveOutboundCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, setOutboundCmd}
 	for _, cmd := range cmds {
 		if strings.Contains(cmd.Example, "xray-proxya outbound") {
 			t.Errorf("command %q Example contains obsolete 'xray-proxya outbound': %s", cmd.Name(), cmd.Example)
@@ -172,5 +172,87 @@ func TestRelayHelpAndExamplesNoObsoleteOutbound(t *testing.T) {
 		if strings.Contains(cmd.Long, "'outbound ") {
 			t.Errorf("command %q Long contains obsolete ''outbound ': %s", cmd.Name(), cmd.Long)
 		}
+	}
+}
+
+func resetSetOutboundFlags() {
+	_ = setOutboundCmd.Flags().Set("private", "false")
+	setOutboundCmd.Flags().Lookup("private").Changed = false
+	_ = setOutboundCmd.Flags().Set("no-private", "false")
+	setOutboundCmd.Flags().Lookup("no-private").Changed = false
+}
+
+func TestSetPrivateTargetsHidden(t *testing.T) {
+	if !setPrivateTargetsRelayCmd.Hidden {
+		t.Errorf("expected setPrivateTargetsRelayCmd to be hidden")
+	}
+}
+
+func TestRelaySetCommand(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "node1", AllowPrivateTargets: false},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	// 1. Test empty flags error
+	resetSetOutboundFlags()
+	err := setOutboundCmd.RunE(setOutboundCmd, []string{"node1"})
+	if err == nil || !strings.Contains(err.Error(), "No parameter supplied") {
+		t.Fatalf("expected 'No parameter supplied' error, got %v", err)
+	}
+
+	// 2. Test conflicting flags
+	resetSetOutboundFlags()
+	_ = setOutboundCmd.Flags().Set("private", "true")
+	_ = setOutboundCmd.Flags().Set("no-private", "true")
+	err = setOutboundCmd.RunE(setOutboundCmd, []string{"node1"})
+	if err == nil || !strings.Contains(err.Error(), "Conflicting flags specified") {
+		t.Fatalf("expected 'Conflicting flags specified' error, got %v", err)
+	}
+
+	// 3. Test -p / --private allows private targets
+	resetSetOutboundFlags()
+	_ = setOutboundCmd.Flags().Set("private", "true")
+	err = setOutboundCmd.RunE(setOutboundCmd, []string{"node1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !loaded.CustomOutbounds[0].AllowPrivateTargets {
+		t.Fatalf("expected AllowPrivateTargets == true")
+	}
+
+	// 4. Test --no-private blocks private targets
+	resetSetOutboundFlags()
+	_ = setOutboundCmd.Flags().Set("no-private", "true")
+	err = setOutboundCmd.RunE(setOutboundCmd, []string{"node1"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	loaded, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if loaded.CustomOutbounds[0].AllowPrivateTargets {
+		t.Fatalf("expected AllowPrivateTargets == false")
+	}
+
+	// 5. Test unknown node error
+	resetSetOutboundFlags()
+	_ = setOutboundCmd.Flags().Set("private", "true")
+	err = setOutboundCmd.RunE(setOutboundCmd, []string{"missing-node"})
+	if err == nil || !strings.Contains(err.Error(), "Relay 'missing-node' not found") {
+		t.Fatalf("expected relay not found error, got %v", err)
 	}
 }
