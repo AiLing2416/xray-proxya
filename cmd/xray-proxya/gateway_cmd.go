@@ -13,6 +13,7 @@ import (
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 var gatewayCmd = &cobra.Command{
@@ -92,75 +93,132 @@ var gatewaySetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Configure gateway parameters in STAGING",
 	Run: func(cmd *cobra.Command, args []string) {
-		relay, _ := cmd.Flags().GetString("relay")
-		lan, _ := cmd.Flags().GetString("lan")
-		state, _ := cmd.Flags().GetString("state")
-		lanEnable, _ := cmd.Flags().GetBool("lan-enable")
-		lanDisable, _ := cmd.Flags().GetBool("lan-disable")
-		localEnable, _ := cmd.Flags().GetBool("local-enable")
-		localDisable, _ := cmd.Flags().GetBool("local-disable")
-
-		if lanEnable && lanDisable {
-			fmt.Println("❌ Cannot specify both --lan-enable and --lan-disable")
-			return
-		}
-		if localEnable && localDisable {
-			fmt.Println("❌ Cannot specify both --local-enable and --local-disable")
-			return
-		}
-
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
-		}
-
-		cfg.Gateway.Mode = "tun"
-		if relay != "" {
-			cfg.Gateway.RelayAlias = relay
-		}
-		if lan != "" {
-			// Basic validation for interface name: alphanumeric and common separators
-			for _, r := range lan {
-				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
-					fmt.Printf("❌ Invalid interface name: %s\n", lan)
-					return
-				}
-			}
-			cfg.Gateway.LANInterface = lan
-		}
-		if state != "" {
-			stateLower := strings.ToLower(strings.TrimSpace(state))
-			if stateLower != "disabled" && stateLower != "forward-only" && stateLower != "proxy" {
-				fmt.Printf("❌ Invalid state: %s (must be one of: disabled, forward-only, proxy)\n", state)
-				return
-			}
-			cfg.Gateway.State = stateLower
-			if stateLower == "forward-only" {
-				fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
-			}
-		}
-		if cmd.Flags().Changed("lan-enable") {
-			cfg.Gateway.LANEnabled = true
-		} else if cmd.Flags().Changed("lan-disable") {
-			cfg.Gateway.LANEnabled = false
-		}
-		if cmd.Flags().Changed("local-enable") {
-			cfg.Gateway.LocalEnabled = true
-		} else if cmd.Flags().Changed("local-disable") {
-			cfg.Gateway.LocalEnabled = false
-		}
-		if cmd.Flags().Changed("bypass-dns") {
-			bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
-			cfg.Gateway.BypassDNS = bypassDNS
-		}
-		if cmd.Flags().Changed("bypass-countries") {
-			bypassCountries, _ := cmd.Flags().GetStringSlice("bypass-countries")
-			cfg.Gateway.BypassCountries = bypassCountries
-		}
-
-		cfg.SaveEx(true)
-		fmt.Println("✅ Gateway parameters updated in STAGING.")
+		_ = runGatewaySet(cmd, args)
 	},
+	RunE: runGatewaySet,
+}
+
+func runGatewaySet(cmd *cobra.Command, args []string) error {
+	hasChanged := false
+	cmd.Flags().VisitAll(func(f *pflag.Flag) {
+		if f.Changed {
+			hasChanged = true
+		}
+	})
+	if !hasChanged {
+		return fmt.Errorf("❌ Error: No parameter supplied")
+	}
+
+	lanEnable := cmd.Flags().Changed("lan-enable") && cmd.Flags().Lookup("lan-enable").Value.String() == "true"
+	lanDisable := cmd.Flags().Changed("lan-disable") && cmd.Flags().Lookup("lan-disable").Value.String() == "true"
+	if cmd.Flags().Changed("lan") {
+		val, _ := cmd.Flags().GetBool("lan")
+		if val {
+			lanEnable = true
+		} else {
+			lanDisable = true
+		}
+	}
+	if cmd.Flags().Changed("no-lan") {
+		val, _ := cmd.Flags().GetBool("no-lan")
+		if val {
+			lanDisable = true
+		} else {
+			lanEnable = true
+		}
+	}
+
+	localEnable := cmd.Flags().Changed("local-enable") && cmd.Flags().Lookup("local-enable").Value.String() == "true"
+	localDisable := cmd.Flags().Changed("local-disable") && cmd.Flags().Lookup("local-disable").Value.String() == "true"
+	if cmd.Flags().Changed("local") {
+		val, _ := cmd.Flags().GetBool("local")
+		if val {
+			localEnable = true
+		} else {
+			localDisable = true
+		}
+	}
+	if cmd.Flags().Changed("no-local") {
+		val, _ := cmd.Flags().GetBool("no-local")
+		if val {
+			localDisable = true
+		} else {
+			localEnable = true
+		}
+	}
+
+	if lanEnable && lanDisable {
+		return fmt.Errorf("❌ Error: Conflicting flags specified")
+	}
+	if localEnable && localDisable {
+		return fmt.Errorf("❌ Error: Conflicting flags specified")
+	}
+
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+	}
+
+	cfg.Gateway.Mode = "tun"
+	if cmd.Flags().Changed("relay") {
+		relay, _ := cmd.Flags().GetString("relay")
+		cfg.Gateway.RelayAlias = relay
+	}
+
+	var iface string
+	if cmd.Flags().Changed("interface") {
+		iface, _ = cmd.Flags().GetString("interface")
+	} else if cmd.Flags().Changed("lan-interface") {
+		iface, _ = cmd.Flags().GetString("lan-interface")
+	}
+	if iface != "" {
+		for _, r := range iface {
+			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+				return fmt.Errorf("❌ Invalid interface name: %s", iface)
+			}
+		}
+		cfg.Gateway.LANInterface = iface
+	}
+
+	if cmd.Flags().Changed("state") {
+		state, _ := cmd.Flags().GetString("state")
+		stateLower := strings.ToLower(strings.TrimSpace(state))
+		if stateLower != "disabled" && stateLower != "forward-only" && stateLower != "proxy" {
+			return fmt.Errorf("❌ Invalid state: %s (must be one of: disabled, forward-only, proxy)", state)
+		}
+		cfg.Gateway.State = stateLower
+		if stateLower == "forward-only" {
+			fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
+		}
+	}
+
+	if lanEnable {
+		cfg.Gateway.LANEnabled = true
+	} else if lanDisable {
+		cfg.Gateway.LANEnabled = false
+	}
+
+	if localEnable {
+		cfg.Gateway.LocalEnabled = true
+	} else if localDisable {
+		cfg.Gateway.LocalEnabled = false
+	}
+
+	if cmd.Flags().Changed("bypass-dns") {
+		bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
+		cfg.Gateway.BypassDNS = bypassDNS
+	}
+	if cmd.Flags().Changed("bypass-countries") {
+		bypassCountries, _ := cmd.Flags().GetStringSlice("bypass-countries")
+		cfg.Gateway.BypassCountries = bypassCountries
+	}
+
+	if err := cfg.SaveEx(true); err != nil {
+		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+	}
+	fmt.Println("✅ Gateway parameters updated in STAGING.")
+	fmt.Println("🚀 Run 'apply' to commit changes.")
+	return nil
 }
 
 var gatewayUpCmd = &cobra.Command{
@@ -372,12 +430,17 @@ var gatewayTestCmd = &cobra.Command{
 
 func init() {
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
-	gatewaySetCmd.Flags().StringP("lan", "l", "", "LAN interface name")
+	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name")
+	gatewaySetCmd.Flags().String("lan-interface", "", "LAN interface name")
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
 	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
+	gatewaySetCmd.Flags().Bool("lan", false, "Enable or disable LAN gateway forwarding in staging")
+	gatewaySetCmd.Flags().Bool("no-lan", false, "Disable LAN gateway in staging")
 	gatewaySetCmd.Flags().Bool("lan-enable", false, "Enable LAN gateway (IP forwarding) in staging")
 	gatewaySetCmd.Flags().Bool("lan-disable", false, "Disable LAN gateway in staging")
+	gatewaySetCmd.Flags().Bool("local", false, "Enable or disable local machine transparent proxy in staging")
+	gatewaySetCmd.Flags().Bool("no-local", false, "Disable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("local-enable", false, "Enable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("local-disable", false, "Disable local machine transparent proxy in staging")
 
@@ -402,6 +465,9 @@ func init() {
 		return aliases, cobra.ShellCompDirectiveNoFileComp
 	})
 	gatewaySetCmd.RegisterFlagCompletionFunc("lan", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"true", "false"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	gatewaySetCmd.RegisterFlagCompletionFunc("interface", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		ifaces, err := net.Interfaces()
 		if err != nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp

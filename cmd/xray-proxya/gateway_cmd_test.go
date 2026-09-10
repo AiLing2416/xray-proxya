@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
 
@@ -90,6 +91,46 @@ func TestGatewaySetFlagsLanLocalEnableDisable(t *testing.T) {
 			wantLAN:   true,
 			wantLocal: true,
 		},
+		{
+			name:      "concise enable LAN",
+			args:      []string{"--lan"},
+			initLAN:   false,
+			wantLAN:   true,
+			initLocal: false,
+			wantLocal: false,
+		},
+		{
+			name:      "concise disable LAN",
+			args:      []string{"--no-lan"},
+			initLAN:   true,
+			wantLAN:   false,
+			initLocal: false,
+			wantLocal: false,
+		},
+		{
+			name:      "concise enable Local",
+			args:      []string{"--local"},
+			initLocal: false,
+			wantLocal: true,
+			initLAN:   false,
+			wantLAN:   false,
+		},
+		{
+			name:      "concise disable Local",
+			args:      []string{"--no-local"},
+			initLocal: true,
+			wantLocal: false,
+			initLAN:   false,
+			wantLAN:   false,
+		},
+		{
+			name:      "concise enable both",
+			args:      []string{"--lan", "--local"},
+			initLAN:   false,
+			initLocal: false,
+			wantLAN:   true,
+			wantLocal: true,
+		},
 	}
 
 	for _, tc := range testCases {
@@ -108,14 +149,16 @@ func TestGatewaySetFlagsLanLocalEnableDisable(t *testing.T) {
 
 			// Reset flags before parsing
 			gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
-				f.Changed = false
 				_ = f.Value.Set(f.DefValue)
+				f.Changed = false
 			})
 
 			if err := gatewaySetCmd.ParseFlags(tc.args); err != nil {
 				t.Fatalf("ParseFlags error: %v", err)
 			}
-			gatewaySetCmd.Run(gatewaySetCmd, nil)
+			if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+				t.Fatalf("RunE error: %v", err)
+			}
 
 			updated, err := config.LoadConfigEx(true)
 			if err != nil {
@@ -128,5 +171,66 @@ func TestGatewaySetFlagsLanLocalEnableDisable(t *testing.T) {
 				t.Errorf("LocalEnabled = %v, want %v", updated.Gateway.LocalEnabled, tc.wantLocal)
 			}
 		})
+	}
+}
+
+func TestGatewaySetEmptyFlagsError(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode: "tun",
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+
+	err := gatewaySetCmd.RunE(gatewaySetCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "No parameter supplied") {
+		t.Fatalf("expected 'No parameter supplied' error, got %v", err)
+	}
+}
+
+func TestGatewaySetConflictingFlagsError(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode: "tun",
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	conflictCases := [][]string{
+		{"--lan", "--no-lan"},
+		{"--lan-enable", "--lan-disable"},
+		{"--lan", "--lan-disable"},
+		{"--local", "--no-local"},
+		{"--local-enable", "--local-disable"},
+		{"--local", "--local-disable"},
+	}
+
+	for _, args := range conflictCases {
+		gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+		if err := gatewaySetCmd.ParseFlags(args); err != nil {
+			t.Fatalf("ParseFlags error for %v: %v", args, err)
+		}
+		err := gatewaySetCmd.RunE(gatewaySetCmd, nil)
+		if err == nil || !strings.Contains(err.Error(), "Conflicting flags specified") {
+			t.Errorf("args %v: expected 'Conflicting flags specified' error, got %v", args, err)
+		}
 	}
 }
