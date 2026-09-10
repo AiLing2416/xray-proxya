@@ -42,8 +42,12 @@ var (
 )
 
 func resolveShowIPs(cmd *cobra.Command) []string {
-	if showAddr != "" {
-		return []string{showAddr}
+	if addr := strings.TrimSpace(showAddr); addr != "" {
+		unbracketed := strings.Trim(addr, "[]")
+		if parsed := net.ParseIP(unbracketed); parsed != nil {
+			return []string{parsed.String()}
+		}
+		return []string{addr}
 	}
 
 	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
