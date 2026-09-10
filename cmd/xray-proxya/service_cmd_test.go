@@ -95,13 +95,36 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 	if _, err := normalizedManagedUnit("ssh.service"); err == nil {
 		t.Fatal("foreign unit was accepted")
 	}
-	unit, err := normalizedManagedUnit("xray-proxya-sub")
-	if err != nil || unit != "xray-proxya-sub.service" {
-		t.Fatalf("sub unit = %q, %v", unit, err)
+
+	tests := []struct {
+		inputs   []string
+		expected string
+	}{
+		{
+			inputs:   []string{"", "core", "CORE", "xray-proxya", "xray-proxya.service"},
+			expected: "xray-proxya.service",
+		},
+		{
+			inputs:   []string{"sub", "SUB", "xray-proxya-sub", "xray-proxya-sub.service"},
+			expected: "xray-proxya-sub.service",
+		},
+		{
+			inputs:   []string{"pathd", "PATHD", "xray-proxya-pathd", "xray-proxya-pathd.service"},
+			expected: "xray-proxya-pathd.service",
+		},
+		{
+			inputs:   []string{"rotate", "ROTATE", "ipv6-rotate", "xray-proxya-ipv6-rotate", "xray-proxya-ipv6-rotate.service"},
+			expected: "xray-proxya-ipv6-rotate.service",
+		},
 	}
-	unit, err = normalizedManagedUnit("xray-proxya-ipv6-rotate")
-	if err != nil || unit != "xray-proxya-ipv6-rotate.service" {
-		t.Fatalf("rotate unit = %q, %v", unit, err)
+
+	for _, tc := range tests {
+		for _, in := range tc.inputs {
+			unit, err := normalizedManagedUnit(in)
+			if err != nil || unit != tc.expected {
+				t.Fatalf("normalizedManagedUnit(%q) = %q, %v; want %q", in, unit, err, tc.expected)
+			}
+		}
 	}
 }
 
@@ -111,10 +134,14 @@ func TestManagedServiceUnitCompletionIncludesDefaultSubscription(t *testing.T) {
 		t.Fatalf("completion directive = %v, want no file completion", directive)
 	}
 	for _, want := range []string{
-		"xray-proxya\tmain Xray-Proxya service",
-		"xray-proxya-pathd\tPathLink ICMP agent",
-		"xray-proxya-sub\tsubscription service",
-		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
+		"core\tCore proxy service (xray-proxya)",
+		"sub\tSubscription distribution service (xray-proxya-sub)",
+		"pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
+		"rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
+		"xray-proxya\tCore proxy service (xray-proxya)",
+		"xray-proxya-sub\tSubscription distribution service (xray-proxya-sub)",
+		"xray-proxya-pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
+		"xray-proxya-ipv6-rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
 	} {
 		if !containsCompletion(units, want) {
 			t.Fatalf("completion missing %q: %v", want, units)

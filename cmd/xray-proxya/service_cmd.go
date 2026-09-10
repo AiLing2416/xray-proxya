@@ -67,10 +67,14 @@ func normalizedManagedUnit(input string) (string, error) {
 
 func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 	units := []string{
-		"xray-proxya\tmain Xray-Proxya service",
-		"xray-proxya-pathd\tPathLink ICMP agent",
-		"xray-proxya-sub\tsubscription service",
-		"xray-proxya-ipv6-rotate\tIPv6 rotation service",
+		"core\tCore proxy service (xray-proxya)",
+		"sub\tSubscription distribution service (xray-proxya-sub)",
+		"pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
+		"rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
+		"xray-proxya\tCore proxy service (xray-proxya)",
+		"xray-proxya-sub\tSubscription distribution service (xray-proxya-sub)",
+		"xray-proxya-pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
+		"xray-proxya-ipv6-rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
 	}
 	return units, cobra.ShellCompDirectiveNoFileComp
 }

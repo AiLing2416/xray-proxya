@@ -44,22 +44,42 @@ type Controller interface {
 	IsInstalled(unit string) bool
 }
 
-// NormalizeUnitName standardizes various aliases (e.g. "xray-proxya", "core", "sub")
-// into canonical systemd unit names.
+// NormalizeUnitName standardizes various aliases (e.g. "xray-proxya", "core", "sub", "pathd", "rotate")
+// into canonical systemd unit names (case-insensitive).
 func NormalizeUnitName(input string) (string, error) {
-	clean := strings.TrimSpace(input)
-	if clean == "" || clean == "xray-proxya" || clean == "core" || clean == MainUnit {
+	clean := strings.ToLower(strings.TrimSpace(input))
+	if clean == "" || clean == "xray-proxya" || clean == "core" || clean == MainUnit || clean == strings.TrimSuffix(MainUnit, ".service") {
 		return MainUnit, nil
 	}
-	if clean == "xray-proxya-pathd" || clean == "pathd" || clean == PathdUnit {
+	if clean == "xray-proxya-pathd" || clean == "pathd" || clean == PathdUnit || clean == strings.TrimSuffix(PathdUnit, ".service") {
 		return PathdUnit, nil
 	}
-	if clean == "xray-proxya-ipv6-rotate" || clean == "ipv6-rotate" || clean == "rotate" || clean == RotateUnit {
+	if clean == "xray-proxya-ipv6-rotate" || clean == "ipv6-rotate" || clean == "rotate" || clean == RotateUnit || clean == strings.TrimSuffix(RotateUnit, ".service") {
 		return RotateUnit, nil
 	}
 	name := strings.TrimSuffix(clean, ".service")
-	if name == "xray-proxya-sub" || name == "sub" || strings.HasPrefix(name, "xray-proxya-sub@") {
+	if name == "xray-proxya-sub" || name == "sub" || strings.HasPrefix(name, "xray-proxya-sub@") || clean == SubUnit {
 		return SubUnit, nil
 	}
-	return "", fmt.Errorf("unit must be xray-proxya, xray-proxya-pathd, xray-proxya-ipv6-rotate, or xray-proxya-sub")
+	return "", fmt.Errorf("unit must be core (xray-proxya), sub (xray-proxya-sub), pathd (xray-proxya-pathd), or rotate (xray-proxya-ipv6-rotate)")
+}
+
+// UnitDisplayName returns the friendly TUI-aligned display name for a unit.
+func UnitDisplayName(unit string) string {
+	norm, err := NormalizeUnitName(unit)
+	if err != nil {
+		return unit
+	}
+	switch norm {
+	case MainUnit:
+		return "Core"
+	case SubUnit:
+		return "Sub"
+	case PathdUnit:
+		return "Pathd"
+	case RotateUnit:
+		return "Rotate"
+	default:
+		return unit
+	}
 }

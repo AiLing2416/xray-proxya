@@ -46,7 +46,7 @@ func isConfigurableService(item ManagedServiceItem) bool {
 	if item.DisplayName == "Core" {
 		return false
 	}
-	if item.DisplayName == "Pathd" || item.DisplayName == "IPv6-Rotate" || item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@") {
+	if item.DisplayName == "Pathd" || item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate" || item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@") {
 		return true
 	}
 	return false
@@ -198,7 +198,7 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 			Type:  PropInput,
 		})
 
-	case item.DisplayName == "IPv6-Rotate":
+	case item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate":
 		rot := getIPv6Config(cfg)
 		ifaces := getAvailableInterfaces()
 		if rot.Interface != "" {
@@ -356,7 +356,7 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 		}
 		setPathdConfig(cfg, p)
 
-	case item.DisplayName == "IPv6-Rotate":
+	case item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate":
 		rot := getIPv6Config(cfg)
 		switch prop.Key {
 		case "Interface":
@@ -443,7 +443,7 @@ func serviceHasStagedChanges(active, staging *config.UserConfig, item ManagedSer
 		pActive := getPathdConfig(active)
 		return pStaging.Listen != pActive.Listen || pStaging.Token != pActive.Token || pStaging.IdleSeconds != pActive.IdleSeconds
 
-	case item.DisplayName == "IPv6-Rotate":
+	case item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate":
 		rStaging := getIPv6Config(staging)
 		if active == nil {
 			return rStaging.Subnet != ""

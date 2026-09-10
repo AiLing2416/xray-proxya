@@ -14,6 +14,7 @@ func TestIsConfigurableService(t *testing.T) {
 		{item: ManagedServiceItem{DisplayName: "Core"}, want: false},
 		{item: ManagedServiceItem{DisplayName: "Pathd"}, want: true},
 		{item: ManagedServiceItem{DisplayName: "IPv6-Rotate"}, want: true},
+		{item: ManagedServiceItem{DisplayName: "Rotate"}, want: true},
 		{item: ManagedServiceItem{DisplayName: "Sub@default"}, want: true},
 		{item: ManagedServiceItem{DisplayName: "Sub@custom"}, want: true},
 	}

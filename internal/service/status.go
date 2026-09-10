@@ -12,24 +12,20 @@ import (
 // GetUnitStatus queries systemd for the current status of a specific unit.
 func GetUnitStatus(unit string) Status {
 	st := Status{
-		UnitName: unit,
-		State:    "Stopped",
+		UnitName:    unit,
+		DisplayName: UnitDisplayName(unit),
+		State:       "Stopped",
 	}
 	switch unit {
 	case MainUnit:
-		st.DisplayName = "Core"
 		st.Description = "Main Xray-Core proxy service"
 	case PathdUnit:
-		st.DisplayName = "Pathd"
 		st.Description = "PathLink ICMP latency & health daemon"
 	case RotateUnit:
-		st.DisplayName = "IPv6-Rotate"
 		st.Description = "Privileged IPv6 subnet address rotator"
 	case SubUnit:
-		st.DisplayName = "Sub"
 		st.Description = "Subscription server"
 	default:
-		st.DisplayName = unit
 		st.Description = "Managed systemd service"
 	}
 

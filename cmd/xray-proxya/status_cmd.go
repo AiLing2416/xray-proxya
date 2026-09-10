@@ -140,10 +140,11 @@ func querySystemdUnitState(unit string) (bool, int, string) {
 }
 
 func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
-	// Main service
+	// 1. Main service
+	mainLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(xray.MainServiceUnit), xray.MainServiceUnit)
 	mainRootOnly := (cfg.Role == config.RoleGateway)
 	if !isRoot && mainRootOnly {
-		fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", xray.MainServiceUnit)
+		fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", mainLabel)
 	} else {
 		active, pid, status := querySystemdUnitState(xray.MainServiceUnit)
 		icon := "●"
@@ -151,17 +152,45 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 			icon = "○"
 		}
 		if active && pid > 0 {
-			fmt.Printf("   %s %-30s %-12s PID: %-7d\n", icon, xray.MainServiceUnit, status, pid)
+			fmt.Printf("   %s %-40s %-12s PID: %-7d\n", icon, mainLabel, status, pid)
 		} else {
-			fmt.Printf("   %s %-30s %s\n", icon, xray.MainServiceUnit, status)
+			fmt.Printf("   %s %-40s %s\n", icon, mainLabel, status)
 		}
 	}
 
-	// Pathd service
+	// 2. Subscription service
+	port := cfg.SubPort
+	if port <= 0 {
+		port = cfg.AdminSub.Port
+	}
+	subConfigured := cfg.AdminSub.Token != "" || port > 0
+	subLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(subServiceUnit), subServiceUnit)
+	if !subConfigured {
+		fmt.Printf("   ○ %-40s [Inactive] (Not configured)\n", subLabel)
+	} else {
+		subRootOnly := (cfg.AdminSub.IPv6Rotation != "" || port <= 1024)
+		if !isRoot && subRootOnly {
+			fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", subLabel)
+		} else {
+			active, pid, status := querySystemdUnitState(subServiceUnit)
+			icon := "●"
+			if !active {
+				icon = "○"
+			}
+			if active && pid > 0 {
+				fmt.Printf("   %s %-40s %-12s Port: %-5d PID: %-7d\n", icon, subLabel, status, port, pid)
+			} else {
+				fmt.Printf("   %s %-40s %s (Port: %d)\n", icon, subLabel, status, port)
+			}
+		}
+	}
+
+	// 3. Pathd service
+	pathdLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(pathdServiceUnit), pathdServiceUnit)
 	if !isRoot {
-		fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", pathdServiceUnit)
+		fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", pathdLabel)
 	} else if cfg.Role != config.RoleServer {
-		fmt.Printf("   ○ %-30s [N/A] (Server role only)\n", pathdServiceUnit)
+		fmt.Printf("   ○ %-40s [N/A] (Server role only)\n", pathdLabel)
 	} else {
 		active, pid, status := querySystemdUnitState(pathdServiceUnit)
 		icon := "●"
@@ -169,46 +198,20 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 			icon = "○"
 		}
 		if active && pid > 0 {
-			fmt.Printf("   %s %-30s %-12s PID: %-7d (ICMP Probe)\n", icon, pathdServiceUnit, status, pid)
+			fmt.Printf("   %s %-40s %-12s PID: %-7d (ICMP Probe)\n", icon, pathdLabel, status, pid)
 		} else {
-			fmt.Printf("   %s %-30s %s\n", icon, pathdServiceUnit, status)
+			fmt.Printf("   %s %-40s %s\n", icon, pathdLabel, status)
 		}
 	}
 
-	// Subscription service
-	port := cfg.SubPort
-	if port <= 0 {
-		port = cfg.AdminSub.Port
-	}
-	subConfigured := cfg.AdminSub.Token != "" || port > 0
-	unitName := "xray-proxya-sub.service"
-	if !subConfigured {
-		fmt.Printf("   ○ %-30s [Inactive] (Not configured)\n", "xray-proxya-sub")
-	} else {
-		subRootOnly := (cfg.AdminSub.IPv6Rotation != "" || port <= 1024)
-		if !isRoot && subRootOnly {
-			fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", "xray-proxya-sub")
-		} else {
-			active, pid, status := querySystemdUnitState(unitName)
-			icon := "●"
-			if !active {
-				icon = "○"
-			}
-			if active && pid > 0 {
-				fmt.Printf("   %s %-30s %-12s Port: %-5d PID: %-7d\n", icon, "xray-proxya-sub", status, port, pid)
-			} else {
-				fmt.Printf("   %s %-30s %s (Port: %d)\n", icon, "xray-proxya-sub", status, port)
-			}
-		}
-	}
-
-	// IPv6 rotate service
+	// 4. IPv6 rotate service
+	rotateLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(rotateServiceUnit), rotateServiceUnit)
 	if !isRoot {
-		fmt.Printf("   ○ %-30s [Unavailable] (root only)\n", rotateServiceUnit)
+		fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", rotateLabel)
 	} else {
 		hasIPv6Config := cfg.IPv6Rotation.Subnet != "" || (cfg.IPv6Rotations != nil && cfg.IPv6Rotations["default"].Subnet != "")
 		if !hasIPv6Config {
-			fmt.Printf("   ○ %-30s [Inactive] (Not configured)\n", rotateServiceUnit)
+			fmt.Printf("   ○ %-40s [Inactive] (Not configured)\n", rotateLabel)
 		} else {
 			active, pid, status := querySystemdUnitState(rotateServiceUnit)
 			icon := "●"
@@ -216,9 +219,9 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 				icon = "○"
 			}
 			if active && pid > 0 {
-				fmt.Printf("   %s %-30s %-12s PID: %-7d\n", icon, rotateServiceUnit, status, pid)
+				fmt.Printf("   %s %-40s %-12s PID: %-7d\n", icon, rotateLabel, status, pid)
 			} else {
-				fmt.Printf("   %s %-30s %s\n", icon, rotateServiceUnit, status)
+				fmt.Printf("   %s %-40s %s\n", icon, rotateLabel, status)
 			}
 		}
 	}
