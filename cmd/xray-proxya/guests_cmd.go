@@ -671,6 +671,8 @@ var guestsCheckCmd = &cobra.Command{
 var guestsSubCmd = &cobra.Command{
 	Use:   "sub",
 	Short: "Manage guest self-service subscription links (STAGING)",
+	Long: `Manage guest self-service subscription links (STAGING).
+For central server subscription distribution, see 'xray-proxya sub'.`,
 }
 
 func runGuestsSubEnable(cmd *cobra.Command, args []string) error {
@@ -814,9 +816,10 @@ var guestsSubShowCmd = &cobra.Command{
 }
 
 var (
-	guestSubSetAddr string
-	guestSubSetPort int
-	guestSubSetBind string
+	guestSubSetAddr   string
+	guestSubSetPort   int
+	guestSubSetBind   string
+	guestSubSetListen string
 )
 
 var guestsSubSetCmd = &cobra.Command{
@@ -825,8 +828,8 @@ var guestsSubSetCmd = &cobra.Command{
 	Example: `  # Set custom hostname for proxy nodes in guest subscriptions
   xray-proxya guests sub set --address proxy.example.com
 
-  # Change guest subscription listener port and bind address
-  xray-proxya guests sub set --port 9445 --bind 127.0.0.1`,
+  # Change guest subscription listener port and listen/bind address
+  xray-proxya guests sub set --port 9445 --listen 127.0.0.1`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
@@ -846,12 +849,17 @@ var guestsSubSetCmd = &cobra.Command{
 			cfg.GuestSubPort = guestSubSetPort
 			changed = true
 		}
-		if cmd.Flags().Changed("bind") {
-			bind := strings.TrimSpace(guestSubSetBind)
-			if err := sub.ValidatePrivateBindAddress(bind); err != nil {
+		bindVal := ""
+		if cmd.Flags().Changed("listen") {
+			bindVal = strings.TrimSpace(guestSubSetListen)
+		} else if cmd.Flags().Changed("bind") {
+			bindVal = strings.TrimSpace(guestSubSetBind)
+		}
+		if bindVal != "" {
+			if err := sub.ValidatePrivateBindAddress(bindVal); err != nil {
 				return err
 			}
-			cfg.GuestSubBind = bind
+			cfg.GuestSubBind = bindVal
 			changed = true
 		}
 		if !changed {
@@ -940,7 +948,9 @@ func init() {
 
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetAddr, "address", "a", "", "Public IP or domain for proxy nodes in guest subscriptions (or empty to auto-detect)")
 	guestsSubSetCmd.Flags().IntVarP(&guestSubSetPort, "port", "p", 0, "Guest subscription listener port (1-65535)")
+	guestsSubSetCmd.Flags().StringVarP(&guestSubSetListen, "listen", "l", "", "Guest subscription bind address (loopback or private IP)")
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
+	guestsSubSetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
 	guestsListCmd.Flags().BoolVar(&guestsListJSON, "json", false, "Output guests list in JSON format")
 	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd, guestsSubSetCmd)

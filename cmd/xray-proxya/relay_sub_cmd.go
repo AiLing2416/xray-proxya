@@ -21,7 +21,9 @@ var (
 var relaySubCmd = &cobra.Command{
 	Use:     "sub",
 	Aliases: []string{"subscription", "subs"},
-	Short:   "Manage upstream subscription links for relay nodes in STAGING",
+	Short:   "Manage upstream subscription providers for importing relay nodes into STAGING",
+	Long: `Manage upstream subscription providers for importing relay nodes into STAGING.
+To distribute subscriptions to downstream clients, see 'xray-proxya sub' or 'xray-proxya guests sub'.`,
 }
 
 func getRelaySubNames() []string {

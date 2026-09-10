@@ -28,7 +28,11 @@ The subscription server runs on its own port and token, and distributes direct s
 guest nodes, or outbound relay chains.
 
 Use 'xray-proxya apply' to commit staged changes, then manage its background
-systemd lifecycle using 'xray-proxya service start/stop xray-proxya-sub'.`,
+systemd lifecycle using 'xray-proxya service start/stop xray-proxya-sub'.
+
+Notice: This command manages central subscription distribution on Server nodes.
+  - To manage individual tenant (guest) subscription links: see 'xray-proxya guests sub'
+  - To import relay nodes from upstream airport subscriptions: see 'xray-proxya relay sub'`,
 }
 
 func requireServerSubscription(cfg *config.UserConfig) error {
@@ -473,14 +477,54 @@ var subShowCmd = &cobra.Command{
 	Use:   "show [instance]",
 	Short: "Show subscription URLs and configuration",
 	Args:  cobra.MaximumNArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
-			fmt.Printf("❌ %v\n", err)
-			return
+			return fmt.Errorf("❌ %w", err)
 		}
 		if reconcileSubscriptions(cfg) {
 			_ = cfg.SaveEx(true)
+		}
+
+		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
+			instName := strings.TrimSpace(args[0])
+			var inst config.AdminSubConfig
+			found := false
+			if instName == defaultSubInstance {
+				adminSub := ensureManagedSubscription(cfg)
+				if adminSub != nil && adminSub.Token != "" {
+					inst = *adminSub
+					found = true
+				}
+			} else if cfg.SubscriptionInstances != nil {
+				if entry, ok := cfg.SubscriptionInstances[instName]; ok && entry.Token != "" {
+					inst = entry
+					found = true
+				}
+			}
+			if !found {
+				return fmt.Errorf("❌ Subscription instance '%s' not found.", instName)
+			}
+			port := inst.Port
+			if port <= 0 {
+				port = cfg.SubPort
+			}
+			listen := inst.Listen
+			if listen == "" {
+				listen = "127.0.0.1"
+			}
+			inst.Port = port
+			inst.Listen = listen
+			fmt.Printf("\n--- Subscription Instance: %s ---\n", instName)
+			fmt.Printf("Listen: %s:%-5d Target: %-8s URL: %s\n", inst.Listen, inst.Port, inst.TargetType, managedSubURL(cfg, &inst))
+			if inst.AddressNode != "" {
+				fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
+			}
+			if inst.IPv6Rotation != "" {
+				fmt.Printf("          └─ IPv6 rotation: enabled (%s)\n", inst.IPv6Rotation)
+			}
+			fmt.Println()
+			return nil
 		}
 
 		adminSub := ensureManagedSubscription(cfg)
@@ -494,6 +538,42 @@ var subShowCmd = &cobra.Command{
 			}
 			if adminSub.IPv6Rotation != "" {
 				fmt.Printf("          └─ IPv6 rotation: enabled (%s)\n", adminSub.IPv6Rotation)
+			}
+		}
+
+		if len(cfg.SubscriptionInstances) > 0 {
+			var names []string
+			for name := range cfg.SubscriptionInstances {
+				if name != defaultSubInstance {
+					names = append(names, name)
+				}
+			}
+			sort.Strings(names)
+			if len(names) > 0 {
+				fmt.Println("\n--- Subscription Instances ---")
+				for _, name := range names {
+					inst := cfg.SubscriptionInstances[name]
+					if inst.Token == "" {
+						continue
+					}
+					port := inst.Port
+					if port <= 0 {
+						port = cfg.SubPort
+					}
+					listen := inst.Listen
+					if listen == "" {
+						listen = "127.0.0.1"
+					}
+					inst.Port = port
+					inst.Listen = listen
+					fmt.Printf("[%s] Listen: %s:%-5d Target: %-8s URL: %s\n", name, inst.Listen, inst.Port, inst.TargetType, managedSubURL(cfg, &inst))
+					if inst.AddressNode != "" {
+						fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
+					}
+					if inst.IPv6Rotation != "" {
+						fmt.Printf("          └─ IPv6 rotation: enabled (%s)\n", inst.IPv6Rotation)
+					}
+				}
 			}
 		}
 
@@ -516,6 +596,7 @@ var subShowCmd = &cobra.Command{
 			}
 			fmt.Println()
 		}
+		return nil
 	},
 }
 
@@ -524,7 +605,11 @@ var subRunCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		instance, err := subscriptionInstance()
+		inst := defaultSubInstance
+		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
+			inst = strings.TrimSpace(args[0])
+		}
+		instance, err := subscriptionInstance(inst)
 		if err != nil {
 			return err
 		}
@@ -540,7 +625,11 @@ var subValidateCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return validateSubInstance()
+		inst := defaultSubInstance
+		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
+			inst = strings.TrimSpace(args[0])
+		}
+		return validateSubInstance(inst)
 	},
 }
 

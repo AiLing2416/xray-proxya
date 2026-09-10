@@ -96,3 +96,79 @@ func TestSubscriptionServiceManagement(t *testing.T) {
 		t.Fatalf("token = %q, want default-tok", subServ.AdminSub.Token)
 	}
 }
+
+func TestSubShowInstancePenetration(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		AdminSub: config.AdminSubConfig{
+			Token:      "admin-tok-12345",
+			Port:       8443,
+			Listen:     "127.0.0.1",
+			TargetType: "direct",
+		},
+		SubscriptionInstances: map[string]config.AdminSubConfig{
+			"default": {
+				Token:      "admin-tok-12345",
+				Port:       8443,
+				Listen:     "127.0.0.1",
+				TargetType: "direct",
+			},
+			"node-hk": {
+				Token:      "hk-token-9999",
+				Port:       9443,
+				Listen:     "127.0.0.1",
+				TargetType: "direct",
+			},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("save active config: %v", err)
+	}
+
+	// 1. Show existing custom instance
+	out := captureStdout(t, func() {
+		err := subShowCmd.RunE(subShowCmd, []string{"node-hk"})
+		if err != nil {
+			t.Fatalf("sub show node-hk failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Subscription Instance: node-hk") || !strings.Contains(out, "hk-token-9999") {
+		t.Errorf("expected node-hk details in output, got: %s", out)
+	}
+	if strings.Contains(out, "admin-tok-12345") {
+		t.Errorf("sub show node-hk should not display default instance details")
+	}
+
+	// 2. Show nonexistent instance
+	err := subShowCmd.RunE(subShowCmd, []string{"nonexistent"})
+	if err == nil || !strings.Contains(err.Error(), "Subscription instance 'nonexistent' not found.") {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+
+	// 3. Show all instances (no args)
+	allOut := captureStdout(t, func() {
+		err := subShowCmd.RunE(subShowCmd, []string{})
+		if err != nil {
+			t.Fatalf("sub show failed: %v", err)
+		}
+	})
+	if !strings.Contains(allOut, "Admin Subscription") || !strings.Contains(allOut, "admin-tok-12345") {
+		t.Errorf("expected Admin Subscription in output, got: %s", allOut)
+	}
+	if !strings.Contains(allOut, "node-hk") || !strings.Contains(allOut, "hk-token-9999") {
+		t.Errorf("expected node-hk in output, got: %s", allOut)
+	}
+
+	// 4. Validate instance penetration
+	if err := subValidateCmd.RunE(subValidateCmd, []string{"node-hk"}); err != nil {
+		t.Errorf("sub validate node-hk failed: %v", err)
+	}
+	if err := subValidateCmd.RunE(subValidateCmd, []string{"nonexistent"}); err == nil {
+		t.Errorf("expected error validating nonexistent instance, got nil")
+	}
+}

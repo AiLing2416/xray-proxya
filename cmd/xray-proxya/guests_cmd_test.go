@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/pflag"
 )
 
 func TestFormatGuestQuotaKeepsSmallDecimals(t *testing.T) {
@@ -417,3 +419,75 @@ func TestGuestsAddWithInlineFlags(t *testing.T) {
 		t.Fatalf("expected conflict error, got %v", err)
 	}
 }
+
+func TestGuestsSubSetListen(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	// 1. Set --listen 127.0.0.1
+	guestsSubSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsSubSetCmd.ParseFlags([]string{"--listen", "127.0.0.1"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsSubSetCmd.RunE(guestsSubSetCmd, nil); err != nil {
+		t.Fatalf("run guests sub set --listen failed: %v", err)
+	}
+
+	staged, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if staged.GuestSubBind != "127.0.0.1" {
+		t.Errorf("staged.GuestSubBind = %q, want 127.0.0.1", staged.GuestSubBind)
+	}
+
+	// 2. Set -l 10.0.0.1
+	guestsSubSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsSubSetCmd.ParseFlags([]string{"-l", "10.0.0.1"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsSubSetCmd.RunE(guestsSubSetCmd, nil); err != nil {
+		t.Fatalf("run guests sub set -l failed: %v", err)
+	}
+
+	staged, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if staged.GuestSubBind != "10.0.0.1" {
+		t.Errorf("staged.GuestSubBind = %q, want 10.0.0.1", staged.GuestSubBind)
+	}
+
+	// 3. Set --bind 192.168.1.1 (compatibility)
+	guestsSubSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsSubSetCmd.ParseFlags([]string{"--bind", "192.168.1.1"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsSubSetCmd.RunE(guestsSubSetCmd, nil); err != nil {
+		t.Fatalf("run guests sub set --bind failed: %v", err)
+	}
+
+	staged, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if staged.GuestSubBind != "192.168.1.1" {
+		t.Errorf("staged.GuestSubBind = %q, want 192.168.1.1", staged.GuestSubBind)
+	}
+}
+
