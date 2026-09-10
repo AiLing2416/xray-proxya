@@ -159,9 +159,10 @@ var guestsAddCmd = &cobra.Command{
 	},
 }
 
-var guestsDelCmd = &cobra.Command{
-	Use:   "del [alias]",
-	Short: "Remove a guest user (STAGING)",
+var guestsRemoveCmd = &cobra.Command{
+	Use:               "remove [alias]",
+	Aliases:           []string{"rm", "del", "delete"},
+	Short:             "Remove a guest user (STAGING)",
 	Args:  cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
@@ -701,6 +702,6 @@ func init() {
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
 
 	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd, guestsSubSetCmd)
-	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
+	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsRemoveCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)
 }

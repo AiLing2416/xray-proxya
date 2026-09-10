@@ -733,8 +733,9 @@ func valueOrNA(v string) string {
 	return v
 }
 
-var deleteOutboundCmd = &cobra.Command{
-	Use:               "delete [alias]",
+var removeOutboundCmd = &cobra.Command{
+	Use:               "remove [alias]",
+	Aliases:           []string{"rm", "del", "delete"},
 	Short:             "Remove a relay node from STAGING",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
@@ -976,6 +977,6 @@ func init() {
 	setDNSRelayCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
 	})
-	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, probeLocalOutboundCmd, resolveOutboundCmd)
+	outboundCmd.AddCommand(addOutboundCmd, listOutboundCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, removeOutboundCmd, bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd, probeLocalOutboundCmd, resolveOutboundCmd)
 	rootCmd.AddCommand(outboundCmd)
 }

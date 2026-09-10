@@ -111,3 +111,51 @@ func TestProbeDNSViaTCPQueryFormat(t *testing.T) {
 		t.Fatalf("QDCOUNT = %d, want 1", qdcount)
 	}
 }
+
+func TestRelayRemoveAliases(t *testing.T) {
+	if removeOutboundCmd.Name() != "remove" {
+		t.Fatalf("expected command name 'remove', got %q", removeOutboundCmd.Name())
+	}
+	expectedAliases := map[string]bool{"rm": true, "del": true, "delete": true}
+	if len(removeOutboundCmd.Aliases) != len(expectedAliases) {
+		t.Fatalf("expected %d aliases, got %v", len(expectedAliases), removeOutboundCmd.Aliases)
+	}
+	for _, alias := range removeOutboundCmd.Aliases {
+		if !expectedAliases[alias] {
+			t.Errorf("unexpected alias %q", alias)
+		}
+	}
+
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "r-rem", Enabled: true},
+			{Alias: "r-rm", Enabled: true},
+			{Alias: "r-del", Enabled: true},
+			{Alias: "r-delete", Enabled: true},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	for _, aliasCmd := range []string{"remove", "rm", "del", "delete"} {
+		cmd, _, err := rootCmd.Find([]string{"relay", aliasCmd})
+		if err != nil || cmd != removeOutboundCmd {
+			t.Fatalf("expected rootCmd.Find(relay, %s) to resolve to removeOutboundCmd, got %v (err: %v)", aliasCmd, cmd, err)
+		}
+	}
+
+	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-rem"})
+	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-rm"})
+	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-del"})
+	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-delete"})
+
+	stagedFinal, _ := config.LoadConfigEx(true)
+	if len(stagedFinal.CustomOutbounds) != 0 {
+		t.Fatalf("expected 0 outbounds after all removals, got %d", len(stagedFinal.CustomOutbounds))
+	}
+}

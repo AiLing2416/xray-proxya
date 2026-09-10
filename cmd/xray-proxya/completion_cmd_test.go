@@ -213,7 +213,7 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 
 	// 8. Verify guests commands completion
 	for _, guestCommand := range []*cobra.Command{
-		guestsDelCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd,
+		guestsRemoveCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd,
 		guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd,
 	} {
 		if guestCommand.ValidArgsFunction == nil {
@@ -233,7 +233,7 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 
 	// 10. Verify relay/outbound commands completion
 	for _, relayCommand := range []*cobra.Command{
-		testOutboundCmd, infoOutboundCmd, speedOutboundCmd, deleteOutboundCmd,
+		testOutboundCmd, infoOutboundCmd, speedOutboundCmd, removeOutboundCmd,
 		bindInterfaceCmd, setDNSRelayCmd, setPrivateTargetsRelayCmd,
 		probeLocalOutboundCmd, resolveOutboundCmd,
 	} {

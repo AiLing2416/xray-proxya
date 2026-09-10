@@ -257,5 +257,55 @@ func TestGuestsSetRelayAndRelayLink(t *testing.T) {
 	}
 }
 
+func TestGuestsRemoveAliases(t *testing.T) {
+	if guestsRemoveCmd.Name() != "remove" {
+		t.Fatalf("expected command name 'remove', got %q", guestsRemoveCmd.Name())
+	}
+	expectedAliases := map[string]bool{"rm": true, "del": true, "delete": true}
+	if len(guestsRemoveCmd.Aliases) != len(expectedAliases) {
+		t.Fatalf("expected %d aliases, got %v", len(expectedAliases), guestsRemoveCmd.Aliases)
+	}
+	for _, alias := range guestsRemoveCmd.Aliases {
+		if !expectedAliases[alias] {
+			t.Errorf("unexpected alias %q", alias)
+		}
+	}
 
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
 
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Guests: []config.GuestConfig{
+			{Alias: "g-rem", UUID: "uuid-1", Enabled: true},
+			{Alias: "g-rm", UUID: "uuid-2", Enabled: true},
+			{Alias: "g-del", UUID: "uuid-3", Enabled: true},
+			{Alias: "g-delete", UUID: "uuid-4", Enabled: true},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-rem"})
+	staged, _ := config.LoadConfigEx(true)
+	if len(staged.Guests) != 3 {
+		t.Fatalf("expected 3 guests after remove, got %d", len(staged.Guests))
+	}
+
+	for _, aliasCmd := range []string{"rm", "del", "delete"} {
+		cmd, _, err := rootCmd.Find([]string{"guests", aliasCmd})
+		if err != nil || cmd != guestsRemoveCmd {
+			t.Fatalf("expected rootCmd.Find(guests, %s) to resolve to guestsRemoveCmd, got %v (err: %v)", aliasCmd, cmd, err)
+		}
+	}
+
+	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-rm"})
+	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-del"})
+	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-delete"})
+
+	stagedFinal, _ := config.LoadConfigEx(true)
+	if len(stagedFinal.Guests) != 0 {
+		t.Fatalf("expected 0 guests after all removals, got %d", len(stagedFinal.Guests))
+	}
+}
