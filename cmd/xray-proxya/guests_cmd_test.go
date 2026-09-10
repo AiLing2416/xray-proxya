@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"xray-proxya/internal/config"
@@ -307,5 +308,112 @@ func TestGuestsRemoveAliases(t *testing.T) {
 	stagedFinal, _ := config.LoadConfigEx(true)
 	if len(stagedFinal.Guests) != 0 {
 		t.Fatalf("expected 0 guests after all removals, got %d", len(stagedFinal.Guests))
+	}
+}
+
+func resetGuestsAddFlags() {
+	guestAddLimit = ""
+	guestAddRelay = ""
+	guestAddRelayLink = ""
+	guestAddResetDay = 1
+	guestAddNotify = ""
+	if f := guestsAddCmd.Flags().Lookup("limit"); f != nil {
+		_ = f.Value.Set("")
+		f.Changed = false
+	}
+	if f := guestsAddCmd.Flags().Lookup("relay"); f != nil {
+		_ = f.Value.Set("")
+		f.Changed = false
+	}
+	if f := guestsAddCmd.Flags().Lookup("relay-link"); f != nil {
+		_ = f.Value.Set("")
+		f.Changed = false
+	}
+	if f := guestsAddCmd.Flags().Lookup("reset"); f != nil {
+		_ = f.Value.Set("1")
+		f.Changed = false
+	}
+	if f := guestsAddCmd.Flags().Lookup("notify"); f != nil {
+		_ = f.Value.Set("")
+		f.Changed = false
+	}
+}
+
+func TestGuestsAddWithInlineFlags(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-hk", Enabled: true},
+		},
+		Guests: []config.GuestConfig{},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	// 1. guests add bob --limit 20GB --relay direct
+	resetGuestsAddFlags()
+	_ = guestsAddCmd.Flags().Set("limit", "20GB")
+	_ = guestsAddCmd.Flags().Set("relay", "direct")
+	err := guestsAddCmd.RunE(guestsAddCmd, []string{"bob"})
+	if err != nil {
+		t.Fatalf("guests add bob failed: %v", err)
+	}
+
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.Guests) != 1 {
+		t.Fatalf("expected 1 guest, got %d", len(loaded.Guests))
+	}
+	bob := loaded.Guests[0]
+	if bob.Alias != "bob" {
+		t.Errorf("alias = %q, want bob", bob.Alias)
+	}
+	if bob.LimitBytes != 20*1000*1000*1000 {
+		t.Errorf("LimitBytes = %d, want %d", bob.LimitBytes, int64(20*1000*1000*1000))
+	}
+	if bob.OutboundLink != "" {
+		t.Errorf("OutboundLink = %q, want empty (direct)", bob.OutboundLink)
+	}
+	if bob.ResetDay != 1 {
+		t.Errorf("ResetDay = %d, want 1", bob.ResetDay)
+	}
+
+	// 2. guests add charlie with custom relay, reset day, and notify
+	resetGuestsAddFlags()
+	_ = guestsAddCmd.Flags().Set("relay", "relay-hk")
+	_ = guestsAddCmd.Flags().Set("reset", "15")
+	_ = guestsAddCmd.Flags().Set("notify", "header")
+	err = guestsAddCmd.RunE(guestsAddCmd, []string{"charlie"})
+	if err != nil {
+		t.Fatalf("guests add charlie failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.Guests) != 2 {
+		t.Fatalf("expected 2 guests, got %d", len(loaded.Guests))
+	}
+	charlie := loaded.Guests[1]
+	if charlie.OutboundLink != "relay-hk" {
+		t.Errorf("charlie OutboundLink = %q, want relay-hk", charlie.OutboundLink)
+	}
+	if charlie.ResetDay != 15 {
+		t.Errorf("charlie ResetDay = %d, want 15", charlie.ResetDay)
+	}
+	if charlie.Notify != config.GuestNotifyHeader {
+		t.Errorf("charlie Notify = %s, want header", charlie.Notify)
+	}
+
+	// 3. Conflict: both --relay and --relay-link
+	resetGuestsAddFlags()
+	_ = guestsAddCmd.Flags().Set("relay", "direct")
+	_ = guestsAddCmd.Flags().Set("relay-link", "vless://dummy")
+	err = guestsAddCmd.RunE(guestsAddCmd, []string{"dave"})
+	if err == nil || !strings.Contains(err.Error(), "Cannot specify both --relay and --relay-link") {
+		t.Fatalf("expected conflict error, got %v", err)
 	}
 }

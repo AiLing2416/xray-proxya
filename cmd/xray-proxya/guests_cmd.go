@@ -25,9 +25,14 @@ var (
 	resetDay         int
 	guestSubShowAddr string
 	notifyStr        string
-	notifyWebhookStr string
-	notifyTriggerStr string
-	guestsListJSON   bool
+	notifyWebhookStr  string
+	notifyTriggerStr  string
+	guestsListJSON    bool
+	guestAddLimit     string
+	guestAddRelay     string
+	guestAddRelayLink string
+	guestAddResetDay  int
+	guestAddNotify    string
 )
 
 var guestsCmd = &cobra.Command{
@@ -162,16 +167,131 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("❌ Guest '%s' already exists.", alias)
 		}
 	}
-	newG := config.GuestConfig{
-		Alias: alias, UUID: uuid.New().String(), Enabled: true, DisabledReason: config.GuestDisabledNone, QuotaGB: -1, LimitBytes: -1, ResetDay: 1,
-		Notify: config.GuestNotifyOff,
+
+	hasRelay := (cmd != nil && cmd.Flags().Changed("relay")) || guestAddRelay != ""
+	hasRelayLink := (cmd != nil && cmd.Flags().Changed("relay-link")) || guestAddRelayLink != ""
+
+	if hasRelay && hasRelayLink {
+		return fmt.Errorf("❌ Error: Cannot specify both --relay and --relay-link")
 	}
+
+	newG := config.GuestConfig{
+		Alias:          alias,
+		UUID:           uuid.New().String(),
+		Enabled:        true,
+		DisabledReason: config.GuestDisabledNone,
+		QuotaGB:        -1,
+		LimitBytes:     -1,
+		ResetDay:       1,
+		Notify:         config.GuestNotifyOff,
+	}
+
+	// 1. Limit
+	limitInput := strings.TrimSpace(guestAddLimit)
+	if cmd != nil && cmd.Flags().Changed("limit") {
+		limitInput = strings.TrimSpace(cmd.Flag("limit").Value.String())
+	}
+	if limitInput != "" {
+		if strings.EqualFold(limitInput, "reset") {
+			return fmt.Errorf("❌ 'reset' is only valid for 'guests set', not 'guests add'.")
+		}
+		byteVal, err := config.ParseByteSize(limitInput)
+		if err != nil {
+			return fmt.Errorf("❌ Invalid limit value %q: %w", limitInput, err)
+		}
+		newG.LimitBytes = byteVal
+		if byteVal > 0 {
+			newG.QuotaGB = float64(byteVal) / float64(config.GigaByte)
+		} else {
+			newG.QuotaGB = float64(byteVal)
+		}
+		if byteVal == 0 {
+			newG.Enabled = false
+			newG.DisabledReason = config.GuestDisabledQuotaZero
+		}
+	}
+
+	// 2. Relay / RelayLink
+	if hasRelayLink {
+		rawLink := strings.TrimSpace(guestAddRelayLink)
+		if cmd != nil && cmd.Flags().Changed("relay-link") {
+			rawLink = strings.TrimSpace(cmd.Flag("relay-link").Value.String())
+		}
+		if rawLink == "" {
+			return fmt.Errorf("❌ Error: --relay-link cannot be empty")
+		}
+		conf, err := xray.ParseProxyLink(rawLink)
+		if err != nil {
+			return fmt.Errorf("❌ Failed to parse link: %w", err)
+		}
+		newG.OutboundLink = rawLink
+		newG.OutboundConf = conf
+	} else if hasRelay {
+		targetRelay := strings.TrimSpace(guestAddRelay)
+		if cmd != nil && cmd.Flags().Changed("relay") {
+			targetRelay = strings.TrimSpace(cmd.Flag("relay").Value.String())
+		}
+		if targetRelay == "direct" {
+			newG.OutboundLink = ""
+			newG.OutboundConf = nil
+		} else {
+			var found *config.CustomOutbound
+			for _, co := range cfg.CustomOutbounds {
+				if co.Alias == targetRelay {
+					found = &co
+					break
+				}
+			}
+			if found != nil {
+				newG.OutboundLink = found.Alias
+				newG.OutboundConf = found.Config
+			} else {
+				return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
+			}
+		}
+	}
+
+	// 3. Reset day
+	effectiveResetDay := guestAddResetDay
+	if cmd != nil && cmd.Flags().Changed("reset") {
+		rVal, err := cmd.Flags().GetInt("reset")
+		if err == nil {
+			effectiveResetDay = rVal
+		}
+	}
+	if effectiveResetDay >= 1 && effectiveResetDay <= 31 {
+		newG.ResetDay = effectiveResetDay
+	} else {
+		return fmt.Errorf("❌ Reset day must be between 1 and 31.")
+	}
+
+	// 4. Notify
+	notifyInput := strings.TrimSpace(guestAddNotify)
+	if cmd != nil && cmd.Flags().Changed("notify") {
+		notifyInput = strings.TrimSpace(cmd.Flag("notify").Value.String())
+	}
+	if notifyInput != "" {
+		mode := config.GuestNotifyMode(strings.ToLower(notifyInput))
+		switch mode {
+		case config.GuestNotifyOff, config.GuestNotifyHeader, config.GuestNotifyRemark, config.GuestNotifyAll:
+			newG.Notify = mode
+		default:
+			return fmt.Errorf("❌ Invalid notify mode '%s'. Valid options: off, header, remark, all", notifyInput)
+		}
+	}
+
 	cfg.Guests = append(cfg.Guests, newG)
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("❌ Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest '%s' added to STAGING. UUID: %s\n", alias, newG.UUID)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+
+	limitDesc := config.FormatByteSize(newG.LimitBytes)
+	relayDesc := "direct"
+	if newG.OutboundLink != "" {
+		relayDesc = newG.OutboundLink
+	}
+	fmt.Printf("✅ Guest '%s' added to STAGING. Limit: %s, Relay: %s, Reset Day: %d. Run 'apply' to commit.\n",
+		alias, limitDesc, relayDesc, newG.ResetDay)
 	return nil
 }
 
@@ -747,6 +867,29 @@ var guestsSubSetCmd = &cobra.Command{
 }
 
 func init() {
+	guestsAddCmd.Flags().StringVarP(&guestAddLimit, "limit", "l", "", "Set initial usage limit (e.g. 500MB, 10GB, 1TiB, -1, 0)")
+	guestsAddCmd.Flags().StringVar(&guestAddRelay, "relay", "", "Bind guest to a configured relay alias or 'direct'")
+	guestsAddCmd.Flags().StringVar(&guestAddRelayLink, "relay-link", "", "Set relay outbound to a raw proxy link (e.g. vless://...)")
+	guestsAddCmd.Flags().IntVarP(&guestAddResetDay, "reset", "r", 1, "Monthly reset day (1-31)")
+	guestsAddCmd.Flags().StringVar(&guestAddNotify, "notify", "", "Subscription usage notify mode (off, header, remark, all)")
+	guestsAddCmd.RegisterFlagCompletionFunc("limit", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"-1", "0", "100MB", "10GB", "50GB", "100GB", "1TB", "1TiB"}, cobra.ShellCompDirectiveNoFileComp
+	})
+	guestsAddCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil || cfg == nil {
+			return []string{"direct"}, cobra.ShellCompDirectiveNoFileComp
+		}
+		aliases := []string{"direct"}
+		for _, co := range cfg.CustomOutbounds {
+			aliases = append(aliases, co.Alias)
+		}
+		return aliases, cobra.ShellCompDirectiveNoFileComp
+	})
+	guestsAddCmd.RegisterFlagCompletionFunc("notify", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"off", "header", "remark", "all"}, cobra.ShellCompDirectiveNoFileComp
+	})
+
 	guestsSetCmd.Flags().StringVarP(&limitStr, "limit", "l", "", "Set usage limit (e.g. 500MB, 10GB, 1TiB, -1, 0, or 'reset')")
 	guestsSetCmd.Flags().StringVarP(&quotaStr, "quota", "q", "", "Set usage limit (deprecated, alias to --limit)")
 	guestsSetCmd.Flags().MarkHidden("quota")
