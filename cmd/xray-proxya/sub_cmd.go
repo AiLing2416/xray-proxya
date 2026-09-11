@@ -402,8 +402,13 @@ Supported target types:
 		}
 		defer func() {
 			subEndpoint = ""
+			subGateURL = ""
 			if cmd != nil {
 				if f := cmd.Flag("endpoint"); f != nil {
+					f.Changed = false
+					_ = f.Value.Set("")
+				}
+				if f := cmd.Flag("gate-url"); f != nil {
 					f.Changed = false
 					_ = f.Value.Set("")
 				}

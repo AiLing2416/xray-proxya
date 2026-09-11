@@ -1,6 +1,7 @@
 package endpoint
 
 import (
+	"strings"
 	"testing"
 
 	"xray-proxya/internal/config"
@@ -146,3 +147,50 @@ func TestFindReferences(t *testing.T) {
 		t.Fatalf("expected 2 references for default, got %d: %v", len(refsDefault), refsDefault)
 	}
 }
+
+func TestFindReferences_SubscriptionInstances(t *testing.T) {
+	cfg := &config.UserConfig{
+		AdminSub: config.AdminSubConfig{
+			Token:    "admin-tok",
+			Endpoint: "ep-admin",
+		},
+		SubscriptionInstances: map[string]config.AdminSubConfig{
+			"default": {
+				Token:    "admin-tok",
+				Endpoint: "ep-admin",
+			},
+			"node-hk": {
+				Token:    "hk-tok",
+				Endpoint: "ep-hk",
+			},
+			"node-jp": {
+				Token:    "jp-tok",
+				Endpoint: "default",
+			},
+			"node-us": {
+				Token: "us-tok",
+				// Endpoint is empty -> defaults to default
+			},
+			"node-disabled": {
+				Token:    "", // no token, inactive
+				Endpoint: "ep-hk",
+			},
+		},
+		Guests: []config.GuestConfig{
+			{Alias: "alice", Endpoint: "ep-hk"},
+		},
+	}
+
+	refsHK := FindReferences(cfg, "ep-hk")
+	refsHKStr := strings.Join(refsHK, ",")
+	if !strings.Contains(refsHKStr, "sub:node-hk") || !strings.Contains(refsHKStr, "guest:alice") || len(refsHK) != 2 {
+		t.Errorf("FindReferences(ep-hk) = %v, want [sub:node-hk guest:alice]", refsHK)
+	}
+
+	refsDefault := FindReferences(cfg, "default")
+	refsDefStr := strings.Join(refsDefault, ",")
+	if !strings.Contains(refsDefStr, "sub:node-jp") || !strings.Contains(refsDefStr, "sub:node-us") || len(refsDefault) != 2 {
+		t.Errorf("FindReferences(default) = %v, want [sub:node-jp sub:node-us]", refsDefault)
+	}
+}
+

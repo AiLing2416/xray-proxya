@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"xray-proxya/internal/config"
@@ -111,6 +112,24 @@ func FindReferences(cfg *config.UserConfig, endpointName string) []string {
 		(endpointName != "default" && cfg.AdminSub.Endpoint == endpointName) {
 		if cfg.AdminSub.Token != "" {
 			refs = append(refs, "sub:admin")
+		}
+	}
+
+	// Check subscription instances
+	var instNames []string
+	for instName := range cfg.SubscriptionInstances {
+		if instName != "default" {
+			instNames = append(instNames, instName)
+		}
+	}
+	sort.Strings(instNames)
+	for _, instName := range instNames {
+		inst := cfg.SubscriptionInstances[instName]
+		if (endpointName == "default" && (inst.Endpoint == "" || inst.Endpoint == "default")) ||
+			(endpointName != "default" && inst.Endpoint == endpointName) {
+			if inst.Token != "" {
+				refs = append(refs, fmt.Sprintf("sub:%s", instName))
+			}
 		}
 	}
 
