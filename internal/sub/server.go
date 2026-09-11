@@ -15,7 +15,6 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
-	"xray-proxya/internal/ipv6rotate"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 )
@@ -94,37 +93,27 @@ func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 
 func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin config.AdminSubConfig) {
 	var targets []xray.TargetNode
-	if admin.IPv6Rotation != "" {
-		rotated, err := ipv6rotate.Next(ipv6rotate.SocketPath(admin.IPv6Rotation))
-		if err != nil {
-			log.Printf("IPv6 rotation error: %v", err)
-			http.Error(w, "IPv6 rotation unavailable", http.StatusServiceUnavailable)
-			return
-		}
-		targets = append(targets, xray.TargetNode{Address: rotated, Alias: "ipv6-rotate"})
-	} else {
-		epSpec := admin.Endpoint
-		if epSpec == "" {
-			if admin.AddressNode != "" {
-				epSpec = admin.AddressNode
-			} else {
-				epSpec = "default"
-			}
-		}
-		if resolvedTargets, err := endpoint.ResolveTargets(cfg, epSpec, "admin", true); err == nil && len(resolvedTargets) > 0 {
-			for _, rt := range resolvedTargets {
-				targets = append(targets, xray.TargetNode{
-					Address: rt.Address,
-					Alias:   rt.Alias,
-				})
-			}
+	epSpec := admin.Endpoint
+	if epSpec == "" {
+		if admin.AddressNode != "" {
+			epSpec = admin.AddressNode
 		} else {
-			if err != nil {
-				log.Printf("⚠️ Admin sub: failed to resolve endpoint targets %q: %v; falling back to node address", epSpec, err)
-			}
-			addr := ResolveNodeAddress(cfg, admin.AddressNode)
-			targets = append(targets, xray.TargetNode{Address: addr})
+			epSpec = "default"
 		}
+	}
+	if resolvedTargets, err := endpoint.ResolveTargets(cfg, epSpec, "admin", true); err == nil && len(resolvedTargets) > 0 {
+		for _, rt := range resolvedTargets {
+			targets = append(targets, xray.TargetNode{
+				Address: rt.Address,
+				Alias:   rt.Alias,
+			})
+		}
+	} else {
+		if err != nil {
+			log.Printf("⚠️ Admin sub: failed to resolve endpoint targets %q: %v; falling back to node address", epSpec, err)
+		}
+		addr := ResolveNodeAddress(cfg, admin.AddressNode)
+		targets = append(targets, xray.TargetNode{Address: addr})
 	}
 
 	links := generateSubscriptionLinksWithTargets(cfg, admin.TargetType, admin.TargetAlias, targets)

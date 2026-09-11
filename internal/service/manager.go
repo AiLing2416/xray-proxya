@@ -95,12 +95,8 @@ func (m *Manager) Install(cfg *config.UserConfig) error {
 		return fmt.Errorf("write %s: %w", SubUnit, err)
 	}
 
-	if system {
-		rotateContent := BuildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir)
-		if err := os.WriteFile(ManagedUnitPath(RotateUnit), []byte(rotateContent), 0644); err != nil {
-			return fmt.Errorf("write %s: %w", RotateUnit, err)
-		}
-	}
+	// Clean up obsolete legacy ipv6-rotate service unit if present
+	_ = os.Remove(ManagedUnitPath("xray-proxya-ipv6-rotate.service"))
 
 	if pathdContent != "" {
 		if err := os.WriteFile(ManagedUnitPath(PathdUnit), []byte(pathdContent), 0644); err != nil {
@@ -125,7 +121,7 @@ func (m *Manager) Uninstall() error {
 	if len(active) > 0 {
 		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
 	}
-	for _, unit := range []string{MainUnit, PathdUnit, SubUnit, SubTemplateUnit, RotateUnit} {
+	for _, unit := range []string{MainUnit, PathdUnit, SubUnit, SubTemplateUnit, "xray-proxya-ipv6-rotate.service"} {
 		if err := os.Remove(ManagedUnitPath(unit)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", unit, err)
 		}

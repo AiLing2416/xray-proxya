@@ -167,36 +167,6 @@ func (s *PathdSyncStep) Run(ctx *ApplyContext) error {
 	return nil
 }
 
-// IPv6RotateSyncStep reloads or notifies the privileged IPv6 rotation daemon.
-type IPv6RotateSyncStep struct{}
-
-func (s *IPv6RotateSyncStep) Name() string {
-	return "IPv6 Rotate Sync"
-}
-
-func (s *IPv6RotateSyncStep) ShouldRun(ctx *ApplyContext) bool {
-	return ctx.Impact.IPv6RotationChanged
-}
-
-func (s *IPv6RotateSyncStep) Run(ctx *ApplyContext) error {
-	if IsIPv6RotateServiceActive() {
-		if err := RestartIPv6RotateServiceIfInstalled(); err != nil {
-			ctx.AppendLine(fmt.Sprintf("❌ Error reloading IPv6 rotation service: %v", err))
-			return fmt.Errorf("reload IPv6 rotation service: %w", err)
-		}
-		ctx.AppendLine("🔄 IPv6 rotation service reloaded.")
-	} else if ctx.Options.Start && os.Geteuid() == 0 && service.IsUnitInstalled(service.RotateUnit) {
-		ctx.AppendLine("🚀 Starting IPv6 rotation service (--start requested)...")
-		if err := service.Start(service.RotateUnit); err != nil {
-			return fmt.Errorf("start IPv6 rotation service: %w", err)
-		}
-		ctx.AppendLine("✅ IPv6 rotation service started.")
-	} else {
-		ctx.AppendLine("ℹ️  IPv6 rotation service is stopped; skipping reload.")
-	}
-	return nil
-}
-
 // XrayGatewaySyncStep handles Xray core restarts and transparent gateway TUN synchronization.
 type XrayGatewaySyncStep struct{}
 

@@ -37,20 +37,6 @@ func TestBuildSubServiceContent(t *testing.T) {
 	}
 }
 
-func TestBuildIPv6RotateServiceIsPrivilegedAndIsolated(t *testing.T) {
-	content := BuildIPv6RotateServiceContent(RootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin")
-	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya ipv6-rotate validate",
-		"ExecStart=/root/.local/bin/xray-proxya ipv6-rotate run",
-		"CapabilityBoundingSet=CAP_NET_ADMIN",
-		"NoNewPrivileges=yes", "ProtectSystem=strict",
-	} {
-		if !strings.Contains(content, required) {
-			t.Fatalf("rotate service missing %q:\n%s", required, content)
-		}
-	}
-}
-
 func TestUserUnitDoesNotRequestCapabilities(t *testing.T) {
 	content := BuildSystemdServiceContent("/home/ailing/.local/bin/xray-proxya", "/home/ailing/.local/share/xray-proxya", "/home/ailing/.local/share/xray-proxya/bin", "/home/ailing/.config/xray-proxya", "", false, true)
 	if strings.Contains(content, "CapabilityBoundingSet=") || strings.Contains(content, "AmbientCapabilities=") || strings.Contains(content, "User=root") {
@@ -93,10 +79,6 @@ func TestNormalizeUnitName(t *testing.T) {
 		{"xray-proxya-pathd", PathdUnit, false},
 		{"pathd", PathdUnit, false},
 		{PathdUnit, PathdUnit, false},
-		{"xray-proxya-ipv6-rotate", RotateUnit, false},
-		{"ipv6-rotate", RotateUnit, false},
-		{"rotate", RotateUnit, false},
-		{RotateUnit, RotateUnit, false},
 		{"xray-proxya-sub", SubUnit, false},
 		{"sub", SubUnit, false},
 		{SubUnit, SubUnit, false},

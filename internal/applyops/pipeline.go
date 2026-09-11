@@ -45,7 +45,6 @@ func NewApplyPipeline() *ApplyPipeline {
 			&RuntimeIsolationStep{},
 			&CommitStagingStep{},
 			&PathdSyncStep{},
-			&IPv6RotateSyncStep{},
 			&XrayGatewaySyncStep{},
 			&SubServiceSyncStep{},
 		},

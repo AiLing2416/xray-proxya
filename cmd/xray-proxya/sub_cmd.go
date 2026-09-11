@@ -536,9 +536,6 @@ var subShowCmd = &cobra.Command{
 			if inst.AddressNode != "" {
 				fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
 			}
-			if inst.IPv6Rotation != "" {
-				fmt.Printf("          └─ IPv6 rotation: enabled (%s)\n", inst.IPv6Rotation)
-			}
 			fmt.Println()
 			return nil
 		}

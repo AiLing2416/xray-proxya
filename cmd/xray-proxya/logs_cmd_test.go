@@ -76,7 +76,7 @@ func TestServiceLogsCompletion(t *testing.T) {
 	if directive != cobra.ShellCompDirectiveNoFileComp {
 		t.Fatalf("expected NoFileComp, got %v", directive)
 	}
-	for _, wantPrefix := range []string{"core\t", "sub\t", "pathd\t", "rotate\t"} {
+	for _, wantPrefix := range []string{"core\t", "sub\t", "pathd\t"} {
 		matched := false
 		for _, c := range completions {
 			if strings.HasPrefix(c, wantPrefix) {

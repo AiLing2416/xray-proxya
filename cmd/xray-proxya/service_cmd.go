@@ -12,7 +12,6 @@ const (
 	pathdServiceUnit  = service.PathdUnit
 	subServiceUnit    = service.SubUnit
 	subTemplateUnit   = service.SubTemplateUnit
-	rotateServiceUnit = service.RotateUnit
 	rootManagerBinary = service.RootManagerBinary
 )
 
@@ -24,8 +23,7 @@ var serviceCmd = &cobra.Command{
 Managed units include:
   - core / xray-proxya:               Main Xray-Core proxy service
   - sub / xray-proxya-sub:             Subscription server service
-  - pathd / xray-proxya-pathd:         PathLink ICMP health & latency probe daemon
-  - rotate / xray-proxya-ipv6-rotate:  Privileged IPv6 address rotation service`,
+  - pathd / xray-proxya-pathd:         PathLink ICMP health & latency probe daemon`,
 	Example: `  # Install unit files for current user or root
   xray-proxya service install
 
@@ -57,10 +55,6 @@ func buildSubServiceContent(binPath, workDir, configDir, assetDir string, system
 	return service.BuildSubServiceContent(binPath, workDir, configDir, assetDir, system)
 }
 
-func buildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir string) string {
-	return service.BuildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir)
-}
-
 func mainServiceActionNeedsGatewayRecovery(action string, now bool) bool {
 	return action == "start" || (action == "enable" && now)
 }
@@ -74,11 +68,9 @@ func completeManagedServiceUnits(cmd *cobra.Command, args []string, toComplete s
 		"core\tCore proxy service (xray-proxya)",
 		"sub\tSubscription distribution service (xray-proxya-sub)",
 		"pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
-		"rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
 		"xray-proxya\tCore proxy service (xray-proxya)",
 		"xray-proxya-sub\tSubscription distribution service (xray-proxya-sub)",
 		"xray-proxya-pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
-		"xray-proxya-ipv6-rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
 	}
 	return units, cobra.ShellCompDirectiveNoFileComp
 }

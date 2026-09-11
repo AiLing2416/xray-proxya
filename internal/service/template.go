@@ -109,36 +109,6 @@ WantedBy=%s
 `, userLine, binPath, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
 }
 
-// BuildIPv6RotateServiceContent generates the systemd unit file content for the IPv6 rotation service.
-func BuildIPv6RotateServiceContent(binPath, workDir, configDir, assetDir string) string {
-	return fmt.Sprintf(`[Unit]
-Description=Xray-Proxya IPv6 Rotation Service
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-ExecStartPre=%s ipv6-rotate validate
-ExecStart=%s ipv6-rotate run
-Restart=on-failure
-RestartSec=2
-WorkingDirectory=%s
-Environment=XRAY_LOCATION_ASSET=%s
-UMask=0077
-NoNewPrivileges=yes
-ProtectSystem=strict
-PrivateTmp=yes
-PrivateDevices=yes
-ReadWritePaths=%s %s
-CapabilityBoundingSet=CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_ADMIN
-
-[Install]
-WantedBy=multi-user.target
-`, binPath, binPath, workDir, assetDir, configDir, assetDir)
-}
-
 // BuildPathdServiceContent generates the systemd unit file content for the PathLink ICMP agent.
 func BuildPathdServiceContent(binaryPath, configPath string) string {
 	return fmt.Sprintf(`[Unit]

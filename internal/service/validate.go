@@ -58,29 +58,6 @@ func ValidateServiceStart(unit string) error {
 		if entry.Token == "" || port <= 0 {
 			return fmt.Errorf("configure subscription first with 'sub set', then apply")
 		}
-		if entry.IPv6Rotation != "" && os.Geteuid() != 0 {
-			return fmt.Errorf("IPv6-rotate subscriptions require a root system service")
-		}
-		return nil
-
-	case RotateUnit:
-		if os.Geteuid() != 0 {
-			return fmt.Errorf("xray-proxya-ipv6-rotate requires a root system service")
-		}
-		cfg, err := config.LoadConfig()
-		if err != nil {
-			return fmt.Errorf("load active IPv6 rotation configuration: %w", err)
-		}
-		if cfg.Role != config.RoleServer {
-			return fmt.Errorf("xray-proxya-ipv6-rotate can run only on a Server")
-		}
-		rotation := cfg.IPv6Rotation
-		if rotation.Subnet == "" && cfg.IPv6Rotations != nil {
-			rotation = cfg.IPv6Rotations["default"]
-		}
-		if rotation.Interface == "" || rotation.Subnet == "" {
-			return fmt.Errorf("IPv6 rotation is not configured; use 'ipv6-rotate set', then apply")
-		}
 		return nil
 
 	default:

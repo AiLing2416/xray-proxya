@@ -107,8 +107,8 @@ func TestPipelineStepErrorHalts(t *testing.T) {
 
 func TestDefaultPipelineStepsCount(t *testing.T) {
 	p := NewApplyPipeline()
-	if len(p.steps) != 7 {
-		t.Fatalf("expected 7 default apply steps, got %d", len(p.steps))
+	if len(p.steps) != 6 {
+		t.Fatalf("expected 6 default apply steps, got %d", len(p.steps))
 	}
 }
 

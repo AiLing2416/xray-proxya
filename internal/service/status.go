@@ -21,8 +21,6 @@ func GetUnitStatus(unit string) Status {
 		st.Description = "Main Xray-Core proxy service"
 	case PathdUnit:
 		st.Description = "PathLink ICMP latency & health daemon"
-	case RotateUnit:
-		st.Description = "Privileged IPv6 subnet address rotator"
 	case SubUnit:
 		st.Description = "Subscription server"
 	default:
@@ -100,7 +98,7 @@ func ActiveManagedUnits() ([]string, error) {
 		return nil, fmt.Errorf("systemctl is required: %w", err)
 	}
 	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units",
-		MainUnit, PathdUnit, SubUnit, "xray-proxya-sub@*.service", RotateUnit)
+		MainUnit, PathdUnit, SubUnit, "xray-proxya-sub@*.service")
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
@@ -125,12 +123,7 @@ func ListManagedServices(cfg *config.UserConfig) ([]Status, error) {
 	// 2. Pathd Probe Service
 	list = append(list, GetUnitStatus(PathdUnit))
 
-	// 3. IPv6-Rotate Service (Server mode)
-	if cfg == nil || cfg.Role == config.RoleServer {
-		list = append(list, GetUnitStatus(RotateUnit))
-	}
-
-	// 4. Subscription service
+	// 3. Subscription service
 	list = append(list, GetUnitStatus(SubUnit))
 
 	return list, nil

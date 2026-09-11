@@ -2,8 +2,7 @@ package tui
 
 import (
 	"fmt"
-	"net"
-	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
@@ -46,28 +45,10 @@ func isConfigurableService(item ManagedServiceItem) bool {
 	if item.DisplayName == "Core" {
 		return false
 	}
-	if item.DisplayName == "Pathd" || item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate" || item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@") {
+	if item.DisplayName == "Pathd" || item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@") {
 		return true
 	}
 	return false
-}
-
-// getAvailableInterfaces detects physical network interfaces for IPv6 rotation.
-func getAvailableInterfaces() []string {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return []string{"eth0"}
-	}
-	var res []string
-	for _, iface := range ifaces {
-		if iface.Name != "" && iface.Name != "lo" && !strings.HasPrefix(iface.Name, "proxya-") {
-			res = append(res, iface.Name)
-		}
-	}
-	if len(res) == 0 {
-		res = append(res, "eth0")
-	}
-	return res
 }
 
 func getPathdConfig(cfg *config.UserConfig) config.PathConfig {
@@ -88,43 +69,6 @@ func setPathdConfig(cfg *config.UserConfig, p config.PathConfig) {
 	if cfg != nil {
 		cfg.Path = p
 	}
-}
-
-func getIPv6Config(cfg *config.UserConfig) config.IPv6Config {
-	if cfg == nil {
-		return config.IPv6Config{MaxAddresses: 6}
-	}
-	if cfg.IPv6Rotation.Subnet != "" {
-		rot := cfg.IPv6Rotation
-		if rot.MaxAddresses <= 0 {
-			rot.MaxAddresses = 6
-		}
-		return rot
-	}
-	if cfg.IPv6Rotations != nil {
-		if rot, ok := cfg.IPv6Rotations["default"]; ok && rot.Subnet != "" {
-			if rot.MaxAddresses <= 0 {
-				rot.MaxAddresses = 6
-			}
-			return rot
-		}
-	}
-	rot := cfg.IPv6Rotation
-	if rot.MaxAddresses <= 0 {
-		rot.MaxAddresses = 6
-	}
-	return rot
-}
-
-func setIPv6Config(cfg *config.UserConfig, rot config.IPv6Config) {
-	if cfg == nil {
-		return
-	}
-	cfg.IPv6Rotation = rot
-	if cfg.IPv6Rotations == nil {
-		cfg.IPv6Rotations = make(map[string]config.IPv6Config)
-	}
-	cfg.IPv6Rotations["default"] = rot
 }
 
 func getSubConfig(cfg *config.UserConfig, instance string) config.AdminSubConfig {
@@ -198,48 +142,6 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 			Type:  PropInput,
 		})
 
-	case item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate":
-		rot := getIPv6Config(cfg)
-		ifaces := getAvailableInterfaces()
-		if rot.Interface != "" {
-			found := false
-			for _, iface := range ifaces {
-				if iface == rot.Interface {
-					found = true
-					break
-				}
-			}
-			if !found {
-				ifaces = append([]string{rot.Interface}, ifaces...)
-			}
-		}
-		props = append(props, ServiceProperty{
-			Key:     "Interface",
-			Label:   "Network Interface",
-			Value:   rot.Interface,
-			Type:    PropChoice,
-			Choices: ifaces,
-		})
-		props = append(props, ServiceProperty{
-			Key:   "Subnet",
-			Label: "IPv6 Subnet (CIDR)",
-			Value: rot.Subnet,
-			Type:  PropInput,
-		})
-		props = append(props, ServiceProperty{
-			Key:   "MaxAddresses",
-			Label: "Max Addresses",
-			Value: strconv.Itoa(rot.MaxAddresses),
-			Type:  PropInput,
-		})
-		props = append(props, ServiceProperty{
-			Key:     "NDP",
-			Label:   "NDP Proxy",
-			Value:   boolToString(rot.EnableNDP),
-			Type:    PropBool,
-			BoolVal: rot.EnableNDP,
-		})
-
 	case item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@"):
 		inst := extractSubInstance(item.UnitName)
 		sub := getSubConfig(cfg, inst)
@@ -307,16 +209,26 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 			Choices: targetChoices,
 		})
 
-		rotVal := sub.IPv6Rotation
-		if rotVal == "" {
-			rotVal = "none"
+		var epChoices []string
+		if cfg != nil {
+			for name := range cfg.Endpoints {
+				epChoices = append(epChoices, name)
+			}
+		}
+		sort.Strings(epChoices)
+		if len(epChoices) == 0 {
+			epChoices = []string{"default"}
+		}
+		epVal := sub.Endpoint
+		if epVal == "" {
+			epVal = "default"
 		}
 		props = append(props, ServiceProperty{
-			Key:     "IPv6Rotation",
-			Label:   "IPv6 Rotation",
-			Value:   rotVal,
+			Key:     "Endpoint",
+			Label:   "Endpoint",
+			Value:   epVal,
 			Type:    PropChoice,
-			Choices: []string{"none", "default"},
+			Choices: epChoices,
 		})
 		props = append(props, ServiceProperty{
 			Key:   "Token",
@@ -356,33 +268,6 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 		}
 		setPathdConfig(cfg, p)
 
-	case item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate":
-		rot := getIPv6Config(cfg)
-		switch prop.Key {
-		case "Interface":
-			if newVal == "" {
-				return fmt.Errorf("interface cannot be empty")
-			}
-			rot.Interface = newVal
-		case "Subnet":
-			if newVal == "" {
-				return fmt.Errorf("subnet cannot be empty")
-			}
-			if _, _, err := net.ParseCIDR(newVal); err != nil {
-				return fmt.Errorf("invalid IPv6 CIDR (e.g. 2001:db8::/64)")
-			}
-			rot.Subnet = newVal
-		case "MaxAddresses":
-			v, err := strconv.Atoi(newVal)
-			if err != nil || v <= 0 {
-				return fmt.Errorf("max addresses must be positive")
-			}
-			rot.MaxAddresses = v
-		case "NDP":
-			rot.EnableNDP = (newVal == "true" || newVal == "On" || newVal == "on")
-		}
-		setIPv6Config(cfg, rot)
-
 	case item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@"):
 		inst := extractSubInstance(item.UnitName)
 		sub := getSubConfig(cfg, inst)
@@ -411,12 +296,8 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 			} else {
 				sub.TargetAlias = newVal
 			}
-		case "IPv6Rotation":
-			if newVal == "none" {
-				sub.IPv6Rotation = ""
-			} else {
-				sub.IPv6Rotation = newVal
-			}
+		case "Endpoint":
+			sub.Endpoint = newVal
 		case "Token":
 			if newVal == "" {
 				return fmt.Errorf("token cannot be empty")
@@ -443,14 +324,6 @@ func serviceHasStagedChanges(active, staging *config.UserConfig, item ManagedSer
 		pActive := getPathdConfig(active)
 		return pStaging.Listen != pActive.Listen || pStaging.Token != pActive.Token || pStaging.IdleSeconds != pActive.IdleSeconds
 
-	case item.DisplayName == "Rotate" || item.DisplayName == "IPv6-Rotate":
-		rStaging := getIPv6Config(staging)
-		if active == nil {
-			return rStaging.Subnet != ""
-		}
-		rActive := getIPv6Config(active)
-		return !reflect.DeepEqual(rStaging, rActive)
-
 	case strings.HasPrefix(item.DisplayName, "Sub@"):
 		inst := extractSubInstance(item.UnitName)
 		sStaging := getSubConfig(staging, inst)
@@ -463,7 +336,7 @@ func serviceHasStagedChanges(active, staging *config.UserConfig, item ManagedSer
 			sStaging.Address != sActive.Address ||
 			sStaging.TargetType != sActive.TargetType ||
 			sStaging.TargetAlias != sActive.TargetAlias ||
-			sStaging.IPv6Rotation != sActive.IPv6Rotation ||
+			sStaging.Endpoint != sActive.Endpoint ||
 			sStaging.Token != sActive.Token
 	}
 

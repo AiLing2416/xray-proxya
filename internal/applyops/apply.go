@@ -15,7 +15,6 @@ type Impact struct {
 	XrayConfigChanged     bool
 	SubListenerChanged    bool
 	SubContentChanged     bool
-	IPv6RotationChanged   bool
 	GatewayRuntimeChanged bool
 	PathdConfigChanged    bool
 	ChangedSections       []string
@@ -262,7 +261,6 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	}
 	if !reflect.DeepEqual(activeCfg.IPv6Pool, stagingCfg.IPv6Pool) || !reflect.DeepEqual(activeCfg.IPv6Rotations, stagingCfg.IPv6Rotations) {
 		impact.SubContentChanged = true
-		impact.IPv6RotationChanged = true
 		mark("ipv6_pool")
 	}
 
@@ -363,22 +361,8 @@ func RestartSubServiceIfInstalled() error {
 	return service.Restart(service.SubUnit)
 }
 
-func RestartIPv6RotateServiceIfInstalled() error {
-	if os.Geteuid() != 0 || !service.IsUnitInstalled(service.RotateUnit) {
-		return nil
-	}
-	return service.Restart(service.RotateUnit)
-}
-
 func AnySubServiceActive() bool {
 	return service.IsUnitActive(service.SubUnit)
-}
-
-func IsIPv6RotateServiceActive() bool {
-	if os.Geteuid() != 0 {
-		return false
-	}
-	return service.IsUnitActive(service.RotateUnit)
 }
 
 func IsPathdServiceActive() bool {
@@ -395,13 +379,6 @@ func fileExists(path string) bool {
 
 func subServicePath() string {
 	return service.ManagedUnitPath(service.SubUnit)
-}
-
-func ipv6RotateServicePath() string {
-	if os.Geteuid() == 0 {
-		return service.ManagedUnitPath(service.RotateUnit)
-	}
-	return ""
 }
 
 func guestsAffectXray(activeGuests, stagingGuests []config.GuestConfig) bool {
@@ -496,20 +473,6 @@ func BuildDryRunPreview(activeCfg, stagingCfg *config.UserConfig, impact Impact,
 				actions = append(actions, "  - Pathd Service       : [State: Stopped] -> Will START (--start requested)")
 			} else {
 				actions = append(actions, "  - Pathd Service       : [State: Stopped] -> Will keep STOPPED (config only)")
-			}
-		}
-	}
-
-	// 4. IPv6 Rotate Service
-	if impact.IPv6RotationChanged {
-		rotateActive := service.IsUnitActive(service.RotateUnit)
-		if rotateActive {
-			actions = append(actions, "  - IPv6-Rotate Service : [State: Active]  -> Will RESTART")
-		} else {
-			if opts.Start {
-				actions = append(actions, "  - IPv6-Rotate Service : [State: Stopped] -> Will START (--start requested)")
-			} else {
-				actions = append(actions, "  - IPv6-Rotate Service : [State: Stopped] -> Will keep STOPPED (config only)")
 			}
 		}
 	}

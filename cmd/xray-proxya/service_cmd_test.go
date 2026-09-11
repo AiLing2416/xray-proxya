@@ -63,20 +63,6 @@ func TestBuildSubServiceContent(t *testing.T) {
 	}
 }
 
-func TestBuildIPv6RotateServiceIsPrivilegedAndIsolated(t *testing.T) {
-	content := buildIPv6RotateServiceContent(rootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin")
-	for _, required := range []string{
-		"ExecStartPre=/root/.local/bin/xray-proxya ipv6-rotate validate",
-		"ExecStart=/root/.local/bin/xray-proxya ipv6-rotate run",
-		"CapabilityBoundingSet=CAP_NET_ADMIN",
-		"NoNewPrivileges=yes", "ProtectSystem=strict",
-	} {
-		if !strings.Contains(content, required) {
-			t.Fatalf("rotate service missing %q:\n%s", required, content)
-		}
-	}
-}
-
 func TestUserUnitDoesNotRequestCapabilities(t *testing.T) {
 	content := buildSystemdServiceContent("/home/ailing/.local/bin/xray-proxya", "/home/ailing/.local/share/xray-proxya", "/home/ailing/.local/share/xray-proxya/bin", "/home/ailing/.config/xray-proxya", "", false, true)
 	if strings.Contains(content, "CapabilityBoundingSet=") || strings.Contains(content, "AmbientCapabilities=") || strings.Contains(content, "User=root") {
@@ -112,10 +98,6 @@ func TestNormalizedManagedUnitRejectsForeignUnits(t *testing.T) {
 			inputs:   []string{"pathd", "PATHD", "xray-proxya-pathd", "xray-proxya-pathd.service"},
 			expected: "xray-proxya-pathd.service",
 		},
-		{
-			inputs:   []string{"rotate", "ROTATE", "ipv6-rotate", "xray-proxya-ipv6-rotate", "xray-proxya-ipv6-rotate.service"},
-			expected: "xray-proxya-ipv6-rotate.service",
-		},
 	}
 
 	for _, tc := range tests {
@@ -137,11 +119,9 @@ func TestManagedServiceUnitCompletionIncludesDefaultSubscription(t *testing.T) {
 		"core\tCore proxy service (xray-proxya)",
 		"sub\tSubscription distribution service (xray-proxya-sub)",
 		"pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
-		"rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
 		"xray-proxya\tCore proxy service (xray-proxya)",
 		"xray-proxya-sub\tSubscription distribution service (xray-proxya-sub)",
 		"xray-proxya-pathd\tPathLink ICMP latency & health daemon (xray-proxya-pathd)",
-		"xray-proxya-ipv6-rotate\tPrivileged IPv6 rotation service (xray-proxya-ipv6-rotate)",
 	} {
 		if !containsCompletion(units, want) {
 			t.Fatalf("completion missing %q: %v", want, units)

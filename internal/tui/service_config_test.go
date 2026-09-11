@@ -13,10 +13,10 @@ func TestIsConfigurableService(t *testing.T) {
 	}{
 		{item: ManagedServiceItem{DisplayName: "Core"}, want: false},
 		{item: ManagedServiceItem{DisplayName: "Pathd"}, want: true},
-		{item: ManagedServiceItem{DisplayName: "IPv6-Rotate"}, want: true},
-		{item: ManagedServiceItem{DisplayName: "Rotate"}, want: true},
 		{item: ManagedServiceItem{DisplayName: "Sub@default"}, want: true},
 		{item: ManagedServiceItem{DisplayName: "Sub@custom"}, want: true},
+		{item: ManagedServiceItem{DisplayName: "IPv6-Rotate"}, want: false},
+		{item: ManagedServiceItem{DisplayName: "Rotate"}, want: false},
 	}
 
 	for _, tt := range tests {
@@ -70,50 +70,6 @@ func TestPathdConfigValidationAndStaging(t *testing.T) {
 	err = validateAndApplyServiceProp(cfg, item, props[2], "30")
 	if err != nil || cfg.Path.IdleSeconds != 30 {
 		t.Fatalf("expected idle 30, got %v", err)
-	}
-}
-
-func TestIPv6RotateConfigValidation(t *testing.T) {
-	cfg := &config.UserConfig{
-		Role: config.RoleServer,
-	}
-	item := ManagedServiceItem{DisplayName: "IPv6-Rotate", UnitName: "xray-proxya-ipv6-rotate.service"}
-
-	props := loadServiceProperties(cfg, item)
-	if len(props) != 4 {
-		t.Fatalf("expected 4 properties for IPv6-Rotate, got %d", len(props))
-	}
-
-	// 1. Subnet CIDR validation
-	subnetProp := props[1]
-	err := validateAndApplyServiceProp(cfg, item, subnetProp, "invalid-subnet")
-	if err == nil {
-		t.Fatalf("expected invalid CIDR to fail")
-	}
-	err = validateAndApplyServiceProp(cfg, item, subnetProp, "2001:db8:1::/64")
-	if err != nil {
-		t.Fatalf("expected valid CIDR to pass, got: %v", err)
-	}
-	if cfg.IPv6Rotation.Subnet != "2001:db8:1::/64" {
-		t.Errorf("expected subnet saved, got %s", cfg.IPv6Rotation.Subnet)
-	}
-
-	// 2. Max addresses
-	maxProp := props[2]
-	err = validateAndApplyServiceProp(cfg, item, maxProp, "-1")
-	if err == nil {
-		t.Fatalf("expected negative max addresses to fail")
-	}
-	err = validateAndApplyServiceProp(cfg, item, maxProp, "8")
-	if err != nil || cfg.IPv6Rotation.MaxAddresses != 8 {
-		t.Fatalf("expected max 8, got %v", err)
-	}
-
-	// 3. NDP toggle
-	ndpProp := props[3]
-	err = validateAndApplyServiceProp(cfg, item, ndpProp, "true")
-	if err != nil || !cfg.IPv6Rotation.EnableNDP {
-		t.Fatalf("expected NDP true, got %v", err)
 	}
 }
 
