@@ -148,4 +148,14 @@ func TestMainUnitCapabilities(t *testing.T) {
 	if caps := MainUnitCapabilities(serverCfg); strings.Contains(caps, "CAP_NET_ADMIN") {
 		t.Fatalf("server capabilities should not include CAP_NET_ADMIN: %s", caps)
 	}
+
+	serverDynCfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"he-pool": {Type: config.EndpointTypeDynamicV6},
+		},
+	}
+	if caps := MainUnitCapabilities(serverDynCfg); !strings.Contains(caps, "CAP_NET_ADMIN") {
+		t.Fatalf("server with dynamic-v6 capabilities missing CAP_NET_ADMIN: %s", caps)
+	}
 }

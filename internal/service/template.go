@@ -24,6 +24,13 @@ func MainUnitCapabilities(cfg *config.UserConfig) string {
 	if cfg != nil && cfg.Role == config.RoleGateway {
 		return "CAP_NET_BIND_SERVICE CAP_NET_ADMIN CAP_NET_RAW"
 	}
+	if cfg != nil {
+		for _, ep := range cfg.Endpoints {
+			if ep.Type == config.EndpointTypeDynamicV6 {
+				return "CAP_NET_BIND_SERVICE CAP_NET_ADMIN"
+			}
+		}
+	}
 	return "CAP_NET_BIND_SERVICE"
 }
 

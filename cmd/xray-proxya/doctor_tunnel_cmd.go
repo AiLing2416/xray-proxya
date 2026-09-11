@@ -600,13 +600,16 @@ func readIfaceTypeFromSysfs(ifaceName string) int {
 }
 
 func isTunnelDevice(iface net.Interface) bool {
+	if (iface.Flags&net.FlagLoopback) != 0 || iface.Name == "lo" {
+		return false
+	}
 	lower := strings.ToLower(iface.Name)
 	if strings.HasPrefix(lower, "he-") || strings.HasPrefix(lower, "sit") || strings.HasPrefix(lower, "tun") || strings.HasPrefix(lower, "ip6tnl") {
 		return true
 	}
 	t := readIfaceTypeFromSysfs(iface.Name)
-	// ARPHRD_SIT = 776, ARPHRD_TUNNEL = 768, ARPHRD_TUNNEL6 = 769, ARPHRD_IPGRE = 772, ARPHRD_NONE = 65534
-	return t == 776 || t == 768 || t == 769 || t == 772 || t == 65534
+	// ARPHRD_SIT = 776, ARPHRD_TUNNEL = 768, ARPHRD_TUNNEL6 = 769, ARPHRD_IPGRE = 778, ARPHRD_NONE = 65534
+	return t == 776 || t == 768 || t == 769 || t == 778 || t == 65534
 }
 
 func parseManagedTunnelServices(dir string) map[string]ManagedServiceInfo {
