@@ -1,17 +1,20 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"xray-proxya/internal/endpoint"
+	"xray-proxya/pkg/units"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -28,8 +31,59 @@ type HETunnelSpec struct {
 	RoutedSubnet string `json:"routed_subnet"`
 }
 
+// ManagedServiceInfo holds parsed metadata from a systemd tunnel service file.
+type ManagedServiceInfo struct {
+	ServiceName string
+	Interface   string
+	RemoteIPv4  string
+	LocalIPv4   string
+	IPv6Address string
+	Active      string
+	Enabled     string
+}
+
+// TunnelTrafficStats records RX and TX packet and byte counters.
+type TunnelTrafficStats struct {
+	RXPackets uint64 `json:"rx_packets"`
+	TXPackets uint64 `json:"tx_packets"`
+	RXBytes   uint64 `json:"rx_bytes"`
+	TXBytes   uint64 `json:"tx_bytes"`
+}
+
+// TunnelProbeReport records reachability probe for an IPv6 address.
+type TunnelProbeReport struct {
+	SourceIP string `json:"source_ip"`
+	Pass     bool   `json:"pass"`
+	RTTMs    int64  `json:"rtt_ms"`
+	Error    string `json:"error,omitempty"`
+}
+
+// TunnelStatusReportItem represents the state of a single tunnel interface.
+type TunnelStatusReportItem struct {
+	Interface      string              `json:"interface"`
+	Managed        bool                `json:"managed"`
+	ManagedBy      string              `json:"managed_by,omitempty"`
+	ServiceActive  string              `json:"service_active,omitempty"`
+	ServiceEnabled string              `json:"service_enabled,omitempty"`
+	State          string              `json:"state"` // "UP", "DOWN", "ABSENT"
+	MTU            int                 `json:"mtu"`
+	LocalIPv4      string              `json:"local_ipv4,omitempty"`
+	RemoteIPv4     string              `json:"remote_ipv4,omitempty"`
+	GlobalIPv6     []string            `json:"global_ipv6"`
+	LinkLocalIPv6  []string            `json:"link_local_ipv6"`
+	Traffic        TunnelTrafficStats  `json:"traffic"`
+	Probes         []TunnelProbeReport `json:"probes"`
+	Diagnostics    []string            `json:"diagnostics,omitempty"`
+}
+
+// TunnelStatusReport is the root struct when formatting as JSON.
+type TunnelStatusReport struct {
+	Tunnels []TunnelStatusReportItem `json:"tunnels"`
+}
+
 var (
 	systemdDir        = "/etc/systemd/system"
+	sysfsNetDir       = "/sys/class/net"
 	tunnelRequireRoot = func(op string) error {
 		return utils.RequireRootShell(op)
 	}
@@ -37,6 +91,12 @@ var (
 		return exec.Command(name, arg...).CombinedOutput()
 	}
 	findVerifiedTunnelConfigFunc = findVerifiedTunnelConfig
+	tunnelInterfacesLister       = net.Interfaces
+	tunnelAddrsLister            = func(iface net.Interface) ([]net.Addr, error) {
+		return iface.Addrs()
+	}
+	tunnelProbeRunner      = testTunnelReachability
+	doctorTunnelStatusJSON bool
 )
 
 // ParseHETunnelConfig parses Debian/interfaces format or key-value format for an HE tunnel.
@@ -513,72 +573,324 @@ var doctorTunnelDownCmd = &cobra.Command{
 	},
 }
 
+func readIfaceStatFromSysfs(ifaceName, statName string) uint64 {
+	p := filepath.Join(sysfsNetDir, ifaceName, "statistics", statName)
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.ParseUint(strings.TrimSpace(string(b)), 10, 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func readIfaceTypeFromSysfs(ifaceName string) int {
+	p := filepath.Join(sysfsNetDir, ifaceName, "type")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return 0
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+func isTunnelDevice(iface net.Interface) bool {
+	lower := strings.ToLower(iface.Name)
+	if strings.HasPrefix(lower, "he-") || strings.HasPrefix(lower, "sit") || strings.HasPrefix(lower, "tun") || strings.HasPrefix(lower, "ip6tnl") {
+		return true
+	}
+	t := readIfaceTypeFromSysfs(iface.Name)
+	// ARPHRD_SIT = 776, ARPHRD_TUNNEL = 768, ARPHRD_TUNNEL6 = 769, ARPHRD_IPGRE = 772, ARPHRD_NONE = 65534
+	return t == 776 || t == 768 || t == 769 || t == 772 || t == 65534
+}
+
+func parseManagedTunnelServices(dir string) map[string]ManagedServiceInfo {
+	res := make(map[string]ManagedServiceInfo)
+	files, _ := filepath.Glob(filepath.Join(dir, "he-tunnel*.service"))
+
+	ifaceRegex := regexp.MustCompile(`(?:tunnel\s+(?:add|del)\s+|dev\s+)([a-zA-Z0-9_-]+)`)
+	remoteRegex := regexp.MustCompile(`remote\s+([0-9.]+)`)
+	localRegex := regexp.MustCompile(`local\s+([0-9.]+)`)
+	addrRegex := regexp.MustCompile(`addr\s+replace\s+([0-9a-fA-F:]+(?:/\d+)?)`)
+
+	for _, f := range files {
+		svcName := filepath.Base(f)
+		content, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		str := string(content)
+
+		var ifaceName string
+		if matches := ifaceRegex.FindStringSubmatch(str); len(matches) > 1 {
+			ifaceName = matches[1]
+		} else if strings.HasPrefix(svcName, "he-tunnel-") && strings.HasSuffix(svcName, ".service") {
+			ifaceName = strings.TrimSuffix(strings.TrimPrefix(svcName, "he-tunnel-"), ".service")
+		} else if svcName == "he-tunnel.service" {
+			ifaceName = "he-ipv6"
+		}
+
+		if ifaceName == "" {
+			continue
+		}
+
+		info := ManagedServiceInfo{
+			ServiceName: svcName,
+			Interface:   ifaceName,
+		}
+
+		if m := remoteRegex.FindStringSubmatch(str); len(m) > 1 {
+			info.RemoteIPv4 = m[1]
+		}
+		if m := localRegex.FindStringSubmatch(str); len(m) > 1 {
+			info.LocalIPv4 = m[1]
+		}
+		if m := addrRegex.FindStringSubmatch(str); len(m) > 1 {
+			info.IPv6Address = m[1]
+		}
+
+		activeOut, _ := tunnelCmdRunner("systemctl", "is-active", svcName)
+		info.Active = strings.TrimSpace(string(activeOut))
+		if info.Active == "" {
+			info.Active = "unknown"
+		}
+
+		enabledOut, _ := tunnelCmdRunner("systemctl", "is-enabled", svcName)
+		info.Enabled = strings.TrimSpace(string(enabledOut))
+		if info.Enabled == "" {
+			info.Enabled = "unknown"
+		}
+
+		res[ifaceName] = info
+	}
+
+	return res
+}
+
 var doctorTunnelStatusCmd = &cobra.Command{
 	Use:   "status [interface]",
 	Short: "Check Hurricane Electric 6in4 tunnel status and traffic",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		ifaceName := "he-ipv6"
+		servicesMap := parseManagedTunnelServices(systemdDir)
+
+		allIfaces, _ := tunnelInterfacesLister()
+		kernelIfaces := make(map[string]net.Interface)
+		for _, ifc := range allIfaces {
+			if isTunnelDevice(ifc) {
+				kernelIfaces[ifc.Name] = ifc
+			}
+		}
+
+		var targetIfaces []string
 		if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
-			ifaceName = strings.TrimSpace(args[0])
-		}
-
-		iface, err := net.InterfaceByName(ifaceName)
-		if err != nil {
-			return fmt.Errorf("tunnel interface '%s' not found or inactive: %w", ifaceName, err)
-		}
-
-		isUp := (iface.Flags & net.FlagUp) != 0
-		stateStr := "DOWN"
-		if isUp {
-			stateStr = "UP"
-		}
-
-		addrs, _ := iface.Addrs()
-		var ipAddrs []string
-		var clientV6 string
-		for _, a := range addrs {
-			ipAddrs = append(ipAddrs, a.String())
-			if ipNet, ok := a.(*net.IPNet); ok && ipNet.IP.To4() == nil && !ipNet.IP.IsLinkLocalUnicast() {
-				clientV6 = ipNet.IP.String()
+			target := strings.TrimSpace(args[0])
+			if _, inKernel := kernelIfaces[target]; !inKernel {
+				for _, ifc := range allIfaces {
+					if ifc.Name == target {
+						kernelIfaces[target] = ifc
+						break
+					}
+				}
 			}
-		}
-
-		readStat := func(name string) string {
-			p := filepath.Join("/sys/class/net", ifaceName, "statistics", name)
-			b, err := os.ReadFile(p)
-			if err != nil {
-				return "0"
+			_, inTier1 := servicesMap[target]
+			_, inTier2 := kernelIfaces[target]
+			if !inTier1 && !inTier2 {
+				return fmt.Errorf("tunnel interface '%s' not found in systemd services or kernel network devices", target)
 			}
-			return strings.TrimSpace(string(b))
+			targetIfaces = []string{target}
+		} else {
+			nameSet := make(map[string]struct{})
+			for name := range servicesMap {
+				nameSet[name] = struct{}{}
+			}
+			for name := range kernelIfaces {
+				nameSet[name] = struct{}{}
+			}
+			for name := range nameSet {
+				targetIfaces = append(targetIfaces, name)
+			}
+			sort.Strings(targetIfaces)
 		}
 
-		rxBytes := readStat("rx_bytes")
-		txBytes := readStat("tx_bytes")
-		rxPackets := readStat("rx_packets")
-		txPackets := readStat("tx_packets")
+		report := TunnelStatusReport{
+			Tunnels: make([]TunnelStatusReportItem, 0, len(targetIfaces)),
+		}
 
-		fmt.Printf("\n--- Hurricane Electric Tunnel: %s ---\n", ifaceName)
-		fmt.Printf("State:       %s\n", stateStr)
-		fmt.Printf("MTU:         %d\n", iface.MTU)
-		fmt.Printf("Addresses:   %s\n", strings.Join(ipAddrs, ", "))
-		fmt.Printf("Packets:     RX %s | TX %s\n", rxPackets, txPackets)
-		fmt.Printf("Bytes:       RX %s | TX %s\n", rxBytes, txBytes)
+		for _, ifaceName := range targetIfaces {
+			item := TunnelStatusReportItem{
+				Interface:     ifaceName,
+				GlobalIPv6:    []string{},
+				LinkLocalIPv6: []string{},
+				Probes:        []TunnelProbeReport{},
+				Diagnostics:   []string{},
+			}
 
-		if isUp && clientV6 != "" {
-			ok, rtt, err := testTunnelReachability(clientV6, 3*time.Second)
-			if ok {
-				fmt.Printf("Probe:       OK (RTT: %v)\n", rtt.Round(time.Millisecond))
+			if svc, ok := servicesMap[ifaceName]; ok {
+				item.Managed = true
+				item.ManagedBy = svc.ServiceName
+				item.ServiceActive = svc.Active
+				item.ServiceEnabled = svc.Enabled
+				item.LocalIPv4 = svc.LocalIPv4
+				item.RemoteIPv4 = svc.RemoteIPv4
 			} else {
-				fmt.Printf("Probe:       FAIL (%v)\n", err)
+				item.Managed = false
+				item.Diagnostics = append(item.Diagnostics, "Detected manual or external tunnel interface. Not managed by Xray-Proxya systemd service.")
 			}
+
+			if kIface, ok := kernelIfaces[ifaceName]; ok {
+				if (kIface.Flags & net.FlagUp) != 0 {
+					item.State = "UP"
+				} else {
+					item.State = "DOWN"
+				}
+				item.MTU = kIface.MTU
+
+				addrs, _ := tunnelAddrsLister(kIface)
+				for _, a := range addrs {
+					if ipNet, ok := a.(*net.IPNet); ok {
+						if ipNet.IP.To4() == nil {
+							if ipNet.IP.IsLinkLocalUnicast() {
+								item.LinkLocalIPv6 = append(item.LinkLocalIPv6, ipNet.String())
+							} else if !ipNet.IP.IsLoopback() {
+								item.GlobalIPv6 = append(item.GlobalIPv6, ipNet.String())
+							}
+						}
+					}
+				}
+
+				item.Traffic.RXBytes = readIfaceStatFromSysfs(ifaceName, "rx_bytes")
+				item.Traffic.TXBytes = readIfaceStatFromSysfs(ifaceName, "tx_bytes")
+				item.Traffic.RXPackets = readIfaceStatFromSysfs(ifaceName, "rx_packets")
+				item.Traffic.TXPackets = readIfaceStatFromSysfs(ifaceName, "tx_packets")
+			} else {
+				item.State = "ABSENT"
+				item.MTU = 0
+				item.Diagnostics = append(item.Diagnostics, "Interface is absent in the kernel.")
+				if svc, ok := servicesMap[ifaceName]; ok && svc.IPv6Address != "" {
+					item.GlobalIPv6 = append(item.GlobalIPv6, svc.IPv6Address)
+				}
+			}
+
+			for _, gIP := range item.GlobalIPv6 {
+				ipOnly := strings.Split(gIP, "/")[0]
+				if item.State == "UP" {
+					ok, rtt, pErr := tunnelProbeRunner(ipOnly, 3*time.Second)
+					rttMs := int64(0)
+					errStr := ""
+					if ok {
+						rttMs = rtt.Milliseconds()
+					}
+					if pErr != nil {
+						errStr = pErr.Error()
+					}
+					item.Probes = append(item.Probes, TunnelProbeReport{
+						SourceIP: gIP,
+						Pass:     ok,
+						RTTMs:    rttMs,
+						Error:    errStr,
+					})
+					if !ok {
+						item.Diagnostics = append(item.Diagnostics, fmt.Sprintf("Reachability probe failed for %s: %s", gIP, errStr))
+					}
+				} else {
+					item.Probes = append(item.Probes, TunnelProbeReport{
+						SourceIP: gIP,
+						Pass:     false,
+						RTTMs:    0,
+						Error:    "interface is not UP",
+					})
+				}
+			}
+
+			if item.Managed && item.ServiceActive != "" && item.ServiceActive != "active" {
+				item.Diagnostics = append(item.Diagnostics, fmt.Sprintf("Systemd service '%s' is not active (state: %s).", item.ManagedBy, item.ServiceActive))
+			}
+			if item.State == "DOWN" {
+				item.Diagnostics = append(item.Diagnostics, "Link state is DOWN.")
+			}
+
+			report.Tunnels = append(report.Tunnels, item)
 		}
-		fmt.Println()
+
+		if doctorTunnelStatusJSON {
+			data, err := json.MarshalIndent(report, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to encode JSON status: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return nil
+		}
+
+		if len(report.Tunnels) == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "No Hurricane Electric or tunnel interfaces detected on this system.")
+			return nil
+		}
+
+		for _, tun := range report.Tunnels {
+			fmt.Fprintln(cmd.OutOrStdout(), strings.Repeat("=", 80))
+			fmt.Fprintf(cmd.OutOrStdout(), "Tunnel Interface: %s [%s]\n", tun.Interface, tun.State)
+			fmt.Fprintln(cmd.OutOrStdout(), strings.Repeat("=", 80))
+
+			if tun.Managed {
+				fmt.Fprintf(cmd.OutOrStdout(), "Managed:        YES (via %s, %s, %s)\n", tun.ManagedBy, tun.ServiceActive, tun.ServiceEnabled)
+			} else {
+				fmt.Fprintln(cmd.OutOrStdout(), "Managed:        NO (external/manual configuration)")
+			}
+
+			if tun.MTU > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "MTU:            %d\n", tun.MTU)
+			}
+			if tun.LocalIPv4 != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Local IPv4:     %s\n", tun.LocalIPv4)
+			}
+			if tun.RemoteIPv4 != "" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Remote IPv4:    %s\n", tun.RemoteIPv4)
+			}
+			if len(tun.GlobalIPv6) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "IPv6 (Global):  %s\n", strings.Join(tun.GlobalIPv6, ", "))
+			}
+			if len(tun.LinkLocalIPv6) > 0 {
+				fmt.Fprintf(cmd.OutOrStdout(), "IPv6 (Local):   %s\n", strings.Join(tun.LinkLocalIPv6, ", "))
+			}
+
+			if tun.State != "ABSENT" {
+				fmt.Fprintf(cmd.OutOrStdout(), "Traffic:        RX %s (%d pkts) | TX %s (%d pkts)\n",
+					units.FormatBytes(int64(tun.Traffic.RXBytes)), tun.Traffic.RXPackets,
+					units.FormatBytes(int64(tun.Traffic.TXBytes)), tun.Traffic.TXPackets)
+			}
+
+			if len(tun.Probes) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Probes:")
+				for _, probe := range tun.Probes {
+					if probe.Pass {
+						fmt.Fprintf(cmd.OutOrStdout(), "  * %s: PASS (%dms)\n", probe.SourceIP, probe.RTTMs)
+					} else {
+						fmt.Fprintf(cmd.OutOrStdout(), "  * %s: FAIL (%s)\n", probe.SourceIP, probe.Error)
+					}
+				}
+			}
+
+			if len(tun.Diagnostics) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "Diagnostics:")
+				for _, diag := range tun.Diagnostics {
+					fmt.Fprintf(cmd.OutOrStdout(), "  ⚠️  %s\n", diag)
+				}
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), strings.Repeat("-", 80))
+			fmt.Fprintln(cmd.OutOrStdout(), "")
+		}
 
 		return nil
 	},
 }
 
 func init() {
+	doctorTunnelStatusCmd.Flags().BoolVar(&doctorTunnelStatusJSON, "json", false, "Output status report in JSON format")
 	doctorTunnelCmd.AddCommand(doctorTunnelUpCmd, doctorTunnelDownCmd, doctorTunnelStatusCmd)
 }

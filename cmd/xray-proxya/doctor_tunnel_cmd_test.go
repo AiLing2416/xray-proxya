@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseHETunnelConfig_PreProduct(t *testing.T) {
@@ -295,5 +299,346 @@ func TestDoctorTunnel_NoHardcodedDefaultConfig(t *testing.T) {
 	}
 	if strings.Contains(string(content), "/root/interfaces-he") {
 		t.Errorf("found hardcoded default path '/root/interfaces-he' in doctor_tunnel_cmd.go; should be purely config-driven")
+	}
+}
+
+func setupMockTunnelEnvironment(t *testing.T) (systemdPath, sysfsPath string) {
+	t.Helper()
+	tmpDir := t.TempDir()
+	sDir := filepath.Join(tmpDir, "systemd")
+	sysDir := filepath.Join(tmpDir, "sysfs")
+	_ = os.MkdirAll(sDir, 0755)
+	_ = os.MkdirAll(sysDir, 0755)
+
+	// Write mock managed service
+	svcContent := `[Unit]
+Description=Hurricane Electric 6in4 IPv6 Tunnel (he-ipv6)
+
+[Service]
+ExecStart=/sbin/ip tunnel add he-ipv6 mode sit remote 216.66.80.30 local 87.58.209.196 ttl 255
+ExecStart=/sbin/ip link set he-ipv6 up mtu 1480
+ExecStart=/sbin/ip -6 addr replace 2001:470:1f0a:692::2/64 dev he-ipv6 nodad
+`
+	_ = os.WriteFile(filepath.Join(sDir, "he-tunnel-he-ipv6.service"), []byte(svcContent), 0644)
+
+	// Setup mock sysfs for he-ipv6
+	heStats := filepath.Join(sysDir, "he-ipv6", "statistics")
+	_ = os.MkdirAll(heStats, 0755)
+	_ = os.WriteFile(filepath.Join(sysDir, "he-ipv6", "type"), []byte("776\n"), 0644)
+	_ = os.WriteFile(filepath.Join(heStats, "rx_bytes"), []byte("1048576\n"), 0644)
+	_ = os.WriteFile(filepath.Join(heStats, "tx_bytes"), []byte("524288\n"), 0644)
+	_ = os.WriteFile(filepath.Join(heStats, "rx_packets"), []byte("1200\n"), 0644)
+	_ = os.WriteFile(filepath.Join(heStats, "tx_packets"), []byte("600\n"), 0644)
+
+	// Setup mock sysfs for sit1 (unmanaged)
+	sitStats := filepath.Join(sysDir, "sit1", "statistics")
+	_ = os.MkdirAll(sitStats, 0755)
+	_ = os.WriteFile(filepath.Join(sysDir, "sit1", "type"), []byte("776\n"), 0644)
+	_ = os.WriteFile(filepath.Join(sitStats, "rx_bytes"), []byte("2048\n"), 0644)
+	_ = os.WriteFile(filepath.Join(sitStats, "tx_bytes"), []byte("1024\n"), 0644)
+	_ = os.WriteFile(filepath.Join(sitStats, "rx_packets"), []byte("20\n"), 0644)
+	_ = os.WriteFile(filepath.Join(sitStats, "tx_packets"), []byte("10\n"), 0644)
+
+	return sDir, sysDir
+}
+
+func TestDoctorTunnelStatus_TwoTier_ScanAndAsciiCards(t *testing.T) {
+	sDir, sysDir := setupMockTunnelEnvironment(t)
+
+	origSystemdDir := systemdDir
+	systemdDir = sDir
+	defer func() { systemdDir = origSystemdDir }()
+
+	origSysfsDir := sysfsNetDir
+	sysfsNetDir = sysDir
+	defer func() { sysfsNetDir = origSysfsDir }()
+
+	origRunner := tunnelCmdRunner
+	tunnelCmdRunner = func(name string, arg ...string) ([]byte, error) {
+		if len(arg) >= 2 && arg[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
+		if len(arg) >= 2 && arg[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		return []byte("ok"), nil
+	}
+	defer func() { tunnelCmdRunner = origRunner }()
+
+	origIfaces := tunnelInterfacesLister
+	tunnelInterfacesLister = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Name: "he-ipv6", Flags: net.FlagUp, MTU: 1480},
+			{Name: "sit1", Flags: net.FlagUp, MTU: 1480},
+			{Name: "lo", Flags: net.FlagUp | net.FlagLoopback, MTU: 65536},
+		}, nil
+	}
+	defer func() { tunnelInterfacesLister = origIfaces }()
+
+	origAddrs := tunnelAddrsLister
+	tunnelAddrsLister = func(ifc net.Interface) ([]net.Addr, error) {
+		if ifc.Name == "he-ipv6" {
+			return []net.Addr{
+				&net.IPNet{IP: net.ParseIP("2001:470:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
+				&net.IPNet{IP: net.ParseIP("fe80::5054:ff:fe12:3456"), Mask: net.CIDRMask(64, 128)},
+			}, nil
+		}
+		if ifc.Name == "sit1" {
+			return []net.Addr{
+				&net.IPNet{IP: net.ParseIP("2001:db8::1"), Mask: net.CIDRMask(64, 128)},
+			}, nil
+		}
+		return nil, nil
+	}
+	defer func() { tunnelAddrsLister = origAddrs }()
+
+	origProbe := tunnelProbeRunner
+	tunnelProbeRunner = func(ip string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 18 * time.Millisecond, nil
+	}
+	defer func() { tunnelProbeRunner = origProbe }()
+
+	origJSON := doctorTunnelStatusJSON
+	doctorTunnelStatusJSON = false
+	defer func() { doctorTunnelStatusJSON = origJSON }()
+
+	var buf bytes.Buffer
+	doctorTunnelStatusCmd.SetOut(&buf)
+	err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{})
+	if err != nil {
+		t.Fatalf("doctor tunnel status failed: %v", err)
+	}
+
+	out := buf.String()
+
+	// Verify he-ipv6 is detected as Managed
+	if !strings.Contains(out, "Tunnel Interface: he-ipv6 [UP]") {
+		t.Errorf("expected he-ipv6 [UP] in output:\n%s", out)
+	}
+	if !strings.Contains(out, "Managed:        YES (via he-tunnel-he-ipv6.service, active, enabled)") {
+		t.Errorf("expected he-ipv6 to be reported as managed:\n%s", out)
+	}
+	if !strings.Contains(out, "IPv6 (Global):  2001:470:1f0a:692::2/64") {
+		t.Errorf("expected global IPv6 in output:\n%s", out)
+	}
+	if !strings.Contains(out, "PASS (18ms)") {
+		t.Errorf("expected probe PASS in output:\n%s", out)
+	}
+
+	// Verify sit1 is detected as Unmanaged
+	if !strings.Contains(out, "Tunnel Interface: sit1 [UP]") {
+		t.Errorf("expected sit1 [UP] in output:\n%s", out)
+	}
+	if !strings.Contains(out, "Managed:        NO (external/manual configuration)") {
+		t.Errorf("expected sit1 to be unmanaged:\n%s", out)
+	}
+	if !strings.Contains(out, "Detected manual or external tunnel interface. Not managed by Xray-Proxya systemd service.") {
+		t.Errorf("expected unmanaged diagnostic note for sit1:\n%s", out)
+	}
+}
+
+func TestDoctorTunnelStatus_JSONOutput(t *testing.T) {
+	sDir, sysDir := setupMockTunnelEnvironment(t)
+
+	origSystemdDir := systemdDir
+	systemdDir = sDir
+	defer func() { systemdDir = origSystemdDir }()
+
+	origSysfsDir := sysfsNetDir
+	sysfsNetDir = sysDir
+	defer func() { sysfsNetDir = origSysfsDir }()
+
+	origRunner := tunnelCmdRunner
+	tunnelCmdRunner = func(name string, arg ...string) ([]byte, error) {
+		if len(arg) >= 2 && arg[0] == "is-active" {
+			return []byte("active\n"), nil
+		}
+		if len(arg) >= 2 && arg[0] == "is-enabled" {
+			return []byte("enabled\n"), nil
+		}
+		return []byte("ok"), nil
+	}
+	defer func() { tunnelCmdRunner = origRunner }()
+
+	origIfaces := tunnelInterfacesLister
+	tunnelInterfacesLister = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Name: "he-ipv6", Flags: net.FlagUp, MTU: 1480},
+			{Name: "sit1", Flags: net.FlagUp, MTU: 1480},
+		}, nil
+	}
+	defer func() { tunnelInterfacesLister = origIfaces }()
+
+	origAddrs := tunnelAddrsLister
+	tunnelAddrsLister = func(ifc net.Interface) ([]net.Addr, error) {
+		if ifc.Name == "he-ipv6" {
+			return []net.Addr{
+				&net.IPNet{IP: net.ParseIP("2001:470:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
+				&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
+			}, nil
+		}
+		if ifc.Name == "sit1" {
+			return []net.Addr{
+				&net.IPNet{IP: net.ParseIP("2001:db8::1"), Mask: net.CIDRMask(64, 128)},
+			}, nil
+		}
+		return nil, nil
+	}
+	defer func() { tunnelAddrsLister = origAddrs }()
+
+	origProbe := tunnelProbeRunner
+	tunnelProbeRunner = func(ip string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 22 * time.Millisecond, nil
+	}
+	defer func() { tunnelProbeRunner = origProbe }()
+
+	origJSON := doctorTunnelStatusJSON
+	doctorTunnelStatusJSON = true
+	defer func() { doctorTunnelStatusJSON = origJSON }()
+
+	var buf bytes.Buffer
+	doctorTunnelStatusCmd.SetOut(&buf)
+	err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{})
+	if err != nil {
+		t.Fatalf("doctor tunnel status with --json failed: %v", err)
+	}
+
+	var report TunnelStatusReport
+	if err := json.Unmarshal(buf.Bytes(), &report); err != nil {
+		t.Fatalf("failed to unmarshal JSON output: %v\nOutput: %s", err, buf.String())
+	}
+
+	if len(report.Tunnels) != 2 {
+		t.Fatalf("expected 2 tunnels, got %d", len(report.Tunnels))
+	}
+
+	tun0 := report.Tunnels[0]
+	if tun0.Interface != "he-ipv6" {
+		t.Errorf("expected tun0 to be he-ipv6, got %s", tun0.Interface)
+	}
+	if !tun0.Managed {
+		t.Errorf("expected he-ipv6 to be Managed == true")
+	}
+	if tun0.ManagedBy != "he-tunnel-he-ipv6.service" {
+		t.Errorf("unexpected ManagedBy: %s", tun0.ManagedBy)
+	}
+	if tun0.ServiceActive != "active" || tun0.ServiceEnabled != "enabled" {
+		t.Errorf("unexpected service state: active=%s, enabled=%s", tun0.ServiceActive, tun0.ServiceEnabled)
+	}
+	if tun0.Traffic.RXBytes != 1048576 || tun0.Traffic.TXBytes != 524288 {
+		t.Errorf("unexpected traffic stats: %+v", tun0.Traffic)
+	}
+	if len(tun0.Probes) != 1 || !tun0.Probes[0].Pass || tun0.Probes[0].RTTMs != 22 {
+		t.Errorf("unexpected probes for he-ipv6: %+v", tun0.Probes)
+	}
+
+	tun1 := report.Tunnels[1]
+	if tun1.Interface != "sit1" {
+		t.Errorf("expected tun1 to be sit1, got %s", tun1.Interface)
+	}
+	if tun1.Managed {
+		t.Errorf("expected sit1 to be Managed == false")
+	}
+	foundDiag := false
+	for _, d := range tun1.Diagnostics {
+		if strings.Contains(d, "Detected manual or external tunnel interface") {
+			foundDiag = true
+			break
+		}
+	}
+	if !foundDiag {
+		t.Errorf("expected unmanaged diagnostic in sit1: %+v", tun1.Diagnostics)
+	}
+}
+
+func TestDoctorTunnelStatus_TargetInterfaceAndAbsent(t *testing.T) {
+	sDir, sysDir := setupMockTunnelEnvironment(t)
+
+	// Also add a service for an interface that is absent in kernel
+	ghostSvc := `[Unit]
+Description=Ghost Tunnel
+[Service]
+ExecStart=/sbin/ip tunnel add ghost-tun mode sit remote 1.1.1.1 local 2.2.2.2 ttl 255
+ExecStart=/sbin/ip -6 addr replace 2001:db8:dead::2/64 dev ghost-tun
+`
+	_ = os.WriteFile(filepath.Join(sDir, "he-tunnel-ghost-tun.service"), []byte(ghostSvc), 0644)
+
+	origSystemdDir := systemdDir
+	systemdDir = sDir
+	defer func() { systemdDir = origSystemdDir }()
+
+	origSysfsDir := sysfsNetDir
+	sysfsNetDir = sysDir
+	defer func() { sysfsNetDir = origSysfsDir }()
+
+	origRunner := tunnelCmdRunner
+	tunnelCmdRunner = func(name string, arg ...string) ([]byte, error) {
+		return []byte("inactive\n"), nil
+	}
+	defer func() { tunnelCmdRunner = origRunner }()
+
+	origIfaces := tunnelInterfacesLister
+	tunnelInterfacesLister = func() ([]net.Interface, error) {
+		return []net.Interface{
+			{Name: "he-ipv6", Flags: net.FlagUp, MTU: 1480},
+		}, nil
+	}
+	defer func() { tunnelInterfacesLister = origIfaces }()
+
+	origAddrs := tunnelAddrsLister
+	tunnelAddrsLister = func(ifc net.Interface) ([]net.Addr, error) {
+		return []net.Addr{
+			&net.IPNet{IP: net.ParseIP("2001:470:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
+		}, nil
+	}
+	defer func() { tunnelAddrsLister = origAddrs }()
+
+	origProbe := tunnelProbeRunner
+	tunnelProbeRunner = func(ip string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 10 * time.Millisecond, nil
+	}
+	defer func() { tunnelProbeRunner = origProbe }()
+
+	origJSON := doctorTunnelStatusJSON
+	doctorTunnelStatusJSON = true
+	defer func() { doctorTunnelStatusJSON = origJSON }()
+
+	// 1. Target single interface "he-ipv6"
+	var buf1 bytes.Buffer
+	doctorTunnelStatusCmd.SetOut(&buf1)
+	if err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{"he-ipv6"}); err != nil {
+		t.Fatalf("failed targeting he-ipv6: %v", err)
+	}
+	var rep1 TunnelStatusReport
+	_ = json.Unmarshal(buf1.Bytes(), &rep1)
+	if len(rep1.Tunnels) != 1 || rep1.Tunnels[0].Interface != "he-ipv6" {
+		t.Errorf("expected only he-ipv6 in report, got: %+v", rep1.Tunnels)
+	}
+
+	// 2. Target absent interface "ghost-tun" (present in systemd, absent in kernel)
+	var buf2 bytes.Buffer
+	doctorTunnelStatusCmd.SetOut(&buf2)
+	if err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{"ghost-tun"}); err != nil {
+		t.Fatalf("failed targeting ghost-tun: %v", err)
+	}
+	var rep2 TunnelStatusReport
+	_ = json.Unmarshal(buf2.Bytes(), &rep2)
+	if len(rep2.Tunnels) != 1 {
+		t.Fatalf("expected 1 tunnel for ghost-tun, got %d", len(rep2.Tunnels))
+	}
+	if rep2.Tunnels[0].State != "ABSENT" {
+		t.Errorf("expected ghost-tun State to be ABSENT, got %s", rep2.Tunnels[0].State)
+	}
+	if !rep2.Tunnels[0].Managed {
+		t.Errorf("expected ghost-tun to be Managed == true")
+	}
+
+	// 3. Target completely nonexistent interface
+	err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{"totally-nonexistent"})
+	if err == nil {
+		t.Fatalf("expected error querying totally-nonexistent interface, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
