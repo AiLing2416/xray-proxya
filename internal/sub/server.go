@@ -103,14 +103,14 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 		}
 		addr = rotated
 	} else if admin.Endpoint != "" {
-		if resolved, err := endpoint.Resolve(cfg, admin.Endpoint); err == nil && len(resolved) > 0 {
+		if resolved, err := endpoint.Resolve(cfg, admin.Endpoint, true); err == nil && len(resolved) > 0 {
 			addr = strings.Join(resolved, ",")
 		} else {
 			addr = ResolveNodeAddress(cfg, admin.AddressNode)
 		}
 	} else if admin.AddressNode != "" {
 		addr = ResolveNodeAddress(cfg, admin.AddressNode)
-	} else if resolved, err := endpoint.Resolve(cfg, "default"); err == nil && len(resolved) > 0 {
+	} else if resolved, err := endpoint.Resolve(cfg, "default", true); err == nil && len(resolved) > 0 {
 		addr = strings.Join(resolved, ",")
 	} else {
 		addr = ResolveNodeAddress(cfg)
@@ -140,7 +140,7 @@ func handleGuestSubRequest(w http.ResponseWriter, cfg *config.UserConfig, guest 
 
 	// Guest is enabled: output regular proxy nodes
 	var addr string
-	if resolved, err := endpoint.Resolve(cfg, guest.Endpoint); err == nil && len(resolved) > 0 {
+	if resolved, err := endpoint.Resolve(cfg, guest.Endpoint, true); err == nil && len(resolved) > 0 {
 		addr = strings.Join(resolved, ",")
 	} else {
 		addr = ResolveNodeAddress(cfg, guest.OutboundLink)

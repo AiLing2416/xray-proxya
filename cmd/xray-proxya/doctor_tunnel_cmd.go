@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -221,34 +222,7 @@ func findIPBinary() string {
 }
 
 func testTunnelReachability(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	targets := []string{
-		"[2606:4700:4700::1111]:53", // Cloudflare
-		"[2001:4860:4860::8888]:53", // Google
-	}
-	var lastErr error
-	for _, target := range targets {
-		start := time.Now()
-		d := net.Dialer{
-			Timeout: timeout,
-		}
-		if sourceIPv6 != "" {
-			srcIP := net.ParseIP(sourceIPv6)
-			if srcIP != nil {
-				d.LocalAddr = &net.TCPAddr{IP: srcIP}
-			}
-		}
-		conn, err := d.Dial("tcp6", target)
-		if err == nil {
-			rtt := time.Since(start)
-			conn.Close()
-			return true, rtt, nil
-		}
-		lastErr = err
-	}
-	return false, 0, lastErr
+	return endpoint.TestIPv6Reachability(sourceIPv6, timeout)
 }
 
 var doctorTunnelCmd = &cobra.Command{

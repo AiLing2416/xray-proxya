@@ -10,7 +10,8 @@ import (
 )
 
 // Resolve resolves the target address(es) for a named endpoint from config.
-func Resolve(cfg *config.UserConfig, endpointName string) ([]string, error) {
+// If forSubscription is true and the endpoint is dynamic-v6, it slides to a new address.
+func Resolve(cfg *config.UserConfig, endpointName string, forSubscription ...bool) ([]string, error) {
 	if endpointName == "" {
 		endpointName = "default"
 	}
@@ -51,20 +52,41 @@ func Resolve(cfg *config.UserConfig, endpointName string) ([]string, error) {
 		return []string{ip}, nil
 
 	case config.EndpointTypeDynamicV6:
-		if ep.Host != "" {
-			parts := strings.Split(ep.Host, ",")
-			var addrs []string
-			for _, part := range parts {
-				addr := strings.TrimSpace(part)
-				if addr != "" {
-					addrs = append(addrs, addr)
+		isSub := len(forSubscription) > 0 && forSubscription[0]
+		if isSub {
+			newIP, err := NextAddress(endpointName, ep)
+			if err != nil {
+				return nil, err
+			}
+			return []string{newIP}, nil
+		}
+
+		// Normal query: return latest active IP, or allocate if pool is empty
+		st, _ := LoadRotationState(endpointName)
+		if st != nil && len(st.ActivePool) > 0 {
+			latest := st.ActivePool[len(st.ActivePool)-1].Address
+			return []string{latest}, nil
+		}
+
+		// Pool is empty, allocate once
+		newIP, err := NextAddress(endpointName, ep)
+		if err != nil {
+			if ep.Host != "" {
+				parts := strings.Split(ep.Host, ",")
+				var addrs []string
+				for _, part := range parts {
+					addr := strings.TrimSpace(part)
+					if addr != "" {
+						addrs = append(addrs, addr)
+					}
+				}
+				if len(addrs) > 0 {
+					return addrs, nil
 				}
 			}
-			if len(addrs) > 0 {
-				return addrs, nil
-			}
+			return nil, fmt.Errorf("dynamic-v6 endpoint '%s' has no active address: %w", endpointName, err)
 		}
-		return nil, fmt.Errorf("endpoint '%s' (dynamic-v6) is not yet configured", endpointName)
+		return []string{newIP}, nil
 
 	default:
 		if ep.Host != "" {

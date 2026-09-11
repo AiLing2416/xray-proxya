@@ -1,8 +1,11 @@
 package endpoint
 
 import (
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"xray-proxya/internal/config"
 )
@@ -191,6 +194,189 @@ func TestFindReferences_SubscriptionInstances(t *testing.T) {
 	refsDefStr := strings.Join(refsDefault, ",")
 	if !strings.Contains(refsDefStr, "sub:node-jp") || !strings.Contains(refsDefStr, "sub:node-us") || len(refsDefault) != 2 {
 		t.Errorf("FindReferences(default) = %v, want [sub:node-jp sub:node-us]", refsDefault)
+	}
+}
+
+func TestRotationStateSerialization(t *testing.T) {
+	st := &RotationState{
+		ActivePool: []AddressEntry{
+			{Address: "2001:db8::1", State: "active", CreatedAt: time.Now()},
+		},
+		DeprecatedPool: []AddressEntry{
+			{Address: "2001:db8::2", State: "deprecated", CreatedAt: time.Now().Add(-2 * time.Hour), DeprecatedAt: time.Now().Add(-1 * time.Hour)},
+		},
+	}
+	data, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("failed to marshal RotationState: %v", err)
+	}
+	var loaded RotationState
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		t.Fatalf("failed to unmarshal RotationState: %v", err)
+	}
+	if len(loaded.ActivePool) != 1 || loaded.ActivePool[0].Address != "2001:db8::1" {
+		t.Errorf("unexpected active pool: %+v", loaded.ActivePool)
+	}
+	if len(loaded.DeprecatedPool) != 1 || loaded.DeprecatedPool[0].Address != "2001:db8::2" {
+		t.Errorf("unexpected deprecated pool: %+v", loaded.DeprecatedPool)
+	}
+}
+
+func TestDynamicV6RotationSlidingWindow(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	var recordedCommands [][]string
+	origCmdRunner := cmdRunner
+	origProbeFunc := probeFunc
+	defer func() {
+		cmdRunner = origCmdRunner
+		probeFunc = origProbeFunc
+	}()
+
+	cmdRunner = func(name string, arg ...string) ([]byte, error) {
+		recordedCommands = append(recordedCommands, append([]string{name}, arg...))
+		return []byte("ok"), nil
+	}
+	probeFunc = func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 10 * time.Millisecond, nil
+	}
+
+	ep := config.EndpointConfig{
+		Type:         config.EndpointTypeDynamicV6,
+		Subnet:       "2001:db8:cafe::/64",
+		Interface:    "he-ipv6",
+		MaxAddresses: 2,
+	}
+
+	// 1st allocation
+	ip1, err := NextAddress("test-ep", ep)
+	if err != nil {
+		t.Fatalf("NextAddress 1 failed: %v", err)
+	}
+	st, err := LoadRotationState("test-ep")
+	if err != nil || len(st.ActivePool) != 1 {
+		t.Fatalf("expected 1 active IP, got %+v (err: %v)", st, err)
+	}
+	if st.ActivePool[0].Address != ip1 {
+		t.Errorf("expected active IP %s, got %s", ip1, st.ActivePool[0].Address)
+	}
+
+	// 2nd allocation
+	ip2, err := NextAddress("test-ep", ep)
+	if err != nil {
+		t.Fatalf("NextAddress 2 failed: %v", err)
+	}
+	st, _ = LoadRotationState("test-ep")
+	if len(st.ActivePool) != 2 || len(st.DeprecatedPool) != 0 {
+		t.Fatalf("expected 2 active IPs and 0 deprecated, got %+v", st)
+	}
+
+	// 3rd allocation: max is 2, so ip1 should be demoted to DeprecatedPool
+	ip3, err := NextAddress("test-ep", ep)
+	if err != nil {
+		t.Fatalf("NextAddress 3 failed: %v", err)
+	}
+	st, _ = LoadRotationState("test-ep")
+	if len(st.ActivePool) != 2 {
+		t.Fatalf("expected 2 active IPs, got %d", len(st.ActivePool))
+	}
+	if len(st.DeprecatedPool) != 1 {
+		t.Fatalf("expected 1 deprecated IP, got %d", len(st.DeprecatedPool))
+	}
+	if st.DeprecatedPool[0].Address != ip1 {
+		t.Errorf("expected deprecated IP %s, got %s", ip1, st.DeprecatedPool[0].Address)
+	}
+	if st.ActivePool[0].Address != ip2 || st.ActivePool[1].Address != ip3 {
+		t.Errorf("unexpected active pool after slide: %+v", st.ActivePool)
+	}
+
+	// ReconcileOnStartup test
+	if err := ReconcileOnStartup("test-ep", ep); err != nil {
+		t.Fatalf("ReconcileOnStartup failed: %v", err)
+	}
+}
+
+func TestResolveDynamicV6_OrdinaryAndSub(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	origCmdRunner := cmdRunner
+	origProbeFunc := probeFunc
+	defer func() {
+		cmdRunner = origCmdRunner
+		probeFunc = origProbeFunc
+	}()
+
+	cmdRunner = func(name string, arg ...string) ([]byte, error) {
+		return []byte("ok"), nil
+	}
+	probeFunc = func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 5 * time.Millisecond, nil
+	}
+
+	cfg := &config.UserConfig{
+		Endpoints: map[string]config.EndpointConfig{
+			"dyn": {
+				Type:         config.EndpointTypeDynamicV6,
+				Subnet:       "2001:db8:1234::/64",
+				Interface:    "he-ipv6",
+				MaxAddresses: 3,
+			},
+		},
+	}
+
+	// Ordinary query on empty state triggers initial allocation
+	res1, err := Resolve(cfg, "dyn")
+	if err != nil {
+		t.Fatalf("Resolve ordinary failed: %v", err)
+	}
+	if len(res1) != 1 {
+		t.Fatalf("expected 1 IP, got %v", res1)
+	}
+
+	// Second ordinary query returns the SAME IP (no rotation)
+	res2, err := Resolve(cfg, "dyn")
+	if err != nil {
+		t.Fatalf("Resolve ordinary 2 failed: %v", err)
+	}
+	if res2[0] != res1[0] {
+		t.Fatalf("expected ordinary query to return same IP %s, got %s", res1[0], res2[0])
+	}
+
+	// Subscription pull (forSubscription=true) triggers rotation and gives a NEW IP
+	resSub, err := Resolve(cfg, "dyn", true)
+	if err != nil {
+		t.Fatalf("Resolve sub failed: %v", err)
+	}
+	if resSub[0] == res1[0] {
+		t.Fatalf("expected subscription pull to rotate to new IP, but got same %s", resSub[0])
+	}
+}
+
+func TestProbeIPv6Reachability_Invalid(t *testing.T) {
+	ok, _, err := TestIPv6Reachability("not-an-ip", time.Second)
+	if ok || err == nil {
+		t.Errorf("expected error for invalid IP, got ok=%v, err=%v", ok, err)
+	}
+
+	ok4, _, err4 := TestIPv6Reachability("192.168.1.1", time.Second)
+	if ok4 || err4 == nil {
+		t.Errorf("expected error for IPv4 IP, got ok=%v, err=%v", ok4, err4)
 	}
 }
 
