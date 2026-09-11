@@ -324,23 +324,7 @@ func FormatSubURL(hostOrURL string, port int, tokenOrUUID string, optionalCfg ..
 		}
 	}
 
-	var cfg *config.UserConfig
-	if len(optionalCfg) > 0 && optionalCfg[0] != nil {
-		cfg = optionalCfg[0]
-	} else {
-		cfg, _ = config.LoadConfigEx(false)
-	}
-
-	hasCert := false
-	if cfg != nil && host != "" {
-		hasCert = cfg.FindCert(host) != nil
-	}
-
-	// Level 2 & 3: Smart scheme auto-promotion (cert awareness / port 443, 8443) vs fallback
 	scheme := "http"
-	if hasCert || effPort == 443 || effPort == 8443 {
-		scheme = "https"
-	}
 
 	var hostPart string
 	if effPort > 0 && !((scheme == "https" && effPort == 443) || (scheme == "http" && effPort == 80)) {

@@ -21,22 +21,21 @@ func TestEnsureManagedSubscriptionCreatesAdminEntry(t *testing.T) {
 }
 
 func TestManagedSubURLUsesOverrideAddress(t *testing.T) {
-	// Port 8443 auto-promoted to https
+	// Defaults to http without explicit https scheme
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}
 	subEntry := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com"}
 	got := managedSubURL(cfg, subEntry)
-	want := "https://sub.example.com:8443/abc123"
+	want := "http://sub.example.com:8443/abc123"
 	if got != want {
 		t.Fatalf("managedSubURL = %q, want %q", got, want)
 	}
 
-	// Non-secure port 8080 falls back to http
-	cfg8080 := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8080}}
-	subEntry8080 := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com"}
-	got8080 := managedSubURL(cfg8080, subEntry8080)
-	want8080 := "http://sub.example.com:8080/abc123"
-	if got8080 != want8080 {
-		t.Fatalf("managedSubURL = %q, want %q", got8080, want8080)
+	// Explicit https scheme is preserved
+	subEntryHTTPS := &config.AdminSubConfig{Token: "abc123", Address: "https://sub.example.com"}
+	gotHTTPS := managedSubURL(cfg, subEntryHTTPS)
+	wantHTTPS := "https://sub.example.com/abc123"
+	if gotHTTPS != wantHTTPS {
+		t.Fatalf("managedSubURL = %q, want %q", gotHTTPS, wantHTTPS)
 	}
 }
 

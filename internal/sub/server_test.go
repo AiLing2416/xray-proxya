@@ -115,34 +115,33 @@ func TestResolveSubAndNodeAddresses(t *testing.T) {
 }
 
 func TestFormatSubURL(t *testing.T) {
-	// Level 1: Scheme preserved
+	// Explicit scheme preserved
 	if got, want := FormatSubURL("https://sub.example.com", 8443, "mytoken"), "https://sub.example.com/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
 	if got, want := FormatSubURL("http://sub.example.com:8080", 8443, "mytoken"), "http://sub.example.com:8080/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
-	// Level 2: Port 8443 or 443 auto-promoted to https
-	if got, want := FormatSubURL("sub.example.com", 8443, "mytoken"), "https://sub.example.com:8443/mytoken"; got != want {
+	// Defaults to http without explicit https scheme
+	if got, want := FormatSubURL("sub.example.com", 8443, "mytoken"), "http://sub.example.com:8443/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
-	if got, want := FormatSubURL("sub.example.com", 443, "mytoken"), "https://sub.example.com/mytoken"; got != want {
+	if got, want := FormatSubURL("sub.example.com", 443, "mytoken"), "http://sub.example.com:443/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
-	// Level 2: Cert awareness auto-promoted to https even on arbitrary port
+	// Cert awareness does not auto-promote unless scheme is given
 	cfgWithCert := &config.UserConfig{
 		Certs: []config.ManagedCert{
 			{Domain: "secure.example.com"},
 		},
 	}
-	if got, want := FormatSubURL("secure.example.com", 9443, "mytoken", cfgWithCert), "https://secure.example.com:9443/mytoken"; got != want {
+	if got, want := FormatSubURL("secure.example.com", 9443, "mytoken", cfgWithCert), "http://secure.example.com:9443/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
-	// Level 3: Non-secure port and no cert falls back to http
-	if got, want := FormatSubURL("sub.example.com:9443", 8443, "mytoken"), "http://sub.example.com:9443/mytoken"; got != want {
+	if got, want := FormatSubURL("https://secure.example.com", 9443, "mytoken", cfgWithCert), "https://secure.example.com/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
-	// Level 3: Bare IP with non-secure port falls back to http
+	// Bare IP with port defaults to http
 	if got, want := FormatSubURL("192.168.1.1", 8080, "mytoken"), "http://192.168.1.1:8080/mytoken"; got != want {
 		t.Fatalf("FormatSubURL = %q, want %q", got, want)
 	}
