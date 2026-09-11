@@ -4,14 +4,16 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 
 	"github.com/spf13/cobra"
 )
 
 func resetEndpointFlags(cmd *cobra.Command) {
-	for _, name := range []string{"host", "auto", "v4", "v6"} {
+	for _, name := range []string{"host", "auto", "v4", "v6", "type", "subnet", "interface", "max", "ndp", "no-ndp"} {
 		if f := cmd.Flags().Lookup(name); f != nil {
 			f.Changed = false
 			_ = f.Value.Set(f.DefValue)
@@ -21,6 +23,12 @@ func resetEndpointFlags(cmd *cobra.Command) {
 	endpointSetAuto = false
 	endpointSetV4 = false
 	endpointSetV6 = false
+	endpointSetType = ""
+	endpointSetSubnet = ""
+	endpointSetInterface = ""
+	endpointSetMax = 6
+	endpointSetNDP = false
+	endpointSetNoNDP = false
 }
 
 func TestEndpointSetStatic(t *testing.T) {
@@ -273,6 +281,261 @@ func TestEndpointSetShorthandHViaRootCmd(t *testing.T) {
 	}
 	if ep.Host != "hk.example.com" || ep.Type != config.EndpointTypeStatic {
 		t.Fatalf("unexpected default endpoint: %+v", ep)
+	}
+}
+
+func TestEndpointSetDynamicV6(t *testing.T) {
+	setupTestConfigDir(t)
+	cmd := endpointSetCmd
+	resetEndpointFlags(cmd)
+	defer resetEndpointFlags(cmd)
+
+	cfg := &config.UserConfig{Role: config.RoleServer}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("failed to save staging config: %v", err)
+	}
+
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "2001:470:1f0b:692::/64")
+	_ = cmd.Flags().Set("interface", "he-ipv6")
+	_ = cmd.Flags().Set("max", "8")
+
+	err := cmd.RunE(cmd, []string{"he-pool"})
+	if err != nil {
+		t.Fatalf("endpoint set dynamic-v6 failed: %v", err)
+	}
+
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	ep, ok := loaded.Endpoints["he-pool"]
+	if !ok {
+		t.Fatalf("expected endpoint 'he-pool' in staging")
+	}
+	if ep.Type != config.EndpointTypeDynamicV6 {
+		t.Errorf("expected type dynamic-v6, got %s", ep.Type)
+	}
+	if ep.Subnet != "2001:470:1f0b:692::/64" {
+		t.Errorf("expected subnet 2001:470:1f0b:692::/64, got %s", ep.Subnet)
+	}
+	if ep.Interface != "he-ipv6" {
+		t.Errorf("expected interface he-ipv6, got %s", ep.Interface)
+	}
+	if ep.MaxAddresses != 8 {
+		t.Errorf("expected max 8, got %d", ep.MaxAddresses)
+	}
+	if ep.EnableNDP {
+		t.Errorf("expected EnableNDP to be false for he-ipv6 interface")
+	}
+}
+
+func TestEndpointSetDynamicV6_AutoNDP(t *testing.T) {
+	setupTestConfigDir(t)
+	cmd := endpointSetCmd
+
+	// Test 1: eth0 interface defaults to EnableNDP=true
+	resetEndpointFlags(cmd)
+	defer resetEndpointFlags(cmd)
+
+	cfg := &config.UserConfig{Role: config.RoleServer}
+	_ = cfg.SaveEx(true)
+
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "2001:db8::/64")
+	_ = cmd.Flags().Set("interface", "eth0")
+
+	err := cmd.RunE(cmd, []string{"eth-pool"})
+	if err != nil {
+		t.Fatalf("endpoint set failed: %v", err)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	if !loaded.Endpoints["eth-pool"].EnableNDP {
+		t.Errorf("expected EnableNDP to be true for eth0 interface by default")
+	}
+
+	// Test 2: explicit --no-ndp
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "2001:db8::/64")
+	_ = cmd.Flags().Set("interface", "eth0")
+	_ = cmd.Flags().Set("no-ndp", "true")
+
+	err = cmd.RunE(cmd, []string{"eth-pool-no-ndp"})
+	if err != nil {
+		t.Fatalf("endpoint set failed: %v", err)
+	}
+	loaded, _ = config.LoadConfigEx(true)
+	if loaded.Endpoints["eth-pool-no-ndp"].EnableNDP {
+		t.Errorf("expected EnableNDP to be false when --no-ndp is set")
+	}
+}
+
+func TestEndpointShowDynamicV6_TextAndJSON(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"he-pool": {
+				Type:         config.EndpointTypeDynamicV6,
+				Subnet:       "2001:470:1f0b:692::/64",
+				Interface:    "he-ipv6",
+				MaxAddresses: 6,
+				EnableNDP:    false,
+			},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	// Populate a mock rotation state file
+	mockState := endpoint.RotationState{
+		ActivePool: []endpoint.AddressEntry{
+			{Address: "2001:470:1f0b:692::1234", State: "active", CreatedAt: time.Now()},
+		},
+		DeprecatedPool: []endpoint.AddressEntry{
+			{Address: "2001:470:1f0b:692::5678", State: "deprecated", CreatedAt: time.Now().Add(-2 * time.Hour), DeprecatedAt: time.Now().Add(-10 * time.Minute)},
+		},
+	}
+	_ = endpoint.SaveRotationState("he-pool", &mockState)
+
+	// 1. Test text output
+	out := captureStdout(t, func() {
+		err := endpointShowCmd.RunE(endpointShowCmd, []string{"he-pool"})
+		if err != nil {
+			t.Fatalf("endpoint show failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "2001:470:1f0b:692::1234") {
+		t.Errorf("expected active IP in show output, got: %s", out)
+	}
+	if !strings.Contains(out, "2001:470:1f0b:692::5678") {
+		t.Errorf("expected deprecated IP in show output, got: %s", out)
+	}
+	if !strings.Contains(out, "Subnet:      2001:470:1f0b:692::/64") {
+		t.Errorf("expected subnet in show output, got: %s", out)
+	}
+
+	// 2. Test JSON output
+	endpointShowJSON = true
+	defer func() { endpointShowJSON = false }()
+
+	jsonOut := captureStdout(t, func() {
+		err := endpointShowCmd.RunE(endpointShowCmd, []string{"he-pool"})
+		if err != nil {
+			t.Fatalf("endpoint show --json failed: %v", err)
+		}
+	})
+
+	var detail EndpointDetailView
+	if err := json.Unmarshal([]byte(jsonOut), &detail); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v, out: %s", err, jsonOut)
+	}
+	if detail.Name != "he-pool" || detail.Type != "dynamic-v6" {
+		t.Errorf("unexpected detail in JSON: %+v", detail)
+	}
+	if len(detail.ActivePool) != 1 || detail.ActivePool[0].Address != "2001:470:1f0b:692::1234" {
+		t.Errorf("unexpected ActivePool in JSON: %+v", detail.ActivePool)
+	}
+	if len(detail.DeprecatedPool) != 1 || detail.DeprecatedPool[0].Address != "2001:470:1f0b:692::5678" {
+		t.Errorf("unexpected DeprecatedPool in JSON: %+v", detail.DeprecatedPool)
+	}
+}
+
+func TestEndpointTestCmd(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"static-test": {
+				Type: config.EndpointTypeStatic,
+				Host: "127.0.0.1",
+			},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	endpointTestJSON = true
+	defer func() { endpointTestJSON = false }()
+
+	jsonOut := captureStdout(t, func() {
+		err := endpointTestCmd.RunE(endpointTestCmd, []string{"static-test"})
+		if err != nil {
+			t.Fatalf("endpoint test failed: %v", err)
+		}
+	})
+
+	var results []EndpointTestResult
+	if err := json.Unmarshal([]byte(jsonOut), &results); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v, out: %s", err, jsonOut)
+	}
+	if len(results) == 0 || results[0].Name != "static-test" {
+		t.Fatalf("unexpected test results: %+v", results)
+	}
+}
+
+func TestEndpointRotateCmd(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"he-pool": {
+				Type:         config.EndpointTypeDynamicV6,
+				Subnet:       "2001:470:1f0b:692::/64",
+				Interface:    "he-ipv6",
+				MaxAddresses: 4,
+			},
+			"static-node": {
+				Type: config.EndpointTypeStatic,
+				Host: "1.1.1.1",
+			},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	origRequireRoot := endpointRequireRoot
+	endpointRequireRoot = func(string) error { return nil }
+	defer func() { endpointRequireRoot = origRequireRoot }()
+
+	restoreRunners := endpoint.SetTestRunners(
+		func(name string, arg ...string) ([]byte, error) { return []byte("ok"), nil },
+		func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
+			return true, 5 * time.Millisecond, nil
+		},
+	)
+	defer restoreRunners()
+
+	// 1. Error on rotating non-dynamic-v6 endpoint
+	err := endpointRotateCmd.RunE(endpointRotateCmd, []string{"static-node"})
+	if err == nil || !strings.Contains(err.Error(), "rotation only applies to 'dynamic-v6'") {
+		t.Fatalf("expected error rotating static endpoint, got: %v", err)
+	}
+
+	// 2. Rotate dynamic-v6 with --json
+	endpointRotateJSON = true
+	defer func() { endpointRotateJSON = false }()
+
+	jsonOut := captureStdout(t, func() {
+		// Mock initial active state
+		st := endpoint.RotationState{
+			ActivePool: []endpoint.AddressEntry{
+				{Address: "2001:470:1f0b:692::1111", State: "active", CreatedAt: time.Now()},
+			},
+		}
+		_ = endpoint.SaveRotationState("he-pool", &st)
+
+		err := endpointRotateCmd.RunE(endpointRotateCmd, []string{"he-pool"})
+		if err != nil {
+			t.Fatalf("endpoint rotate failed: %v", err)
+		}
+	})
+
+	var rotRes EndpointRotateResult
+	if err := json.Unmarshal([]byte(jsonOut), &rotRes); err != nil {
+		t.Fatalf("failed to unmarshal rotate JSON: %v, out: %s", err, jsonOut)
+	}
+	if rotRes.Name != "he-pool" || rotRes.RotatedAddress == "" {
+		t.Errorf("unexpected rotate result: %+v", rotRes)
 	}
 }
 

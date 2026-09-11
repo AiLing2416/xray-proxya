@@ -36,6 +36,23 @@ var (
 	}
 )
 
+// SetTestRunners configures mock command and reachability runners for testing.
+// It returns a restore function that resets the runners to defaults.
+func SetTestRunners(runner func(name string, arg ...string) ([]byte, error), probe func(string, time.Duration) (bool, time.Duration, error)) func() {
+	origCmd := cmdRunner
+	origProbe := probeFunc
+	if runner != nil {
+		cmdRunner = runner
+	}
+	if probe != nil {
+		probeFunc = probe
+	}
+	return func() {
+		cmdRunner = origCmd
+		probeFunc = origProbe
+	}
+}
+
 // RotationStatePath returns the path to the JSON state file for the given endpoint name.
 func RotationStatePath(endpointName string) string {
 	return filepath.Join(config.GetConfigDir(), "endpoints", endpointName+".json")
