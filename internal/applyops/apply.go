@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sort"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/presets"
 	"xray-proxya/internal/service"
 )
@@ -17,6 +19,7 @@ type Impact struct {
 	GatewayRuntimeChanged bool
 	PathdConfigChanged    bool
 	ChangedSections       []string
+	EndpointDiffs         []string
 }
 
 type Options struct {
@@ -102,6 +105,32 @@ func ClearPending() error {
 	return config.ClearStaging()
 }
 
+// DiffEndpoints compares active and staging Endpoints maps and returns a list of formatted change descriptions.
+func DiffEndpoints(active, staging map[string]config.EndpointConfig) []string {
+	var diffs []string
+	// Check added or modified
+	for name, stgEp := range staging {
+		actEp, exists := active[name]
+		if !exists {
+			target := endpoint.GetTargetDescription(stgEp)
+			diffs = append(diffs, fmt.Sprintf("Added endpoint '%s' (%s, target: %s)", name, stgEp.Type, target))
+		} else if !reflect.DeepEqual(actEp, stgEp) {
+			oldTarget := endpoint.GetTargetDescription(actEp)
+			newTarget := endpoint.GetTargetDescription(stgEp)
+			diffs = append(diffs, fmt.Sprintf("Modified endpoint '%s' (%s -> %s, target: %s -> %s)", name, actEp.Type, stgEp.Type, oldTarget, newTarget))
+		}
+	}
+	// Check removed
+	for name, actEp := range active {
+		if _, exists := staging[name]; !exists {
+			target := endpoint.GetTargetDescription(actEp)
+			diffs = append(diffs, fmt.Sprintf("Removed endpoint '%s' (%s, target: %s)", name, actEp.Type, target))
+		}
+	}
+	sort.Strings(diffs)
+	return diffs
+}
+
 func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	impact := Impact{}
 	if stagingCfg == nil {
@@ -110,10 +139,13 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if activeCfg == nil {
 		impact.XrayConfigChanged = true
 		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
-		impact.SubContentChanged = stagingCfg.AdminSub.Token != "" || len(stagingCfg.Subscriptions) > 0
+		impact.SubContentChanged = stagingCfg.AdminSub.Token != "" || len(stagingCfg.Subscriptions) > 0 || len(stagingCfg.Endpoints) > 0
 		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled
 		impact.PathdConfigChanged = stagingCfg.Role == config.RoleServer && stagingCfg.Path.Token != ""
 		impact.ChangedSections = []string{"initial_apply"}
+		if len(stagingCfg.Endpoints) > 0 {
+			impact.EndpointDiffs = DiffEndpoints(nil, stagingCfg.Endpoints)
+		}
 		return impact
 	}
 
@@ -214,6 +246,15 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if activeCfg.AddressSub != stagingCfg.AddressSub || activeCfg.AddressNode != stagingCfg.AddressNode {
 		impact.SubContentChanged = true
 		mark("address_sub_node")
+	}
+	if activeCfg.GateURL != stagingCfg.GateURL {
+		impact.SubContentChanged = true
+		mark("gate_url")
+	}
+	if !reflect.DeepEqual(activeCfg.Endpoints, stagingCfg.Endpoints) {
+		impact.SubContentChanged = true
+		mark("endpoints")
+		impact.EndpointDiffs = DiffEndpoints(activeCfg.Endpoints, stagingCfg.Endpoints)
 	}
 	if !reflect.DeepEqual(activeCfg.Subscriptions, stagingCfg.Subscriptions) {
 		impact.SubContentChanged = true
@@ -405,6 +446,12 @@ func BuildDryRunPreview(activeCfg, stagingCfg *config.UserConfig, impact Impact,
 		sectionsStr = "[]"
 	}
 	lines = append(lines, fmt.Sprintf("Changed Sections : %s", sectionsStr))
+	if len(impact.EndpointDiffs) > 0 {
+		lines = append(lines, "Endpoint Changes :")
+		for _, diff := range impact.EndpointDiffs {
+			lines = append(lines, fmt.Sprintf("  • %s", diff))
+		}
+	}
 	lines = append(lines, "Service Actions:")
 
 	var actions []string

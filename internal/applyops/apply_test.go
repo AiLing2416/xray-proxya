@@ -139,3 +139,106 @@ func TestStoppedServiceActionableHints(t *testing.T) {
 		t.Fatalf("expected actionable hint for stopped core service, got:\n%s", fullText)
 	}
 }
+
+func TestBuildImpactDetectsEndpointChanges(t *testing.T) {
+	active := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"default":   {Type: config.EndpointTypeAuto, Family: "v4"},
+			"to-remove": {Type: config.EndpointTypeStatic, Host: "old.example.com"},
+			"to-modify": {Type: config.EndpointTypeStatic, Host: "mod1.example.com"},
+		},
+	}
+	staging := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"default":   {Type: config.EndpointTypeAuto, Family: "v4"},
+			"to-modify": {Type: config.EndpointTypeStatic, Host: "mod2.example.com"},
+			"to-add":    {Type: config.EndpointTypeStatic, Host: "new.example.com"},
+		},
+	}
+
+	impact := BuildImpact(active, staging)
+	if !impact.SubContentChanged {
+		t.Fatal("expected SubContentChanged to be true on endpoint changes")
+	}
+	foundEndpointsSection := false
+	for _, s := range impact.ChangedSections {
+		if s == "endpoints" {
+			foundEndpointsSection = true
+			break
+		}
+	}
+	if !foundEndpointsSection {
+		t.Fatalf("expected 'endpoints' in changed sections, got %v", impact.ChangedSections)
+	}
+
+	diffText := strings.Join(impact.EndpointDiffs, "\n")
+	if !strings.Contains(diffText, "Added endpoint 'to-add'") {
+		t.Errorf("expected added endpoint diff, got: %s", diffText)
+	}
+	if !strings.Contains(diffText, "Modified endpoint 'to-modify'") {
+		t.Errorf("expected modified endpoint diff, got: %s", diffText)
+	}
+	if !strings.Contains(diffText, "Removed endpoint 'to-remove'") {
+		t.Errorf("expected removed endpoint diff, got: %s", diffText)
+	}
+}
+
+func TestDryRunPreviewDisplaysEndpointDiffs(t *testing.T) {
+	impact := Impact{
+		ChangedSections: []string{"endpoints"},
+		EndpointDiffs: []string{
+			"Added endpoint 'hk-node' (static, target: hk.example.com)",
+		},
+	}
+	lines := BuildDryRunPreview(nil, nil, impact, Options{DryRun: true})
+	fullText := strings.Join(lines, "\n")
+
+	if !strings.Contains(fullText, "Endpoint Changes :") {
+		t.Fatalf("expected 'Endpoint Changes :' in dry-run preview, got:\n%s", fullText)
+	}
+	if !strings.Contains(fullText, "Added endpoint 'hk-node'") {
+		t.Fatalf("expected 'Added endpoint 'hk-node'' in dry-run preview, got:\n%s", fullText)
+	}
+}
+
+func TestApplyPendingDisplaysEndpointChanges(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	active := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid-apply-ep",
+		Endpoints: map[string]config.EndpointConfig{
+			"default": {Type: config.EndpointTypeAuto, Family: "v4"},
+		},
+	}
+	staging := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid-apply-ep",
+		Endpoints: map[string]config.EndpointConfig{
+			"default": {Type: config.EndpointTypeAuto, Family: "v4"},
+			"my-ep":   {Type: config.EndpointTypeStatic, Host: "ep.example.com"},
+		},
+	}
+	if err := active.SaveEx(false); err != nil {
+		t.Fatalf("save active: %v", err)
+	}
+	if err := staging.SaveEx(true); err != nil {
+		t.Fatalf("save staging: %v", err)
+	}
+
+	lines, err := ApplyPending(Options{Force: true})
+	if err != nil {
+		t.Fatalf("ApplyPending failed: %v", err)
+	}
+
+	fullText := strings.Join(lines, "\n")
+	if !strings.Contains(fullText, "Endpoint changes:") {
+		t.Fatalf("expected 'Endpoint changes:' in apply output, got:\n%s", fullText)
+	}
+	if !strings.Contains(fullText, "Added endpoint 'my-ep'") {
+		t.Fatalf("expected 'Added endpoint 'my-ep'' in apply output, got:\n%s", fullText)
+	}
+}

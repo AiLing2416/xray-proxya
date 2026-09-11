@@ -272,7 +272,7 @@ func init() {
 		return []string{
 			"role", "uuid", "api_inbound", "test_inbound", "presets", "custom_outbounds",
 			"relay_subs", "guests", "gateway", "path", "admin_sub", "subscription_instances",
-			"ipv6_rotation", "subscriptions",
+			"ipv6_rotation", "subscriptions", "endpoints", "gate_url",
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 

@@ -758,6 +758,10 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			changes = append(changes, "injected default auto(v4) endpoint")
 		}
 	}
+	if cfg.GateURL == "" && strings.TrimSpace(cfg.AddressSub) != "" {
+		cfg.GateURL = strings.TrimSpace(cfg.AddressSub)
+		changes = append(changes, "migrated address_sub to gate_url")
+	}
 	if cfg.Role == RoleGateway {
 		if cfg.Gateway.Mode == "" {
 			cfg.Gateway.Mode = "tun"

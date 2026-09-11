@@ -275,3 +275,45 @@ func TestConfigShowCmd(t *testing.T) {
 	}
 }
 
+func TestConfigUpgradeUpgradesEndpointsAndGateURL(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configPath := filepath.Join(tmpHome, ".config", "xray-proxya", "config.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	legacyJSON := `{"role":"server","address_node":"old-node.example.com","address_sub":"https://old-sub.example.com"}`
+	if err := os.WriteFile(configPath, []byte(legacyJSON), 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	configUpgradeStaging = false
+	configUpgradeDryRun = false
+	t.Cleanup(func() {
+		configUpgradeStaging = false
+		configUpgradeDryRun = false
+	})
+
+	_ = captureStdout(t, func() {
+		configUpgradeCmd.Run(configUpgradeCmd, nil)
+	})
+
+	upgraded, err := config.LoadConfig()
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if upgraded.GateURL != "https://old-sub.example.com" {
+		t.Errorf("GateURL = %q, want https://old-sub.example.com", upgraded.GateURL)
+	}
+	ep, ok := upgraded.Endpoints["default"]
+	if !ok {
+		t.Fatal("missing default endpoint in upgraded config")
+	}
+	if ep.Type != config.EndpointTypeStatic || ep.Host != "old-node.example.com" {
+		t.Errorf("ep = %+v, want static old-node.example.com", ep)
+	}
+}
+
+

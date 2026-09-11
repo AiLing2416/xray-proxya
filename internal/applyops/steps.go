@@ -128,6 +128,12 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 	if len(ctx.Impact.ChangedSections) > 0 {
 		ctx.AppendLine(fmt.Sprintf("ℹ️  Changed sections: %v", ctx.Impact.ChangedSections))
 	}
+	if len(ctx.Impact.EndpointDiffs) > 0 {
+		ctx.AppendLine("ℹ️  Endpoint changes:")
+		for _, diff := range ctx.Impact.EndpointDiffs {
+			ctx.AppendLine(fmt.Sprintf("   • %s", diff))
+		}
+	}
 	return nil
 }
 

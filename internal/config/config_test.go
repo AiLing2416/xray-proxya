@@ -435,3 +435,42 @@ func TestBackfillDefaultsSkinPort(t *testing.T) {
 		t.Errorf("expected SkinPort = 0 when no skin is configured, got %d", cfgNoSkin.SkinPort)
 	}
 }
+
+func TestBackfillDefaultsEndpointsAndGateURL(t *testing.T) {
+	// Case 1: Legacy config with AddressNode and AddressSub
+	cfg1 := &UserConfig{
+		Role:        RoleServer,
+		AddressNode: "node.legacy.com",
+		AddressSub:  "https://sub.legacy.com",
+	}
+	cfg1.BackfillDefaults()
+
+	if cfg1.GateURL != "https://sub.legacy.com" {
+		t.Errorf("GateURL = %q, want https://sub.legacy.com", cfg1.GateURL)
+	}
+	ep1, ok := cfg1.Endpoints["default"]
+	if !ok {
+		t.Fatal("missing default endpoint in Endpoints")
+	}
+	if ep1.Type != EndpointTypeStatic || ep1.Host != "node.legacy.com" {
+		t.Errorf("ep1 = %+v, want static node.legacy.com", ep1)
+	}
+
+	// Case 2: Clean config without AddressNode or AddressSub
+	cfg2 := &UserConfig{
+		Role: RoleServer,
+	}
+	cfg2.BackfillDefaults()
+
+	if cfg2.GateURL != "" {
+		t.Errorf("expected empty GateURL, got %q", cfg2.GateURL)
+	}
+	ep2, ok := cfg2.Endpoints["default"]
+	if !ok {
+		t.Fatal("missing default endpoint in Endpoints")
+	}
+	if ep2.Type != EndpointTypeAuto || ep2.Family != "v4" {
+		t.Errorf("ep2 = %+v, want auto(v4)", ep2)
+	}
+}
+
