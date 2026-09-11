@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -163,5 +165,135 @@ func TestDetectAndFixNAT(t *testing.T) {
 		if spec.ClientIPv4 == "192.0.2.1" {
 			t.Errorf("expected ClientIPv4 to be replaced with local interface IP")
 		}
+	}
+}
+
+func TestDoctorTunnelUp_RequiresArgument(t *testing.T) {
+	cmd := doctorTunnelUpCmd
+	err := cmd.Args(cmd, []string{})
+	if err == nil {
+		t.Fatalf("expected error when doctor tunnel up is called without arguments, got nil")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg(s)") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestDoctorTunnelDown_RequiresArgument(t *testing.T) {
+	cmd := doctorTunnelDownCmd
+	err := cmd.Args(cmd, []string{})
+	if err == nil {
+		t.Fatalf("expected error when doctor tunnel down is called without arguments, got nil")
+	}
+	if !strings.Contains(err.Error(), "accepts 1 arg(s)") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestDoctorTunnelDown_WithConfigFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	origSystemdDir := systemdDir
+	systemdDir = tmpDir
+	defer func() { systemdDir = origSystemdDir }()
+
+	origRoot := tunnelRequireRoot
+	tunnelRequireRoot = func(string) error { return nil }
+	defer func() { tunnelRequireRoot = origRoot }()
+
+	origRunner := tunnelCmdRunner
+	tunnelCmdRunner = func(name string, arg ...string) ([]byte, error) { return []byte("ok"), nil }
+	defer func() { tunnelCmdRunner = origRunner }()
+
+	// Write mock config file
+	confPath := filepath.Join(tmpDir, "interfaces-test")
+	confContent := `auto he-ipv6
+iface he-ipv6 inet6 v4tunnel
+        address 2001:470:1f0a:692::2
+        netmask 64
+        endpoint 216.66.80.30
+        local 87.58.209.196
+        gateway 2001:470:1f0a:692::1
+`
+	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create dummy service files that down should remove
+	svcPath := filepath.Join(tmpDir, "he-tunnel-he-ipv6.service")
+	_ = os.WriteFile(svcPath, []byte("[Unit]\nDescription=test\n"), 0644)
+	legacyPath := filepath.Join(tmpDir, "he-tunnel.service")
+	_ = os.WriteFile(legacyPath, []byte("[Unit]\nDescription=legacy\n"), 0644)
+
+	err := doctorTunnelDownCmd.RunE(doctorTunnelDownCmd, []string{confPath})
+	if err != nil {
+		t.Fatalf("doctor tunnel down with config file failed: %v", err)
+	}
+
+	if _, err := os.Stat(svcPath); !os.IsNotExist(err) {
+		t.Errorf("expected %s to be deleted by down command", svcPath)
+	}
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Errorf("expected %s to be deleted by down command", legacyPath)
+	}
+}
+
+func TestDoctorTunnelDown_WithInterface_Unverified(t *testing.T) {
+	origRoot := tunnelRequireRoot
+	tunnelRequireRoot = func(string) error { return nil }
+	defer func() { tunnelRequireRoot = origRoot }()
+
+	origFunc := findVerifiedTunnelConfigFunc
+	findVerifiedTunnelConfigFunc = func(iface string) (bool, string) { return false, "" }
+	defer func() { findVerifiedTunnelConfigFunc = origFunc }()
+
+	err := doctorTunnelDownCmd.RunE(doctorTunnelDownCmd, []string{"eth0"})
+	if err == nil {
+		t.Fatalf("expected error when down is called on unverified interface eth0, got nil")
+	}
+	if !strings.Contains(err.Error(), "Cannot safely tear down interface 'eth0'") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestDoctorTunnelDown_WithInterface_Verified(t *testing.T) {
+	tmpDir := t.TempDir()
+	origSystemdDir := systemdDir
+	systemdDir = tmpDir
+	defer func() { systemdDir = origSystemdDir }()
+
+	origRoot := tunnelRequireRoot
+	tunnelRequireRoot = func(string) error { return nil }
+	defer func() { tunnelRequireRoot = origRoot }()
+
+	origRunner := tunnelCmdRunner
+	tunnelCmdRunner = func(name string, arg ...string) ([]byte, error) { return []byte("ok"), nil }
+	defer func() { tunnelCmdRunner = origRunner }()
+
+	origFunc := findVerifiedTunnelConfigFunc
+	findVerifiedTunnelConfigFunc = func(iface string) (bool, string) {
+		return true, "mock systemd service (he-tunnel-he-ipv6.service)"
+	}
+	defer func() { findVerifiedTunnelConfigFunc = origFunc }()
+
+	svcPath := filepath.Join(tmpDir, "he-tunnel-he-ipv6.service")
+	_ = os.WriteFile(svcPath, []byte("[Unit]\nDescription=test\n"), 0644)
+
+	err := doctorTunnelDownCmd.RunE(doctorTunnelDownCmd, []string{"he-ipv6"})
+	if err != nil {
+		t.Fatalf("doctor tunnel down with verified interface failed: %v", err)
+	}
+
+	if _, err := os.Stat(svcPath); !os.IsNotExist(err) {
+		t.Errorf("expected %s to be removed", svcPath)
+	}
+}
+
+func TestDoctorTunnel_NoHardcodedDefaultConfig(t *testing.T) {
+	content, err := os.ReadFile("doctor_tunnel_cmd.go")
+	if err != nil {
+		t.Fatalf("failed to read doctor_tunnel_cmd.go: %v", err)
+	}
+	if strings.Contains(string(content), "/root/interfaces-he") {
+		t.Errorf("found hardcoded default path '/root/interfaces-he' in doctor_tunnel_cmd.go; should be purely config-driven")
 	}
 }
