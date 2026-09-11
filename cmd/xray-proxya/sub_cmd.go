@@ -15,9 +15,9 @@ import (
 const defaultSubInstance = "default"
 
 var (
-	subListen, subAddress, subAddressSub, subAddressNode, subToken, subTargetType, subTargetAlias, subRotation string
-	subPort                                                                                                    int
-	subShowGuest                                                                                               string
+	subGateURL, subListen, subAddress, subAddressSub, subAddressNode, subToken, subTargetType, subTargetAlias, subRotation string
+	subPort                                                                                                                int
+	subShowGuest                                                                                                           string
 )
 
 var subCmd = &cobra.Command{
@@ -115,7 +115,13 @@ func managedSubURL(cfg *config.UserConfig, entry *config.AdminSubConfig) string 
 	if cfg == nil || entry == nil || entry.Token == "" {
 		return ""
 	}
-	host := entry.AddressSub
+	host := ""
+	if cfg.GateURL != "" {
+		host = cfg.GateURL
+	}
+	if host == "" {
+		host = entry.AddressSub
+	}
 	if host == "" {
 		host = cfg.AddressSub
 	}
@@ -132,19 +138,25 @@ func managedSubURL(cfg *config.UserConfig, entry *config.AdminSubConfig) string 
 	if port <= 0 {
 		port = cfg.SubPort
 	}
-	return sub.FormatSubURL(host, port, entry.Token)
+	return sub.FormatSubURL(host, port, entry.Token, cfg)
 }
 
 func subGuestSubURL(cfg *config.UserConfig, tokenOrUUID string) string {
 	if cfg == nil || tokenOrUUID == "" {
 		return ""
 	}
-	host := sub.ResolveSubAddress(cfg)
+	host := ""
+	if cfg.GateURL != "" {
+		host = cfg.GateURL
+	}
+	if host == "" {
+		host = sub.ResolveSubAddress(cfg)
+	}
 	port := cfg.SubPort
 	if port <= 0 {
 		port = cfg.AdminSub.Port
 	}
-	return sub.FormatSubURL(host, port, tokenOrUUID)
+	return sub.FormatSubURL(host, port, tokenOrUUID, cfg)
 }
 
 func completeNetworkInterfaces(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
@@ -400,9 +412,18 @@ Supported target types:
 			entry.Listen = strings.TrimSpace(subListen)
 			changed = true
 		}
+		if cmd.Flags().Changed("gate-url") {
+			entry.AddressSub = strings.TrimSpace(subGateURL)
+			cfg.GateURL = strings.TrimSpace(subGateURL)
+			cfg.AddressSub = entry.AddressSub
+			changed = true
+		}
 		if cmd.Flags().Changed("address-sub") {
 			entry.AddressSub = strings.TrimSpace(subAddressSub)
 			cfg.AddressSub = entry.AddressSub
+			if cfg.GateURL == "" {
+				cfg.GateURL = entry.AddressSub
+			}
 			changed = true
 		}
 		if cmd.Flags().Changed("address") {
@@ -410,6 +431,9 @@ Supported target types:
 			if entry.AddressSub == "" {
 				entry.AddressSub = entry.Address
 				cfg.AddressSub = entry.Address
+				if cfg.GateURL == "" {
+					cfg.GateURL = entry.Address
+				}
 			}
 			changed = true
 		}
@@ -468,7 +492,12 @@ Supported target types:
 		if err := cfg.SaveEx(true); err != nil {
 			return err
 		}
-		fmt.Println("✅ Subscription configuration updated in STAGING. Run 'apply', then control it with 'service start xray-proxya-sub'.")
+		subURL := managedSubURL(cfg, &entry)
+		proto := "HTTP"
+		if strings.HasPrefix(subURL, "https://") {
+			proto = "HTTPS"
+		}
+		fmt.Printf("✅ Subscription configuration updated in STAGING (%s). Run 'apply', then control it with 'service start xray-proxya-sub'.\n", proto)
 		return nil
 	},
 }
@@ -513,10 +542,13 @@ var subShowCmd = &cobra.Command{
 			if listen == "" {
 				listen = "127.0.0.1"
 			}
-			inst.Port = port
-			inst.Listen = listen
+			subURL := managedSubURL(cfg, &inst)
+			proto := "HTTP"
+			if strings.HasPrefix(subURL, "https://") {
+				proto = "HTTPS"
+			}
 			fmt.Printf("\n--- Subscription Instance: %s ---\n", instName)
-			fmt.Printf("Listen: %s:%-5d Target: %-8s URL: %s\n", inst.Listen, inst.Port, inst.TargetType, managedSubURL(cfg, &inst))
+			fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", inst.Listen, inst.Port, inst.TargetType, proto, subURL)
 			if inst.AddressNode != "" {
 				fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
 			}
@@ -531,8 +563,13 @@ var subShowCmd = &cobra.Command{
 		if adminSub.Token == "" {
 			fmt.Println("ℹ️  No subscription configured. Use 'sub set'.")
 		} else {
+			subURL := managedSubURL(cfg, adminSub)
+			proto := "HTTP"
+			if strings.HasPrefix(subURL, "https://") {
+				proto = "HTTPS"
+			}
 			fmt.Println("\n--- Admin Subscription ---")
-			fmt.Printf("Listen: %s:%-5d Target: %-8s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, managedSubURL(cfg, adminSub))
+			fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, proto, subURL)
 			if adminSub.AddressNode != "" {
 				fmt.Printf("          └─ Node Address: %s\n", adminSub.AddressNode)
 			}
@@ -566,7 +603,12 @@ var subShowCmd = &cobra.Command{
 					}
 					inst.Port = port
 					inst.Listen = listen
-					fmt.Printf("[%s] Listen: %s:%-5d Target: %-8s URL: %s\n", name, inst.Listen, inst.Port, inst.TargetType, managedSubURL(cfg, &inst))
+					subURL := managedSubURL(cfg, &inst)
+					proto := "HTTP"
+					if strings.HasPrefix(subURL, "https://") {
+						proto = "HTTPS"
+					}
+					fmt.Printf("[%s] Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", name, inst.Listen, inst.Port, inst.TargetType, proto, subURL)
 					if inst.AddressNode != "" {
 						fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
 					}
@@ -634,9 +676,12 @@ var subValidateCmd = &cobra.Command{
 }
 
 func init() {
+	subSetCmd.Flags().StringVar(&subGateURL, "gate-url", "", "Advertised subscription download URL (e.g. https://sub.example.com)")
 	subSetCmd.Flags().StringVarP(&subListen, "listen", "l", "", "Loopback listener address")
 	subSetCmd.Flags().StringVarP(&subAddress, "address", "a", "", "Advertised address (alias to --address-sub)")
 	subSetCmd.Flags().StringVar(&subAddressSub, "address-sub", "", "Advertised hostname or URL for subscription links")
+	_ = subSetCmd.Flags().MarkHidden("address-sub")
+	_ = subSetCmd.Flags().MarkHidden("address")
 	subSetCmd.Flags().StringVar(&subAddressNode, "address-node", "", "Advertised hostname(s) or IP(s) for proxy nodes (comma-separated)")
 	subSetCmd.Flags().StringVarP(&subToken, "token", "t", "", "Subscription access token")
 	subSetCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTP port")

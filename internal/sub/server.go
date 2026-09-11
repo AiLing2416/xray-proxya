@@ -223,6 +223,9 @@ func ResolveSubAddress(cfg *config.UserConfig, override ...string) string {
 		return strings.TrimSpace(override[0])
 	}
 	if cfg != nil {
+		if addr := strings.TrimSpace(cfg.GateURL); addr != "" {
+			return addr
+		}
 		if addr := strings.TrimSpace(cfg.AddressSub); addr != "" {
 			return addr
 		}
@@ -239,11 +242,12 @@ func ResolveSubAddress(cfg *config.UserConfig, override ...string) string {
 	return utils.GetSmartIP(false)
 }
 
-func FormatSubURL(hostOrURL string, port int, tokenOrUUID string) string {
+func FormatSubURL(hostOrURL string, port int, tokenOrUUID string, optionalCfg ...*config.UserConfig) string {
 	raw := strings.TrimSpace(hostOrURL)
 	if raw == "" {
 		raw = utils.GetSmartIP(false)
 	}
+	// Level 1: Explicit declaration priority (100% respect user scheme)
 	if strings.HasPrefix(raw, "http://") || strings.HasPrefix(raw, "https://") {
 		u, err := url.Parse(raw)
 		if err == nil {
@@ -251,11 +255,45 @@ func FormatSubURL(hostOrURL string, port int, tokenOrUUID string) string {
 			return u.String()
 		}
 	}
-	hostPart := raw
-	if _, _, err := net.SplitHostPort(hostPart); err != nil && port > 0 {
-		hostPart = net.JoinHostPort(hostPart, strconv.Itoa(port))
+
+	host := raw
+	effPort := port
+	if h, pStr, err := net.SplitHostPort(raw); err == nil {
+		host = h
+		if p, err := strconv.Atoi(pStr); err == nil {
+			effPort = p
+		}
 	}
-	return fmt.Sprintf("http://%s/%s", hostPart, tokenOrUUID)
+
+	var cfg *config.UserConfig
+	if len(optionalCfg) > 0 && optionalCfg[0] != nil {
+		cfg = optionalCfg[0]
+	} else {
+		cfg, _ = config.LoadConfigEx(false)
+	}
+
+	hasCert := false
+	if cfg != nil && host != "" {
+		hasCert = cfg.FindCert(host) != nil
+	}
+
+	// Level 2 & 3: Smart scheme auto-promotion (cert awareness / port 443, 8443) vs fallback
+	scheme := "http"
+	if hasCert || effPort == 443 || effPort == 8443 {
+		scheme = "https"
+	}
+
+	var hostPart string
+	if effPort > 0 && !((scheme == "https" && effPort == 443) || (scheme == "http" && effPort == 80)) {
+		hostPart = net.JoinHostPort(host, strconv.Itoa(effPort))
+	} else {
+		if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+			hostPart = "[" + host + "]"
+		} else {
+			hostPart = host
+		}
+	}
+	return fmt.Sprintf("%s://%s/%s", scheme, hostPart, tokenOrUUID)
 }
 
 func ValidatePrivateBindAddress(bind string) error {

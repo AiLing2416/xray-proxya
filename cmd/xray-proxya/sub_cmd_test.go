@@ -21,10 +21,33 @@ func TestEnsureManagedSubscriptionCreatesAdminEntry(t *testing.T) {
 }
 
 func TestManagedSubURLUsesOverrideAddress(t *testing.T) {
+	// Port 8443 auto-promoted to https
 	cfg := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8443}}
 	subEntry := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com"}
 	got := managedSubURL(cfg, subEntry)
-	want := "http://sub.example.com:8443/abc123"
+	want := "https://sub.example.com:8443/abc123"
+	if got != want {
+		t.Fatalf("managedSubURL = %q, want %q", got, want)
+	}
+
+	// Non-secure port 8080 falls back to http
+	cfg8080 := &config.UserConfig{AdminSub: config.AdminSubConfig{Port: 8080}}
+	subEntry8080 := &config.AdminSubConfig{Token: "abc123", Address: "sub.example.com"}
+	got8080 := managedSubURL(cfg8080, subEntry8080)
+	want8080 := "http://sub.example.com:8080/abc123"
+	if got8080 != want8080 {
+		t.Fatalf("managedSubURL = %q, want %q", got8080, want8080)
+	}
+}
+
+func TestManagedSubURLPrioritizesGateURL(t *testing.T) {
+	cfg := &config.UserConfig{
+		GateURL:    "https://gate.example.com",
+		AddressSub: "https://old.example.com",
+		AdminSub:   config.AdminSubConfig{Port: 8443, Token: "abc123"},
+	}
+	got := managedSubURL(cfg, &cfg.AdminSub)
+	want := "https://gate.example.com/abc123"
 	if got != want {
 		t.Fatalf("managedSubURL = %q, want %q", got, want)
 	}
