@@ -116,20 +116,18 @@ func managedSubURL(cfg *config.UserConfig, entry *config.AdminSubConfig) string 
 		return ""
 	}
 	host := ""
-	if cfg.GateURL != "" {
-		host = cfg.GateURL
-	}
-	if host == "" {
+	if entry.AddressSub != "" {
 		host = entry.AddressSub
-	}
-	if host == "" {
+	} else if cfg.GateURL != "" {
+		host = cfg.GateURL
+	} else if cfg.AddressSub != "" {
 		host = cfg.AddressSub
-	}
-	if host == "" {
+	} else if entry.Address != "" {
 		host = entry.Address
-	}
-	if host == "" {
-		host = utils.GetSmartIP(false)
+	} else if cfg.AddressNode != "" {
+		host = cfg.AddressNode
+	} else {
+		host = sub.ResolveSubAddress(cfg)
 	}
 	port := entry.Port
 	if port <= 0 {

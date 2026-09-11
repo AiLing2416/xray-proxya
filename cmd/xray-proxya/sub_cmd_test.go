@@ -265,3 +265,35 @@ func TestSubSetAndShow_EndpointFlag(t *testing.T) {
 	}
 }
 
+func TestManagedSubURLMultiInstanceGateURLPriority(t *testing.T) {
+	cfg := &config.UserConfig{
+		GateURL:  "https://gate.global.com",
+		AdminSub: config.AdminSubConfig{Port: 8443, Token: "admin-token"},
+		SubscriptionInstances: map[string]config.AdminSubConfig{
+			"custom": {
+				Token:      "custom-token",
+				Port:       8443,
+				AddressSub: "https://inst.custom.com",
+			},
+			"fallback": {
+				Token: "fallback-token",
+				Port:  8443,
+				// AddressSub is intentionally empty
+			},
+		},
+	}
+
+	customEntry := cfg.SubscriptionInstances["custom"]
+	gotCustom := managedSubURL(cfg, &customEntry)
+	if !strings.HasPrefix(gotCustom, "https://inst.custom.com") {
+		t.Errorf("managedSubURL for custom instance = %q, want prefix https://inst.custom.com", gotCustom)
+	}
+
+	fallbackEntry := cfg.SubscriptionInstances["fallback"]
+	gotFallback := managedSubURL(cfg, &fallbackEntry)
+	if !strings.HasPrefix(gotFallback, "https://gate.global.com") {
+		t.Errorf("managedSubURL for fallback instance = %q, want prefix https://gate.global.com", gotFallback)
+	}
+}
+
+
