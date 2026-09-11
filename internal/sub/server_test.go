@@ -379,3 +379,84 @@ func TestServer_Handler_EndpointResolution(t *testing.T) {
 	}
 }
 
+func TestServer_Handler_DefaultEndpointResolvedWhenUnset(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "server-uuid-def-ep",
+		Endpoints: map[string]config.EndpointConfig{
+			"default": {
+				Type: config.EndpointTypeStatic,
+				Host: "node.default.com",
+			},
+		},
+		AdminSub: config.AdminSubConfig{
+			Token:      "admin-def-token",
+			Port:       8443,
+			TargetType: "direct",
+			// Endpoint is intentionally empty to test default resolution
+		},
+		Presets: []config.ModeInfo{{
+			Mode:    config.ModeVLESSVision,
+			Enabled: true,
+			Port:    443,
+			SNI:     "example.com",
+			Settings: config.Settings{
+				PublicKey: "pub",
+				ShortID:   "abcd",
+			},
+		}},
+		Guests: []config.GuestConfig{
+			{
+				Alias:      "guest-plain",
+				UUID:       "guest-plain-uuid",
+				Enabled:    true,
+				LimitBytes: 10 * config.GigaByte,
+				// Endpoint is intentionally empty to test default resolution
+			},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	handler := httpUnifiedSubHandler(cfg.AdminSub)
+
+	// 1. Guest sub request without explicit Endpoint should resolve to node.default.com
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/guest-plain-uuid", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("guest sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode guest body: %v", err)
+		}
+		if !strings.Contains(string(decoded), "@node.default.com:443?") {
+			t.Fatalf("expected node.default.com in guest sub, got %q", string(decoded))
+		}
+	}
+
+	// 2. Admin sub request without explicit Endpoint should also resolve to node.default.com
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/admin-def-token", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("admin sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode admin body: %v", err)
+		}
+		if !strings.Contains(string(decoded), "@node.default.com:443?") {
+			t.Fatalf("expected node.default.com in admin sub, got %q", string(decoded))
+		}
+	}
+}
+
+

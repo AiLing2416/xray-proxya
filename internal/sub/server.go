@@ -108,8 +108,12 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 		} else {
 			addr = ResolveNodeAddress(cfg, admin.AddressNode)
 		}
-	} else {
+	} else if admin.AddressNode != "" {
 		addr = ResolveNodeAddress(cfg, admin.AddressNode)
+	} else if resolved, err := endpoint.Resolve(cfg, "default"); err == nil && len(resolved) > 0 {
+		addr = strings.Join(resolved, ",")
+	} else {
+		addr = ResolveNodeAddress(cfg)
 	}
 
 	links := generateSubscriptionLinks(cfg, admin.TargetType, admin.TargetAlias, addr)
@@ -136,12 +140,8 @@ func handleGuestSubRequest(w http.ResponseWriter, cfg *config.UserConfig, guest 
 
 	// Guest is enabled: output regular proxy nodes
 	var addr string
-	if guest.Endpoint != "" {
-		if resolved, err := endpoint.Resolve(cfg, guest.Endpoint); err == nil && len(resolved) > 0 {
-			addr = strings.Join(resolved, ",")
-		} else {
-			addr = ResolveNodeAddress(cfg, guest.OutboundLink)
-		}
+	if resolved, err := endpoint.Resolve(cfg, guest.Endpoint); err == nil && len(resolved) > 0 {
+		addr = strings.Join(resolved, ",")
 	} else {
 		addr = ResolveNodeAddress(cfg, guest.OutboundLink)
 	}
@@ -231,6 +231,9 @@ func ResolveNodeAddress(cfg *config.UserConfig, override ...string) string {
 		}
 		if addr := strings.TrimSpace(cfg.GuestSubAddress); addr != "" {
 			return addr
+		}
+		if resolved, err := endpoint.Resolve(cfg, "default"); err == nil && len(resolved) > 0 {
+			return strings.Join(resolved, ",")
 		}
 	}
 	return utils.GetSmartIP(false)
