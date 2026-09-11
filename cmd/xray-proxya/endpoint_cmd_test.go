@@ -173,6 +173,49 @@ func TestEndpointListJSON(t *testing.T) {
 	}
 }
 
+func TestEndpointList_DynamicV6_TextOutput(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"he-pool": {
+				Type:         config.EndpointTypeDynamicV6,
+				Subnet:       "2001:470:1f0a:692::/64",
+				Interface:    "he-ipv6",
+				MaxAddresses: 6,
+			},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("failed to save staging config: %v", err)
+	}
+
+	// Populate rotation state with a known address
+	mockState := endpoint.RotationState{
+		ActivePool: []endpoint.AddressEntry{
+			{Address: "2001:470:1f0a:692:a7d7:2136:b3b0:11ea", State: "active"},
+		},
+	}
+	_ = endpoint.SaveRotationState("he-pool", &mockState)
+
+	out := captureStdout(t, func() {
+		err := endpointListCmd.RunE(endpointListCmd, []string{})
+		if err != nil {
+			t.Fatalf("endpoint list failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "2001:470:1f0a:692::/64") {
+		t.Errorf("expected subnet '2001:470:1f0a:692::/64' in TARGET column, got: %s", out)
+	}
+	if !strings.Contains(out, "::a7d7:2136:b3b0:11ea") {
+		t.Errorf("expected shortened rotatable IPv6 '::a7d7:2136:b3b0:11ea' in RESOLVED column, got: %s", out)
+	}
+	if strings.Contains(out, "dynamic-v6 (2001:470:1f0a:692::/64)") {
+		t.Errorf("found redundant 'dynamic-v6 (2001:470...)' in TARGET column: %s", out)
+	}
+}
+
 func TestEndpointRemoveAndDefaultProtection(t *testing.T) {
 	setupTestConfigDir(t)
 	cfg := &config.UserConfig{

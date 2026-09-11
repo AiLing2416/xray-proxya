@@ -153,7 +153,9 @@ func runEndpointList(cmd *cobra.Command, args []string) error {
 	fmt.Printf("\n%-15s | %-12s | %-28s | %-25s | %-s\n", "NAME", "TYPE", "TARGET", "RESOLVED IP(S)", "REFERENCES")
 	fmt.Println("-------------------------------------------------------------------------------------------------------------")
 	for _, v := range views {
-		resolvedStr := strings.Join(v.ResolvedIPs, ", ")
+		ep := cfg.Endpoints[v.Name]
+		displayIPs := endpoint.FormatDisplayResolvedIPs(ep, v.ResolvedIPs)
+		resolvedStr := strings.Join(displayIPs, ", ")
 		if resolvedStr == "" {
 			resolvedStr = "-"
 		}

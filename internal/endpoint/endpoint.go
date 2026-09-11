@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -111,7 +112,7 @@ func GetTargetDescription(ep config.EndpointConfig) string {
 		return "auto (v4)"
 	case config.EndpointTypeDynamicV6:
 		if ep.Subnet != "" {
-			return fmt.Sprintf("dynamic-v6 (%s)", ep.Subnet)
+			return ep.Subnet
 		}
 		return "dynamic-v6"
 	default:
@@ -120,6 +121,58 @@ func GetTargetDescription(ep config.EndpointConfig) string {
 		}
 		return string(ep.Type)
 	}
+}
+
+// FormatDisplayResolvedIP returns a concise display representation of a resolved IP.
+// For dynamic-v6 endpoints with a configured subnet, it extracts the rotatable host portion
+// formatted with a leading '::' (e.g. '::a7d7:2136:b3b0:11ea').
+func FormatDisplayResolvedIP(ep config.EndpointConfig, ipStr string) string {
+	cleanIP := strings.TrimSpace(ipStr)
+	if ep.Type != config.EndpointTypeDynamicV6 || strings.TrimSpace(ep.Subnet) == "" {
+		return cleanIP
+	}
+
+	_, ipNet, err := net.ParseCIDR(strings.TrimSpace(ep.Subnet))
+	if err != nil {
+		return cleanIP
+	}
+
+	parsedIP := net.ParseIP(cleanIP)
+	if parsedIP == nil || parsedIP.To4() != nil {
+		return cleanIP
+	}
+
+	ip16 := parsedIP.To16()
+	if ip16 == nil || !ipNet.Contains(ip16) {
+		return cleanIP
+	}
+
+	ones, bits := ipNet.Mask.Size()
+	if bits != 128 || ones <= 0 || ones >= 128 {
+		return cleanIP
+	}
+
+	hostIP := make(net.IP, 16)
+	for i := 0; i < 16; i++ {
+		hostIP[i] = ip16[i] & (^ipNet.Mask[i])
+	}
+	res := hostIP.String()
+	if !strings.HasPrefix(res, "::") {
+		return "::" + res
+	}
+	return res
+}
+
+// FormatDisplayResolvedIPs maps FormatDisplayResolvedIP across a slice of resolved IPs.
+func FormatDisplayResolvedIPs(ep config.EndpointConfig, ips []string) []string {
+	if len(ips) == 0 {
+		return []string{}
+	}
+	res := make([]string, len(ips))
+	for i, ip := range ips {
+		res[i] = FormatDisplayResolvedIP(ep, ip)
+	}
+	return res
 }
 
 // FindReferences finds references to an endpoint across guests and subscriptions.
