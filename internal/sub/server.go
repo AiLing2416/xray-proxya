@@ -119,6 +119,9 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 				})
 			}
 		} else {
+			if err != nil {
+				log.Printf("⚠️ Admin sub: failed to resolve endpoint targets %q: %v; falling back to node address", epSpec, err)
+			}
 			addr := ResolveNodeAddress(cfg, admin.AddressNode)
 			targets = append(targets, xray.TargetNode{Address: addr})
 		}
@@ -164,6 +167,9 @@ func handleGuestSubRequest(w http.ResponseWriter, cfg *config.UserConfig, guest 
 			})
 		}
 	} else {
+		if err != nil {
+			log.Printf("⚠️ Guest %s sub: failed to resolve endpoint targets %q: %v; falling back to node address", guest.Alias, epSpec, err)
+		}
 		addr := ResolveNodeAddress(cfg, guest.OutboundLink)
 		targets = append(targets, xray.TargetNode{Address: addr})
 	}

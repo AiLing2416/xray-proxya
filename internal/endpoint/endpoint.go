@@ -2,6 +2,7 @@ package endpoint
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sort"
 	"strings"
@@ -108,6 +109,10 @@ func ResolveTargets(cfg *config.UserConfig, endpointSpec string, consumer string
 									targets = append(targets, Target{Alias: token, Address: sAddr})
 								}
 							}
+							continue
+						}
+						if forSubscription && strings.Contains(spec, ",") {
+							log.Printf("⚠️ dynamic-v6 endpoint %q failed to resolve during subscription fetch: %v", token, err)
 							continue
 						}
 						return nil, fmt.Errorf("failed to resolve dynamic-v6 endpoint '%s': %w", token, err)

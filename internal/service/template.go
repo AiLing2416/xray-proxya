@@ -81,7 +81,7 @@ func BuildSubServiceContent(binPath, workDir, configDir, assetDir string, system
 	if system {
 		userLine = "User=root\n"
 		wantedBy = "multi-user.target"
-		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE\nAmbientCapabilities=CAP_NET_BIND_SERVICE\n"
+		capabilityLines = "CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\nAmbientCapabilities=CAP_NET_BIND_SERVICE CAP_NET_ADMIN\n"
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Subscription Server

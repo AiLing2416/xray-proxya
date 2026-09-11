@@ -376,6 +376,7 @@ func TestResolveDynamicV6_OrdinaryAndSub(t *testing.T) {
 				Type:         config.EndpointTypeDynamicV6,
 				Subnet:       "2001:db8:1234::/64",
 				Interface:    "he-ipv6",
+				TTL:          "10ms",
 				MaxAddresses: 3,
 			},
 		},
@@ -399,13 +400,25 @@ func TestResolveDynamicV6_OrdinaryAndSub(t *testing.T) {
 		t.Fatalf("expected ordinary query to return same IP %s, got %s", res1[0], res2[0])
 	}
 
-	// Subscription pull (forSubscription=true) triggers rotation and gives a NEW IP
-	resSub, err := Resolve(cfg, "dyn", true)
+	// Subscription pull before TTL expires returns the SAME IP (turtle protects against churn)
+	resSubEarly, err := Resolve(cfg, "dyn", true)
 	if err != nil {
-		t.Fatalf("Resolve sub failed: %v", err)
+		t.Fatalf("Resolve sub early failed: %v", err)
 	}
-	if resSub[0] == res1[0] {
-		t.Fatalf("expected subscription pull to rotate to new IP, but got same %s", resSub[0])
+	if resSubEarly[0] != res1[0] {
+		t.Fatalf("expected early sub pull to return same IP %s, got %s", res1[0], resSubEarly[0])
+	}
+
+	// Wait for TTL to expire
+	time.Sleep(15 * time.Millisecond)
+
+	// Subscription pull after TTL expired triggers rotation and gives a NEW IP
+	resSubLater, err := Resolve(cfg, "dyn", true)
+	if err != nil {
+		t.Fatalf("Resolve sub later failed: %v", err)
+	}
+	if resSubLater[0] == res1[0] {
+		t.Fatalf("expected subscription pull after TTL to rotate to new IP, but got same %s", resSubLater[0])
 	}
 }
 

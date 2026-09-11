@@ -346,17 +346,6 @@ func resolveDynamicV6Locked(endpointName string, ep config.EndpointConfig, consu
 		st.Consumers = make(map[string]*ConsumerState)
 	}
 
-	// Legacy multi-address sliding pool fallback if profile and TTL are not configured
-	if ep.Profile == "" && ep.TTL == "" && ep.MaxAddresses > 1 {
-		if forSubscription {
-			return nextAddressLocked(endpointName, ep)
-		}
-		if len(st.ActivePool) > 0 {
-			return st.ActivePool[len(st.ActivePool)-1].Address, nil
-		}
-		return nextAddressLocked(endpointName, ep)
-	}
-
 	now := time.Now()
 
 	isColliding := func(candidate string) bool {
