@@ -292,6 +292,7 @@ var endpointShowCmd = &cobra.Command{
 func init() {
 	endpointListCmd.Flags().BoolVar(&endpointListJSON, "json", false, "Output in JSON format")
 
+	endpointSetCmd.Flags().Bool("help", false, "Help for set")
 	endpointSetCmd.Flags().StringVarP(&endpointSetHost, "host", "h", "", "Static hostname(s) or IP(s), comma-separated")
 	endpointSetCmd.Flags().BoolVar(&endpointSetAuto, "auto", false, "Automatically detect host public IP")
 	endpointSetCmd.Flags().BoolVar(&endpointSetV4, "v4", false, "Detect IPv4 (with --auto)")

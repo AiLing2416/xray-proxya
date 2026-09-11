@@ -251,3 +251,28 @@ func TestEndpointCompletion(t *testing.T) {
 		t.Fatalf("expected 2 completions, got %d: %v", len(comps), comps)
 	}
 }
+
+func TestEndpointSetShorthandHViaRootCmd(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{Role: config.RoleServer}
+	_ = cfg.SaveEx(true)
+
+	rootCmd.SetArgs([]string{"endpoint", "set", "default", "-h", "hk.example.com"})
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("rootCmd.Execute failed: %v", err)
+	}
+
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	ep, ok := loaded.Endpoints["default"]
+	if !ok {
+		t.Fatalf("expected default endpoint")
+	}
+	if ep.Host != "hk.example.com" || ep.Type != config.EndpointTypeStatic {
+		t.Fatalf("unexpected default endpoint: %+v", ep)
+	}
+}
+
