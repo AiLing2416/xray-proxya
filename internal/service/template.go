@@ -43,7 +43,7 @@ func BuildSystemdServiceContent(binPath, workDir, assetDir, configDir, capabilit
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Service
-After=network-online.target
+After=network-online.target he-tunnel.service he-tunnel-he-ipv6.service
 Wants=network-online.target
 
 [Service]

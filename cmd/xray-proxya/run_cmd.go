@@ -13,6 +13,7 @@ import (
 	"time"
 	"xray-proxya/internal/certmanager"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/pathtun"
@@ -121,6 +122,24 @@ var runCmd = &cobra.Command{
 		}
 
 		startProcess := func(currentCfg *config.UserConfig) (*exec.Cmd, chan error, error) {
+			// Reconcile dynamic-v6 endpoints before generating configuration and starting Xray
+			for epName, ep := range currentCfg.Endpoints {
+				if ep.Type == config.EndpointTypeDynamicV6 {
+					if err := endpoint.ReconcileOnStartup(epName, ep); err != nil {
+						fmt.Printf("⚠️  Failed to reconcile dynamic-v6 endpoint '%s': %v\n", epName, err)
+					} else {
+						st, _ := endpoint.LoadRotationState(epName)
+						activeCount := 0
+						deprecatedCount := 0
+						if st != nil {
+							activeCount = len(st.ActivePool)
+							deprecatedCount = len(st.DeprecatedPool)
+						}
+						fmt.Printf("🔄 Reconciled dynamic-v6 endpoint '%s' (active: %d, deprecated: %d)\n", epName, activeCount, deprecatedCount)
+					}
+				}
+			}
+
 			fmt.Println("🔍 Generating configuration...")
 			jsonData, err := xray.GenerateXrayJSON(currentCfg, overrides, "")
 			if err != nil {
