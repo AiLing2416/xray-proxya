@@ -491,3 +491,144 @@ func TestGuestsSubSetListen(t *testing.T) {
 	}
 }
 
+func TestGuestsCmd_EndpointFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"ep-1": {
+				Type: config.EndpointTypeStatic,
+				Host: "node1.example.com",
+			},
+			"ep-2": {
+				Type: config.EndpointTypeStatic,
+				Host: "node2.example.com",
+			},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	// 1. guests add user1 -e ep-1
+	guestsAddCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsAddCmd.ParseFlags([]string{"-e", "ep-1"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsAddCmd.RunE(guestsAddCmd, []string{"user1"}); err != nil {
+		t.Fatalf("run guests add user1 -e ep-1 failed: %v", err)
+	}
+
+	staged, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if len(staged.Guests) != 1 || staged.Guests[0].Endpoint != "ep-1" {
+		t.Fatalf("expected guest endpoint ep-1, got %+v", staged.Guests)
+	}
+
+	// 2. guests set user1 -e ep-2
+	guestsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsSetCmd.ParseFlags([]string{"-e", "ep-2"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsSetCmd.RunE(guestsSetCmd, []string{"user1"}); err != nil {
+		t.Fatalf("run guests set user1 -e ep-2 failed: %v", err)
+	}
+
+	staged, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if staged.Guests[0].Endpoint != "ep-2" {
+		t.Fatalf("expected guest endpoint ep-2, got %q", staged.Guests[0].Endpoint)
+	}
+
+	// 3. guests set user1 -e default (clears to "")
+	guestsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsSetCmd.ParseFlags([]string{"-e", "default"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsSetCmd.RunE(guestsSetCmd, []string{"user1"}); err != nil {
+		t.Fatalf("run guests set user1 -e default failed: %v", err)
+	}
+
+	staged, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staged: %v", err)
+	}
+	if staged.Guests[0].Endpoint != "" {
+		t.Fatalf("expected guest endpoint cleared to empty, got %q", staged.Guests[0].Endpoint)
+	}
+}
+
+func TestGuestsCmd_ListAndInfoShowsEndpoint(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Guests: []config.GuestConfig{
+			{
+				Alias:      "user-ep",
+				UUID:       "uuid-ep-1234",
+				Enabled:    true,
+				LimitBytes: -1,
+				Endpoint:   "edge-jp",
+			},
+			{
+				Alias:      "user-def",
+				UUID:       "uuid-def-1234",
+				Enabled:    true,
+				LimitBytes: -1,
+				Endpoint:   "",
+			},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	// 1. guests list
+	listOut := captureStdout(t, func() {
+		_ = runGuestsList(guestsListCmd, nil)
+	})
+	if !strings.Contains(listOut, "ENDPOINT") {
+		t.Errorf("expected ENDPOINT column in guests list, got: %s", listOut)
+	}
+	if !strings.Contains(listOut, "edge-jp") {
+		t.Errorf("expected edge-jp in guests list, got: %s", listOut)
+	}
+	if !strings.Contains(listOut, "default") {
+		t.Errorf("expected default in guests list, got: %s", listOut)
+	}
+
+	// 2. guests info user-ep
+	infoOut := captureStdout(t, func() {
+		_ = runGuestsInfo(guestsInfoCmd, []string{"user-ep"})
+	})
+	if !strings.Contains(infoOut, "Endpoint: edge-jp") {
+		t.Errorf("expected 'Endpoint: edge-jp' in guests info, got: %s", infoOut)
+	}
+
+	// 3. guests info user-def
+	infoDefOut := captureStdout(t, func() {
+		_ = runGuestsInfo(guestsInfoCmd, []string{"user-def"})
+	})
+	if !strings.Contains(infoDefOut, "Endpoint: default") {
+		t.Errorf("expected 'Endpoint: default' in guests info, got: %s", infoDefOut)
+	}
+}
+
+

@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -26,6 +27,7 @@ func formatAddressDisplay(rawAddr string) (addrType string, displayAddr string) 
 }
 
 var (
+	showEndpoint string = "default"
 	showIPv4     bool
 	showIPv6     bool
 	showAddr     string
@@ -41,7 +43,7 @@ var (
 	getLocalIPFunc    = utils.GetLocalIP
 )
 
-func resolveShowIPs(cmd *cobra.Command) []string {
+func resolveShowIPs(cmd *cobra.Command, optionalCfg ...*config.UserConfig) []string {
 	if addr := strings.TrimSpace(showAddr); addr != "" {
 		unbracketed := strings.Trim(addr, "[]")
 		if parsed := net.ParseIP(unbracketed); parsed != nil {
@@ -50,8 +52,26 @@ func resolveShowIPs(cmd *cobra.Command) []string {
 		return []string{addr}
 	}
 
-	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
+	endpointChanged := cmd != nil && cmd.Flags().Changed("endpoint")
 	ipv6Changed := cmd != nil && cmd.Flags().Changed("ipv6")
+
+	// If -e / --endpoint was explicitly passed or is not default, resolve through endpoint
+	if endpointChanged || (showEndpoint != "" && showEndpoint != "default") {
+		var cfg *config.UserConfig
+		if len(optionalCfg) > 0 && optionalCfg[0] != nil {
+			cfg = optionalCfg[0]
+		} else {
+			cfg, _ = config.LoadConfig()
+		}
+		if cfg != nil {
+			if addrs, err := endpoint.Resolve(cfg, showEndpoint); err == nil && len(addrs) > 0 {
+				return addrs
+			}
+		}
+	}
+
+	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
+	ipv6Changed = cmd != nil && cmd.Flags().Changed("ipv6")
 
 	useIPv4 := false
 	useIPv6 := false
@@ -90,12 +110,19 @@ func resolveShowIPs(cmd *cobra.Command) []string {
 }
 
 func runShow(cmd *cobra.Command, args []string) error {
+	defer func() {
+		if f := cmd.Flags().Lookup("endpoint"); f != nil {
+			f.Changed = false
+		}
+		showEndpoint = "default"
+	}()
+
 	cfg, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("❌ Configuration not found. Please run 'init' first.")
 	}
 
-	ips := resolveShowIPs(cmd)
+	ips := resolveShowIPs(cmd, cfg)
 	if len(ips) == 0 {
 		return fmt.Errorf("❌ Could not determine any IP address. Use -a to specify manually.")
 	}
@@ -209,6 +236,8 @@ func init() {
 	showCmd.RegisterFlagCompletionFunc("guest", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getGuestAliases(), cobra.ShellCompDirectiveNoFileComp
 	})
+	showCmd.Flags().StringVarP(&showEndpoint, "endpoint", "e", "default", "Endpoint to use for node addresses")
+	showCmd.RegisterFlagCompletionFunc("endpoint", completeEndpointNames)
 
 	rootCmd.AddCommand(showCmd)
 }

@@ -27,6 +27,7 @@ type GuestQuotaView struct {
 	ResetDay           int      `json:"reset_day"`
 	DaysUntilReset     int      `json:"days_until_reset"`
 	RelayLabel         string   `json:"relay"` // "direct", "custom-link"
+	Endpoint           string   `json:"endpoint,omitempty"`
 	OutboundLink       string   `json:"outbound_link,omitempty"`
 	SubToken           string   `json:"sub_token,omitempty"`
 	NotifyWebhook      string   `json:"notify_webhook,omitempty"`
@@ -118,6 +119,7 @@ func BuildGuestView(g config.GuestConfig, now time.Time) GuestQuotaView {
 		ResetDay:           g.ResetDay,
 		DaysUntilReset:     g.DaysUntilReset(now),
 		RelayLabel:         relay,
+		Endpoint:           g.Endpoint,
 		OutboundLink:       g.OutboundLink,
 		SubToken:           g.SubToken,
 		NotifyWebhook:      g.NotifyWebhook,

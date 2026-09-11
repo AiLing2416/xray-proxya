@@ -15,9 +15,9 @@ import (
 const defaultSubInstance = "default"
 
 var (
-	subGateURL, subListen, subAddress, subAddressSub, subAddressNode, subToken, subTargetType, subTargetAlias, subRotation string
-	subPort                                                                                                                int
-	subShowGuest                                                                                                           string
+	subGateURL, subEndpoint, subListen, subAddress, subAddressSub, subAddressNode, subToken, subTargetType, subTargetAlias, subRotation string
+	subPort                                                                                                                              int
+	subShowGuest                                                                                                                         string
 )
 
 var subCmd = &cobra.Command{
@@ -402,6 +402,15 @@ Supported target types:
 		if err := requireServerSubscription(cfg); err != nil {
 			return err
 		}
+		defer func() {
+			subEndpoint = ""
+			if cmd != nil {
+				if f := cmd.Flag("endpoint"); f != nil {
+					f.Changed = false
+					_ = f.Value.Set("")
+				}
+			}
+		}()
 		inst := defaultSubInstance
 		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
 			inst = strings.TrimSpace(args[0])
@@ -434,6 +443,15 @@ Supported target types:
 				if cfg.GateURL == "" {
 					cfg.GateURL = entry.Address
 				}
+			}
+			changed = true
+		}
+		if cmd.Flags().Changed("endpoint") {
+			epVal := strings.TrimSpace(subEndpoint)
+			if epVal == "default" {
+				entry.Endpoint = ""
+			} else {
+				entry.Endpoint = epVal
 			}
 			changed = true
 		}
@@ -549,6 +567,9 @@ var subShowCmd = &cobra.Command{
 			}
 			fmt.Printf("\n--- Subscription Instance: %s ---\n", instName)
 			fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", inst.Listen, inst.Port, inst.TargetType, proto, subURL)
+			if inst.Endpoint != "" {
+				fmt.Printf("          └─ Endpoint: %s\n", inst.Endpoint)
+			}
 			if inst.AddressNode != "" {
 				fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
 			}
@@ -570,6 +591,9 @@ var subShowCmd = &cobra.Command{
 			}
 			fmt.Println("\n--- Admin Subscription ---")
 			fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, proto, subURL)
+			if adminSub.Endpoint != "" {
+				fmt.Printf("          └─ Endpoint: %s\n", adminSub.Endpoint)
+			}
 			if adminSub.AddressNode != "" {
 				fmt.Printf("          └─ Node Address: %s\n", adminSub.AddressNode)
 			}
@@ -609,6 +633,9 @@ var subShowCmd = &cobra.Command{
 						proto = "HTTPS"
 					}
 					fmt.Printf("[%s] Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", name, inst.Listen, inst.Port, inst.TargetType, proto, subURL)
+					if inst.Endpoint != "" {
+						fmt.Printf("          └─ Endpoint: %s\n", inst.Endpoint)
+					}
 					if inst.AddressNode != "" {
 						fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
 					}
@@ -688,11 +715,13 @@ func init() {
 	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "direct, outbound, or guest")
 	subSetCmd.Flags().StringVar(&subTargetAlias, "target", "", "Target alias for outbound or guest")
 	subSetCmd.Flags().StringVar(&subRotation, "ipv6-rotation", "", "IPv6 rotation (e.g. 'default', or 'none')")
+	subSetCmd.Flags().StringVarP(&subEndpoint, "endpoint", "e", "", "Endpoint to bind for proxy nodes")
 	subSetCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 	subSetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 	subSetCmd.RegisterFlagCompletionFunc("target-type", completeTargetTypes)
 	subSetCmd.RegisterFlagCompletionFunc("target", completeTargetAliases)
 	subSetCmd.RegisterFlagCompletionFunc("ipv6-rotation", completeIPv6Rotations)
+	subSetCmd.RegisterFlagCompletionFunc("endpoint", completeEndpointNames)
 
 	subShowCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Filter by guest alias")

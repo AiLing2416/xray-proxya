@@ -294,3 +294,88 @@ func TestUnifiedSubHandler(t *testing.T) {
 		}
 	}
 }
+
+func TestServer_Handler_EndpointResolution(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "server-uuid-1111",
+		Endpoints: map[string]config.EndpointConfig{
+			"admin-ep": {
+				Type: config.EndpointTypeStatic,
+				Host: "admin-edge.example.com",
+			},
+			"guest-ep": {
+				Type: config.EndpointTypeStatic,
+				Host: "guest-edge.example.com",
+			},
+		},
+		AdminSub: config.AdminSubConfig{
+			Token:      "admin-ep-token",
+			Endpoint:   "admin-ep",
+			Port:       8443,
+			TargetType: "direct",
+		},
+		Presets: []config.ModeInfo{{
+			Mode:    config.ModeVLESSVision,
+			Enabled: true,
+			Port:    443,
+			SNI:     "example.com",
+			Settings: config.Settings{
+				PublicKey: "pub",
+				ShortID:   "abcd",
+			},
+		}},
+		Guests: []config.GuestConfig{
+			{
+				Alias:      "alice",
+				UUID:       "alice-ep-uuid",
+				Enabled:    true,
+				LimitBytes: 10 * config.GigaByte,
+				Endpoint:   "guest-ep",
+			},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	handler := httpUnifiedSubHandler(cfg.AdminSub)
+
+	// Admin sub request should contain admin-edge.example.com
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/admin-ep-token", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("admin sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode admin body: %v", err)
+		}
+		if !strings.Contains(string(decoded), "@admin-edge.example.com:443?") {
+			t.Fatalf("expected admin-edge.example.com in admin sub, got %q", string(decoded))
+		}
+	}
+
+	// Guest sub request should contain guest-edge.example.com
+	{
+		req := httptest.NewRequest("GET", "http://127.0.0.1/alice-ep-uuid", nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("guest sub code = %d, want 200", rec.Code)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(strings.TrimSpace(rec.Body.String()))
+		if err != nil {
+			t.Fatalf("decode guest body: %v", err)
+		}
+		if !strings.Contains(string(decoded), "@guest-edge.example.com:443?") {
+			t.Fatalf("expected guest-edge.example.com in guest sub, got %q", string(decoded))
+		}
+	}
+}
+

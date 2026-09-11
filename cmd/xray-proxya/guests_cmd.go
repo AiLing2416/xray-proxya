@@ -33,6 +33,8 @@ var (
 	guestAddRelayLink string
 	guestAddResetDay  int
 	guestAddNotify    string
+	guestAddEndpoint  string
+	guestSetEndpoint  string
 )
 
 var guestsCmd = &cobra.Command{
@@ -125,12 +127,16 @@ func runGuestsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY")
-	fmt.Println("----------------------------------------------------------------------------------------------------------------")
+	fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-12s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "ENDPOINT", "RELAY")
+	fmt.Println("-----------------------------------------------------------------------------------------------------------------------------")
 	for _, v := range views {
 		limit := config.FormatByteSize(v.LimitBytes)
 		used := config.FormatByteSize(v.UsedBytes)
-		fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-s\n", v.Alias, v.StateLabel, v.ReasonLabel, used+"/"+limit, v.ResetDay, v.RelayLabel)
+		ep := v.Endpoint
+		if ep == "" {
+			ep = "default"
+		}
+		fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-12s | %-s\n", v.Alias, v.StateLabel, v.ReasonLabel, used+"/"+limit, v.ResetDay, ep, v.RelayLabel)
 	}
 	fmt.Println()
 	return nil
@@ -280,6 +286,25 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// 5. Endpoint
+	if cmd != nil && cmd.Flags().Changed("endpoint") {
+		epVal := strings.TrimSpace(guestAddEndpoint)
+		if epVal == "default" {
+			newG.Endpoint = ""
+		} else {
+			newG.Endpoint = epVal
+		}
+	}
+	defer func() {
+		guestAddEndpoint = ""
+		if cmd != nil {
+			if f := cmd.Flag("endpoint"); f != nil {
+				f.Changed = false
+				_ = f.Value.Set("")
+			}
+		}
+	}()
+
 	cfg.Guests = append(cfg.Guests, newG)
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("❌ Failed to save staging config: %w", err)
@@ -290,8 +315,12 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	if newG.OutboundLink != "" {
 		relayDesc = newG.OutboundLink
 	}
-	fmt.Printf("✅ Guest '%s' added to STAGING. Limit: %s, Relay: %s, Reset Day: %d. Run 'apply' to commit.\n",
-		alias, limitDesc, relayDesc, newG.ResetDay)
+	epDesc := "default"
+	if newG.Endpoint != "" {
+		epDesc = newG.Endpoint
+	}
+	fmt.Printf("✅ Guest '%s' added to STAGING. Limit: %s, Relay: %s, Endpoint: %s, Reset Day: %d. Run 'apply' to commit.\n",
+		alias, limitDesc, relayDesc, epDesc, newG.ResetDay)
 	return nil
 }
 
@@ -491,6 +520,26 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 		}
 		success = true
 	}
+	if cmd != nil && cmd.Flags().Changed("endpoint") {
+		epVal := strings.TrimSpace(guestSetEndpoint)
+		if epVal == "default" {
+			cfg.Guests[idx].Endpoint = ""
+			fmt.Printf("✅ Endpoint for '%s' reset to default.\n", alias)
+		} else {
+			cfg.Guests[idx].Endpoint = epVal
+			fmt.Printf("✅ Endpoint for '%s' set to '%s'.\n", alias, epVal)
+		}
+		success = true
+	}
+	defer func() {
+		guestSetEndpoint = ""
+		if cmd != nil {
+			if f := cmd.Flag("endpoint"); f != nil {
+				f.Changed = false
+				_ = f.Value.Set("")
+			}
+		}
+	}()
 	if success {
 		if err := cfg.SaveEx(true); err != nil {
 			return fmt.Errorf("❌ Failed to save staging config: %w", err)
@@ -608,6 +657,11 @@ func runGuestsInfo(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Used: %s\n", config.FormatByteSize(view.UsedBytes))
 	fmt.Printf("Reset Day: %d\n", view.ResetDay)
 	fmt.Printf("Last Reset Month: %s\n", lastReset)
+	ep := view.Endpoint
+	if ep == "" {
+		ep = "default"
+	}
+	fmt.Printf("Endpoint: %s\n", ep)
 	fmt.Printf("Notify: %s\n", guest.NormalizedNotifyMode())
 	fmt.Printf("Notify Webhook: %s\n", webhook)
 	fmt.Printf("Notify Trigger: %s\n", triggers)
@@ -618,6 +672,7 @@ func runGuestsInfo(cmd *cobra.Command, args []string) error {
 
 var guestsInfoCmd = &cobra.Command{
 	Use:               "info [alias]",
+	Aliases:           []string{"show"},
 	Short:             "Show detailed guest runtime state",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
@@ -796,6 +851,11 @@ func runGuestsSubShow(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Limit: %s\n", config.FormatByteSize(guest.EffectiveLimitBytes()))
 	fmt.Printf("Used: %s\n", config.FormatByteSize(guest.UsedBytes))
 	fmt.Printf("Reset Day: %d\n", guest.ResetDay)
+	ep := guest.Endpoint
+	if ep == "" {
+		ep = "default"
+	}
+	fmt.Printf("Endpoint: %s\n", ep)
 	fmt.Printf("Notify: %s\n", guest.NormalizedNotifyMode())
 	if guest.NormalizedNotifyMode() == config.GuestNotifyRemark || guest.NormalizedNotifyMode() == config.GuestNotifyAll {
 		fmt.Printf("Remark Preview: %s\n", sub.FormatGuestSubRemarkForDisplay(*guest, time.Now()))
@@ -878,8 +938,10 @@ func init() {
 	guestsAddCmd.Flags().StringVarP(&guestAddLimit, "limit", "l", "", "Set initial usage limit (e.g. 500MB, 10GB, 1TiB, -1, 0)")
 	guestsAddCmd.Flags().StringVar(&guestAddRelay, "relay", "", "Bind guest to a configured relay alias or 'direct'")
 	guestsAddCmd.Flags().StringVar(&guestAddRelayLink, "relay-link", "", "Set relay outbound to a raw proxy link (e.g. vless://...)")
+	guestsAddCmd.Flags().StringVarP(&guestAddEndpoint, "endpoint", "e", "", "Bind guest to a connection endpoint")
 	guestsAddCmd.Flags().IntVarP(&guestAddResetDay, "reset", "r", 1, "Monthly reset day (1-31)")
 	guestsAddCmd.Flags().StringVar(&guestAddNotify, "notify", "", "Subscription usage notify mode (off, header, remark, all)")
+	guestsAddCmd.RegisterFlagCompletionFunc("endpoint", completeEndpointNames)
 	guestsAddCmd.RegisterFlagCompletionFunc("limit", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"-1", "0", "100MB", "10GB", "50GB", "100GB", "1TB", "1TiB"}, cobra.ShellCompDirectiveNoFileComp
 	})
@@ -903,12 +965,14 @@ func init() {
 	guestsSetCmd.Flags().MarkHidden("quota")
 	guestsSetCmd.Flags().StringVar(&relayStr, "relay", "", "Bind guest to a configured relay alias or 'direct'")
 	guestsSetCmd.Flags().StringVar(&relayLinkStr, "relay-link", "", "Set relay outbound to a raw proxy link (e.g. vless://...)")
+	guestsSetCmd.Flags().StringVarP(&guestSetEndpoint, "endpoint", "e", "", "Bind guest to a connection endpoint (or 'default')")
 	guestsSetCmd.Flags().StringVarP(&outboundStr, "outbound", "o", "", "Set outbound to a proxy link or 'direct' (deprecated)")
 	guestsSetCmd.Flags().MarkHidden("outbound")
 	guestsSetCmd.Flags().IntVarP(&resetDay, "reset", "r", 1, "Monthly reset day (1-31)")
 	guestsSetCmd.Flags().StringVar(&notifyStr, "notify", "", "Subscription usage notify mode (off, header, remark, all)")
 	guestsSetCmd.Flags().StringVar(&notifyWebhookStr, "notify-webhook", "", "Set webhook URL for guest usage notifications (or empty to clear)")
 	guestsSetCmd.Flags().StringVar(&notifyTriggerStr, "notify-trigger", "", "Set remaining quota triggers, comma-separated (e.g. 80p,45p,40G,5G, or 'none' to clear)")
+	guestsSetCmd.RegisterFlagCompletionFunc("endpoint", completeEndpointNames)
 	guestsSetCmd.RegisterFlagCompletionFunc("limit", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"reset", "-1", "0", "100MB", "10GB", "50GB", "100GB", "1TB", "1TiB"}, cobra.ShellCompDirectiveNoFileComp
 	})

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/ipv6rotate"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -92,7 +93,7 @@ func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 }
 
 func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin config.AdminSubConfig) {
-	addr := ResolveNodeAddress(cfg, admin.AddressNode)
+	var addr string
 	if admin.IPv6Rotation != "" {
 		rotated, err := ipv6rotate.Next(ipv6rotate.SocketPath(admin.IPv6Rotation))
 		if err != nil {
@@ -101,6 +102,14 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 			return
 		}
 		addr = rotated
+	} else if admin.Endpoint != "" {
+		if resolved, err := endpoint.Resolve(cfg, admin.Endpoint); err == nil && len(resolved) > 0 {
+			addr = strings.Join(resolved, ",")
+		} else {
+			addr = ResolveNodeAddress(cfg, admin.AddressNode)
+		}
+	} else {
+		addr = ResolveNodeAddress(cfg, admin.AddressNode)
 	}
 
 	links := generateSubscriptionLinks(cfg, admin.TargetType, admin.TargetAlias, addr)
@@ -126,7 +135,16 @@ func handleGuestSubRequest(w http.ResponseWriter, cfg *config.UserConfig, guest 
 	}
 
 	// Guest is enabled: output regular proxy nodes
-	addr := ResolveNodeAddress(cfg, guest.OutboundLink)
+	var addr string
+	if guest.Endpoint != "" {
+		if resolved, err := endpoint.Resolve(cfg, guest.Endpoint); err == nil && len(resolved) > 0 {
+			addr = strings.Join(resolved, ",")
+		} else {
+			addr = ResolveNodeAddress(cfg, guest.OutboundLink)
+		}
+	} else {
+		addr = ResolveNodeAddress(cfg, guest.OutboundLink)
+	}
 	links := xray.GenerateGuestLinks(cfg, addr, guest.UUID, guest.Alias)
 	if len(links) == 0 {
 		http.Error(w, "No links generated for this guest", http.StatusInternalServerError)

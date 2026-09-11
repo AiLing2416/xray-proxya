@@ -195,3 +195,73 @@ func TestSubShowInstancePenetration(t *testing.T) {
 		t.Errorf("expected error validating nonexistent instance, got nil")
 	}
 }
+
+func TestSubSetAndShow_EndpointFlag(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		AdminSub: config.AdminSubConfig{
+			Token:      "admin-tok-ep",
+			Port:       8443,
+			Listen:     "127.0.0.1",
+			TargetType: "direct",
+		},
+		Endpoints: map[string]config.EndpointConfig{
+			"hk-node": {
+				Type: config.EndpointTypeStatic,
+				Host: "hk.example.com",
+			},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	defer func() {
+		subEndpoint = ""
+		subSetCmd.Flags().Lookup("endpoint").Changed = false
+		_ = subSetCmd.Flags().Lookup("endpoint").Value.Set("")
+	}()
+
+	// 1. sub set -e hk-node
+	subEndpoint = "hk-node"
+	subSetCmd.Flags().Lookup("endpoint").Changed = true
+	if err := subSetCmd.RunE(subSetCmd, []string{}); err != nil {
+		t.Fatalf("sub set -e hk-node failed: %v", err)
+	}
+
+	staged, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging: %v", err)
+	}
+	if staged.AdminSub.Endpoint != "hk-node" {
+		t.Fatalf("expected AdminSub.Endpoint == 'hk-node', got %q", staged.AdminSub.Endpoint)
+	}
+
+	// 2. sub show should display Endpoint: hk-node
+	showOut := captureStdout(t, func() {
+		if err := subShowCmd.RunE(subShowCmd, []string{}); err != nil {
+			t.Fatalf("sub show failed: %v", err)
+		}
+	})
+	if !strings.Contains(showOut, "Endpoint: hk-node") {
+		t.Errorf("expected 'Endpoint: hk-node' in output, got: %s", showOut)
+	}
+
+	// 3. sub set -e default should clear endpoint
+	subEndpoint = "default"
+	subSetCmd.Flags().Lookup("endpoint").Changed = true
+	if err := subSetCmd.RunE(subSetCmd, []string{}); err != nil {
+		t.Fatalf("sub set -e default failed: %v", err)
+	}
+
+	staged2, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging: %v", err)
+	}
+	if staged2.AdminSub.Endpoint != "" {
+		t.Fatalf("expected AdminSub.Endpoint cleared, got %q", staged2.AdminSub.Endpoint)
+	}
+}
+
