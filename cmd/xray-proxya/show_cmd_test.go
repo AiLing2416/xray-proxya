@@ -491,3 +491,58 @@ func TestShowCmd_EndpointFlag(t *testing.T) {
 		t.Errorf("expected @test.example.com:443? in output, got: %s", output)
 	}
 }
+
+func TestShowCmd_DefaultEndpointAppliedWithoutFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid-show-def-ep",
+		Presets: []config.ModeInfo{{
+			Mode:    config.ModeVLESSVision,
+			Enabled: true,
+			Port:    443,
+			SNI:     "example.com",
+			Settings: config.Settings{
+				PublicKey: "pub",
+				ShortID:   "abcd",
+			},
+		}},
+		Endpoints: map[string]config.EndpointConfig{
+			"default": {
+				Type: config.EndpointTypeStatic,
+				Host: "node.example.com",
+			},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	defer func() {
+		showEndpoint = "default"
+		showCmd.Flags().Lookup("endpoint").Changed = false
+		_ = showCmd.Flags().Lookup("endpoint").Value.Set("default")
+	}()
+
+	origStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := showCmd.RunE(showCmd, []string{})
+	w.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("showCmd.RunE failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	output := buf.String()
+
+	if !strings.Contains(output, "@node.example.com:443?") {
+		t.Errorf("expected @node.example.com:443? in output without --endpoint flag, got: %s", output)
+	}
+}
+

@@ -43,6 +43,32 @@ var (
 	getLocalIPFunc    = utils.GetLocalIP
 )
 
+func resolveEndpointAddrs(cfg *config.UserConfig, name string) ([]string, error) {
+	if cfg == nil || cfg.Endpoints == nil {
+		return nil, fmt.Errorf("endpoint '%s' not found", name)
+	}
+	ep, ok := cfg.Endpoints[name]
+	if !ok {
+		return endpoint.Resolve(cfg, name)
+	}
+	if ep.Type == config.EndpointTypeAuto {
+		var ip string
+		if strings.EqualFold(ep.Family, "v6") {
+			ip = getPublicIPv6Func()
+		} else {
+			ip = getPublicIPv4Func()
+			if ip == "" {
+				ip = getLocalIPFunc()
+			}
+		}
+		if ip == "" {
+			return nil, fmt.Errorf("failed to detect public IP for auto endpoint '%s'", name)
+		}
+		return []string{ip}, nil
+	}
+	return endpoint.Resolve(cfg, name)
+}
+
 func resolveShowIPs(cmd *cobra.Command, optionalCfg ...*config.UserConfig) []string {
 	if addr := strings.TrimSpace(showAddr); addr != "" {
 		unbracketed := strings.Trim(addr, "[]")
@@ -53,25 +79,80 @@ func resolveShowIPs(cmd *cobra.Command, optionalCfg ...*config.UserConfig) []str
 	}
 
 	endpointChanged := cmd != nil && cmd.Flags().Changed("endpoint")
+	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
 	ipv6Changed := cmd != nil && cmd.Flags().Changed("ipv6")
 
-	// If -e / --endpoint was explicitly passed or is not default, resolve through endpoint
-	if endpointChanged || (showEndpoint != "" && showEndpoint != "default") {
-		var cfg *config.UserConfig
-		if len(optionalCfg) > 0 && optionalCfg[0] != nil {
-			cfg = optionalCfg[0]
-		} else {
-			cfg, _ = config.LoadConfig()
-		}
-		if cfg != nil {
-			if addrs, err := endpoint.Resolve(cfg, showEndpoint); err == nil && len(addrs) > 0 {
-				return addrs
+	var cfg *config.UserConfig
+	if len(optionalCfg) > 0 && optionalCfg[0] != nil {
+		cfg = optionalCfg[0]
+	} else {
+		cfg, _ = config.LoadConfig()
+	}
+
+	if cfg != nil && len(cfg.Endpoints) > 0 {
+		if ipv6Changed && !ipv4Changed && !endpointChanged {
+			// Explicit -6 without -4 and without --endpoint
+			var v6EpName string
+			for name, ep := range cfg.Endpoints {
+				if ep.Type == config.EndpointTypeAuto && strings.EqualFold(ep.Family, "v6") {
+					v6EpName = name
+					break
+				}
 			}
+			if v6EpName != "" {
+				if addrs, err := resolveEndpointAddrs(cfg, v6EpName); err == nil && len(addrs) > 0 {
+					return addrs
+				}
+			} else if defEp, ok := cfg.Endpoints["default"]; ok && defEp.Type == config.EndpointTypeAuto {
+				tempCfg := *cfg
+				tempEndpoints := make(map[string]config.EndpointConfig, len(cfg.Endpoints))
+				for k, v := range cfg.Endpoints {
+					tempEndpoints[k] = v
+				}
+				tempDef := defEp
+				tempDef.Family = "v6"
+				tempEndpoints["default"] = tempDef
+				tempCfg.Endpoints = tempEndpoints
+				if addrs, err := resolveEndpointAddrs(&tempCfg, "default"); err == nil && len(addrs) > 0 {
+					return addrs
+				}
+			}
+			if ip := getPublicIPv6Func(); ip != "" {
+				return []string{ip}
+			}
+			return nil
+		}
+
+		if ipv4Changed && ipv6Changed && !endpointChanged {
+			// Explicit dual stack -4 and -6 without --endpoint
+			var ips []string
+			if ip := getPublicIPv4Func(); ip != "" {
+				ips = append(ips, ip)
+			}
+			if ip := getPublicIPv6Func(); ip != "" {
+				ips = append(ips, ip)
+			}
+			if len(ips) > 0 {
+				return ips
+			}
+		}
+
+		epName := showEndpoint
+		if epName == "" {
+			epName = "default"
+		}
+		addrs, err := resolveEndpointAddrs(cfg, epName)
+		if err == nil && len(addrs) > 0 {
+			return addrs
+		}
+		if endpointChanged {
+			return nil
 		}
 	}
 
-	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
-	ipv6Changed = cmd != nil && cmd.Flags().Changed("ipv6")
+	if endpointChanged {
+		return nil
+	}
 
 	useIPv4 := false
 	useIPv6 := false
