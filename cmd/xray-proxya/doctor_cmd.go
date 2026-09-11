@@ -103,6 +103,6 @@ func containsSELinuxEnabled(status string) bool {
 }
 
 func init() {
-	doctorCmd.AddCommand(doctorSELinuxCmd, doctorCompletionCmd, doctorLingerCmd)
+	doctorCmd.AddCommand(doctorSELinuxCmd, doctorCompletionCmd, doctorLingerCmd, doctorTunnelCmd)
 	rootCmd.AddCommand(doctorCmd)
 }
