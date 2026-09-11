@@ -115,6 +115,24 @@ var PresetOrder = []PresetMode{
 	ModeShadowsocksTCP,
 }
 
+type EndpointType string
+
+const (
+	EndpointTypeStatic    EndpointType = "static"     // 静态域名或单/多 IP
+	EndpointTypeAuto      EndpointType = "auto"       // 自动探测宿主机公网出口
+	EndpointTypeDynamicV6 EndpointType = "dynamic-v6" // 动态 IPv6 轮换池 (预留)
+)
+
+type EndpointConfig struct {
+	Type         EndpointType `json:"type"`                     // static, auto, dynamic-v6
+	Host         string       `json:"host,omitempty"`            // 域名或 IP (用于 static)
+	Family       string       `json:"family,omitempty"`          // v4 或 v6 (用于 auto)
+	Interface    string       `json:"interface,omitempty"`       // 网卡名称 (预留给 dynamic-v6)
+	Subnet       string       `json:"subnet,omitempty"`          // IPv6 前缀 CIDR (预留给 dynamic-v6)
+	MaxAddresses int          `json:"max_addresses,omitempty"`   // 最大活跃数 (预留给 dynamic-v6)
+	EnableNDP    bool         `json:"enable_ndp,omitempty"`       // 是否开启 NDP 代理 (预留给 dynamic-v6)
+}
+
 type UserConfig struct {
 	Role            AppRole          `json:"role"`
 	UUID            string           `json:"uuid"`
@@ -144,6 +162,8 @@ type UserConfig struct {
 	GuestSubAddress string                `json:"guest_sub_address,omitempty"`
 	AddressSub      string                `json:"address_sub,omitempty"`
 	AddressNode     string                `json:"address_node,omitempty"`
+	GateURL         string                `json:"gate_url,omitempty"`
+	Endpoints       map[string]EndpointConfig `json:"endpoints,omitempty"`
 	IPv6Pool        IPv6Config            `json:"ipv6_pool"`
 	Certs         []ManagedCert         `json:"certs,omitempty"`
 	SkinPort      int                   `json:"skin_port,omitempty"`
@@ -207,6 +227,7 @@ type AdminSubConfig struct {
 	Address      string `json:"address,omitempty"`
 	AddressSub   string `json:"address_sub,omitempty"`
 	AddressNode  string `json:"address_node,omitempty"`
+	Endpoint     string `json:"endpoint,omitempty"`
 	Port         int    `json:"port,omitempty"`
 	TargetType   string `json:"target_type,omitempty"`
 	TargetAlias  string `json:"target_alias,omitempty"`
@@ -245,6 +266,7 @@ func (a *AdminSubConfig) UnmarshalJSON(data []byte) error {
 		Address      string     `json:"address"`
 		AddressSub   string     `json:"address_sub"`
 		AddressNode  string     `json:"address_node"`
+		Endpoint     string     `json:"endpoint"`
 		Port         int        `json:"port"`
 		TargetType   string     `json:"target_type"`
 		TargetAlias  string     `json:"target_alias"`
@@ -263,6 +285,7 @@ func (a *AdminSubConfig) UnmarshalJSON(data []byte) error {
 		Address:          v.Address,
 		AddressSub:       v.AddressSub,
 		AddressNode:      v.AddressNode,
+		Endpoint:         v.Endpoint,
 		Port:             v.Port,
 		TargetType:       v.TargetType,
 		TargetAlias:      v.TargetAlias,
@@ -327,6 +350,7 @@ type GuestConfig struct {
 	ResetDay        int                    `json:"reset_day"`               // 1-31
 	LastResetYM     string                 `json:"last_reset_ym,omitempty"` // YYYY-MM of the last quota reset
 	SubToken        string                 `json:"sub_token,omitempty"`
+	Endpoint        string                 `json:"endpoint,omitempty"`
 	OutboundLink    string                 `json:"outbound_link,omitempty"` // For custom routing
 	OutboundConf    map[string]interface{} `json:"outbound_conf,omitempty"` // Parsed version
 	Notify          GuestNotifyMode        `json:"notify,omitempty"`
@@ -715,6 +739,24 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	}
 	if cfg.IPv6Rotations == nil {
 		cfg.IPv6Rotations = map[string]IPv6Config{}
+	}
+	if cfg.Endpoints == nil {
+		cfg.Endpoints = map[string]EndpointConfig{}
+	}
+	if len(cfg.Endpoints) == 0 {
+		if strings.TrimSpace(cfg.AddressNode) != "" {
+			cfg.Endpoints["default"] = EndpointConfig{
+				Type: EndpointTypeStatic,
+				Host: strings.TrimSpace(cfg.AddressNode),
+			}
+			changes = append(changes, "injected default endpoint from address_node")
+		} else {
+			cfg.Endpoints["default"] = EndpointConfig{
+				Type:   EndpointTypeAuto,
+				Family: "v4",
+			}
+			changes = append(changes, "injected default auto(v4) endpoint")
+		}
 	}
 	if cfg.Role == RoleGateway {
 		if cfg.Gateway.Mode == "" {
