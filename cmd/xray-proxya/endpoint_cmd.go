@@ -30,6 +30,8 @@ var (
 	endpointSetMax       int
 	endpointSetNDP       bool
 	endpointSetNoNDP     bool
+	endpointSetProfile   string
+	endpointSetTTL       string
 
 	endpointRequireRoot = func(operation string) error {
 		return utils.RequireRootShell(operation)
@@ -54,6 +56,8 @@ type EndpointDetailView struct {
 	Interface      string                  `json:"interface,omitempty"`
 	MaxAddresses   int                     `json:"max_addresses,omitempty"`
 	EnableNDP      *bool                   `json:"enable_ndp,omitempty"`
+	Profile        string                  `json:"profile,omitempty"`
+	TTL            string                  `json:"ttl,omitempty"`
 	ResolvedIP     string                  `json:"resolved_ip"`
 	ActivePool     []endpoint.AddressEntry `json:"active_pool,omitempty"`
 	DeprecatedPool []endpoint.AddressEntry `json:"deprecated_pool,omitempty"`
@@ -87,9 +91,17 @@ func completeEndpointNames(cmd *cobra.Command, args []string, toComplete string)
 	if err != nil || cfg == nil || len(cfg.Endpoints) == 0 {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	prefix := ""
+	lastToken := toComplete
+	if idx := strings.LastIndex(toComplete, ","); idx >= 0 {
+		prefix = toComplete[:idx+1]
+		lastToken = toComplete[idx+1:]
+	}
 	var names []string
 	for name, ep := range cfg.Endpoints {
-		names = append(names, fmt.Sprintf("%s\t%s", name, endpoint.GetTargetDescription(ep)))
+		if strings.HasPrefix(name, lastToken) {
+			names = append(names, fmt.Sprintf("%s%s\t%s", prefix, name, endpoint.GetTargetDescription(ep)))
+		}
 	}
 	sort.Strings(names)
 	return names, cobra.ShellCompDirectiveNoFileComp
@@ -178,7 +190,7 @@ var endpointListCmd = &cobra.Command{
 
 func runEndpointSet(cmd *cobra.Command, args []string) error {
 	defer func() {
-		for _, fName := range []string{"host", "auto", "v4", "v6", "type", "subnet", "interface", "max", "ndp", "no-ndp"} {
+		for _, fName := range []string{"host", "auto", "v4", "v6", "type", "subnet", "interface", "max", "ndp", "no-ndp", "profile", "ttl"} {
 			if f := cmd.Flags().Lookup(fName); f != nil {
 				f.Changed = false
 				_ = f.Value.Set(f.DefValue)
@@ -194,6 +206,8 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		endpointSetMax = 6
 		endpointSetNDP = false
 		endpointSetNoNDP = false
+		endpointSetProfile = ""
+		endpointSetTTL = ""
 	}()
 
 	name := "default"
@@ -201,27 +215,42 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		name = strings.TrimSpace(args[0])
 	}
 
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config: %w", err)
+	}
+	if cfg.Endpoints == nil {
+		cfg.Endpoints = make(map[string]config.EndpointConfig)
+	}
+	existingEp, hasExisting := cfg.Endpoints[name]
+
 	hasHost := cmd.Flags().Changed("host")
 	hasAuto := cmd.Flags().Changed("auto")
 	hasV4 := cmd.Flags().Changed("v4")
 	hasV6 := cmd.Flags().Changed("v6")
 	hasType := cmd.Flags().Changed("type")
 	hasSubnet := cmd.Flags().Changed("subnet")
+	hasInterface := cmd.Flags().Changed("interface")
+	hasMax := cmd.Flags().Changed("max")
 	hasNDP := cmd.Flags().Changed("ndp")
 	hasNoNDP := cmd.Flags().Changed("no-ndp")
+	hasProfile := cmd.Flags().Changed("profile")
+	hasTTL := cmd.Flags().Changed("ttl")
 
-	if !hasHost && !hasAuto && !hasV4 && !hasV6 && !hasType && !hasSubnet {
+	if !hasHost && !hasAuto && !hasV4 && !hasV6 && !hasType && !hasSubnet && !hasInterface && !hasMax && !hasNDP && !hasNoNDP && !hasProfile && !hasTTL {
 		return fmt.Errorf("❌ Error: No parameter supplied")
 	}
 
 	targetType := strings.ToLower(strings.TrimSpace(endpointSetType))
 	if targetType == "" {
-		if hasSubnet {
+		if hasSubnet || hasProfile || hasTTL {
 			targetType = string(config.EndpointTypeDynamicV6)
 		} else if hasHost {
 			targetType = string(config.EndpointTypeStatic)
 		} else if hasAuto || hasV4 || hasV6 {
 			targetType = string(config.EndpointTypeAuto)
+		} else if hasExisting {
+			targetType = string(existingEp.Type)
 		}
 	}
 
@@ -232,6 +261,9 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("❌ Error: Cannot specify --host for dynamic-v6 endpoint")
 		}
 		subnetVal := strings.TrimSpace(endpointSetSubnet)
+		if subnetVal == "" && hasExisting && existingEp.Subnet != "" {
+			subnetVal = existingEp.Subnet
+		}
 		if subnetVal == "" {
 			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --subnet")
 		}
@@ -240,13 +272,41 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		}
 
 		ifaceVal := strings.TrimSpace(endpointSetInterface)
+		if ifaceVal == "" && hasExisting && existingEp.Interface != "" {
+			ifaceVal = existingEp.Interface
+		}
 		if ifaceVal == "" {
 			ifaceVal = "he-ipv6"
 		}
 
+		profileVal := strings.ToLower(strings.TrimSpace(endpointSetProfile))
+		if profileVal == "" && hasExisting && existingEp.Profile != "" {
+			profileVal = existingEp.Profile
+		}
+		if profileVal != "" {
+			if profileVal != config.RotationProfileTurtle && profileVal != config.RotationProfileProactive && profileVal != config.RotationProfileIsolated {
+				return fmt.Errorf("❌ Error: Invalid rotation profile '%s'. Valid options: turtle, proactive, isolated", profileVal)
+			}
+		} else {
+			profileVal = config.RotationProfileTurtle
+		}
+
+		ttlVal := strings.TrimSpace(endpointSetTTL)
+		if ttlVal == "" && hasExisting && existingEp.TTL != "" {
+			ttlVal = existingEp.TTL
+		}
+		if ttlVal == "" {
+			ttlVal = "12h"
+		} else {
+			_ = endpoint.ParseTTL(ttlVal)
+		}
+
 		maxVal := endpointSetMax
+		if !hasMax && hasExisting && existingEp.MaxAddresses > 0 {
+			maxVal = existingEp.MaxAddresses
+		}
 		if maxVal <= 0 {
-			maxVal = 6
+			maxVal = 1
 		}
 
 		var enableNDP bool
@@ -254,8 +314,9 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 			enableNDP = false
 		} else if hasNDP {
 			enableNDP = true
+		} else if hasExisting {
+			enableNDP = existingEp.EnableNDP
 		} else {
-			// Auto-guard: sit* or he-* tunnels skip Proxy NDP by default
 			lowerIface := strings.ToLower(ifaceVal)
 			if strings.Contains(lowerIface, "sit") || strings.Contains(lowerIface, "he-") || strings.Contains(lowerIface, "tun") {
 				enableNDP = false
@@ -270,6 +331,8 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 			Interface:    ifaceVal,
 			MaxAddresses: maxVal,
 			EnableNDP:    enableNDP,
+			Profile:      profileVal,
+			TTL:          ttlVal,
 		}
 
 	case string(config.EndpointTypeStatic):
@@ -277,6 +340,9 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("❌ Error: Cannot specify both --host and --auto")
 		}
 		hostVal := strings.TrimSpace(endpointSetHost)
+		if hostVal == "" && hasExisting && existingEp.Host != "" {
+			hostVal = existingEp.Host
+		}
 		if hostVal == "" {
 			return fmt.Errorf("❌ Error: Host cannot be empty")
 		}
@@ -292,6 +358,8 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		family := "v4"
 		if endpointSetV6 || (hasV6 && !hasV4) {
 			family = "v6"
+		} else if hasExisting && existingEp.Family != "" && !hasV4 {
+			family = existingEp.Family
 		}
 		ep = config.EndpointConfig{
 			Type:   config.EndpointTypeAuto,
@@ -302,13 +370,6 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Error: Unsupported endpoint type '%s' (valid types: static, auto, dynamic-v6)", targetType)
 	}
 
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %w", err)
-	}
-	if cfg.Endpoints == nil {
-		cfg.Endpoints = make(map[string]config.EndpointConfig)
-	}
 	cfg.Endpoints[name] = ep
 
 	if err := cfg.SaveEx(true); err != nil {
@@ -416,6 +477,16 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 		}
 		if ep.Type == config.EndpointTypeDynamicV6 {
 			detail.EnableNDP = &ep.EnableNDP
+			prof := ep.Profile
+			if prof == "" {
+				prof = "turtle"
+			}
+			ttl := ep.TTL
+			if ttl == "" {
+				ttl = "12h"
+			}
+			detail.Profile = prof
+			detail.TTL = ttl
 		}
 		data, err := json.MarshalIndent(detail, "", "  ")
 		if err != nil {
@@ -438,6 +509,16 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 		if ep.EnableNDP {
 			ndpStr = "enabled"
 		}
+		profStr := ep.Profile
+		if profStr == "" {
+			profStr = "turtle"
+		}
+		ttlStr := ep.TTL
+		if ttlStr == "" {
+			ttlStr = "12h"
+		}
+		fmt.Printf("Profile:     %s\n", profStr)
+		fmt.Printf("TTL:         %s\n", ttlStr)
 		fmt.Printf("Subnet:      %s\n", ep.Subnet)
 		fmt.Printf("Interface:   %s\n", ep.Interface)
 		fmt.Printf("Proxy NDP:   %s\n", ndpStr)
@@ -682,6 +763,22 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+var endpointRotateProfilesCmd = &cobra.Command{
+	Use:   "rotate-profiles",
+	Short: "Display available dynamic-v6 rotation profiles and behaviors",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("\n%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n", "PROFILE", "SCOPE", "ACTIVE IPS", "ROTATION TRIGGER", "RETIREMENT", "BEST FOR")
+		fmt.Println("-----------------------------------------------------------------------------------------------------------------------------")
+		fmt.Printf("%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n",
+			"turtle", "Shared", "1", "TTL Expired + On-Pull", "3600s", "Recommended. High stability, zero broken links")
+		fmt.Printf("%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n",
+			"proactive", "Shared", "1", "Strict TTL Schedule", "3600s", "Periodic forced refresh, strict sanitization")
+		fmt.Printf("%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n",
+			"isolated", "Per-Guest", "1 / user", "User Pull + Cooldown", "3600s", "Multi-tenant isolation & tracing")
+		fmt.Println()
+	},
+}
+
 var endpointRotateCmd = &cobra.Command{
 	Use:               "rotate [name]",
 	Short:             "Manually rotate and slide address pool for a dynamic-v6 endpoint",
@@ -710,7 +807,16 @@ func init() {
 	endpointSetCmd.Flags().IntVarP(&endpointSetMax, "max", "m", 6, "Maximum active addresses for dynamic-v6 (default 6)")
 	endpointSetCmd.Flags().BoolVar(&endpointSetNDP, "ndp", false, "Enable Proxy NDP")
 	endpointSetCmd.Flags().BoolVar(&endpointSetNoNDP, "no-ndp", false, "Disable Proxy NDP")
+	endpointSetCmd.Flags().StringVarP(&endpointSetProfile, "profile", "p", "", "Rotation profile for dynamic-v6 (turtle, proactive, isolated)")
+	endpointSetCmd.Flags().StringVar(&endpointSetTTL, "ttl", "", "TTL / rotation cooldown for dynamic-v6 (e.g. 12h, 6h, 1d)")
+	endpointSetCmd.RegisterFlagCompletionFunc("profile", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{
+			"turtle\tSingle-IP Lazy on-demand TTL (default)",
+			"proactive\tSingle-IP Strict TTL schedule",
+			"isolated\tPer-Guest dedicated pool (1 IP/user)",
+		}, cobra.ShellCompDirectiveNoFileComp
+	})
 
-	endpointCmd.AddCommand(endpointListCmd, endpointSetCmd, endpointRemoveCmd, endpointShowCmd, endpointTestCmd, endpointRotateCmd)
+	endpointCmd.AddCommand(endpointListCmd, endpointSetCmd, endpointRemoveCmd, endpointShowCmd, endpointTestCmd, endpointRotateCmd, endpointRotateProfilesCmd)
 	rootCmd.AddCommand(endpointCmd)
 }

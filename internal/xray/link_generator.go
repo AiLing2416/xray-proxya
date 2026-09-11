@@ -22,16 +22,67 @@ func splitAddresses(raw string) []string {
 	return addrs
 }
 
+// TargetNode represents an address paired with an endpoint alias for link generation.
+type TargetNode struct {
+	Address string
+	Alias   string
+}
+
+func GenerateLinksWithTargets(cfg *config.UserConfig, targets []TargetNode) []string {
+	if len(targets) == 0 {
+		return nil
+	}
+	var all []string
+	for _, t := range targets {
+		suffix := ""
+		if t.Alias != "" {
+			suffix = t.Alias
+		}
+		all = append(all, generateAllLinks(cfg, t.Address, cfg.UUID, suffix)...)
+	}
+	return all
+}
+
+func GenerateRelayLinksWithTargets(cfg *config.UserConfig, targets []TargetNode, relay config.CustomOutbound) []string {
+	if len(targets) == 0 {
+		return nil
+	}
+	var all []string
+	for _, t := range targets {
+		suffix := "Relay-" + relay.Alias
+		if t.Alias != "" {
+			suffix = "Relay-" + relay.Alias + "-" + t.Alias
+		}
+		all = append(all, generateAllLinks(cfg, t.Address, relay.UserUUID, suffix)...)
+	}
+	return all
+}
+
+func GenerateGuestLinksWithTargets(cfg *config.UserConfig, targets []TargetNode, guestUUID string, alias string) []string {
+	if len(targets) == 0 {
+		return nil
+	}
+	var all []string
+	for _, t := range targets {
+		suffix := "Guest-" + alias
+		if t.Alias != "" {
+			suffix = "Guest-" + alias + "-" + t.Alias
+		}
+		all = append(all, generateAllLinks(cfg, t.Address, guestUUID, suffix)...)
+	}
+	return all
+}
+
 func GenerateLinks(cfg *config.UserConfig, ip string) []string {
 	addrs := splitAddresses(ip)
 	if len(addrs) == 0 {
 		return nil
 	}
-	var all []string
+	var targets []TargetNode
 	for _, addr := range addrs {
-		all = append(all, generateAllLinks(cfg, addr, cfg.UUID, "")...)
+		targets = append(targets, TargetNode{Address: addr})
 	}
-	return all
+	return GenerateLinksWithTargets(cfg, targets)
 }
 
 func GenerateRelayLinks(cfg *config.UserConfig, ip string, relay config.CustomOutbound) []string {
@@ -39,11 +90,11 @@ func GenerateRelayLinks(cfg *config.UserConfig, ip string, relay config.CustomOu
 	if len(addrs) == 0 {
 		return nil
 	}
-	var all []string
+	var targets []TargetNode
 	for _, addr := range addrs {
-		all = append(all, generateAllLinks(cfg, addr, relay.UserUUID, "Relay-"+relay.Alias)...)
+		targets = append(targets, TargetNode{Address: addr})
 	}
-	return all
+	return GenerateRelayLinksWithTargets(cfg, targets, relay)
 }
 
 func GenerateGuestLinks(cfg *config.UserConfig, ip string, guestUUID string, alias string) []string {
@@ -51,11 +102,11 @@ func GenerateGuestLinks(cfg *config.UserConfig, ip string, guestUUID string, ali
 	if len(addrs) == 0 {
 		return nil
 	}
-	var all []string
+	var targets []TargetNode
 	for _, addr := range addrs {
-		all = append(all, generateAllLinks(cfg, addr, guestUUID, "Guest-"+alias)...)
+		targets = append(targets, TargetNode{Address: addr})
 	}
-	return all
+	return GenerateGuestLinksWithTargets(cfg, targets, guestUUID, alias)
 }
 
 func WithPrimaryRemark(links []string, remark string) []string {
@@ -132,8 +183,8 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 
 		case config.ModeShadowsocksTCP:
 			// Shadowsocks usually doesn't support the same user-UUID routing in this context
-			if suffix == "" {
-				ps := fmt.Sprintf("SS-TCP-%d", mode.Port)
+			if !strings.HasPrefix(suffix, "Guest-") && !strings.HasPrefix(suffix, "Relay-") {
+				ps := fmt.Sprintf("SS-TCP-%d%s", mode.Port, psSuffix)
 				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", mode.Settings.Cipher, mode.Settings.Password)))
 				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, url.PathEscape(ps))
 			}

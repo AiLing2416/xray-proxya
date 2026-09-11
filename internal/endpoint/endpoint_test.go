@@ -630,3 +630,191 @@ func TestReconcileOnStartup_ColdStartPrewarm(t *testing.T) {
 	}
 }
 
+func TestResolveTargets_CompositeAndOrder(t *testing.T) {
+	cfg := &config.UserConfig{
+		Endpoints: map[string]config.EndpointConfig{
+			"ep1": {Type: config.EndpointTypeStatic, Host: "1.1.1.1"},
+			"ep2": {Type: config.EndpointTypeStatic, Host: "2.2.2.2"},
+		},
+	}
+
+	// 1. Order-preserving multi-endpoint resolution
+	targets, err := ResolveTargets(cfg, "ep1,ep2,3.3.3.3,proxy.node.com", "", false)
+	if err != nil {
+		t.Fatalf("ResolveTargets failed: %v", err)
+	}
+	if len(targets) != 4 {
+		t.Fatalf("expected 4 targets, got %d", len(targets))
+	}
+	if targets[0].Alias != "ep1" || targets[0].Address != "1.1.1.1" {
+		t.Errorf("unexpected target 0: %+v", targets[0])
+	}
+	if targets[1].Alias != "ep2" || targets[1].Address != "2.2.2.2" {
+		t.Errorf("unexpected target 1: %+v", targets[1])
+	}
+	if targets[2].Alias != "3.3.3.3" || targets[2].Address != "3.3.3.3" {
+		t.Errorf("unexpected target 2: %+v", targets[2])
+	}
+	if targets[3].Alias != "proxy.node.com" || targets[3].Address != "proxy.node.com" {
+		t.Errorf("unexpected target 3: %+v", targets[3])
+	}
+
+	// 2. Reject empty item in list
+	_, err = ResolveTargets(cfg, "ep1,,ep2", "", false)
+	if err == nil || !strings.Contains(err.Error(), "contains empty item") {
+		t.Fatalf("expected error for empty item in list, got: %v", err)
+	}
+
+	// 3. Fallback to default
+	defTargets, err := ResolveTargets(cfg, "", "", false)
+	if err != nil {
+		t.Fatalf("ResolveTargets empty failed: %v", err)
+	}
+	if len(defTargets) == 0 || defTargets[0].Alias != "default" {
+		t.Fatalf("expected default target, got: %+v", defTargets)
+	}
+}
+
+func TestDynamicV6Profiles_Turtle(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "turtle-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	restoreRunners := SetTestRunners(func(name string, arg ...string) ([]byte, error) {
+		return []byte("ok"), nil
+	}, func(ip string, d time.Duration) (bool, time.Duration, error) {
+		return true, time.Millisecond, nil
+	})
+	defer restoreRunners()
+
+	ep := config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:aaaa::/64",
+		Interface: "eth0",
+		Profile:   config.RotationProfileTurtle,
+		TTL:       "2h",
+	}
+
+	// Initial resolution creates active IP
+	ip1, err := ResolveDynamicV6Address("turtle-ep", ep, "guest:SPYS", false)
+	if err != nil {
+		t.Fatalf("initial resolve failed: %v", err)
+	}
+
+	// Subscription pull before TTL expires returns SAME IP (lazy on-demand)
+	ip2, err := ResolveDynamicV6Address("turtle-ep", ep, "guest:SPYS", true)
+	if err != nil {
+		t.Fatalf("subscription resolve within TTL failed: %v", err)
+	}
+	if ip2 != ip1 {
+		t.Fatalf("turtle profile rotated within TTL: %s != %s", ip1, ip2)
+	}
+
+	// Fast-forward state to simulate TTL expiration (older than 2h)
+	st, err := LoadRotationState("turtle-ep")
+	if err != nil || len(st.ActivePool) == 0 {
+		t.Fatalf("load rotation state failed: %v", err)
+	}
+	st.ActivePool[0].CreatedAt = time.Now().Add(-3 * time.Hour)
+	_ = SaveRotationState("turtle-ep", st)
+
+	// Ordinary query after TTL expires still returns current IP (lazy - no rotate without sub)
+	ip3, err := ResolveDynamicV6Address("turtle-ep", ep, "guest:SPYS", false)
+	if err != nil {
+		t.Fatalf("query after TTL failed: %v", err)
+	}
+	if ip3 != ip1 {
+		t.Fatalf("ordinary query rotated without subscription pull: %s != %s", ip1, ip3)
+	}
+
+	// Subscription pull after TTL triggers rotation!
+	ip4, err := ResolveDynamicV6Address("turtle-ep", ep, "guest:SPYS", true)
+	if err != nil {
+		t.Fatalf("sub pull after TTL failed: %v", err)
+	}
+	if ip4 == ip1 {
+		t.Fatalf("expected rotation on subscription pull after TTL, got same IP: %s", ip4)
+	}
+
+	// Check that old IP was demoted to DeprecatedPool with 3600s transition window
+	stAfter, _ := LoadRotationState("turtle-ep")
+	if len(stAfter.ActivePool) != 1 {
+		t.Fatalf("expected 1 active IP, got %d", len(stAfter.ActivePool))
+	}
+	if len(stAfter.DeprecatedPool) != 1 || stAfter.DeprecatedPool[0].Address != ip1 {
+		t.Fatalf("expected ip1 in DeprecatedPool, got: %+v", stAfter.DeprecatedPool)
+	}
+}
+
+func TestDynamicV6Profiles_Isolated(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "isolated-test-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	restoreRunners := SetTestRunners(func(name string, arg ...string) ([]byte, error) {
+		return []byte("ok"), nil
+	}, func(ip string, d time.Duration) (bool, time.Duration, error) {
+		return true, time.Millisecond, nil
+	})
+	defer restoreRunners()
+
+	ep := config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:bbbb::/64",
+		Interface: "eth0",
+		Profile:   config.RotationProfileIsolated,
+		TTL:       "1h",
+	}
+
+	// Guest A allocates their single dedicated IP
+	ipA, err := ResolveDynamicV6Address("iso-ep", ep, "guest:alice", true)
+	if err != nil {
+		t.Fatalf("alice resolve failed: %v", err)
+	}
+
+	// Guest B allocates their independent dedicated IP
+	ipB, err := ResolveDynamicV6Address("iso-ep", ep, "guest:bob", true)
+	if err != nil {
+		t.Fatalf("bob resolve failed: %v", err)
+	}
+
+	if ipA == ipB {
+		t.Fatalf("expected isolated IPs for alice and bob, got identical %s", ipA)
+	}
+
+	// Fast-forward alice's IP past TTL
+	st, _ := LoadRotationState("iso-ep")
+	st.Consumers["guest:alice"].ActivePool[0].CreatedAt = time.Now().Add(-2 * time.Hour)
+	_ = SaveRotationState("iso-ep", st)
+
+	// Alice rotates to new IP
+	ipA2, err := ResolveDynamicV6Address("iso-ep", ep, "guest:alice", true)
+	if err != nil {
+		t.Fatalf("alice rotate failed: %v", err)
+	}
+	if ipA2 == ipA {
+		t.Fatalf("expected alice to rotate to new IP, got %s", ipA2)
+	}
+
+	// Bob's IP is completely unaffected
+	ipB2, err := ResolveDynamicV6Address("iso-ep", ep, "guest:bob", false)
+	if err != nil {
+		t.Fatalf("bob check failed: %v", err)
+	}
+	if ipB2 != ipB {
+		t.Fatalf("bob's IP was mutated by alice's rotation: %s != %s", ipB2, ipB)
+	}
+}
+

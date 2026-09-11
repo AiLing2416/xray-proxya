@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/sub"
 	"xray-proxya/pkg/utils"
 
@@ -451,11 +452,13 @@ Supported target types:
 		}
 		if cmd.Flags().Changed("endpoint") {
 			epVal := strings.TrimSpace(subEndpoint)
-			if epVal == "default" {
-				entry.Endpoint = ""
-			} else {
-				entry.Endpoint = epVal
+			if epVal == "" {
+				return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 			}
+			if _, err := endpoint.ResolveTargets(cfg, epVal, "sub:"+inst, false); err != nil {
+				return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
+			}
+			entry.Endpoint = epVal
 			changed = true
 		}
 		if cmd.Flags().Changed("address-node") {

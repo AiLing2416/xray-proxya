@@ -154,3 +154,51 @@ func TestGenerateLinksMultiAddressGrouping(t *testing.T) {
 		t.Errorf("expected proxy.example.com in third link, got %q", links[2])
 	}
 }
+
+func TestGenerateLinksWithTargets_Remarks(t *testing.T) {
+	cfg := &config.UserConfig{
+		UUID: "12345678-1234-1234-1234-123456789012",
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSReality,
+				Enabled: true,
+				Port:    443,
+				SNI:     "reality.domain.com",
+				Settings: config.Settings{
+					PublicKey: "pubkey-reality",
+					ShortID:   "sid",
+				},
+			},
+		},
+	}
+
+	targets := []TargetNode{
+		{Address: "1.2.3.4", Alias: "default"},
+		{Address: "2600::1", Alias: "he-pool"},
+	}
+
+	// 1. Admin links with targets
+	adminLinks := GenerateLinksWithTargets(cfg, targets)
+	if len(adminLinks) != 2 {
+		t.Fatalf("expected 2 admin links, got %d", len(adminLinks))
+	}
+	if !strings.Contains(adminLinks[0], "#VLess-XHTTP-Reality-443-default") {
+		t.Errorf("expected admin link 0 to end with #VLess-XHTTP-Reality-443-default, got %q", adminLinks[0])
+	}
+	if !strings.Contains(adminLinks[1], "#VLess-XHTTP-Reality-443-he-pool") {
+		t.Errorf("expected admin link 1 to end with #VLess-XHTTP-Reality-443-he-pool, got %q", adminLinks[1])
+	}
+
+	// 2. Guest links with targets
+	guestLinks := GenerateGuestLinksWithTargets(cfg, targets, "guest-uuid-1", "SPYS")
+	if len(guestLinks) != 2 {
+		t.Fatalf("expected 2 guest links, got %d", len(guestLinks))
+	}
+	if !strings.Contains(guestLinks[0], "#VLess-XHTTP-Reality-443-Guest-SPYS-default") {
+		t.Errorf("expected guest link 0 to end with #VLess-XHTTP-Reality-443-Guest-SPYS-default, got %q", guestLinks[0])
+	}
+	if !strings.Contains(guestLinks[1], "#VLess-XHTTP-Reality-443-Guest-SPYS-he-pool") {
+		t.Errorf("expected guest link 1 to end with #VLess-XHTTP-Reality-443-Guest-SPYS-he-pool, got %q", guestLinks[1])
+	}
+}
+

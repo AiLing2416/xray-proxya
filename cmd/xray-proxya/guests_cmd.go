@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/notify"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/sub"
@@ -289,11 +290,15 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	// 5. Endpoint
 	if cmd != nil && cmd.Flags().Changed("endpoint") {
 		epVal := strings.TrimSpace(guestAddEndpoint)
-		if epVal == "default" {
-			newG.Endpoint = ""
-		} else {
-			newG.Endpoint = epVal
+		if epVal == "" {
+			return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 		}
+		if _, err := endpoint.ResolveTargets(cfg, epVal, "guest:"+alias, false); err != nil {
+			return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
+		}
+		newG.Endpoint = epVal
+	} else {
+		newG.Endpoint = "default"
 	}
 	defer func() {
 		guestAddEndpoint = ""
@@ -522,13 +527,14 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 	}
 	if cmd != nil && cmd.Flags().Changed("endpoint") {
 		epVal := strings.TrimSpace(guestSetEndpoint)
-		if epVal == "default" {
-			cfg.Guests[idx].Endpoint = ""
-			fmt.Printf("✅ Endpoint for '%s' reset to default.\n", alias)
-		} else {
-			cfg.Guests[idx].Endpoint = epVal
-			fmt.Printf("✅ Endpoint for '%s' set to '%s'.\n", alias, epVal)
+		if epVal == "" {
+			return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 		}
+		if _, err := endpoint.ResolveTargets(cfg, epVal, "guest:"+alias, false); err != nil {
+			return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
+		}
+		cfg.Guests[idx].Endpoint = epVal
+		fmt.Printf("✅ Endpoint for '%s' set to '%s'.\n", alias, epVal)
 		success = true
 	}
 	defer func() {

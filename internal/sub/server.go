@@ -93,7 +93,7 @@ func httpUnifiedSubHandler(admin config.AdminSubConfig) http.HandlerFunc {
 }
 
 func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin config.AdminSubConfig) {
-	var addr string
+	var targets []xray.TargetNode
 	if admin.IPv6Rotation != "" {
 		rotated, err := ipv6rotate.Next(ipv6rotate.SocketPath(admin.IPv6Rotation))
 		if err != nil {
@@ -101,22 +101,30 @@ func handleAdminSubRequest(w http.ResponseWriter, cfg *config.UserConfig, admin 
 			http.Error(w, "IPv6 rotation unavailable", http.StatusServiceUnavailable)
 			return
 		}
-		addr = rotated
-	} else if admin.Endpoint != "" {
-		if resolved, err := endpoint.Resolve(cfg, admin.Endpoint, true); err == nil && len(resolved) > 0 {
-			addr = strings.Join(resolved, ",")
-		} else {
-			addr = ResolveNodeAddress(cfg, admin.AddressNode)
-		}
-	} else if admin.AddressNode != "" {
-		addr = ResolveNodeAddress(cfg, admin.AddressNode)
-	} else if resolved, err := endpoint.Resolve(cfg, "default", true); err == nil && len(resolved) > 0 {
-		addr = strings.Join(resolved, ",")
+		targets = append(targets, xray.TargetNode{Address: rotated, Alias: "ipv6-rotate"})
 	} else {
-		addr = ResolveNodeAddress(cfg)
+		epSpec := admin.Endpoint
+		if epSpec == "" {
+			if admin.AddressNode != "" {
+				epSpec = admin.AddressNode
+			} else {
+				epSpec = "default"
+			}
+		}
+		if resolvedTargets, err := endpoint.ResolveTargets(cfg, epSpec, "admin", true); err == nil && len(resolvedTargets) > 0 {
+			for _, rt := range resolvedTargets {
+				targets = append(targets, xray.TargetNode{
+					Address: rt.Address,
+					Alias:   rt.Alias,
+				})
+			}
+		} else {
+			addr := ResolveNodeAddress(cfg, admin.AddressNode)
+			targets = append(targets, xray.TargetNode{Address: addr})
+		}
 	}
 
-	links := generateSubscriptionLinks(cfg, admin.TargetType, admin.TargetAlias, addr)
+	links := generateSubscriptionLinksWithTargets(cfg, admin.TargetType, admin.TargetAlias, targets)
 	if len(links) == 0 {
 		http.Error(w, "No links generated for this subscription", http.StatusInternalServerError)
 		return
@@ -139,13 +147,27 @@ func handleGuestSubRequest(w http.ResponseWriter, cfg *config.UserConfig, guest 
 	}
 
 	// Guest is enabled: output regular proxy nodes
-	var addr string
-	if resolved, err := endpoint.Resolve(cfg, guest.Endpoint, true); err == nil && len(resolved) > 0 {
-		addr = strings.Join(resolved, ",")
-	} else {
-		addr = ResolveNodeAddress(cfg, guest.OutboundLink)
+	var targets []xray.TargetNode
+	epSpec := guest.Endpoint
+	if epSpec == "" {
+		if guest.OutboundLink != "" {
+			epSpec = guest.OutboundLink
+		} else {
+			epSpec = "default"
+		}
 	}
-	links := xray.GenerateGuestLinks(cfg, addr, guest.UUID, guest.Alias)
+	if resolvedTargets, err := endpoint.ResolveTargets(cfg, epSpec, "guest:"+guest.Alias, true); err == nil && len(resolvedTargets) > 0 {
+		for _, rt := range resolvedTargets {
+			targets = append(targets, xray.TargetNode{
+				Address: rt.Address,
+				Alias:   rt.Alias,
+			})
+		}
+	} else {
+		addr := ResolveNodeAddress(cfg, guest.OutboundLink)
+		targets = append(targets, xray.TargetNode{Address: addr})
+	}
+	links := xray.GenerateGuestLinksWithTargets(cfg, targets, guest.UUID, guest.Alias)
 	if len(links) == 0 {
 		http.Error(w, "No links generated for this guest", http.StatusInternalServerError)
 		return
@@ -186,9 +208,19 @@ func handleLegacySubscriptionRequest(w http.ResponseWriter, cfg *config.UserConf
 }
 
 func generateSubscriptionLinks(cfg *config.UserConfig, targetType string, targetAlias string, addr string) []string {
+	var targets []xray.TargetNode
+	for _, a := range strings.Split(addr, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			targets = append(targets, xray.TargetNode{Address: a})
+		}
+	}
+	return generateSubscriptionLinksWithTargets(cfg, targetType, targetAlias, targets)
+}
+
+func generateSubscriptionLinksWithTargets(cfg *config.UserConfig, targetType string, targetAlias string, targets []xray.TargetNode) []string {
 	switch targetType {
 	case "direct":
-		return xray.GenerateLinks(cfg, addr)
+		return xray.GenerateLinksWithTargets(cfg, targets)
 	case "outbound":
 		var targetOutbound *config.CustomOutbound
 		for _, o := range cfg.CustomOutbounds {
@@ -198,7 +230,7 @@ func generateSubscriptionLinks(cfg *config.UserConfig, targetType string, target
 			}
 		}
 		if targetOutbound != nil {
-			return xray.GenerateRelayLinks(cfg, addr, *targetOutbound)
+			return xray.GenerateRelayLinksWithTargets(cfg, targets, *targetOutbound)
 		}
 	case "guest":
 		var targetGuest *config.GuestConfig
@@ -209,7 +241,7 @@ func generateSubscriptionLinks(cfg *config.UserConfig, targetType string, target
 			}
 		}
 		if targetGuest != nil {
-			return xray.GenerateGuestLinks(cfg, addr, targetGuest.UUID, targetGuest.Alias)
+			return xray.GenerateGuestLinksWithTargets(cfg, targets, targetGuest.UUID, targetGuest.Alias)
 		}
 	}
 	return nil

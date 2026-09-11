@@ -260,8 +260,15 @@ func TestSubSetAndShow_EndpointFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load staging: %v", err)
 	}
-	if staged2.AdminSub.Endpoint != "" {
-		t.Fatalf("expected AdminSub.Endpoint cleared, got %q", staged2.AdminSub.Endpoint)
+	if staged2.AdminSub.Endpoint != "default" {
+		t.Fatalf("expected AdminSub.Endpoint set to 'default', got %q", staged2.AdminSub.Endpoint)
+	}
+
+	// 4. sub set -e "" must be rejected
+	subEndpoint = ""
+	subSetCmd.Flags().Lookup("endpoint").Changed = true
+	if err := subSetCmd.RunE(subSetCmd, []string{}); err == nil {
+		t.Fatalf("expected error when setting empty endpoint, got nil")
 	}
 }
 

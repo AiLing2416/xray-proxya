@@ -568,8 +568,20 @@ func TestGuestsCmd_EndpointFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load staged: %v", err)
 	}
-	if staged.Guests[0].Endpoint != "" {
-		t.Fatalf("expected guest endpoint cleared to empty, got %q", staged.Guests[0].Endpoint)
+	if staged.Guests[0].Endpoint != "default" {
+		t.Fatalf("expected guest endpoint set to 'default', got %q", staged.Guests[0].Endpoint)
+	}
+
+	// 4. Setting empty endpoint must be disallowed
+	guestsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := guestsSetCmd.ParseFlags([]string{"-e", ""}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := guestsSetCmd.RunE(guestsSetCmd, []string{"user1"}); err == nil {
+		t.Fatalf("expected error when setting empty endpoint, got nil")
 	}
 }
 

@@ -13,7 +13,7 @@ import (
 )
 
 func resetEndpointFlags(cmd *cobra.Command) {
-	for _, name := range []string{"host", "auto", "v4", "v6", "type", "subnet", "interface", "max", "ndp", "no-ndp"} {
+	for _, name := range []string{"host", "auto", "v4", "v6", "type", "subnet", "interface", "max", "ndp", "no-ndp", "profile", "ttl"} {
 		if f := cmd.Flags().Lookup(name); f != nil {
 			f.Changed = false
 			_ = f.Value.Set(f.DefValue)
@@ -29,6 +29,8 @@ func resetEndpointFlags(cmd *cobra.Command) {
 	endpointSetMax = 6
 	endpointSetNDP = false
 	endpointSetNoNDP = false
+	endpointSetProfile = ""
+	endpointSetTTL = ""
 }
 
 func TestEndpointSetStatic(t *testing.T) {
@@ -579,6 +581,73 @@ func TestEndpointRotateCmd(t *testing.T) {
 	}
 	if rotRes.Name != "he-pool" || rotRes.RotatedAddress == "" {
 		t.Errorf("unexpected rotate result: %+v", rotRes)
+	}
+}
+
+func TestEndpointRotateProfilesCmd(t *testing.T) {
+	out := captureStdout(t, func() {
+		endpointRotateProfilesCmd.Run(endpointRotateProfilesCmd, []string{})
+	})
+	if !strings.Contains(out, "turtle") || !strings.Contains(out, "proactive") || !strings.Contains(out, "isolated") {
+		t.Fatalf("expected rotate-profiles table to contain turtle, proactive, isolated, got:\n%s", out)
+	}
+	if !strings.Contains(out, "3600s") {
+		t.Fatalf("expected retirement info 3600s in rotate-profiles table, got:\n%s", out)
+	}
+}
+
+func TestEndpointSetProfileAndTTL(t *testing.T) {
+	setupTestConfigDir(t)
+	cmd := endpointSetCmd
+	resetEndpointFlags(cmd)
+	defer resetEndpointFlags(cmd)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Endpoints: map[string]config.EndpointConfig{
+			"he-pool": {
+				Type:      config.EndpointTypeDynamicV6,
+				Subnet:    "2001:470:1f0a:692::/64",
+				Interface: "he-ipv6",
+			},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("failed to save staging config: %v", err)
+	}
+
+	// 1. Set turtle profile with TTL 6h
+	_ = cmd.Flags().Set("profile", "turtle")
+	_ = cmd.Flags().Set("ttl", "6h")
+	if err := cmd.RunE(cmd, []string{"he-pool"}); err != nil {
+		t.Fatalf("endpoint set -p turtle --ttl 6h failed: %v", err)
+	}
+
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load config failed: %v", err)
+	}
+	ep := loaded.Endpoints["he-pool"]
+	if ep.Profile != "turtle" || ep.TTL != "6h" {
+		t.Fatalf("expected profile=turtle, ttl=6h, got profile=%q, ttl=%q", ep.Profile, ep.TTL)
+	}
+
+	// 2. Reject invalid profile
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("profile", "non-existent-profile")
+	if err := cmd.RunE(cmd, []string{"he-pool"}); err == nil {
+		t.Fatalf("expected error setting invalid profile, got nil")
+	}
+
+	// 3. Set isolated profile
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("profile", "isolated")
+	if err := cmd.RunE(cmd, []string{"he-pool"}); err != nil {
+		t.Fatalf("endpoint set -p isolated failed: %v", err)
+	}
+	loaded2, _ := config.LoadConfigEx(true)
+	if loaded2.Endpoints["he-pool"].Profile != "isolated" {
+		t.Fatalf("expected profile=isolated, got %q", loaded2.Endpoints["he-pool"].Profile)
 	}
 }
 

@@ -123,6 +123,12 @@ const (
 	EndpointTypeDynamicV6 EndpointType = "dynamic-v6" // 动态 IPv6 轮换池 (预留)
 )
 
+const (
+	RotationProfileTurtle    = "turtle"    // Single-IP lazy on-demand TTL (default)
+	RotationProfileProactive = "proactive" // Single-IP strict scheduled TTL
+	RotationProfileIsolated  = "isolated"  // Per-consumer dedicated pool (1 IP per user, 3600s retirement)
+)
+
 type EndpointConfig struct {
 	Type         EndpointType `json:"type"`                     // static, auto, dynamic-v6
 	Host         string       `json:"host,omitempty"`            // 域名或 IP (用于 static)
@@ -131,6 +137,8 @@ type EndpointConfig struct {
 	Subnet       string       `json:"subnet,omitempty"`          // IPv6 前缀 CIDR (预留给 dynamic-v6)
 	MaxAddresses int          `json:"max_addresses,omitempty"`   // 最大活跃数 (预留给 dynamic-v6)
 	EnableNDP    bool         `json:"enable_ndp,omitempty"`       // 是否开启 NDP 代理 (预留给 dynamic-v6)
+	Profile      string       `json:"profile,omitempty"`          // 轮换策略包: turtle, proactive, isolated
+	TTL          string       `json:"ttl,omitempty"`              // 轮换周期/冷却时间: 如 12h, 6h, 1d (默认 12h)
 }
 
 type UserConfig struct {
