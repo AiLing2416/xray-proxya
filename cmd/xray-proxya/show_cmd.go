@@ -31,7 +31,6 @@ var (
 	showEndpoint string = "default"
 	showIPv4     bool
 	showIPv6     bool
-	showAddr     string
 	showRelay    string
 	showOutbound string
 	showGuest    string
@@ -73,14 +72,6 @@ func resolveEndpointAddrs(cfg *config.UserConfig, name string) ([]string, error)
 }
 
 func resolveShowIPs(cmd *cobra.Command, optionalCfg ...*config.UserConfig) []string {
-	if addr := strings.TrimSpace(showAddr); addr != "" {
-		unbracketed := strings.Trim(addr, "[]")
-		if parsed := net.ParseIP(unbracketed); parsed != nil {
-			return []string{parsed.String()}
-		}
-		return []string{addr}
-	}
-
 	endpointChanged := cmd != nil && cmd.Flags().Changed("endpoint")
 	ipv4Changed := cmd != nil && cmd.Flags().Changed("ipv4")
 	ipv6Changed := cmd != nil && cmd.Flags().Changed("ipv6")
@@ -208,7 +199,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 
 	ips := resolveShowIPs(cmd, cfg)
 	if len(ips) == 0 {
-		return fmt.Errorf("❌ Could not determine any IP address. Use -a to specify manually.")
+		return fmt.Errorf("❌ Could not determine any IP address. Use -e to specify an endpoint.")
 	}
 
 	targetRelay := showRelay
@@ -310,7 +301,6 @@ var showCmd = &cobra.Command{
 func init() {
 	showCmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "Use public IPv4 address")
 	showCmd.Flags().BoolVarP(&showIPv6, "ipv6", "6", false, "Use public IPv6 address")
-	showCmd.Flags().StringVarP(&showAddr, "address", "a", "", "Override server address/hostname in links")
 	showCmd.Flags().StringVarP(&showRelay, "relay", "r", "", "Show links for specific relay node")
 	showCmd.Flags().StringVarP(&showOutbound, "outbound", "o", "", "Show links for specific custom outbound (deprecated)")
 	showCmd.Flags().StringVarP(&showGuest, "guest", "g", "", "Show links for specific guest user")

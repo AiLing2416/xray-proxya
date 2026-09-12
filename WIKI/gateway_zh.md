@@ -46,7 +46,7 @@ xray-proxya service start
 导出分享链接：
 
 ```bash
-xray-proxya show --address <server-ip> --all
+xray-proxya show --all
 ```
 
 优先选择经测试可用的节点，例如 Reality Vision TCP 链接。

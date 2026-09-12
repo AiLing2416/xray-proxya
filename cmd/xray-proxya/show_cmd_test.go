@@ -19,7 +19,6 @@ func TestShowResolveIPs_DefaultUsesIPv4(t *testing.T) {
 		getPublicIPv4Func = origV4
 		getPublicIPv6Func = origV6
 		getLocalIPFunc = origLocal
-		showAddr = ""
 		showIPv4 = true
 		showIPv6 = false
 	}()
@@ -27,7 +26,6 @@ func TestShowResolveIPs_DefaultUsesIPv4(t *testing.T) {
 	getPublicIPv4Func = func() string { return "198.51.100.1" }
 	getPublicIPv6Func = func() string { return "2001:db8::1" }
 	getLocalIPFunc = func() string { return "10.0.0.2" }
-	showAddr = ""
 
 	cmd := &cobra.Command{}
 	cmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "")
@@ -47,7 +45,6 @@ func TestShowResolveIPs_ExplicitIPv6Only(t *testing.T) {
 		getPublicIPv4Func = origV4
 		getPublicIPv6Func = origV6
 		getLocalIPFunc = origLocal
-		showAddr = ""
 		showIPv4 = true
 		showIPv6 = false
 	}()
@@ -55,7 +52,6 @@ func TestShowResolveIPs_ExplicitIPv6Only(t *testing.T) {
 	getPublicIPv4Func = func() string { return "198.51.100.1" }
 	getPublicIPv6Func = func() string { return "2001:db8::1" }
 	getLocalIPFunc = func() string { return "10.0.0.2" }
-	showAddr = ""
 
 	cmd := &cobra.Command{}
 	cmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "")
@@ -78,7 +74,6 @@ func TestShowResolveIPs_ExplicitIPv6NoFallbackToIPv4(t *testing.T) {
 		getPublicIPv4Func = origV4
 		getPublicIPv6Func = origV6
 		getLocalIPFunc = origLocal
-		showAddr = ""
 		showIPv4 = true
 		showIPv6 = false
 	}()
@@ -86,7 +81,6 @@ func TestShowResolveIPs_ExplicitIPv6NoFallbackToIPv4(t *testing.T) {
 	getPublicIPv4Func = func() string { return "198.51.100.1" }
 	getPublicIPv6Func = func() string { return "" } // No public IPv6
 	getLocalIPFunc = func() string { return "10.0.0.2" }
-	showAddr = ""
 
 	cmd := &cobra.Command{}
 	cmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "")
@@ -109,7 +103,6 @@ func TestShowResolveIPs_ExplicitDualStack(t *testing.T) {
 		getPublicIPv4Func = origV4
 		getPublicIPv6Func = origV6
 		getLocalIPFunc = origLocal
-		showAddr = ""
 		showIPv4 = true
 		showIPv6 = false
 	}()
@@ -117,7 +110,6 @@ func TestShowResolveIPs_ExplicitDualStack(t *testing.T) {
 	getPublicIPv4Func = func() string { return "198.51.100.1" }
 	getPublicIPv6Func = func() string { return "2001:db8::1" }
 	getLocalIPFunc = func() string { return "10.0.0.2" }
-	showAddr = ""
 
 	cmd := &cobra.Command{}
 	cmd.Flags().BoolVarP(&showIPv4, "ipv4", "4", true, "")
@@ -135,108 +127,23 @@ func TestShowResolveIPs_ExplicitDualStack(t *testing.T) {
 	}
 }
 
-func TestShowResolveIPs_AddressOverride(t *testing.T) {
-	showAddr = "custom.example.com"
-	defer func() { showAddr = "" }()
-
-	ips := resolveShowIPs(nil)
-	if len(ips) != 1 || ips[0] != "custom.example.com" {
-		t.Fatalf("resolveShowIPs() with override = %v, want [custom.example.com]", ips)
-	}
-}
-
-func TestShowResolveIPs_AddressOverride_IPv6_Bracketed(t *testing.T) {
-	showAddr = "[2001:db8::1]"
-	defer func() { showAddr = "" }()
-
-	ips := resolveShowIPs(nil)
-	if len(ips) != 1 || ips[0] != "2001:db8::1" {
-		t.Fatalf("resolveShowIPs() with bracketed IPv6 = %v, want [2001:db8::1]", ips)
-	}
-}
-
-func TestShowResolveIPs_AddressOverride_SkipsNetworkCalls(t *testing.T) {
-	origV4 := getPublicIPv4Func
-	origV6 := getPublicIPv6Func
-	origLocal := getLocalIPFunc
-	defer func() {
-		getPublicIPv4Func = origV4
-		getPublicIPv6Func = origV6
-		getLocalIPFunc = origLocal
-		showAddr = ""
-	}()
-
-	getPublicIPv4Func = func() string {
-		t.Fatal("getPublicIPv4Func should not be called when -a is specified")
-		return ""
-	}
-	getPublicIPv6Func = func() string {
-		t.Fatal("getPublicIPv6Func should not be called when -a is specified")
-		return ""
-	}
-	getLocalIPFunc = func() string {
-		t.Fatal("getLocalIPFunc should not be called when -a is specified")
-		return ""
-	}
-
-	showAddr = "custom.domain.com"
-	ips := resolveShowIPs(nil)
-	if len(ips) != 1 || ips[0] != "custom.domain.com" {
-		t.Fatalf("resolveShowIPs() = %v, want [custom.domain.com]", ips)
-	}
-}
-
-func TestShowCmd_AddressOverrideTitles(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("XRAY_PROXYA_CONFIG_DIR", dir)
-
-	cfg := &config.UserConfig{
-		Role: config.RoleServer,
-		UUID: "test-uuid-show-addr",
-		Presets: []config.ModeInfo{
-			{
-				Mode:    config.ModeVLESSVision,
-				Enabled: true,
-				Port:    443,
-				SNI:     "mock.com",
-				Dest:    "mock.com:443",
-			},
-		},
-	}
-	if err := cfg.SaveEx(false); err != nil {
-		t.Fatalf("SaveEx error: %v", err)
-	}
-
-	defer func() { showAddr = "" }()
-
+func TestFormatAddressDisplay(t *testing.T) {
 	testCases := []struct {
-		addrInput  string
-		wantHeader string
+		addrInput   string
+		wantType    string
+		wantDisplay string
 	}{
-		{"custom.domain.com", "Sharing Links for Admin, Using Hostname custom.domain.com"},
-		{"87.229.95.124", "Sharing Links for Admin, Using IP 87.229.95.124"},
-		{"2001:db8::1", "Sharing Links for Admin, Using IP [2001:db8::1]"},
-		{"[2001:db8::1]", "Sharing Links for Admin, Using IP [2001:db8::1]"},
+		{"custom.domain.com", "Hostname", "custom.domain.com"},
+		{"87.229.95.124", "IP", "87.229.95.124"},
+		{"2001:db8::1", "IP", "[2001:db8::1]"},
+		{"[2001:db8::1]", "IP", "[2001:db8::1]"},
 	}
 
 	for _, tc := range testCases {
-		showAddr = tc.addrInput
-		origStdout := os.Stdout
-		r, w, _ := os.Pipe()
-		os.Stdout = w
-
-		err := showCmd.RunE(showCmd, []string{})
-		w.Close()
-		os.Stdout = origStdout
-
-		if err != nil {
-			t.Fatalf("showCmd.RunE failed for %s: %v", tc.addrInput, err)
-		}
-		var buf bytes.Buffer
-		_, _ = io.Copy(&buf, r)
-		out := buf.String()
-		if !strings.Contains(out, tc.wantHeader) {
-			t.Errorf("for input %q, want header %q, got output:\n%s", tc.addrInput, tc.wantHeader, out)
+		gotType, gotDisplay := formatAddressDisplay(tc.addrInput)
+		if gotType != tc.wantType || gotDisplay != tc.wantDisplay {
+			t.Errorf("formatAddressDisplay(%q) = (%q, %q), want (%q, %q)",
+				tc.addrInput, gotType, gotDisplay, tc.wantType, tc.wantDisplay)
 		}
 	}
 }
@@ -269,7 +176,6 @@ func TestShowCmd_ExecutionMultiIPAndHeaders(t *testing.T) {
 		getPublicIPv4Func = origV4
 		getPublicIPv6Func = origV6
 		getLocalIPFunc = origLocal
-		showAddr = ""
 		showIPv4 = true
 		showIPv6 = false
 		showCmd.Flags().Lookup("ipv4").Changed = false
@@ -278,7 +184,6 @@ func TestShowCmd_ExecutionMultiIPAndHeaders(t *testing.T) {
 
 	getPublicIPv4Func = func() string { return "198.51.100.1" }
 	getPublicIPv6Func = func() string { return "2001:db8::1" }
-	showAddr = ""
 	showIPv4 = true
 	showIPv6 = true
 	showCmd.Flags().Lookup("ipv4").Changed = true
@@ -416,7 +321,6 @@ func TestShowCmd_NoIPError(t *testing.T) {
 		getPublicIPv4Func = origV4
 		getPublicIPv6Func = origV6
 		getLocalIPFunc = origLocal
-		showAddr = ""
 		showIPv4 = true
 		showIPv6 = false
 		showCmd.Flags().Lookup("ipv6").Changed = false
@@ -425,7 +329,6 @@ func TestShowCmd_NoIPError(t *testing.T) {
 	getPublicIPv4Func = func() string { return "" }
 	getPublicIPv6Func = func() string { return "" }
 	getLocalIPFunc = func() string { return "" }
-	showAddr = ""
 	showIPv6 = true
 	showCmd.Flags().Lookup("ipv6").Changed = true
 

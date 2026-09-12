@@ -46,7 +46,7 @@ xray-proxya service start
 Export sharing links:
 
 ```bash
-xray-proxya show --address <server-ip> --all
+xray-proxya show --all
 ```
 
 Use a link that passes connectivity tests, for example a Reality Vision TCP link.
