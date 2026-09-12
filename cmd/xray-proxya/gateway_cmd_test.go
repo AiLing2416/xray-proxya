@@ -503,4 +503,98 @@ func TestProxyNodeExitConfigurationSuite(t *testing.T) {
 	}
 }
 
+func TestGatewayFull6StateMatrixConfiguration(t *testing.T) {
+	setupTestConfigDir(t)
+
+	// Verify all 6 states in the state matrix can be configured and validated
+	states := []struct {
+		name      string
+		args      []string
+		wantState string
+		wantLocal bool
+		wantLAN   bool
+	}{
+		{
+			name:      "Case 1: disabled",
+			args:      []string{"--state", "disabled", "--no-local", "--no-lan"},
+			wantState: "disabled",
+			wantLocal: false,
+			wantLAN:   false,
+		},
+		{
+			name:      "Case 2: forward-only local-only",
+			args:      []string{"--state", "forward-only", "--local", "--no-lan"},
+			wantState: "forward-only",
+			wantLocal: true,
+			wantLAN:   false,
+		},
+		{
+			name:      "Case 3: forward-only lan-only",
+			args:      []string{"--state", "forward-only", "--no-local", "--lan"},
+			wantState: "forward-only",
+			wantLocal: false,
+			wantLAN:   true,
+		},
+		{
+			name:      "Case 4: proxy local-only",
+			args:      []string{"--state", "proxy", "--local", "--no-lan"},
+			wantState: "proxy",
+			wantLocal: true,
+			wantLAN:   false,
+		},
+		{
+			name:      "Case 5: proxy lan-only",
+			args:      []string{"--state", "proxy", "--no-local", "--lan"},
+			wantState: "proxy",
+			wantLocal: false,
+			wantLAN:   true,
+		},
+		{
+			name:      "Case 6: proxy dual",
+			args:      []string{"--state", "proxy", "--local", "--lan"},
+			wantState: "proxy",
+			wantLocal: true,
+			wantLAN:   true,
+		},
+	}
+
+	for _, tc := range states {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.UserConfig{
+				Role: config.RoleGateway,
+				Gateway: config.GatewayConfig{
+					Mode:         "tun",
+					LANInterface: "ens18",
+				},
+			}
+			if err := cfg.SaveEx(true); err != nil {
+				t.Fatalf("save staging config: %v", err)
+			}
+			gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+				_ = f.Value.Set(f.DefValue)
+				f.Changed = false
+			})
+			if err := gatewaySetCmd.ParseFlags(tc.args); err != nil {
+				t.Fatalf("ParseFlags error for %v: %v", tc.args, err)
+			}
+			if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+				t.Fatalf("RunE error: %v", err)
+			}
+			updated, err := config.LoadConfigEx(true)
+			if err != nil {
+				t.Fatalf("load staging config: %v", err)
+			}
+			if updated.Gateway.State != tc.wantState {
+				t.Errorf("State = %s, want %s", updated.Gateway.State, tc.wantState)
+			}
+			if updated.Gateway.LocalEnabled != tc.wantLocal {
+				t.Errorf("LocalEnabled = %v, want %v", updated.Gateway.LocalEnabled, tc.wantLocal)
+			}
+			if updated.Gateway.LANEnabled != tc.wantLAN {
+				t.Errorf("LANEnabled = %v, want %v", updated.Gateway.LANEnabled, tc.wantLAN)
+			}
+		})
+	}
+}
+
 
