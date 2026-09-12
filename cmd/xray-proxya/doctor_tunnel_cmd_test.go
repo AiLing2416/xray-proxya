@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -172,11 +173,119 @@ func TestDetectAndFixNAT(t *testing.T) {
 	}
 }
 
+func TestDoctorTunnelCmd_Alias(t *testing.T) {
+	if doctorTunnelCmd.Name() != "he-tunnel" {
+		t.Errorf("expected command name 'he-tunnel', got '%s'", doctorTunnelCmd.Name())
+	}
+	if !doctorTunnelCmd.HasAlias("tunnel") {
+		t.Errorf("expected 'tunnel' to be an alias of doctorTunnelCmd")
+	}
+	if doctorTunnelCmd.Short != "Hurricane Electric (HE) 6in4 tunnel declarative deployment, diagnostics, and management" {
+		t.Errorf("unexpected doctorTunnelCmd.Short: %s", doctorTunnelCmd.Short)
+	}
+}
+
+func TestDoctorTunnel_RequireRoot(t *testing.T) {
+	origRoot := tunnelRequireRoot
+	tunnelRequireRoot = func(op string) error {
+		return fmt.Errorf("root required for %s", op)
+	}
+	defer func() { tunnelRequireRoot = origRoot }()
+
+	errUp := doctorTunnelUpCmd.RunE(doctorTunnelUpCmd, []string{"dummy-path"})
+	if errUp == nil || !strings.Contains(errUp.Error(), "doctor he-tunnel up") {
+		t.Errorf("expected root error mentioning 'doctor he-tunnel up', got: %v", errUp)
+	}
+
+	errDown := doctorTunnelDownCmd.RunE(doctorTunnelDownCmd, []string{"dummy-path"})
+	if errDown == nil || !strings.Contains(errDown.Error(), "doctor he-tunnel down") {
+		t.Errorf("expected root error mentioning 'doctor he-tunnel down', got: %v", errDown)
+	}
+}
+
+func TestDoctorTunnelUp_ExecutionAndDecoupledService(t *testing.T) {
+	tmpDir := t.TempDir()
+	origSystemdDir := systemdDir
+	systemdDir = tmpDir
+	defer func() { systemdDir = origSystemdDir }()
+
+	origRoot := tunnelRequireRoot
+	tunnelRequireRoot = func(string) error { return nil }
+	defer func() { tunnelRequireRoot = origRoot }()
+
+	origRunner := tunnelCmdRunner
+	tunnelCmdRunner = func(name string, arg ...string) ([]byte, error) {
+		return []byte("ok"), nil
+	}
+	defer func() { tunnelCmdRunner = origRunner }()
+
+	origProbe := tunnelProbeRunner
+	tunnelProbeRunner = func(ip string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 15 * time.Millisecond, nil
+	}
+	defer func() { tunnelProbeRunner = origProbe }()
+
+	// Write test config file with routed subnet
+	confPath := filepath.Join(tmpDir, "interfaces-up")
+	confContent := `auto he-ipv6
+iface he-ipv6 inet6 v4tunnel
+        address 2001:db8:1f0a:692::2/64
+        endpoint 216.66.80.30
+        local 198.51.100.87
+        gateway 2001:db8:1f0a:692::1
+# Routed /64: 2001:db8:1f0a:692::/64
+`
+	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	doctorTunnelUpCmd.SetOut(&buf)
+	err := doctorTunnelUpCmd.RunE(doctorTunnelUpCmd, []string{confPath})
+	if err != nil {
+		t.Fatalf("doctor he-tunnel up failed: %v", err)
+	}
+
+	out := buf.String()
+
+	// Verify console output
+	if !strings.Contains(out, "✅ Hurricane Electric IPv6 tunnel 'he-ipv6' deployed successfully!") {
+		t.Errorf("expected success banner in output:\n%s", out)
+	}
+	if !strings.Contains(out, "💡 Next step: To use this tunnel for dynamic IPv6 rotation, run:") {
+		t.Errorf("expected dynamic-v6 hint in output:\n%s", out)
+	}
+	if !strings.Contains(out, "xray-proxya endpoint dynamic-v6 add --interface he-ipv6 --cidr 2001:db8:1f0a:692::/64") {
+		t.Errorf("expected dynamic-v6 command in output:\n%s", out)
+	}
+
+	// Verify generated systemd service file
+	unitPath := filepath.Join(tmpDir, "he-tunnel-he-ipv6.service")
+	unitBytes, err := os.ReadFile(unitPath)
+	if err != nil {
+		t.Fatalf("failed to read generated systemd service unit: %v", err)
+	}
+	unitContent := string(unitBytes)
+
+	// Decoupling assertions
+	if !strings.Contains(unitContent, "WantedBy=multi-user.target") {
+		t.Errorf("expected WantedBy=multi-user.target in unit:\n%s", unitContent)
+	}
+	if !strings.Contains(unitContent, "After=network-online.target") {
+		t.Errorf("expected After=network-online.target in unit:\n%s", unitContent)
+	}
+	for _, forbidden := range []string{"PartOf=xray-proxya.service", "Requires=xray-proxya.service", "Wants=xray-proxya.service"} {
+		if strings.Contains(unitContent, forbidden) {
+			t.Errorf("forbidden dependency %q found in unit:\n%s", forbidden, unitContent)
+		}
+	}
+}
+
 func TestDoctorTunnelUp_RequiresArgument(t *testing.T) {
 	cmd := doctorTunnelUpCmd
 	err := cmd.Args(cmd, []string{})
 	if err == nil {
-		t.Fatalf("expected error when doctor tunnel up is called without arguments, got nil")
+		t.Fatalf("expected error when doctor he-tunnel up is called without arguments, got nil")
 	}
 	if !strings.Contains(err.Error(), "accepts 1 arg(s)") {
 		t.Errorf("unexpected error message: %v", err)
@@ -187,7 +296,7 @@ func TestDoctorTunnelDown_RequiresArgument(t *testing.T) {
 	cmd := doctorTunnelDownCmd
 	err := cmd.Args(cmd, []string{})
 	if err == nil {
-		t.Fatalf("expected error when doctor tunnel down is called without arguments, got nil")
+		t.Fatalf("expected error when doctor he-tunnel down is called without arguments, got nil")
 	}
 	if !strings.Contains(err.Error(), "accepts 1 arg(s)") {
 		t.Errorf("unexpected error message: %v", err)
@@ -230,7 +339,7 @@ iface he-ipv6 inet6 v4tunnel
 
 	err := doctorTunnelDownCmd.RunE(doctorTunnelDownCmd, []string{confPath})
 	if err != nil {
-		t.Fatalf("doctor tunnel down with config file failed: %v", err)
+		t.Fatalf("doctor he-tunnel down with config file failed: %v", err)
 	}
 
 	if _, err := os.Stat(svcPath); !os.IsNotExist(err) {
@@ -284,7 +393,7 @@ func TestDoctorTunnelDown_WithInterface_Verified(t *testing.T) {
 
 	err := doctorTunnelDownCmd.RunE(doctorTunnelDownCmd, []string{"he-ipv6"})
 	if err != nil {
-		t.Fatalf("doctor tunnel down with verified interface failed: %v", err)
+		t.Fatalf("doctor he-tunnel down with verified interface failed: %v", err)
 	}
 
 	if _, err := os.Stat(svcPath); !os.IsNotExist(err) {
@@ -406,7 +515,7 @@ func TestDoctorTunnelStatus_TwoTier_ScanAndAsciiCards(t *testing.T) {
 	doctorTunnelStatusCmd.SetOut(&buf)
 	err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{})
 	if err != nil {
-		t.Fatalf("doctor tunnel status failed: %v", err)
+		t.Fatalf("doctor he-tunnel status failed: %v", err)
 	}
 
 	out := buf.String()
@@ -500,7 +609,7 @@ func TestDoctorTunnelStatus_JSONOutput(t *testing.T) {
 	doctorTunnelStatusCmd.SetOut(&buf)
 	err := doctorTunnelStatusCmd.RunE(doctorTunnelStatusCmd, []string{})
 	if err != nil {
-		t.Fatalf("doctor tunnel status with --json failed: %v", err)
+		t.Fatalf("doctor he-tunnel status with --json failed: %v", err)
 	}
 
 	var report TunnelStatusReport
