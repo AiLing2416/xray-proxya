@@ -190,8 +190,8 @@ type Model struct {
 
 	// Large info pane (40% height)
 	largeInfo          bool
-	// Copy feedback timer (1s green badge)
-	copyFeedbackUntil  time.Time
+	// Transient feedback manager
+	flash              *FlashManager
 
 	// In-bar input mode
 	inputMode          inputMode
@@ -453,7 +453,15 @@ func InitialModel() Model {
 		gwNftables:      nft,
 		gwTun:           tun,
 		gwForward:       fwd,
+		flash:           NewFlashManager(),
 	}
+}
+
+func (m *Model) getFlash() *FlashManager {
+	if m.flash == nil {
+		m.flash = NewFlashManager()
+	}
+	return m.flash
 }
 
 func (m Model) Init() tea.Cmd {
@@ -475,6 +483,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case clearNoticeMsg:
+		return m, nil
+
+	case FlashExpiryMsg:
+		m.getFlash().Expire(msg.ID)
 		return m, nil
 
 	case statsMsg:
@@ -584,6 +596,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.setOverride(fmt.Sprintf("Apply Error (exit != 0):\n%s", outText))
 			cmd = m.setNotice("apply failed")
+			flashCmd := m.getFlash().Trigger("apply", FlashError, 1*time.Second)
+			return m, tea.Batch(cmd, flashCmd)
 		} else {
 			m.overrideMsg = ""
 			cmd = m.setNotice(summarizeActionResult(msg.lines, msg.err))
@@ -595,8 +609,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.serviceState = xray.GetServiceState()
 			m.managedServices = QueryManagedServices(m.active)
 			m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+			flashCmd := m.getFlash().Trigger("apply", FlashSuccess, 1*time.Second)
+			return m, tea.Batch(cmd, flashCmd)
 		}
-		return m, cmd
 
 	case gatewayActionResultMsg:
 		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
@@ -863,13 +878,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case "a", "A":
-			if m.currentTab == tabStatus {
+			if m.servicePropMode || m.servicePropEdit || m.inputMode != inputNone || m.infoSelectMode {
 				return m, nil
 			}
 			if m.currentTab == tabService {
-				if m.servicePropMode || m.servicePropEdit {
-					return m, nil
-				}
 				if !hasAnyServiceStagedChanges(m.active, m.staging, m.managedServices) {
 					return m, nil
 				}
@@ -877,13 +889,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.performApply()
 
 		case "u", "U":
-			if m.currentTab == tabStatus {
+			if m.servicePropMode || m.servicePropEdit || m.inputMode != inputNone || m.infoSelectMode {
 				return m, nil
 			}
 			if m.currentTab == tabService {
-				if m.servicePropMode || m.servicePropEdit {
-					return m, nil
-				}
 				if !hasAnyServiceStagedChanges(m.active, m.staging, m.managedServices) {
 					return m, nil
 				}
@@ -896,7 +905,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.relayResults = make(map[string]relayTestMsg)
 			m.overrideMsg = ""
-			return m, m.setNotice("staging reset")
+			flashCmd := m.getFlash().Trigger("undo", FlashSuccess, 1*time.Second)
+			return m, tea.Batch(m.setNotice("staging reset"), flashCmd)
 
 		case "c", "C":
 			if m.currentTab == tabStatus || m.currentTab == tabService {
@@ -906,7 +916,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if text != "" {
 				writeOSC52(text)
 				_ = clipboard.WriteAll(text)
-				m.copyFeedbackUntil = time.Now().Add(1 * time.Second)
+				flashCmd := m.getFlash().Trigger("copy", FlashSuccess, 1*time.Second)
+				return m, flashCmd
 			}
 			return m, nil
 		}
@@ -2037,19 +2048,46 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 		isFollowTitle = true
 	}
 
-	var header string
+	var styledTitle string
 	if isErrorTitle {
-		redTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(title)
-		header = detailPaneCustomHeader(redTitle, title, lineWidth)
+		styledTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(title)
 	} else if isPromptTitle {
-		blueTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(title)
-		header = detailPaneCustomHeader(blueTitle, title, lineWidth)
+		styledTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("33")).Render(title)
 	} else if isFollowTitle {
-		greenTitle := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(title)
-		header = detailPaneCustomHeader(greenTitle, title, lineWidth)
+		styledTitle = lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render(title)
 	} else {
-		header = detailPaneHeader(title, lineWidth)
+		styledTitle = title
 	}
+
+	var rightBadges []string
+	showShortcuts := !m.servicePropEdit && !m.servicePropMode && m.inputMode == inputNone && !m.infoSelectMode
+	if showShortcuts {
+		hasStaged := config.StagingExists() ||
+			(m.currentTab == tabService && hasAnyServiceStagedChanges(m.active, m.staging, m.managedServices)) ||
+			(m.currentTab == tabGateway && HasGatewayStagedChanges(m.active, m.staging))
+
+		var applyBadge string
+		if m.getFlash().IsActive("apply") {
+			applyBadge = m.getFlash().Render("apply", "[A] Apply", lipgloss.NewStyle())
+		} else if hasStaged {
+			applyBadge = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("[A] Apply")
+		} else {
+			applyBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[A] Apply")
+		}
+
+		var undoBadge string
+		if m.getFlash().IsActive("undo") {
+			undoBadge = m.getFlash().Render("undo", "[U] Undo", lipgloss.NewStyle())
+		} else if hasStaged {
+			undoBadge = "[U] Undo"
+		} else {
+			undoBadge = lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("[U] Undo")
+		}
+
+		rightBadges = []string{applyBadge, undoBadge, "[+/-] Height", "[Q] Quit"}
+	}
+
+	header := detailPaneHeaderWithBadges(styledTitle, title, rightBadges, lineWidth)
 
 	var rawLines []string
 
@@ -2167,9 +2205,50 @@ func detailPaneCustomHeader(styledTitle, rawTitle string, width int) string {
 	return "┌─ " + styledTitle + " " + strings.Repeat("─", dashes) + "┐"
 }
 
+func detailPaneHeaderWithBadges(styledTitle, rawTitle string, badges []string, width int) string {
+	titleLen := runeLen(rawTitle)
+	leftOverhead := 3 + titleLen + 1 // "┌─ " + rawTitle + " "
+	rightOverhead := 4               // " ──┐"
+
+	if len(badges) == 0 || width < leftOverhead+rightOverhead+2 {
+		dashes := width - titleLen - 4
+		if dashes < 1 {
+			dashes = 1
+		}
+		return "┌─ " + styledTitle + " " + strings.Repeat("─", dashes) + "┐"
+	}
+
+	candidateSets := [][]string{
+		badges,
+	}
+	if len(badges) >= 4 {
+		candidateSets = append(candidateSets,
+			[]string{badges[0], badges[2], badges[3]}, // drop [U] Undo
+			[]string{badges[0], badges[3]},            // drop [+/-] Height
+			[]string{badges[3]},                       // drop [A] Apply, keep [Q] Quit
+		)
+	}
+
+	for _, set := range candidateSets {
+		joined := strings.Join(set, "  ")
+		bWidth := lipgloss.Width(joined)
+		needed := leftOverhead + 1 + bWidth + rightOverhead
+		if width >= needed+1 {
+			dashes := width - needed
+			return "┌─ " + styledTitle + " " + strings.Repeat("─", dashes) + " " + joined + " ──┐"
+		}
+	}
+
+	dashes := width - titleLen - 4
+	if dashes < 1 {
+		dashes = 1
+	}
+	return "┌─ " + styledTitle + " " + strings.Repeat("─", dashes) + "┐"
+}
+
 func (m Model) renderFooter() string {
 	var badges []string
-	isCopied := time.Now().Before(m.copyFeedbackUntil)
+	isCopied := m.getFlash().IsActive("copy")
 	copyLink := m.getSelectedLink()
 
 	if m.servicePropEdit {
@@ -2192,42 +2271,25 @@ func (m Model) renderFooter() string {
 	} else if m.inputMode != inputNone {
 		badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
 	} else {
-		badges = append(badges, "[Tab] Switch")
-
 		switch m.currentTab {
 		case tabStatus:
-			badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow")
 		case tabService:
-			hasStaged := false
-			if m.cursor >= 0 && m.cursor < len(m.managedServices) {
-				hasStaged = serviceHasStagedChanges(m.active, m.staging, m.managedServices[m.cursor])
-			}
-			if hasStaged {
-				badges = append(badges, "[Enter] Config", "[A] Apply", "[U] Undo", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
-			} else {
-				badges = append(badges, "[Enter] Config", "[Space/S] Toggle", "[R] Restart", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow", "[+/-] Height", "[Q] Quit")
-			}
+			badges = append(badges, "[Enter] Config", "[Space/S] Toggle", "[R] Restart", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow")
 		case tabPresets:
-			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy")
 		case tabRelays:
-			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy")
 		case tabGuests:
-			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy")
 		case tabGateway:
-			hasStaged := HasGatewayStagedChanges(m.active, m.staging)
-			var actBadges []string
 			if m.cursor == 1 {
-				actBadges = append(actBadges, "[Space] Toggle Rules")
+				badges = append(badges, "[Space] Toggle Rules")
 			} else if m.cursor == 2 || m.cursor == 3 {
-				actBadges = append(actBadges, "[Space] Toggle", "[T] Test Route")
+				badges = append(badges, "[Space] Toggle", "[T] Test Route")
 			} else {
-				actBadges = append(actBadges, "[Enter] Edit")
+				badges = append(badges, "[Enter] Edit")
 			}
-			if hasStaged {
-				actBadges = append(actBadges, "[A] Apply", "[U] Undo")
-			}
-			actBadges = append(actBadges, "[+/-] Height", "[Q] Quit")
-			badges = append(badges, actBadges...)
 		}
 	}
 
