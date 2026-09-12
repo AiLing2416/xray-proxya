@@ -386,8 +386,9 @@ func findVerifiedTunnelConfig(iface string) (bool, string) {
 }
 
 var doctorTunnelCmd = &cobra.Command{
-	Use:   "tunnel",
-	Short: "Hurricane Electric (HE) 6in4 tunnel declarative deployment, diagnostics, and management",
+	Use:     "he-tunnel",
+	Aliases: []string{"tunnel"},
+	Short:   "Hurricane Electric (HE) 6in4 tunnel declarative deployment, diagnostics, and management",
 	Long: `Declarative provisioner and diagnostic tools for Hurricane Electric 6in4 IPv6 tunnels.
 Operates on explicit configuration files, automatically detects NAT bindings,
 incrementally configures SIT tunnels, and integrates with systemd.`,
@@ -398,7 +399,7 @@ var doctorTunnelUpCmd = &cobra.Command{
 	Short: "Deploy or update Hurricane Electric 6in4 tunnel from a configuration file",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := tunnelRequireRoot("doctor tunnel up"); err != nil {
+		if err := tunnelRequireRoot("doctor he-tunnel up"); err != nil {
 			return err
 		}
 
@@ -524,7 +525,7 @@ var doctorTunnelDownCmd = &cobra.Command{
 	Short: "Tear down Hurricane Electric 6in4 tunnel and remove systemd persistence",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := tunnelRequireRoot("doctor tunnel down"); err != nil {
+		if err := tunnelRequireRoot("doctor he-tunnel down"); err != nil {
 			return err
 		}
 
