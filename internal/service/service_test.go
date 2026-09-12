@@ -24,6 +24,18 @@ func TestBuildSystemdServiceContentUsesJournaldAndSandbox(t *testing.T) {
 	}
 }
 
+func TestBuildSystemdServiceContentDecoupledFromTunnel(t *testing.T) {
+	content := BuildSystemdServiceContent(RootManagerBinary, "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin", "/root/.config/xray-proxya", "CAP_NET_BIND_SERVICE", true, true)
+	if !strings.Contains(content, "After=network-online.target he-tunnel.service he-tunnel-he-ipv6.service") {
+		t.Fatalf("expected soft After ordering for he-tunnel, got:\n%s", content)
+	}
+	for _, forbidden := range []string{"Requires=he-tunnel", "Wants=he-tunnel", "PartOf=he-tunnel"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("forbidden strong dependency %q found in unit:\n%s", forbidden, content)
+		}
+	}
+}
+
 func TestBuildSubServiceContent(t *testing.T) {
 	content := BuildSubServiceContent(RootManagerBinary, "/root/.local/share/xray-proxya", "/root/.config/xray-proxya", "/root/.local/share/xray-proxya/bin", true)
 	for _, required := range []string{
