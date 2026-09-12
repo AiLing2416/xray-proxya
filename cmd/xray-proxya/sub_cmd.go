@@ -20,8 +20,12 @@ var (
 	subGateURL, subEndpoint, subListen, subToken, subTargetType, subTargetAlias string
 	subPort                                                                     int
 	subShowGuest                                                                string
+	subShowAll                                                                  bool
 	subShowQRCode                                                               bool
 	subShowQRInvert                                                             bool
+	subListGuest                                                                string
+	subListQRCode                                                               bool
+	subListQRInvert                                                             bool
 )
 
 var subCmd = &cobra.Command{
@@ -486,6 +490,156 @@ Supported target types:
 	},
 }
 
+func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR bool, invertQR bool) error {
+	if guestFilter != "" {
+		var target *config.GuestConfig
+		for _, g := range cfg.Guests {
+			if g.Alias == guestFilter {
+				target = &g
+				break
+			}
+		}
+		if target == nil {
+			return fmt.Errorf("❌ Guest '%s' not found.", guestFilter)
+		}
+
+		fmt.Println("\n--- Guest Subscription ---")
+		fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
+		fmt.Println("-----------------------------------------------------------------------------------------")
+		state := "active"
+		if !target.Enabled {
+			state = "disabled"
+		}
+		limit := config.FormatByteSize(target.EffectiveLimitBytes())
+		used := config.FormatByteSize(target.UsedBytes)
+		url := subGuestSubURL(cfg, target.UUID)
+		fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", target.Alias, state, used+"/"+limit, target.ResetDay, url)
+		if withQR && url != "" {
+			fmt.Println()
+			if qr, err := qrcode.RenderTerminal(url, invertQR); err == nil {
+				fmt.Print(qr)
+				fmt.Println()
+			}
+		}
+		fmt.Println()
+		return nil
+	}
+
+	adminSub := ensureManagedSubscription(cfg)
+	if adminSub.Token == "" {
+		fmt.Println("ℹ️  No subscription configured. Use 'sub set'.")
+	} else {
+		subURL := managedSubURL(cfg, adminSub)
+		proto := "HTTP"
+		if strings.HasPrefix(subURL, "https://") {
+			proto = "HTTPS"
+		}
+		fmt.Println("\n--- Admin Subscription ---")
+		fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, proto, subURL)
+		ep := adminSub.Endpoint
+		if ep == "" {
+			ep = "default"
+		}
+		fmt.Printf("          └─ Endpoint: %s\n", ep)
+		if withQR && subURL != "" {
+			fmt.Println()
+			if qr, err := qrcode.RenderTerminal(subURL, invertQR); err == nil {
+				fmt.Print(qr)
+				fmt.Println()
+			}
+		}
+	}
+
+	if len(cfg.SubscriptionInstances) > 0 {
+		var names []string
+		for name := range cfg.SubscriptionInstances {
+			if name != defaultSubInstance {
+				names = append(names, name)
+			}
+		}
+		sort.Strings(names)
+		if len(names) > 0 {
+			fmt.Println("\n--- Subscription Instances ---")
+			for _, name := range names {
+				inst := cfg.SubscriptionInstances[name]
+				if inst.Token == "" {
+					continue
+				}
+				port := inst.Port
+				if port <= 0 {
+					port = cfg.SubPort
+				}
+				listen := inst.Listen
+				if listen == "" {
+					listen = "127.0.0.1"
+				}
+				inst.Port = port
+				inst.Listen = listen
+				subURL := managedSubURL(cfg, &inst)
+				proto := "HTTP"
+				if strings.HasPrefix(subURL, "https://") {
+					proto = "HTTPS"
+				}
+				fmt.Printf("[%s] Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", name, inst.Listen, inst.Port, inst.TargetType, proto, subURL)
+				ep := inst.Endpoint
+				if ep == "" {
+					ep = "default"
+				}
+				fmt.Printf("          └─ Endpoint: %s\n", ep)
+				if withQR && subURL != "" {
+					fmt.Println()
+					if qr, err := qrcode.RenderTerminal(subURL, invertQR); err == nil {
+						fmt.Print(qr)
+						fmt.Println()
+					}
+				}
+			}
+		}
+	}
+
+	if len(cfg.Guests) > 0 {
+		fmt.Println("\n--- Guest Subscriptions ---")
+		fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
+		fmt.Println("-----------------------------------------------------------------------------------------")
+		for _, g := range cfg.Guests {
+			state := "active"
+			if !g.Enabled {
+				state = "disabled"
+			}
+			limit := config.FormatByteSize(g.EffectiveLimitBytes())
+			used := config.FormatByteSize(g.UsedBytes)
+			url := subGuestSubURL(cfg, g.UUID)
+			fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", g.Alias, state, used+"/"+limit, g.ResetDay, url)
+			if withQR && url != "" {
+				fmt.Println()
+				if qr, err := qrcode.RenderTerminal(url, invertQR); err == nil {
+					fmt.Print(qr)
+					fmt.Println()
+				}
+			}
+		}
+		fmt.Println()
+	}
+	return nil
+}
+
+var subListCmd = &cobra.Command{
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List subscription instances and guest subscriptions",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		if reconcileSubscriptions(cfg) {
+			_ = cfg.SaveEx(true)
+		}
+
+		return printSubscriptionsList(cfg, subListGuest, subListQRCode, subListQRInvert)
+	},
+}
+
 var subShowCmd = &cobra.Command{
 	Use:   "show [instance]",
 	Short: "Show subscription URLs and configuration",
@@ -499,6 +653,12 @@ var subShowCmd = &cobra.Command{
 			_ = cfg.SaveEx(true)
 		}
 
+		// 1. Show all subscriptions when --all is set
+		if subShowAll {
+			return printSubscriptionsList(cfg, subShowGuest, subShowQRCode, subShowQRInvert)
+		}
+
+		// 2. Show specific subscription instance when positional arg is provided
 		if len(args) == 1 && strings.TrimSpace(args[0]) != "" {
 			instName := strings.TrimSpace(args[0])
 			var inst config.AdminSubConfig
@@ -550,6 +710,7 @@ var subShowCmd = &cobra.Command{
 			return nil
 		}
 
+		// 3. Show specific guest subscription when -g is provided
 		if subShowGuest != "" {
 			var target *config.GuestConfig
 			for _, g := range cfg.Guests {
@@ -584,101 +745,32 @@ var subShowCmd = &cobra.Command{
 			return nil
 		}
 
+		// 4. Default: No args, no -g, no --all -> show Admin Subscription only (aligned with show)
 		adminSub := ensureManagedSubscription(cfg)
 		if adminSub.Token == "" {
 			fmt.Println("ℹ️  No subscription configured. Use 'sub set'.")
-		} else {
-			subURL := managedSubURL(cfg, adminSub)
-			proto := "HTTP"
-			if strings.HasPrefix(subURL, "https://") {
-				proto = "HTTPS"
-			}
-			fmt.Println("\n--- Admin Subscription ---")
-			fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, proto, subURL)
-			ep := adminSub.Endpoint
-			if ep == "" {
-				ep = "default"
-			}
-			fmt.Printf("          └─ Endpoint: %s\n", ep)
-			if subShowQRCode && subURL != "" {
-				fmt.Println()
-				if qr, err := qrcode.RenderTerminal(subURL, subShowQRInvert); err == nil {
-					fmt.Print(qr)
-					fmt.Println()
-				}
-			}
+			return nil
 		}
-
-		if len(cfg.SubscriptionInstances) > 0 {
-			var names []string
-			for name := range cfg.SubscriptionInstances {
-				if name != defaultSubInstance {
-					names = append(names, name)
-				}
-			}
-			sort.Strings(names)
-			if len(names) > 0 {
-				fmt.Println("\n--- Subscription Instances ---")
-				for _, name := range names {
-					inst := cfg.SubscriptionInstances[name]
-					if inst.Token == "" {
-						continue
-					}
-					port := inst.Port
-					if port <= 0 {
-						port = cfg.SubPort
-					}
-					listen := inst.Listen
-					if listen == "" {
-						listen = "127.0.0.1"
-					}
-					inst.Port = port
-					inst.Listen = listen
-					subURL := managedSubURL(cfg, &inst)
-					proto := "HTTP"
-					if strings.HasPrefix(subURL, "https://") {
-						proto = "HTTPS"
-					}
-					fmt.Printf("[%s] Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", name, inst.Listen, inst.Port, inst.TargetType, proto, subURL)
-					ep := inst.Endpoint
-					if ep == "" {
-						ep = "default"
-					}
-					fmt.Printf("          └─ Endpoint: %s\n", ep)
-					if subShowQRCode && subURL != "" {
-						fmt.Println()
-						if qr, err := qrcode.RenderTerminal(subURL, subShowQRInvert); err == nil {
-							fmt.Print(qr)
-							fmt.Println()
-						}
-					}
-				}
-			}
+		subURL := managedSubURL(cfg, adminSub)
+		proto := "HTTP"
+		if strings.HasPrefix(subURL, "https://") {
+			proto = "HTTPS"
 		}
-
-		if len(cfg.Guests) > 0 {
-			fmt.Println("\n--- Guest Subscriptions ---")
-			fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
-			fmt.Println("-----------------------------------------------------------------------------------------")
-			for _, g := range cfg.Guests {
-				state := "active"
-				if !g.Enabled {
-					state = "disabled"
-				}
-				limit := config.FormatByteSize(g.EffectiveLimitBytes())
-				used := config.FormatByteSize(g.UsedBytes)
-				url := subGuestSubURL(cfg, g.UUID)
-				fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", g.Alias, state, used+"/"+limit, g.ResetDay, url)
-				if subShowQRCode && url != "" {
-					fmt.Println()
-					if qr, err := qrcode.RenderTerminal(url, subShowQRInvert); err == nil {
-						fmt.Print(qr)
-						fmt.Println()
-					}
-				}
-			}
+		fmt.Println("\n--- Admin Subscription ---")
+		fmt.Printf("Listen: %s:%-5d Target: %-8s Proto: %-5s URL: %s\n", adminSub.Listen, adminSub.Port, adminSub.TargetType, proto, subURL)
+		ep := adminSub.Endpoint
+		if ep == "" {
+			ep = "default"
+		}
+		fmt.Printf("          └─ Endpoint: %s\n", ep)
+		if subShowQRCode && subURL != "" {
 			fmt.Println()
+			if qr, err := qrcode.RenderTerminal(subURL, subShowQRInvert); err == nil {
+				fmt.Print(qr)
+				fmt.Println()
+			}
 		}
+		fmt.Println()
 		return nil
 	},
 }
@@ -732,13 +824,19 @@ func init() {
 
 	subShowCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Filter by guest alias")
+	subShowCmd.Flags().BoolVarP(&subShowAll, "all", "a", false, "Show all subscription instances and guest subscriptions")
 	subShowCmd.Flags().BoolVarP(&subShowQRCode, "qrcode", "q", false, "Display QR code for subscription URLs")
 	subShowCmd.Flags().BoolVar(&subShowQRInvert, "qr-invert", false, "Invert QR code colors for light-background terminals")
 	subShowCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
 
+	subListCmd.Flags().StringVarP(&subListGuest, "guest", "g", "", "Filter by guest alias")
+	subListCmd.Flags().BoolVarP(&subListQRCode, "qrcode", "q", false, "Display QR code for subscription URLs")
+	subListCmd.Flags().BoolVar(&subListQRInvert, "qr-invert", false, "Invert QR code colors for light-background terminals")
+	subListCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
+
 	subRunCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 	subValidateCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 
-	subCmd.AddCommand(subSetCmd, subShowCmd, subRunCmd, subValidateCmd)
+	subCmd.AddCommand(subSetCmd, subShowCmd, subListCmd, subRunCmd, subValidateCmd)
 	rootCmd.AddCommand(subCmd)
 }

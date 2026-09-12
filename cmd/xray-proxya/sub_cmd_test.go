@@ -172,21 +172,45 @@ func TestSubShowInstancePenetration(t *testing.T) {
 		t.Fatalf("expected not found error, got %v", err)
 	}
 
-	// 3. Show all instances (no args)
-	allOut := captureStdout(t, func() {
+	// 3. Show without args (Admin only, aligns with show)
+	adminOnlyOut := captureStdout(t, func() {
 		err := subShowCmd.RunE(subShowCmd, []string{})
 		if err != nil {
 			t.Fatalf("sub show failed: %v", err)
 		}
 	})
-	if !strings.Contains(allOut, "Admin Subscription") || !strings.Contains(allOut, "admin-tok-12345") {
-		t.Errorf("expected Admin Subscription in output, got: %s", allOut)
+	if !strings.Contains(adminOnlyOut, "Admin Subscription") || !strings.Contains(adminOnlyOut, "admin-tok-12345") {
+		t.Errorf("expected Admin Subscription in output, got: %s", adminOnlyOut)
 	}
-	if !strings.Contains(allOut, "node-hk") || !strings.Contains(allOut, "hk-token-9999") {
-		t.Errorf("expected node-hk in output, got: %s", allOut)
+	if strings.Contains(adminOnlyOut, "node-hk") {
+		t.Errorf("sub show without args should only display Admin Subscription, got: %s", adminOnlyOut)
 	}
 
-	// 4. Validate instance penetration
+	// 4. Show with --all
+	subShowAll = true
+	allOut := captureStdout(t, func() {
+		err := subShowCmd.RunE(subShowCmd, []string{})
+		if err != nil {
+			t.Fatalf("sub show --all failed: %v", err)
+		}
+	})
+	subShowAll = false
+	if !strings.Contains(allOut, "Admin Subscription") || !strings.Contains(allOut, "node-hk") {
+		t.Errorf("expected both admin and node-hk in sub show --all, got: %s", allOut)
+	}
+
+	// 5. sub list lists all instances
+	listOut := captureStdout(t, func() {
+		err := subListCmd.RunE(subListCmd, []string{})
+		if err != nil {
+			t.Fatalf("sub list failed: %v", err)
+		}
+	})
+	if !strings.Contains(listOut, "Admin Subscription") || !strings.Contains(listOut, "node-hk") {
+		t.Errorf("expected both admin and node-hk in sub list, got: %s", listOut)
+	}
+
+	// 6. Validate instance penetration
 	if err := subValidateCmd.RunE(subValidateCmd, []string{"node-hk"}); err != nil {
 		t.Errorf("sub validate node-hk failed: %v", err)
 	}
@@ -330,13 +354,16 @@ func TestSubShowCmd_QRCodeFlag(t *testing.T) {
 		subShowQRCode = false
 		subShowQRInvert = false
 		subShowGuest = ""
+		subShowAll = false
 		subShowCmd.Flags().Lookup("qrcode").Changed = false
 		_ = subShowCmd.Flags().Lookup("qrcode").Value.Set("false")
 		subShowCmd.Flags().Lookup("guest").Changed = false
 		_ = subShowCmd.Flags().Lookup("guest").Value.Set("")
+		subShowCmd.Flags().Lookup("all").Changed = false
+		_ = subShowCmd.Flags().Lookup("all").Value.Set("false")
 	}()
 
-	// 1. Run sub show --qrcode
+	// 1. Run sub show --qrcode (Admin only)
 	subShowQRCode = true
 	out := captureStdout(t, func() {
 		err := subShowCmd.RunE(subShowCmd, []string{})
@@ -345,14 +372,30 @@ func TestSubShowCmd_QRCodeFlag(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "admin-tok-qr") || !strings.Contains(out, "alice") {
-		t.Errorf("expected admin and guest in output, got: %s", out)
+	if !strings.Contains(out, "admin-tok-qr") {
+		t.Errorf("expected admin in sub show output, got: %s", out)
+	}
+	if strings.Contains(out, "alice") {
+		t.Errorf("sub show without args should only display admin, got: %s", out)
 	}
 	if !strings.Contains(out, "█") || !strings.Contains(out, "▀") {
 		t.Errorf("expected QR code blocks in output when --qrcode is set, got: %s", out)
 	}
 
-	// 2. Filter by specific guest: sub show -g alice --qrcode
+	// 2. Run sub show --all --qrcode
+	subShowAll = true
+	outAll := captureStdout(t, func() {
+		err := subShowCmd.RunE(subShowCmd, []string{})
+		if err != nil {
+			t.Fatalf("subShowCmd.RunE --all failed: %v", err)
+		}
+	})
+	subShowAll = false
+	if !strings.Contains(outAll, "admin-tok-qr") || !strings.Contains(outAll, "alice") {
+		t.Errorf("expected admin and alice in sub show --all, got: %s", outAll)
+	}
+
+	// 3. Filter by specific guest: sub show -g alice --qrcode
 	subShowGuest = "alice"
 	outAlice := captureStdout(t, func() {
 		err := subShowCmd.RunE(subShowCmd, []string{})
@@ -370,7 +413,7 @@ func TestSubShowCmd_QRCodeFlag(t *testing.T) {
 		t.Errorf("expected QR code blocks in output for guest alice, got: %s", outAlice)
 	}
 
-	// 3. Non-existent guest returns error
+	// 4. Non-existent guest returns error
 	subShowGuest = "nonexistent"
 	err := subShowCmd.RunE(subShowCmd, []string{})
 	if err == nil || !strings.Contains(err.Error(), "Guest 'nonexistent' not found.") {
