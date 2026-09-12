@@ -112,6 +112,30 @@ func TestBuildNFTConditionalChains(t *testing.T) {
 	}
 }
 
+func TestBuildNFT_Proxy_LocalOnly_GeneratesOutputOnly(t *testing.T) {
+	cfg := testGatewayConfig(true, false)
+	cfg.Gateway.State = "proxy"
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
+	if strings.Contains(rules, "chain prerouting") {
+		t.Error("rules should not contain prerouting chain when LANEnabled is false in proxy state")
+	}
+	if !strings.Contains(rules, "chain output") {
+		t.Error("rules must contain output chain when LocalEnabled is true in proxy state")
+	}
+}
+
+func TestBuildNFT_Proxy_LANOnly_GeneratesPreroutingOnly(t *testing.T) {
+	cfg := testGatewayConfig(false, true)
+	cfg.Gateway.State = "proxy"
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
+	if !strings.Contains(rules, "chain prerouting") {
+		t.Error("rules must contain prerouting chain when LANEnabled is true in proxy state")
+	}
+	if strings.Contains(rules, "chain output") {
+		t.Error("rules should not contain output chain when LocalEnabled is false in proxy state")
+	}
+}
+
 func TestBuildNFTProtectsSSHSourceAndDestinationPorts(t *testing.T) {
 	rules := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24", "")
 	for _, port := range getSSHPorts() {

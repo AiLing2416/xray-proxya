@@ -207,6 +207,11 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	if lanIface != "" {
 		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", lanIface, "accept", "comment", "\"xray-proxya\"")
 	}
+	if cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
+		if err := installDirectLANForwardRules(lanIface); err != nil {
+			return errors.Join(err, CleanupFirewall())
+		}
+	}
 
 	rollback = false
 	return nil
@@ -1056,10 +1061,7 @@ func setupLANForwardingBlock(lanIface string) error {
 	return nil
 }
 
-func setupDirectLANForwarding(lanIface string) error {
-	if err := SetupKernel(lanIface); err != nil {
-		return fmt.Errorf("kernel setup failed: %w", err)
-	}
+func installDirectLANForwardRules(lanIface string) error {
 	wanIface, err := detectDefaultInterfaceFn()
 	if err != nil {
 		return fmt.Errorf("detect default WAN interface: %w", err)
@@ -1079,6 +1081,13 @@ func setupDirectLANForwarding(lanIface string) error {
 		return fmt.Errorf("enable direct LAN NAT masquerade: %w", err)
 	}
 	return nil
+}
+
+func setupDirectLANForwarding(lanIface string) error {
+	if err := SetupKernel(lanIface); err != nil {
+		return fmt.Errorf("kernel setup failed: %w", err)
+	}
+	return installDirectLANForwardRules(lanIface)
 }
 
 func cleanupFilterManagedRules(chain string) error {
