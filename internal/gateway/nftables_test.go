@@ -421,3 +421,156 @@ func TestForwardOnly_LANEnabled_EnablesForwarding(t *testing.T) {
 		t.Error("expected postrouting masquerade rule")
 	}
 }
+
+func TestVerify_StateMatrix(t *testing.T) {
+	origForwarding := isIPv4ForwardingEnabledFn
+	origExecCombined := execCommandCombinedOutput
+	origExecRun := execCommandRun
+	defer func() {
+		isIPv4ForwardingEnabledFn = origForwarding
+		execCommandCombinedOutput = origExecCombined
+		execCommandRun = origExecRun
+	}()
+
+	execCommandRun = func(name string, args ...string) error {
+		// Mock kernel objects: tun/nft table absent for disabled/forward-only
+		return errors.New("not found")
+	}
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte(""), nil
+	}
+
+	tests := []struct {
+		name             string
+		state            string
+		localEnabled     bool
+		lanEnabled       bool
+		expectForwarding bool
+	}{
+		{
+			name:             "disabled",
+			state:            "disabled",
+			localEnabled:     false,
+			lanEnabled:       false,
+			expectForwarding: false,
+		},
+		{
+			name:             "forward-only_local_only",
+			state:            "forward-only",
+			localEnabled:     true,
+			lanEnabled:       false,
+			expectForwarding: false,
+		},
+		{
+			name:             "forward-only_lan_only",
+			state:            "forward-only",
+			localEnabled:     false,
+			lanEnabled:       true,
+			expectForwarding: true,
+		},
+		{
+			name:             "proxy_local_only",
+			state:            "proxy",
+			localEnabled:     true,
+			lanEnabled:       false,
+			expectForwarding: true,
+		},
+		{
+			name:             "proxy_lan_only",
+			state:            "proxy",
+			localEnabled:     false,
+			lanEnabled:       true,
+			expectForwarding: true,
+		},
+		{
+			name:             "proxy_both",
+			state:            "proxy",
+			localEnabled:     true,
+			lanEnabled:       true,
+			expectForwarding: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &config.UserConfig{
+				Role: config.RoleGateway,
+				Gateway: config.GatewayConfig{
+					Mode:         "tun",
+					State:        tc.state,
+					LANInterface: "lo",
+					LocalEnabled: tc.localEnabled,
+					LANEnabled:   tc.lanEnabled,
+				},
+			}
+
+			// Sub-case 1: Kernel ip_forward is DISABLED (0)
+			isIPv4ForwardingEnabledFn = func() bool { return false }
+			problems := Verify(cfg)
+			hasForwardErr := false
+			for _, p := range problems {
+				if strings.Contains(p, "net.ipv4.ip_forward is not enabled") {
+					hasForwardErr = true
+					break
+				}
+			}
+			if tc.expectForwarding && !hasForwardErr {
+				t.Errorf("expected forwarding error when ip_forward=0, but got none; problems: %v", problems)
+			}
+			if !tc.expectForwarding && hasForwardErr {
+				t.Errorf("did not expect forwarding error when expectForwarding=false, but got: %v", problems)
+			}
+
+			// Sub-case 2: Kernel ip_forward is ENABLED (1)
+			isIPv4ForwardingEnabledFn = func() bool { return true }
+			problems = Verify(cfg)
+			for _, p := range problems {
+				if strings.Contains(p, "net.ipv4.ip_forward is not enabled") {
+					t.Errorf("unexpected forwarding error when ip_forward=1: %v", p)
+				}
+			}
+		})
+	}
+}
+
+func TestVerify_DetectsUnauthorizedForwardingRules(t *testing.T) {
+	origExecCombined := execCommandCombinedOutput
+	origExecRun := execCommandRun
+	defer func() {
+		execCommandCombinedOutput = origExecCombined
+		execCommandRun = origExecRun
+	}()
+
+	execCommandRun = func(name string, args ...string) error {
+		return errors.New("not found")
+	}
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		if name == "nft" && len(args) >= 6 && args[5] == "forward" {
+			return []byte("table inet filter {\nchain forward {\niifname \"eth1\" oifname \"eth0\" accept comment \"xray-proxya\"\n}\n}"), nil
+		}
+		return []byte(""), nil
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tun",
+			State:        "forward-only",
+			LANInterface: "lo",
+			LocalEnabled: true,
+			LANEnabled:   false, // expectForwarding = false
+		},
+	}
+
+	problems := Verify(cfg)
+	foundUnauthorized := false
+	for _, p := range problems {
+		if strings.Contains(p, "unexpected managed forward accept rule exists") {
+			foundUnauthorized = true
+			break
+		}
+	}
+	if !foundUnauthorized {
+		t.Fatalf("expected unauthorized forward rule detection, but got: %v", problems)
+	}
+}

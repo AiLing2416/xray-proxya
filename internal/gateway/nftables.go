@@ -549,14 +549,27 @@ func Verify(cfg *config.UserConfig) []string {
 		state = "proxy"
 	}
 
+	expectForwarding := false
+	switch state {
+	case "disabled":
+		expectForwarding = false
+	case "forward-only":
+		expectForwarding = cfg.Gateway.LANEnabled
+	case "proxy":
+		expectForwarding = cfg.Gateway.LANEnabled || (cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled)
+	}
+
+	if expectForwarding {
+		if !isIPv4ForwardingEnabledFn() {
+			problems = append(problems, "net.ipv4.ip_forward is not enabled")
+		}
+	} else {
+		problems = append(problems, verifyNoManagedForwardRules()...)
+	}
+
 	if state == "disabled" {
 		problems = append(problems, verifyNoManagedRuntime("disabled")...)
 		return problems
-	}
-
-	// For both forward-only and proxy, check IP forwarding is enabled
-	if !tune.IsIPv4ForwardingEnabled() {
-		problems = append(problems, "net.ipv4.ip_forward is not enabled")
 	}
 
 	if state == "forward-only" {
@@ -566,7 +579,7 @@ func Verify(cfg *config.UserConfig) []string {
 
 	// For proxy state, perform full verification
 	ipv6Configured := false
-	if err := exec.Command("ip", "link", "show", tunName).Run(); err != nil {
+	if err := execCommandRun("ip", "link", "show", tunName); err != nil {
 		problems = append(problems, tunName+" interface is not present (Hint: Is the 'xray-proxya' service running?)")
 	} else {
 		if !interfaceIsUp(tunName) {
@@ -591,7 +604,7 @@ func Verify(cfg *config.UserConfig) []string {
 	} else if interfaceExists(pathTunName) {
 		problems = append(problems, pathTunName+" interface is present but PathLink is disabled")
 	}
-	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err != nil {
+	if err := execCommandRun("nft", "list", "table", "inet", tableName); err != nil {
 		problems = append(problems, "nft table inet "+tableName+" is not present")
 	}
 
@@ -770,7 +783,7 @@ func verifyNoManagedRuntime(state string) []string {
 	if interfaceExists(pathTunName) {
 		problems = append(problems, pathTunName+" interface is present but gateway state is "+state)
 	}
-	if err := exec.Command("nft", "list", "table", "inet", tableName).Run(); err == nil {
+	if err := execCommandRun("nft", "list", "table", "inet", tableName); err == nil {
 		problems = append(problems, "nft table inet "+tableName+" is present but gateway state is "+state)
 	}
 	for _, table := range []string{policyTable, pathPolicyTable} {
@@ -781,7 +794,7 @@ func verifyNoManagedRuntime(state string) []string {
 			} else {
 				args = append([]string{"-4"}, args...)
 			}
-			out, err := exec.Command("ip", args...).CombinedOutput()
+			out, err := execCommandCombinedOutput("ip", args...)
 			if err != nil {
 				problems = append(problems, fmt.Sprintf("cannot inspect %s policy table %s: %v", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], table, err))
 			} else if strings.TrimSpace(string(out)) != "" {
@@ -796,7 +809,7 @@ func verifyNoManagedRuntime(state string) []string {
 		} else {
 			args = append([]string{"-4"}, args...)
 		}
-		out, err := exec.Command("ip", args...).CombinedOutput()
+		out, err := execCommandCombinedOutput("ip", args...)
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("cannot inspect %s policy rules: %v", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], err))
 			continue
@@ -807,11 +820,32 @@ func verifyNoManagedRuntime(state string) []string {
 			}
 		}
 	}
-	if out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").CombinedOutput(); err == nil {
+	if state == "disabled" {
+		if out, err := execCommandCombinedOutput("nft", "-a", "list", "chain", "inet", "filter", "forward"); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, `comment "xray-proxya"`) {
+					problems = append(problems, "managed filter forward rule still exists")
+					break
+				}
+			}
+		}
+	}
+	return problems
+}
+
+func verifyNoManagedForwardRules() []string {
+	var problems []string
+	if out, err := execCommandCombinedOutput("nft", "-a", "list", "chain", "inet", "filter", "forward"); err == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, `comment "xray-proxya"`) && strings.Contains(line, "accept") {
+				problems = append(problems, "unexpected managed forward accept rule exists when forwarding is disabled: "+strings.TrimSpace(line))
+			}
+		}
+	}
+	if out, err := execCommandCombinedOutput("nft", "-a", "list", "chain", "inet", "filter", "postrouting"); err == nil {
 		for _, line := range strings.Split(string(out), "\n") {
 			if strings.Contains(line, `comment "xray-proxya"`) {
-				problems = append(problems, "managed filter forward rule still exists")
-				break
+				problems = append(problems, "unexpected managed postrouting rule exists when forwarding is disabled: "+strings.TrimSpace(line))
 			}
 		}
 	}
@@ -1033,7 +1067,13 @@ var (
 	detectDefaultInterfaceFn  = DetectDefaultInterface
 	runCommand                = defaultRunCommand
 	execCommandCombinedOutput = defaultExecCombinedOutput
+	execCommandRun            = defaultExecRun
+	isIPv4ForwardingEnabledFn = tune.IsIPv4ForwardingEnabled
 )
+
+func defaultExecRun(name string, args ...string) error {
+	return exec.Command(name, args...).Run()
+}
 
 func defaultRunCommand(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
