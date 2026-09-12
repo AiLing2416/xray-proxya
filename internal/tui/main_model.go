@@ -203,7 +203,7 @@ type Model struct {
 	infoSelectTitle    string
 	infoSelectChoices  []string
 	infoSelectIdx      int
-	infoSelectTarget   string // "guest-outbound-choice", "gw-state", "gw-iface", "gw-relay"
+	infoSelectTarget   string // "guest-outbound-choice", "guest-endpoint-choice", "gw-state", "gw-iface", "gw-relay"
 
 	// Logs in info bar
 	infoShowLogs       bool
@@ -1301,11 +1301,45 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "e", "E":
 				if m.staging != nil && m.cursor < len(m.staging.Guests) {
-					current := m.staging.Guests[m.cursor].Endpoint
-					if current == "" {
-						current = "default"
+					g := m.staging.Guests[m.cursor]
+					choices := []string{"Custom...", "default"}
+					var epNames []string
+					if m.staging.Endpoints != nil {
+						for name := range m.staging.Endpoints {
+							name = strings.TrimSpace(name)
+							if name != "" && name != "default" {
+								epNames = append(epNames, name)
+							}
+						}
 					}
-					m.startInput(inputSetGuestEndpoint, "Endpoint (e.g. default, he-pool, custom-ep)", current)
+					sort.Strings(epNames)
+					choices = append(choices, epNames...)
+
+					m.infoSelectMode = true
+					m.infoSelectTitle = "Endpoint for " + g.Alias
+					m.infoSelectChoices = choices
+					m.infoSelectTarget = "guest-endpoint-choice"
+					m.infoSelectIdx = 1
+
+					currentEp := g.Endpoint
+					if currentEp == "" {
+						currentEp = "default"
+					}
+					matched := false
+					for i, c := range choices {
+						if i == 0 {
+							continue
+						}
+						if c == currentEp {
+							m.infoSelectIdx = i
+							matched = true
+							break
+						}
+					}
+					if !matched {
+						m.infoSelectIdx = 0
+					}
+					m.overrideMsg = ""
 				}
 				return m, nil
 
@@ -1319,13 +1353,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "r", "R", "enter":
 				if m.staging != nil && m.cursor < len(m.staging.Guests) {
 					g := m.staging.Guests[m.cursor]
+					choices := []string{"Custom...", "Direct"}
+					for _, co := range m.staging.CustomOutbounds {
+						if strings.TrimSpace(co.Alias) != "" {
+							choices = append(choices, co.Alias)
+						}
+					}
+
 					m.infoSelectMode = true
 					m.infoSelectTitle = "Outbound for " + g.Alias
-					m.infoSelectChoices = []string{"Direct", "Relay to"}
+					m.infoSelectChoices = choices
 					m.infoSelectTarget = "guest-outbound-choice"
-					m.infoSelectIdx = 0
-					if g.OutboundLink != "" {
-						m.infoSelectIdx = 1
+					m.infoSelectIdx = 1
+
+					currentRelay := g.OutboundLink
+					if currentRelay != "" {
+						matched := false
+						for i, c := range choices {
+							if i == 0 {
+								continue
+							}
+							if c == currentRelay {
+								m.infoSelectIdx = i
+								matched = true
+								break
+							}
+						}
+						if !matched {
+							m.infoSelectIdx = 0
+						}
 					}
 					m.overrideMsg = ""
 				}
@@ -1696,18 +1752,45 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 	var noticeText string
 
 	switch m.infoSelectTarget {
+	case "guest-endpoint-choice":
+		m.infoSelectMode = false
+		if m.staging != nil && m.cursor < len(m.staging.Guests) {
+			if choice == "Custom..." {
+				current := m.staging.Guests[m.cursor].Endpoint
+				if current == "" {
+					current = "default"
+				}
+				m.startInput(inputSetGuestEndpoint, "Endpoint Spec (e.g. default, he-pool, custom-ep)", current)
+				return m, nil
+			}
+			m.staging.Guests[m.cursor].Endpoint = choice
+			m.staging.SaveEx(true)
+			return m, m.setNotice(fmt.Sprintf("guest %s endpoint => %s", m.staging.Guests[m.cursor].Alias, choice))
+		}
+
 	case "guest-outbound-choice":
 		m.infoSelectMode = false
 		if m.staging != nil && m.cursor < len(m.staging.Guests) {
+			if choice == "Custom..." {
+				m.startInput(inputSetGuestOutbound, "Relay Alias (e.g. hk-01, direct) or Link (vless://, vmess://)", m.staging.Guests[m.cursor].OutboundLink)
+				return m, nil
+			}
 			if choice == "Direct" {
 				m.staging.Guests[m.cursor].OutboundLink = ""
 				m.staging.Guests[m.cursor].OutboundConf = nil
 				m.staging.SaveEx(true)
 				return m, m.setNotice(fmt.Sprintf("guest %s relay set to Direct", m.staging.Guests[m.cursor].Alias))
-			} else {
-				m.startInput(inputSetGuestOutbound, "Relay Alias (e.g. hk-01, direct) or Link (vless://, vmess://)", m.staging.Guests[m.cursor].OutboundLink)
-				return m, nil
 			}
+			m.staging.Guests[m.cursor].OutboundLink = choice
+			m.staging.Guests[m.cursor].OutboundConf = nil
+			for _, co := range m.staging.CustomOutbounds {
+				if co.Alias == choice {
+					m.staging.Guests[m.cursor].OutboundConf = co.Config
+					break
+				}
+			}
+			m.staging.SaveEx(true)
+			return m, m.setNotice(fmt.Sprintf("guest %s relay bound to %s", m.staging.Guests[m.cursor].Alias, choice))
 		}
 	case "gw-state":
 		if m.staging != nil {
