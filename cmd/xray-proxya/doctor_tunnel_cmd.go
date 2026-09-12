@@ -216,12 +216,12 @@ func ParseHETunnelConfig(content string) (*HETunnelSpec, error) {
 // getHostIPv4Addresses returns all non-loopback IPv4 addresses bound to host interfaces.
 func getHostIPv4Addresses() (map[string]string, error) {
 	res := make(map[string]string)
-	ifaces, err := net.Interfaces()
+	ifaces, err := tunnelInterfacesLister()
 	if err != nil {
 		return nil, err
 	}
 	for _, iface := range ifaces {
-		addrs, err := iface.Addrs()
+		addrs, err := tunnelAddrsLister(iface)
 		if err != nil {
 			continue
 		}
@@ -251,8 +251,9 @@ func DetectAndFixNAT(spec *HETunnelSpec) (fixed bool, ifaceName string, original
 	// ClientIPv4 not found locally, machine is in a NAT / private IP environment.
 	originalIP = spec.ClientIPv4
 
-	// Try using 'ip -4 route get <ServerIPv4>' to find egress interface and source IP
-	if out, err := exec.Command("ip", "-4", "route", "get", spec.ServerIPv4).CombinedOutput(); err == nil {
+	// 1. Try using 'ip -4 route get <ServerIPv4>' to find egress interface and source IP
+	ipBin := findIPBinary()
+	if out, err := tunnelCmdRunner(ipBin, "-4", "route", "get", spec.ServerIPv4); err == nil {
 		outStr := string(out)
 		fields := strings.Fields(outStr)
 		var dev, src string
@@ -268,12 +269,38 @@ func DetectAndFixNAT(spec *HETunnelSpec) (fixed bool, ifaceName string, original
 			ifaceName = dev
 			return true, ifaceName, originalIP
 		}
+		// If dev was found but src was not explicitly in output, find an IPv4 on dev
+		if dev != "" {
+			for ip, ifc := range hostIPv4s {
+				if ifc == dev {
+					spec.ClientIPv4 = ip
+					ifaceName = dev
+					return true, ifaceName, originalIP
+				}
+			}
+		}
 	}
 
-	// Fallback to first available host IPv4
-	for ip, dev := range hostIPv4s {
-		spec.ClientIPv4 = ip
-		ifaceName = dev
+	// 2. Safe deterministic fallback to local valid non-loopback IPv4
+	if len(hostIPv4s) > 0 {
+		ips := make([]string, 0, len(hostIPv4s))
+		for ip := range hostIPv4s {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+		// Prioritize common primary interface names (eth*, ens*, enp*, wlan*)
+		for _, ip := range ips {
+			dev := hostIPv4s[ip]
+			if strings.HasPrefix(dev, "eth") || strings.HasPrefix(dev, "en") || strings.HasPrefix(dev, "wl") {
+				spec.ClientIPv4 = ip
+				ifaceName = dev
+				return true, ifaceName, originalIP
+			}
+		}
+		// Default to first sorted IP
+		firstIP := ips[0]
+		spec.ClientIPv4 = firstIP
+		ifaceName = hostIPv4s[firstIP]
 		return true, ifaceName, originalIP
 	}
 
@@ -513,6 +540,11 @@ WantedBy=multi-user.target
 			fmt.Fprintf(cmd.OutOrStdout(), "   - Connectivity: OK (RTT: %v)\n", rtt.Round(time.Millisecond))
 		} else {
 			fmt.Fprintf(cmd.OutOrStdout(), "   - Connectivity: ⚠️  Probe failed (%v)\n", probeErr)
+		}
+		if spec.RoutedSubnet != "" {
+			fmt.Fprintln(cmd.OutOrStdout(), "")
+			fmt.Fprintln(cmd.OutOrStdout(), "💡 Next step: To use this tunnel for dynamic IPv6 rotation, run:")
+			fmt.Fprintf(cmd.OutOrStdout(), "   xray-proxya endpoint dynamic-v6 add --interface %s --cidr %s\n", spec.Interface, spec.RoutedSubnet)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "")
 
