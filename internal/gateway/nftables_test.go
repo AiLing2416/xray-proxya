@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -213,5 +214,28 @@ func TestPolicyRulesUseDedicatedPriorities(t *testing.T) {
 	configurePathRelay(pathCfg)
 	if got := len(policyRules(pathCfg, "192.168.50.0/24", "fd00::/64", true)); got != 10 {
 		t.Fatalf("PathLink policyRules returned %d rules, want 10", got)
+	}
+}
+
+func TestSaveSysctlState_DoesNotOverwriteExistingBaseline(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	baselinePath := sysctlStatePath()
+	initialData := `{"values":{"net.ipv4.ip_forward":"0","custom.test":"baseline"}}`
+	if err := os.WriteFile(baselinePath, []byte(initialData), 0600); err != nil {
+		t.Fatalf("failed to write initial sysctl baseline: %v", err)
+	}
+
+	if err := saveSysctlState(""); err != nil {
+		t.Fatalf("saveSysctlState() returned error: %v", err)
+	}
+
+	content, err := os.ReadFile(baselinePath)
+	if err != nil {
+		t.Fatalf("failed to read baseline: %v", err)
+	}
+	if string(content) != initialData {
+		t.Fatalf("saveSysctlState() overwrote existing baseline; got %s, want %s", string(content), initialData)
 	}
 }

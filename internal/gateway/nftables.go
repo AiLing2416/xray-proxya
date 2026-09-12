@@ -1139,6 +1139,11 @@ func ipv6Available() bool {
 }
 
 func saveSysctlState(lanIface string) error {
+	if _, err := os.Stat(sysctlStatePath()); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat gateway sysctl state: %w", err)
+	}
 	keys := []string{
 		"net.ipv4.ip_forward",
 		"net.ipv4.conf.all.rp_filter",
