@@ -328,7 +328,7 @@ func resolveDynamicV6Locked(endpointName string, ep config.EndpointConfig, consu
 	}
 	iface := strings.TrimSpace(ep.Interface)
 	if iface == "" {
-		iface = "he-ipv6"
+		return "", fmt.Errorf("dynamic-v6 endpoint '%s' has no network interface configured", endpointName)
 	}
 
 	profile := NormalizeProfile(ep.Profile)
@@ -542,7 +542,7 @@ func nextAddressLocked(endpointName string, ep config.EndpointConfig) (string, e
 
 	iface := strings.TrimSpace(ep.Interface)
 	if iface == "" {
-		iface = "he-ipv6"
+		return "", fmt.Errorf("dynamic-v6 endpoint '%s' has no network interface configured", endpointName)
 	}
 
 	maxAddrs := ep.MaxAddresses
@@ -616,7 +616,7 @@ func ReconcileOnStartup(endpointName string, ep config.EndpointConfig) error {
 func reconcileOnStartupLocked(endpointName string, ep config.EndpointConfig) error {
 	iface := strings.TrimSpace(ep.Interface)
 	if iface == "" {
-		iface = "he-ipv6"
+		return fmt.Errorf("dynamic-v6 endpoint '%s' has no network interface configured", endpointName)
 	}
 
 	// 1. Polling check for interface readiness (up to 5s)

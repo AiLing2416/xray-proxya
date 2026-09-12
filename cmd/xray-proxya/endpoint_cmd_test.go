@@ -651,3 +651,27 @@ func TestEndpointSetProfileAndTTL(t *testing.T) {
 	}
 }
 
+func TestEndpointSetDynamicV6_RequiresInterface(t *testing.T) {
+	setupTestConfigDir(t)
+	cmd := endpointSetCmd
+	resetEndpointFlags(cmd)
+	defer resetEndpointFlags(cmd)
+
+	cfg := &config.UserConfig{Role: config.RoleServer}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("failed to save staging config: %v", err)
+	}
+
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "2001:db8:1f0b:692::/64")
+
+	err := cmd.RunE(cmd, []string{"v6-pool"})
+	if err == nil {
+		t.Fatal("expected error when --interface is omitted for dynamic-v6, got nil")
+	}
+	if !strings.Contains(err.Error(), "dynamic-v6 endpoint requires --interface") {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+

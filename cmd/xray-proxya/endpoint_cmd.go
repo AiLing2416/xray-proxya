@@ -276,7 +276,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 			ifaceVal = existingEp.Interface
 		}
 		if ifaceVal == "" {
-			ifaceVal = "he-ipv6"
+			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --interface (specify the network interface holding the routed IPv6 subnet, e.g. --interface eth0)")
 		}
 
 		profileVal := strings.ToLower(strings.TrimSpace(endpointSetProfile))
@@ -803,7 +803,7 @@ func init() {
 	endpointSetCmd.Flags().BoolVar(&endpointSetV6, "v6", false, "Detect IPv6 (with --auto)")
 	endpointSetCmd.Flags().StringVar(&endpointSetType, "type", "", "Endpoint type (static, auto, dynamic-v6)")
 	endpointSetCmd.Flags().StringVar(&endpointSetSubnet, "subnet", "", "IPv6 subnet prefix for dynamic-v6 (e.g. 2001:470:1f0b:692::/64)")
-	endpointSetCmd.Flags().StringVarP(&endpointSetInterface, "interface", "i", "", "Interface for dynamic-v6 (e.g. he-ipv6)")
+	endpointSetCmd.Flags().StringVarP(&endpointSetInterface, "interface", "i", "", "Interface for dynamic-v6 (e.g. eth0)")
 	endpointSetCmd.Flags().IntVarP(&endpointSetMax, "max", "m", 6, "Maximum active addresses for dynamic-v6 (default 6)")
 	endpointSetCmd.Flags().BoolVar(&endpointSetNDP, "ndp", false, "Enable Proxy NDP")
 	endpointSetCmd.Flags().BoolVar(&endpointSetNoNDP, "no-ndp", false, "Disable Proxy NDP")

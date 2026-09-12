@@ -1760,7 +1760,7 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 				if current == "" {
 					current = "default"
 				}
-				m.startInput(inputSetGuestEndpoint, "Endpoint Spec (e.g. default, he-pool, custom-ep)", current)
+				m.startInput(inputSetGuestEndpoint, "Endpoint Spec (e.g. default, v6-pool, custom-ep)", current)
 				return m, nil
 			}
 			m.staging.Guests[m.cursor].Endpoint = choice
@@ -1838,7 +1838,7 @@ func (m Model) inputTitle() string {
 	case inputSetGuestOutbound:
 		return "Relay Alias (e.g. hk-01, direct) or Link (vless://, vmess://)"
 	case inputSetGuestEndpoint:
-		return "Endpoint (e.g. default, he-pool, custom-ep)"
+		return "Endpoint (e.g. default, v6-pool, custom-ep)"
 	case inputBypassCountries:
 		return "Bypass Countries (comma separated, e.g. CN)"
 	default:

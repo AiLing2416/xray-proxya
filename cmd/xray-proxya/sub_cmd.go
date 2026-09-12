@@ -384,7 +384,7 @@ Supported target types:
   xray-proxya sub set --port 8443 --token mytoken
 
   # Configure advertised subscription URL and proxy node endpoints
-  xray-proxya sub set --gate-url https://sub.example.com -e default,he-pool`,
+  xray-proxya sub set --gate-url https://sub.example.com -e default,v6-pool`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)

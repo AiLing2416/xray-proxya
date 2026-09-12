@@ -831,3 +831,27 @@ func TestDynamicV6Profiles_Isolated(t *testing.T) {
 	}
 }
 
+func TestDynamicV6_MissingInterfaceFails(t *testing.T) {
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", t.TempDir())
+	ep := config.EndpointConfig{
+		Type:   config.EndpointTypeDynamicV6,
+		Subnet: "2001:db8::/64",
+	}
+
+	_, err := ResolveDynamicV6Address("test-missing-iface", ep, "guest1", false)
+	if err == nil || !strings.Contains(err.Error(), "has no network interface configured") {
+		t.Fatalf("expected missing interface error in ResolveDynamicV6Address, got %v", err)
+	}
+
+	_, err = NextAddress("test-missing-iface", ep)
+	if err == nil || !strings.Contains(err.Error(), "has no network interface configured") {
+		t.Fatalf("expected missing interface error in NextAddress, got %v", err)
+	}
+
+	err = ReconcileOnStartup("test-missing-iface", ep)
+	if err == nil || !strings.Contains(err.Error(), "has no network interface configured") {
+		t.Fatalf("expected missing interface error in ReconcileOnStartup, got %v", err)
+	}
+}
+
+
