@@ -802,7 +802,7 @@ func init() {
 	endpointSetCmd.Flags().BoolVar(&endpointSetV4, "v4", false, "Detect IPv4 (with --auto)")
 	endpointSetCmd.Flags().BoolVar(&endpointSetV6, "v6", false, "Detect IPv6 (with --auto)")
 	endpointSetCmd.Flags().StringVar(&endpointSetType, "type", "", "Endpoint type (static, auto, dynamic-v6)")
-	endpointSetCmd.Flags().StringVar(&endpointSetSubnet, "subnet", "", "IPv6 subnet prefix for dynamic-v6 (e.g. 2001:470:1f0b:692::/64)")
+	endpointSetCmd.Flags().StringVar(&endpointSetSubnet, "subnet", "", "IPv6 subnet prefix for dynamic-v6 (e.g. 2001:db8:1f0b:692::/64)")
 	endpointSetCmd.Flags().StringVarP(&endpointSetInterface, "interface", "i", "", "Interface for dynamic-v6 (e.g. eth0)")
 	endpointSetCmd.Flags().IntVarP(&endpointSetMax, "max", "m", 6, "Maximum active addresses for dynamic-v6 (default 6)")
 	endpointSetCmd.Flags().BoolVar(&endpointSetNDP, "ndp", false, "Enable Proxy NDP")

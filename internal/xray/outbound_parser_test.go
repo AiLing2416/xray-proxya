@@ -5,7 +5,7 @@ import (
 )
 
 func TestParseVLESSWithMLKEMEncryption(t *testing.T) {
-	link := "vless://c8abfd6a-bba7-4db9-b43e-82c2beb76049@203.88.112.207:34035?security=none&encryption=mlkem768x25519plus.native.0rtt.SOME_KEY&type=xhttp&path=%2Fc085425d9bc32c05#VLess-XHTTP-KEM768-34035"
+	link := "vless://c8abfd6a-bba7-4db9-b43e-82c2beb76049@203.0.113.207:34035?security=none&encryption=mlkem768x25519plus.native.0rtt.SOME_KEY&type=xhttp&path=%2Fc085425d9bc32c05#VLess-XHTTP-KEM768-34035"
 	out, err := ParseProxyLink(link)
 	if err != nil {
 		t.Fatalf("ParseProxyLink failed: %v", err)
@@ -41,7 +41,7 @@ func TestParseVLESSWithMLKEMEncryption(t *testing.T) {
 
 func TestParseProxyLinkWithRemark(t *testing.T) {
 	// VLESS with URL-encoded remark
-	vlessLink := "vless://c8abfd6a-bba7-4db9-b43e-82c2beb76049@203.88.112.207:34035?security=none#%E9%A6%99%E6%B8%AF-01"
+	vlessLink := "vless://c8abfd6a-bba7-4db9-b43e-82c2beb76049@203.0.113.207:34035?security=none#%E9%A6%99%E6%B8%AF-01"
 	out, remark, err := ParseProxyLinkWithRemark(vlessLink)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -130,9 +130,9 @@ func TestGetTargetDescription(t *testing.T) {
 func TestFormatDisplayResolvedIP(t *testing.T) {
 	ep64 := config.EndpointConfig{
 		Type:   config.EndpointTypeDynamicV6,
-		Subnet: "2001:470:1f0a:692::/64",
+		Subnet: "2001:db8:1f0a:692::/64",
 	}
-	got := FormatDisplayResolvedIP(ep64, "2001:470:1f0a:692:a7d7:2136:b3b0:11ea")
+	got := FormatDisplayResolvedIP(ep64, "2001:db8:1f0a:692:a7d7:2136:b3b0:11ea")
 	want := "::a7d7:2136:b3b0:11ea"
 	if got != want {
 		t.Errorf("FormatDisplayResolvedIP(/64) = %q, want %q", got, want)
@@ -140,9 +140,9 @@ func TestFormatDisplayResolvedIP(t *testing.T) {
 
 	ep48 := config.EndpointConfig{
 		Type:   config.EndpointTypeDynamicV6,
-		Subnet: "2001:470:abcd::/48",
+		Subnet: "2001:db8:abcd::/48",
 	}
-	got48 := FormatDisplayResolvedIP(ep48, "2001:470:abcd:1234:5678:9abc:def0:1111")
+	got48 := FormatDisplayResolvedIP(ep48, "2001:db8:abcd:1234:5678:9abc:def0:1111")
 	want48 := "::1234:5678:9abc:def0:1111"
 	if got48 != want48 {
 		t.Errorf("FormatDisplayResolvedIP(/48) = %q, want %q", got48, want48)
@@ -153,13 +153,13 @@ func TestFormatDisplayResolvedIP(t *testing.T) {
 		Type:   config.EndpointTypeAuto,
 		Family: "v4",
 	}
-	gotAuto := FormatDisplayResolvedIP(epAuto, "87.58.209.196")
-	if gotAuto != "87.58.209.196" {
-		t.Errorf("FormatDisplayResolvedIP(auto) = %q, want '87.58.209.196'", gotAuto)
+	gotAuto := FormatDisplayResolvedIP(epAuto, "198.51.100.87")
+	if gotAuto != "198.51.100.87" {
+		t.Errorf("FormatDisplayResolvedIP(auto) = %q, want '198.51.100.87'", gotAuto)
 	}
 
 	// Slices mapping
-	ips := []string{"2001:470:1f0a:692:a7d7:2136:b3b0:11ea", "2001:470:1f0a:692:1111:2222:3333:4444"}
+	ips := []string{"2001:db8:1f0a:692:a7d7:2136:b3b0:11ea", "2001:db8:1f0a:692:1111:2222:3333:4444"}
 	mapped := FormatDisplayResolvedIPs(ep64, ips)
 	if len(mapped) != 2 || mapped[0] != "::a7d7:2136:b3b0:11ea" || mapped[1] != "::1111:2222:3333:4444" {
 		t.Errorf("FormatDisplayResolvedIPs unexpected: %+v", mapped)

@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseVLESSReality(t *testing.T) {
-	link := "vless://c8abfd6a-bba7-4db9-b43e-82c2beb76049@203.88.112.207:34035?security=reality&encryption=none&pbk=SOME_PBK&fp=chrome&type=xhttp&path=%2Fcustom&sni=example.com&sid=abcdef12&spx=%2F#HK-Reality"
+	link := "vless://c8abfd6a-bba7-4db9-b43e-82c2beb76049@203.0.113.207:34035?security=reality&encryption=none&pbk=SOME_PBK&fp=chrome&type=xhttp&path=%2Fcustom&sni=example.com&sid=abcdef12&spx=%2F#HK-Reality"
 	spec, err := Parse(link)
 	if err != nil {
 		t.Fatalf("Parse failed: %v", err)
@@ -16,8 +16,8 @@ func TestParseVLESSReality(t *testing.T) {
 	if spec.Protocol != ProtoVLESS {
 		t.Errorf("Protocol = %s, want vless", spec.Protocol)
 	}
-	if spec.Address != "203.88.112.207" || spec.Port != 34035 {
-		t.Errorf("Address:Port = %s:%d, want 203.88.112.207:34035", spec.Address, spec.Port)
+	if spec.Address != "203.0.113.207" || spec.Port != 34035 {
+		t.Errorf("Address:Port = %s:%d, want 203.0.113.207:34035", spec.Address, spec.Port)
 	}
 	if spec.UUID != "c8abfd6a-bba7-4db9-b43e-82c2beb76049" {
 		t.Errorf("UUID = %s", spec.UUID)
@@ -39,13 +39,13 @@ func TestParseVLESSReality(t *testing.T) {
 	}
 
 	extracted := FromOutbound(out)
-	if extracted.Protocol != ProtoVLESS || extracted.Address != "203.88.112.207" || extracted.Port != 34035 {
+	if extracted.Protocol != ProtoVLESS || extracted.Address != "203.0.113.207" || extracted.Port != 34035 {
 		t.Errorf("Extracted = %+v", extracted)
 	}
 	if extracted.Security != "reality" || extracted.PublicKey != "SOME_PBK" || extracted.SNI != "example.com" {
 		t.Errorf("Extracted security fields = %+v", extracted)
 	}
-	if extracted.ServerSpec() != "203.88.112.207:34035" {
+	if extracted.ServerSpec() != "203.0.113.207:34035" {
 		t.Errorf("ServerSpec = %s", extracted.ServerSpec())
 	}
 	summary := extracted.TransportSummary()

@@ -14,12 +14,12 @@ import (
 func TestParseHETunnelConfig_PreProduct(t *testing.T) {
 	raw := `auto he-ipv6
 iface he-ipv6 inet6 v4tunnel
-        address 2001:470:1f0a:692::2
+        address 2001:db8:1f0a:692::2
         netmask 64
         endpoint 216.66.80.30
-        local 87.58.209.196
+        local 198.51.100.87
         ttl 255
-        gateway 2001:470:1f0a:692::1
+        gateway 2001:db8:1f0a:692::1
 `
 	spec, err := ParseHETunnelConfig(raw)
 	if err != nil {
@@ -32,20 +32,20 @@ iface he-ipv6 inet6 v4tunnel
 	if spec.ServerIPv4 != "216.66.80.30" {
 		t.Errorf("expected ServerIPv4 '216.66.80.30', got '%s'", spec.ServerIPv4)
 	}
-	if spec.ClientIPv4 != "87.58.209.196" {
-		t.Errorf("expected ClientIPv4 '87.58.209.196', got '%s'", spec.ClientIPv4)
+	if spec.ClientIPv4 != "198.51.100.87" {
+		t.Errorf("expected ClientIPv4 '198.51.100.87', got '%s'", spec.ClientIPv4)
 	}
-	if spec.ClientIPv6 != "2001:470:1f0a:692::2" {
-		t.Errorf("expected ClientIPv6 '2001:470:1f0a:692::2', got '%s'", spec.ClientIPv6)
+	if spec.ClientIPv6 != "2001:db8:1f0a:692::2" {
+		t.Errorf("expected ClientIPv6 '2001:db8:1f0a:692::2', got '%s'", spec.ClientIPv6)
 	}
 	if spec.PrefixLen != 64 {
 		t.Errorf("expected PrefixLen 64, got %d", spec.PrefixLen)
 	}
-	if spec.GatewayIPv6 != "2001:470:1f0a:692::1" {
-		t.Errorf("expected GatewayIPv6 '2001:470:1f0a:692::1', got '%s'", spec.GatewayIPv6)
+	if spec.GatewayIPv6 != "2001:db8:1f0a:692::1" {
+		t.Errorf("expected GatewayIPv6 '2001:db8:1f0a:692::1', got '%s'", spec.GatewayIPv6)
 	}
-	if spec.RoutedSubnet != "2001:470:1f0a:692::/64" {
-		t.Errorf("expected fallback RoutedSubnet '2001:470:1f0a:692::/64', got '%s'", spec.RoutedSubnet)
+	if spec.RoutedSubnet != "2001:db8:1f0a:692::/64" {
+		t.Errorf("expected fallback RoutedSubnet '2001:db8:1f0a:692::/64', got '%s'", spec.RoutedSubnet)
 	}
 }
 
@@ -102,14 +102,14 @@ func TestParseHETunnelConfig_ValidationErrors(t *testing.T) {
 		{
 			name: "missing endpoint",
 			content: `iface he-ipv6 inet6 v4tunnel
-address 2001:470:1f0a:692::2
+address 2001:db8:1f0a:692::2
 local 1.2.3.4`,
 			wantErr: "missing ServerIPv4",
 		},
 		{
 			name: "missing local",
 			content: `iface he-ipv6 inet6 v4tunnel
-address 2001:470:1f0a:692::2
+address 2001:db8:1f0a:692::2
 endpoint 1.2.3.4`,
 			wantErr: "missing ClientIPv4",
 		},
@@ -125,7 +125,7 @@ local 5.6.7.8`,
 			content: `iface he-ipv6 inet6 v4tunnel
 endpoint not-an-ip
 local 5.6.7.8
-address 2001:470:1f0a:692::2`,
+address 2001:db8:1f0a:692::2`,
 			wantErr: "invalid ServerIPv4",
 		},
 	}
@@ -149,7 +149,7 @@ func TestDetectAndFixNAT(t *testing.T) {
 		Interface:  "he-ipv6",
 		ServerIPv4: "216.66.80.30",
 		ClientIPv4: "192.0.2.1",
-		ClientIPv6: "2001:470:1f0a:692::2",
+		ClientIPv6: "2001:db8:1f0a:692::2",
 		PrefixLen:  64,
 	}
 
@@ -212,11 +212,11 @@ func TestDoctorTunnelDown_WithConfigFile(t *testing.T) {
 	confPath := filepath.Join(tmpDir, "interfaces-test")
 	confContent := `auto he-ipv6
 iface he-ipv6 inet6 v4tunnel
-        address 2001:470:1f0a:692::2
+        address 2001:db8:1f0a:692::2
         netmask 64
         endpoint 216.66.80.30
-        local 87.58.209.196
-        gateway 2001:470:1f0a:692::1
+        local 198.51.100.87
+        gateway 2001:db8:1f0a:692::1
 `
 	if err := os.WriteFile(confPath, []byte(confContent), 0644); err != nil {
 		t.Fatal(err)
@@ -315,9 +315,9 @@ func setupMockTunnelEnvironment(t *testing.T) (systemdPath, sysfsPath string) {
 Description=Hurricane Electric 6in4 IPv6 Tunnel (he-ipv6)
 
 [Service]
-ExecStart=/sbin/ip tunnel add he-ipv6 mode sit remote 216.66.80.30 local 87.58.209.196 ttl 255
+ExecStart=/sbin/ip tunnel add he-ipv6 mode sit remote 216.66.80.30 local 198.51.100.87 ttl 255
 ExecStart=/sbin/ip link set he-ipv6 up mtu 1480
-ExecStart=/sbin/ip -6 addr replace 2001:470:1f0a:692::2/64 dev he-ipv6 nodad
+ExecStart=/sbin/ip -6 addr replace 2001:db8:1f0a:692::2/64 dev he-ipv6 nodad
 `
 	_ = os.WriteFile(filepath.Join(sDir, "he-tunnel-he-ipv6.service"), []byte(svcContent), 0644)
 
@@ -379,7 +379,7 @@ func TestDoctorTunnelStatus_TwoTier_ScanAndAsciiCards(t *testing.T) {
 	tunnelAddrsLister = func(ifc net.Interface) ([]net.Addr, error) {
 		if ifc.Name == "he-ipv6" {
 			return []net.Addr{
-				&net.IPNet{IP: net.ParseIP("2001:470:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
+				&net.IPNet{IP: net.ParseIP("2001:db8:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
 				&net.IPNet{IP: net.ParseIP("fe80::5054:ff:fe12:3456"), Mask: net.CIDRMask(64, 128)},
 			}, nil
 		}
@@ -418,7 +418,7 @@ func TestDoctorTunnelStatus_TwoTier_ScanAndAsciiCards(t *testing.T) {
 	if !strings.Contains(out, "Managed:        YES (via he-tunnel-he-ipv6.service, active, enabled)") {
 		t.Errorf("expected he-ipv6 to be reported as managed:\n%s", out)
 	}
-	if !strings.Contains(out, "IPv6 (Global):  2001:470:1f0a:692::2/64") {
+	if !strings.Contains(out, "IPv6 (Global):  2001:db8:1f0a:692::2/64") {
 		t.Errorf("expected global IPv6 in output:\n%s", out)
 	}
 	if !strings.Contains(out, "PASS (18ms)") {
@@ -473,7 +473,7 @@ func TestDoctorTunnelStatus_JSONOutput(t *testing.T) {
 	tunnelAddrsLister = func(ifc net.Interface) ([]net.Addr, error) {
 		if ifc.Name == "he-ipv6" {
 			return []net.Addr{
-				&net.IPNet{IP: net.ParseIP("2001:470:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
+				&net.IPNet{IP: net.ParseIP("2001:db8:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
 				&net.IPNet{IP: net.ParseIP("fe80::1"), Mask: net.CIDRMask(64, 128)},
 			}, nil
 		}
@@ -588,7 +588,7 @@ ExecStart=/sbin/ip -6 addr replace 2001:db8:dead::2/64 dev ghost-tun
 	origAddrs := tunnelAddrsLister
 	tunnelAddrsLister = func(ifc net.Interface) ([]net.Addr, error) {
 		return []net.Addr{
-			&net.IPNet{IP: net.ParseIP("2001:470:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
+			&net.IPNet{IP: net.ParseIP("2001:db8:1f0a:692::2"), Mask: net.CIDRMask(64, 128)},
 		}, nil
 	}
 	defer func() { tunnelAddrsLister = origAddrs }()

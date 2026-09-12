@@ -182,7 +182,7 @@ func TestEndpointList_DynamicV6_TextOutput(t *testing.T) {
 		Endpoints: map[string]config.EndpointConfig{
 			"he-pool": {
 				Type:         config.EndpointTypeDynamicV6,
-				Subnet:       "2001:470:1f0a:692::/64",
+				Subnet:       "2001:db8:1f0a:692::/64",
 				Interface:    "he-ipv6",
 				MaxAddresses: 6,
 			},
@@ -195,7 +195,7 @@ func TestEndpointList_DynamicV6_TextOutput(t *testing.T) {
 	// Populate rotation state with a known address
 	mockState := endpoint.RotationState{
 		ActivePool: []endpoint.AddressEntry{
-			{Address: "2001:470:1f0a:692:a7d7:2136:b3b0:11ea", State: "active"},
+			{Address: "2001:db8:1f0a:692:a7d7:2136:b3b0:11ea", State: "active"},
 		},
 	}
 	_ = endpoint.SaveRotationState("he-pool", &mockState)
@@ -207,14 +207,14 @@ func TestEndpointList_DynamicV6_TextOutput(t *testing.T) {
 		}
 	})
 
-	if !strings.Contains(out, "2001:470:1f0a:692::/64") {
-		t.Errorf("expected subnet '2001:470:1f0a:692::/64' in TARGET column, got: %s", out)
+	if !strings.Contains(out, "2001:db8:1f0a:692::/64") {
+		t.Errorf("expected subnet '2001:db8:1f0a:692::/64' in TARGET column, got: %s", out)
 	}
 	if !strings.Contains(out, "::a7d7:2136:b3b0:11ea") {
 		t.Errorf("expected shortened rotatable IPv6 '::a7d7:2136:b3b0:11ea' in RESOLVED column, got: %s", out)
 	}
-	if strings.Contains(out, "dynamic-v6 (2001:470:1f0a:692::/64)") {
-		t.Errorf("found redundant 'dynamic-v6 (2001:470...)' in TARGET column: %s", out)
+	if strings.Contains(out, "dynamic-v6 (2001:db8:1f0a:692::/64)") {
+		t.Errorf("found redundant 'dynamic-v6 (2001:db8...)' in TARGET column: %s", out)
 	}
 }
 
@@ -341,7 +341,7 @@ func TestEndpointSetDynamicV6(t *testing.T) {
 	}
 
 	_ = cmd.Flags().Set("type", "dynamic-v6")
-	_ = cmd.Flags().Set("subnet", "2001:470:1f0b:692::/64")
+	_ = cmd.Flags().Set("subnet", "2001:db8:1f0b:692::/64")
 	_ = cmd.Flags().Set("interface", "he-ipv6")
 	_ = cmd.Flags().Set("max", "8")
 
@@ -361,8 +361,8 @@ func TestEndpointSetDynamicV6(t *testing.T) {
 	if ep.Type != config.EndpointTypeDynamicV6 {
 		t.Errorf("expected type dynamic-v6, got %s", ep.Type)
 	}
-	if ep.Subnet != "2001:470:1f0b:692::/64" {
-		t.Errorf("expected subnet 2001:470:1f0b:692::/64, got %s", ep.Subnet)
+	if ep.Subnet != "2001:db8:1f0b:692::/64" {
+		t.Errorf("expected subnet 2001:db8:1f0b:692::/64, got %s", ep.Subnet)
 	}
 	if ep.Interface != "he-ipv6" {
 		t.Errorf("expected interface he-ipv6, got %s", ep.Interface)
@@ -607,7 +607,7 @@ func TestEndpointSetProfileAndTTL(t *testing.T) {
 		Endpoints: map[string]config.EndpointConfig{
 			"he-pool": {
 				Type:      config.EndpointTypeDynamicV6,
-				Subnet:    "2001:470:1f0a:692::/64",
+				Subnet:    "2001:db8:1f0a:692::/64",
 				Interface: "he-ipv6",
 			},
 		},
