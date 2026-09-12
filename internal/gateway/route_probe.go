@@ -135,6 +135,9 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 	if cfg == nil || cfg.Gateway.State == "disabled" || !cfg.Gateway.LANEnabled {
 		return "", errors.New("LAN gateway is disabled")
 	}
+	if cfg.Gateway.State != "proxy" {
+		return "", fmt.Errorf("simulated LAN test is only supported in proxy state (active state is %q)", cfg.Gateway.State)
+	}
 
 	endpoints, err := FilterTestEndpoints(cfg)
 	if err != nil {

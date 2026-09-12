@@ -585,8 +585,8 @@ var gatewayTestCmd = &cobra.Command{
 			return
 		}
 
-		if cfg.Gateway.State != "proxy" {
-			fmt.Printf("ℹ️  Gateway transparent tests skipped: active state is %q, not proxy.\n", cfg.Gateway.State)
+		if cfg.Gateway.State == "disabled" {
+			fmt.Printf("ℹ️  Gateway transparent tests skipped: active state is %q.\n", cfg.Gateway.State)
 			fmt.Println("   Hint: xray-proxya gateway set --state proxy && xray-proxya apply")
 			return
 		}

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"xray-proxya/internal/applyops"
@@ -410,4 +412,95 @@ func TestGatewayStatusJSON(t *testing.T) {
 		t.Errorf("expected human readable headers in output, got: %s", humanOut)
 	}
 }
+
+func TestProxyNodeExitConfigurationSuite(t *testing.T) {
+	setupTestConfigDir(t)
+
+	// Verify ProxyNode.txt links can be parsed and configured as relays for gateway
+	proxyNodePath := filepath.Join("..", "..", "ProxyNode.txt")
+	data, err := os.ReadFile(proxyNodePath)
+	if err != nil {
+		t.Skipf("ProxyNode.txt not found at %s, skipping test: %v", proxyNodePath, err)
+		return
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var nodeLinks []string
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l != "" && !strings.HasPrefix(l, "#") {
+			nodeLinks = append(nodeLinks, l)
+		}
+	}
+	if len(nodeLinks) < 2 {
+		t.Fatalf("expected at least 2 proxy nodes in ProxyNode.txt, found %d", len(nodeLinks))
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			State:        "proxy",
+			LocalEnabled: true,
+			LANEnabled:   true,
+			LANInterface: "eth0",
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("failed to save initial staging config: %v", err)
+	}
+
+	// 1. Add JP-TK
+	if err := addOutboundCmd.RunE(addOutboundCmd, []string{nodeLinks[0]}); err != nil {
+		t.Fatalf("failed to add JP-TK relay node: %v", err)
+	}
+
+	// 2. Add DE-LM
+	if err := addOutboundCmd.RunE(addOutboundCmd, []string{nodeLinks[1]}); err != nil {
+		t.Fatalf("failed to add DE-LM relay node: %v", err)
+	}
+
+	// Verify both nodes are staged
+	stagedCfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("failed to load staging config: %v", err)
+	}
+	if len(stagedCfg.CustomOutbounds) < 2 {
+		t.Fatalf("expected at least 2 custom outbounds, got %d", len(stagedCfg.CustomOutbounds))
+	}
+
+	// 3. Bind gateway to JP-TK
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--relay", "JP-TK", "--state", "proxy", "--local-enable"}); err != nil {
+		t.Fatalf("failed to parse gateway set flags: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+		t.Fatalf("failed to set gateway relay to JP-TK: %v", err)
+	}
+
+	stagedCfg, _ = config.LoadConfigEx(true)
+	if stagedCfg.Gateway.RelayAlias != "JP-TK" {
+		t.Errorf("expected gateway relay alias JP-TK, got %s", stagedCfg.Gateway.RelayAlias)
+	}
+
+	// 4. Switch gateway to DE-LM
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--relay", "DE-LM"}); err != nil {
+		t.Fatalf("failed to parse gateway set flags: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+		t.Fatalf("failed to switch gateway relay to DE-LM: %v", err)
+	}
+
+	stagedCfg, _ = config.LoadConfigEx(true)
+	if stagedCfg.Gateway.RelayAlias != "DE-LM" {
+		t.Errorf("expected gateway relay alias DE-LM, got %s", stagedCfg.Gateway.RelayAlias)
+	}
+}
+
 
