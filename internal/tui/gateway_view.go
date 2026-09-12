@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gateway"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -336,6 +337,20 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		b.WriteString(fmt.Sprintf("Option:      Bypass Geo (%s)\n", geoStr))
 		b.WriteString("Rule:        Traffic destined to IP ranges in configured countries bypasses proxy\n")
 		b.WriteString("Database:    Uses built-in GeoIP database loaded in Xray routing rules\n")
+	}
+
+	targetCfg := active
+	if targetCfg == nil {
+		targetCfg = staging
+	}
+	if targetCfg != nil {
+		problems := gateway.Verify(targetCfg)
+		if len(problems) > 0 {
+			b.WriteString("\n⚠️ Runtime Problems Detected:\n")
+			for _, p := range problems {
+				b.WriteString(fmt.Sprintf("  • %s\n", p))
+			}
+		}
 	}
 
 	return strings.TrimSpace(b.String())

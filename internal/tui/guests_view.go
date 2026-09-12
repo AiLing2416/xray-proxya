@@ -19,7 +19,7 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		return lipgloss.NewStyle().Padding(2, 5).Render("No guests. Press [N] to add.")
 	}
 
-	headers := []string{"  ", "ALIAS", "STATE", "SUB", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY"}
+	headers := []string{"  ", "ALIAS", "STATE", "ENDPOINT", "SUB", "REASON", "QUOTA (USED/LIM)", "RESET", "RELAY"}
 	rows := make([][]string, 0, len(staging.Guests))
 	disabled := make([]bool, 0, len(staging.Guests))
 
@@ -30,10 +30,15 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		}
 		used := config.FormatByteSize(g.UsedBytes)
 		limit := config.FormatByteSize(g.EffectiveLimitBytes())
+		ep := g.Endpoint
+		if ep == "" {
+			ep = "default"
+		}
 		row := []string{
 			indicator,
 			g.Alias,
 			guestStateLabel(g),
+			ep,
 			guestSubStateLabel(g),
 			guestReasonLabel(g),
 			used + "/" + limit,
@@ -44,7 +49,7 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 		disabled = append(disabled, !g.Enabled)
 	}
 
-	widths := fitTableWidths(headers, rows, []int{3, 8, 5, 3, 6, 14, 5, 7}, width)
+	widths := fitTableWidths(headers, rows, []int{3, 8, 5, 8, 3, 6, 14, 5, 7}, width)
 
 	var b strings.Builder
 	b.WriteString(renderRow(headers, widths, true))
@@ -78,6 +83,11 @@ func BuildGuestReport(guest config.GuestConfig) string {
 	} else {
 		b.WriteString(fmt.Sprintf("Last Reset Month: %s\n", guest.LastResetYM))
 	}
+	ep := guest.Endpoint
+	if ep == "" {
+		ep = "default"
+	}
+	b.WriteString(fmt.Sprintf("Endpoint: %s\n", ep))
 	b.WriteString(fmt.Sprintf("Notify: %s\n", guest.NormalizedNotifyMode()))
 	if guest.NotifyWebhook == "" {
 		b.WriteString("Notify Webhook: -\n")
@@ -112,10 +122,13 @@ func guestReasonLabel(guest config.GuestConfig) string {
 }
 
 func guestOutboundLabel(guest config.GuestConfig) string {
-	if guest.OutboundLink != "" {
-		return "relay"
+	if guest.OutboundLink == "" {
+		return "direct"
 	}
-	return "direct"
+	if strings.Contains(guest.OutboundLink, "://") {
+		return "link"
+	}
+	return guest.OutboundLink
 }
 
 func guestSubStateLabel(guest config.GuestConfig) string {
@@ -135,9 +148,14 @@ func guestChanged(active *config.UserConfig, guest config.GuestConfig) bool {
 				g.Enabled != guest.Enabled ||
 				g.DisabledReason != guest.DisabledReason ||
 				g.QuotaGB != guest.QuotaGB ||
+				g.LimitBytes != guest.LimitBytes ||
 				g.ResetDay != guest.ResetDay ||
 				g.SubToken != guest.SubToken ||
-				g.OutboundLink != guest.OutboundLink
+				g.Endpoint != guest.Endpoint ||
+				g.OutboundLink != guest.OutboundLink ||
+				g.Notify != guest.Notify ||
+				g.NotifyWebhook != guest.NotifyWebhook ||
+				!sliceEqual(g.NotifyTrigger, guest.NotifyTrigger)
 		}
 	}
 	return true

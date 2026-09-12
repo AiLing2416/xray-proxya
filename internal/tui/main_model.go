@@ -52,10 +52,12 @@ import (
 
 	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/relaysub"
 	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/service"
+	"xray-proxya/internal/sharelink"
 	"xray-proxya/internal/sub"
 	"xray-proxya/internal/trafficstats"
 	"xray-proxya/internal/tune"
@@ -90,6 +92,7 @@ const (
 	inputSetGuestQuota
 	inputSetGuestZero
 	inputSetGuestOutbound
+	inputSetGuestEndpoint
 	inputBypassCountries
 )
 
@@ -1179,9 +1182,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.setOverride("Updating upstream subscriptions in STAGING...\nPlease wait...")
 				return m, updateRelaySubsCmd()
 
+			case "v", "V":
+				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
+					co := &m.staging.CustomOutbounds[m.cursor]
+					co.AllowPrivateTargets = !co.AllowPrivateTargets
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					status := "BLOCKED"
+					if co.AllowPrivateTargets {
+						status = "ALLOWED"
+					}
+					return m, m.setNotice(fmt.Sprintf("relay %s private targets: %s", co.Alias, status))
+				}
+				return m, nil
+
 			case "n", "N":
 				m.relayAlias = ""
-				m.startInput(inputAddRelayAlias, "New Relay Alias (Empty = Auto)", "")
+				m.startInput(inputAddRelayAlias, "New Relay Alias (Leave empty to extract from link)", "")
 				return m, nil
 
 			case "x", "X":
@@ -1263,8 +1280,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case "l", "L":
 				if m.staging != nil && m.cursor < len(m.staging.Guests) {
-					current := fmt.Sprintf("%v", m.staging.Guests[m.cursor].QuotaGB)
-					m.startInput(inputSetGuestQuota, "Quota (GB: -1 for unlimited, 0 for paused, 10, 50)", current)
+					current := config.FormatByteSize(m.staging.Guests[m.cursor].EffectiveLimitBytes())
+					if m.staging.Guests[m.cursor].EffectiveLimitBytes() < 0 {
+						current = "-1"
+					}
+					m.startInput(inputSetGuestQuota, "Quota Limit (e.g. 500MB, 10GB, 1TB, -1 for unlimited, 0 for paused)", current)
+				}
+				return m, nil
+
+			case "e", "E":
+				if m.staging != nil && m.cursor < len(m.staging.Guests) {
+					current := m.staging.Guests[m.cursor].Endpoint
+					if current == "" {
+						current = "default"
+					}
+					m.startInput(inputSetGuestEndpoint, "Endpoint (e.g. default, he-pool, custom-ep)", current)
 				}
 				return m, nil
 
@@ -1466,15 +1496,21 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case inputAddRelay:
 		if val != "" {
-			alias := m.relayAlias
-			if alias == "" {
-				alias = fmt.Sprintf("relay-%d", len(m.staging.CustomOutbounds)+1)
-			}
+			alias := strings.TrimSpace(m.relayAlias)
 			outboundConfig, err := xray.ParseProxyLink(val)
 			if err != nil {
 				m.inputMode = inputNone
 				m.setOverride(fmt.Sprintf("Relay Link Parse Error:\n%v", err))
 				return m, m.setNotice("invalid relay link")
+			}
+			if alias == "" {
+				spec, err := sharelink.Parse(val)
+				if err == nil && strings.TrimSpace(spec.Remark) != "" {
+					alias = strings.TrimSpace(spec.Remark)
+				}
+			}
+			if alias == "" {
+				alias = fmt.Sprintf("relay-%d", len(m.staging.CustomOutbounds)+1)
 			}
 			co := config.CustomOutbound{
 				Alias:   alias,
@@ -1492,13 +1528,15 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 	case inputAddGuest:
 		if val != "" {
 			g := config.GuestConfig{
-				UUID:      uuid.New().String(),
-				Alias:     val,
-				Enabled:   true,
-				QuotaGB:   -1,
-				ResetDay:  1,
-				SubToken:  uuid.New().String(),
-				UsedBytes: 0,
+				UUID:       uuid.New().String(),
+				Alias:      val,
+				Enabled:    true,
+				QuotaGB:    -1,
+				LimitBytes: -1,
+				Endpoint:   "default",
+				ResetDay:   1,
+				SubToken:   uuid.New().String(),
+				UsedBytes:  0,
 			}
 			m.staging.Guests = append(m.staging.Guests, g)
 			m.staging.SaveEx(true)
@@ -1510,17 +1548,31 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case inputSetGuestQuota:
 		if m.cursor < len(m.staging.Guests) {
-			q, err := strconv.ParseFloat(val, 64)
+			byteVal, err := config.ParseByteSize(val)
 			if err != nil {
 				m.inputMode = inputNone
-				m.setOverride(fmt.Sprintf("Quota Parse Error:\n%v", err))
+				m.setOverride(fmt.Sprintf("Quota Parse Error:\n%v\n(Enter e.g. 500MB, 10GB, 1TB, -1 for unlimited, 0 for paused)", err))
 				return m, m.setNotice("invalid quota value")
 			}
-			m.staging.Guests[m.cursor].QuotaGB = q
+			m.staging.Guests[m.cursor].LimitBytes = byteVal
+			if byteVal > 0 {
+				m.staging.Guests[m.cursor].QuotaGB = float64(byteVal) / float64(config.GigaByte)
+			} else {
+				m.staging.Guests[m.cursor].QuotaGB = float64(byteVal)
+			}
+			if byteVal == 0 {
+				m.staging.Guests[m.cursor].Enabled = false
+				m.staging.Guests[m.cursor].DisabledReason = config.GuestDisabledQuotaZero
+			} else {
+				if m.staging.Guests[m.cursor].DisabledReason != config.GuestDisabledManual {
+					m.staging.Guests[m.cursor].Enabled = true
+					m.staging.Guests[m.cursor].DisabledReason = config.GuestDisabledNone
+				}
+			}
 			m.staging.SaveEx(true)
 			m.inputMode = inputNone
 			m.overrideMsg = ""
-			return m, m.setNotice(fmt.Sprintf("quota => %v GB", q))
+			return m, m.setNotice(fmt.Sprintf("quota => %s", config.FormatByteSize(byteVal)))
 		}
 		m.inputMode = inputNone
 
@@ -1549,7 +1601,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case inputSetGuestOutbound:
 		if m.cursor < len(m.staging.Guests) {
-			if val == "" {
+			if val == "" || strings.EqualFold(val, "direct") {
 				m.staging.Guests[m.cursor].OutboundLink = ""
 				m.staging.Guests[m.cursor].OutboundConf = nil
 				m.staging.SaveEx(true)
@@ -1557,18 +1609,49 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 				m.overrideMsg = ""
 				return m, m.setNotice(fmt.Sprintf("guest %s relay set to Direct", m.staging.Guests[m.cursor].Alias))
 			}
+			var matchedRelay *config.CustomOutbound
+			if m.staging != nil {
+				for _, co := range m.staging.CustomOutbounds {
+					if co.Alias == val {
+						matchedRelay = &co
+						break
+					}
+				}
+			}
+			if matchedRelay != nil {
+				m.staging.Guests[m.cursor].OutboundLink = matchedRelay.Alias
+				m.staging.Guests[m.cursor].OutboundConf = matchedRelay.Config
+				m.staging.SaveEx(true)
+				m.inputMode = inputNone
+				m.overrideMsg = ""
+				return m, m.setNotice(fmt.Sprintf("guest %s relay bound to %s", m.staging.Guests[m.cursor].Alias, matchedRelay.Alias))
+			}
 			outboundConfig, err := xray.ParseProxyLink(val)
 			if err != nil {
 				m.inputMode = inputNone
-				m.setOverride(fmt.Sprintf("Relay Link Parse Error:\n%v", err))
-				return m, m.setNotice("invalid relay link")
+				m.setOverride(fmt.Sprintf("Relay Parse Error:\n%v\n(Enter a configured relay alias or valid proxy link)", err))
+				return m, m.setNotice("invalid relay link or alias")
 			}
 			m.staging.Guests[m.cursor].OutboundLink = val
 			m.staging.Guests[m.cursor].OutboundConf = outboundConfig
 			m.staging.SaveEx(true)
 			m.inputMode = inputNone
 			m.overrideMsg = ""
-			return m, m.setNotice(fmt.Sprintf("guest %s relay updated", m.staging.Guests[m.cursor].Alias))
+			return m, m.setNotice(fmt.Sprintf("guest %s relay updated via link", m.staging.Guests[m.cursor].Alias))
+		}
+		m.inputMode = inputNone
+
+	case inputSetGuestEndpoint:
+		if m.cursor < len(m.staging.Guests) {
+			val = strings.TrimSpace(val)
+			if val == "" {
+				val = "default"
+			}
+			m.staging.Guests[m.cursor].Endpoint = val
+			m.staging.SaveEx(true)
+			m.inputMode = inputNone
+			m.overrideMsg = ""
+			return m, m.setNotice(fmt.Sprintf("guest %s endpoint => %s", m.staging.Guests[m.cursor].Alias, val))
 		}
 		m.inputMode = inputNone
 
@@ -1611,7 +1694,7 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 				m.staging.SaveEx(true)
 				return m, m.setNotice(fmt.Sprintf("guest %s relay set to Direct", m.staging.Guests[m.cursor].Alias))
 			} else {
-				m.startInput(inputSetGuestOutbound, "Paste Relay Link (vless://, vmess://, ss://)", m.staging.Guests[m.cursor].OutboundLink)
+				m.startInput(inputSetGuestOutbound, "Relay Alias (e.g. hk-01, direct) or Link (vless://, vmess://)", m.staging.Guests[m.cursor].OutboundLink)
 				return m, nil
 			}
 		}
@@ -1649,17 +1732,19 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 func (m Model) inputTitle() string {
 	switch m.inputMode {
 	case inputAddRelayAlias:
-		return "New Relay Alias (Empty = Auto)"
+		return "New Relay Alias (Leave empty to extract from link)"
 	case inputAddRelay:
 		return "Paste Relay Link (vless://, vmess://, ss://)"
 	case inputAddGuest:
 		return "New Guest Alias"
 	case inputSetGuestQuota:
-		return "Quota (GB: -1 for unlimited, 0 for paused, 10, 50)"
+		return "Quota Limit (e.g. 500MB, 10GB, 1TB, -1 for unlimited, 0 for paused)"
 	case inputSetGuestZero:
 		return "Reset Day (1-31) or 0 to clear used bytes"
 	case inputSetGuestOutbound:
-		return "Paste Relay Link (vless://, vmess://, ss://)"
+		return "Relay Alias (e.g. hk-01, direct) or Link (vless://, vmess://)"
+	case inputSetGuestEndpoint:
+		return "Endpoint (e.g. default, he-pool, custom-ep)"
 	case inputBypassCountries:
 		return "Bypass Countries (comma separated, e.g. CN)"
 	default:
@@ -1727,6 +1812,35 @@ func (m Model) View() string {
 	return mainArea + "\n" + detailPane + "\n" + footerText
 }
 
+func (m Model) resolveTargetNodes(cfg *config.UserConfig, epSpec string) []xray.TargetNode {
+	if m.useLocalIP {
+		ip := m.localIP
+		if ip == "" {
+			ip = "127.0.0.1"
+		}
+		return []xray.TargetNode{{Address: ip}}
+	}
+	if epSpec == "" {
+		epSpec = "default"
+	}
+	targets, err := endpoint.ResolveTargets(cfg, epSpec, "tui", false)
+	if err == nil && len(targets) > 0 {
+		nodes := make([]xray.TargetNode, len(targets))
+		for i, t := range targets {
+			nodes[i] = xray.TargetNode{Address: t.Address, Alias: t.Alias}
+		}
+		return nodes
+	}
+	ip := m.cachedIP
+	if ip == "" {
+		ip = m.localIP
+	}
+	if ip == "" {
+		ip = "127.0.0.1"
+	}
+	return []xray.TargetNode{{Address: ip}}
+}
+
 func (m Model) getSelectedCopyContent() string {
 	switch m.currentTab {
 	case tabStatus:
@@ -1740,7 +1854,8 @@ func (m Model) getSelectedCopyContent() string {
 	case tabRelays:
 		if m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
 			co := m.staging.CustomOutbounds[m.cursor]
-			links := xray.GenerateRelayLinks(m.staging, m.cachedIP, co)
+			targets := m.resolveTargetNodes(m.staging, "default")
+			links := xray.GenerateRelayLinksWithTargets(m.staging, targets, co)
 			if len(links) > 0 {
 				return links[0]
 			}
@@ -1748,7 +1863,12 @@ func (m Model) getSelectedCopyContent() string {
 	case tabGuests:
 		if m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Guests) {
 			g := m.staging.Guests[m.cursor]
-			links := xray.GenerateGuestLinks(m.staging, m.cachedIP, g.UUID, g.Alias)
+			ep := g.Endpoint
+			if ep == "" {
+				ep = "default"
+			}
+			targets := m.resolveTargetNodes(m.staging, ep)
+			links := xray.GenerateGuestLinksWithTargets(m.staging, targets, g.UUID, g.Alias)
 			if len(links) > 0 {
 				return links[0]
 			}
@@ -1758,30 +1878,33 @@ func (m Model) getSelectedCopyContent() string {
 }
 
 func (m Model) getSelectedLink() string {
-	ip := m.cachedIP
-	if m.useLocalIP {
-		ip = m.localIP
-	}
 	if m.currentTab == tabPresets && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Presets) {
 		m1 := m.staging.Presets[m.cursor]
 		m1.Enabled = true
 		tempCfg := *m.staging
 		tempCfg.Presets = []config.ModeInfo{m1}
-		links := xray.GenerateLinks(&tempCfg, ip)
+		targets := m.resolveTargetNodes(m.staging, "default")
+		links := xray.GenerateLinksWithTargets(&tempCfg, targets)
 		if len(links) > 0 {
 			return links[0]
 		}
 	}
 	if m.currentTab == tabRelays && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
 		co := m.staging.CustomOutbounds[m.cursor]
-		links := xray.GenerateRelayLinks(m.staging, ip, co)
+		targets := m.resolveTargetNodes(m.staging, "default")
+		links := xray.GenerateRelayLinksWithTargets(m.staging, targets, co)
 		if len(links) > 0 {
 			return links[0]
 		}
 	}
 	if m.currentTab == tabGuests && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Guests) {
 		g := m.staging.Guests[m.cursor]
-		links := xray.GenerateGuestLinks(m.staging, ip, g.UUID, g.Alias)
+		ep := g.Endpoint
+		if ep == "" {
+			ep = "default"
+		}
+		targets := m.resolveTargetNodes(m.staging, ep)
+		links := xray.GenerateGuestLinksWithTargets(m.staging, targets, g.UUID, g.Alias)
 		if len(links) > 0 {
 			return links[0]
 		}
@@ -1828,13 +1951,29 @@ func (m Model) getSelectedDetailContent() string {
 		if viewMode == "test" && m.relayTestMap[co.Alias] != "" {
 			return m.relayTestMap[co.Alias]
 		}
-		return ""
+		privStr := "BLOCKED"
+		if co.AllowPrivateTargets {
+			privStr = "ALLOWED"
+		}
+		link := m.getSelectedLink()
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("Relay:    %s\n", co.Alias))
+		b.WriteString(fmt.Sprintf("Private:  %s (RFC1918 / loopback access)\n", privStr))
+		if link != "" {
+			b.WriteString(fmt.Sprintf("Link:     %s", link))
+		}
+		return strings.TrimSpace(b.String())
 	}
 	if m.currentTab == tabGuests && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.Guests) {
 		g := m.staging.Guests[m.cursor]
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("Guest:    %s (UUID: %s)\n", g.Alias, g.UUID))
 		b.WriteString(fmt.Sprintf("Quota:    %s  Used: %s\n", formatGuestQuota(g.QuotaGB), config.FormatByteSize(g.UsedBytes)))
+		ep := g.Endpoint
+		if ep == "" {
+			ep = "default"
+		}
+		b.WriteString(fmt.Sprintf("Endpoint: %s\n", ep))
 		b.WriteString(fmt.Sprintf("Relay:    %s\n", guestOutboundLabel(g)))
 		if g.OutboundLink != "" {
 			b.WriteString(fmt.Sprintf("Relay To: %s\n", g.OutboundLink))
@@ -2071,9 +2210,9 @@ func (m Model) renderFooter() string {
 		case tabPresets:
 			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 		case tabRelays:
-			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 		case tabGuests:
-			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
+			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy", "[A] Apply", "[U] Undo", "[+/-] Height", "[Q] Quit")
 		case tabGateway:
 			hasStaged := HasGatewayStagedChanges(m.active, m.staging)
 			var actBadges []string

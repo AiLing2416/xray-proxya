@@ -9,7 +9,7 @@ import (
 
 // ManagedServiceItem represents a simplified service unit entry for the list-based SERVICE view.
 type ManagedServiceItem struct {
-	DisplayName string // e.g. "Core", "Pathd", "IPv6-Rotate", "Sub@default"
+	DisplayName string // e.g. "Core", "Pathd", "Sub"
 	UnitName    string // e.g. "xray-proxya.service", "xray-proxya-pathd.service"
 	Active      bool
 	PID         int

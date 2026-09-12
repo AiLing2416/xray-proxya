@@ -119,6 +119,26 @@ func TestSubConfigValidation(t *testing.T) {
 	if err != nil || cfg.AdminSub.Token != "token123" {
 		t.Fatalf("expected token123, got: %v", err)
 	}
+
+	// 4. GateURL validation
+	gateURLProp := props[2]
+	if gateURLProp.Key != "GateURL" {
+		t.Fatalf("expected prop[2] to be GateURL, got %s", gateURLProp.Key)
+	}
+	err = validateAndApplyServiceProp(cfg, item, gateURLProp, "https://sub.example.com")
+	if err != nil || cfg.GateURL != "https://sub.example.com" {
+		t.Fatalf("expected GateURL updated, got %v (err: %v)", cfg.GateURL, err)
+	}
+
+	// 5. Endpoint validation
+	epProp := props[5]
+	if epProp.Key != "Endpoint" {
+		t.Fatalf("expected prop[5] to be Endpoint, got %s", epProp.Key)
+	}
+	err = validateAndApplyServiceProp(cfg, item, epProp, "he-pool")
+	if err != nil || cfg.AdminSub.Endpoint != "he-pool" {
+		t.Fatalf("expected Endpoint he-pool, got %s (err: %v)", cfg.AdminSub.Endpoint, err)
+	}
 }
 
 func TestServiceHasStagedChanges(t *testing.T) {

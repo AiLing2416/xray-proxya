@@ -59,10 +59,16 @@ func RenderStatus(cfg *config.UserConfig, state xray.ServiceState, allStats map[
 		controlMode = "Nohup (Fallback)"
 	}
 
+	stagingStatus := lipgloss.NewStyle().Foreground(lipgloss.Color("2")).Render("Clean (In sync)")
+	if config.StagingExists() {
+		stagingStatus = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("3")).Render("⚠️ Pending changes [A to apply]")
+	}
+
 	coreRows := [][]string{
 		{"Core Service", statusStyle.Render(statusStr)},
 		{"Control Mode", controlMode},
 		{"Role", roleName},
+		{"Staging Config", stagingStatus},
 		{"Direct Traffic", HumanizeBytes(summary.Direct)},
 		{"Relay Traffic", HumanizeBytes(summary.Relay)},
 	}
@@ -96,6 +102,11 @@ func BuildStatusReport(cfg *config.UserConfig, state xray.ServiceState, allStats
 		}
 	}
 
+	stagingStatusPlain := "Clean (In sync with active)"
+	if config.StagingExists() {
+		stagingStatusPlain = "Pending changes in STAGING (Run 'apply' to commit)"
+	}
+
 	summary := trafficstats.Summarize(allStats)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("Xray-Proxya v%s Status Report\n", buildinfo.Version))
@@ -108,6 +119,7 @@ func BuildStatusReport(cfg *config.UserConfig, state xray.ServiceState, allStats
 		b.WriteString(fmt.Sprintf("API Inbound:      127.0.0.1:%d\n", cfg.APIInbound))
 		b.WriteString(fmt.Sprintf("Config Path:      %s\n", config.GetConfigPath()))
 	}
+	b.WriteString(fmt.Sprintf("Staging Config:   %s\n", stagingStatusPlain))
 	b.WriteString(fmt.Sprintf("Direct Outbound:  %s\n", HumanizeBytes(summary.Direct)))
 	b.WriteString(fmt.Sprintf("Relay Outbound:   %s\n", HumanizeBytes(summary.Relay)))
 

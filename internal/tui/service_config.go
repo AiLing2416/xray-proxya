@@ -162,24 +162,32 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 			Value: sub.Listen,
 			Type:  PropInput,
 		})
+		gateURL := sub.AddressSub
+		if gateURL == "" && cfg != nil {
+			gateURL = cfg.GateURL
+		}
 		props = append(props, ServiceProperty{
-			Key:   "Address",
-			Label: "Advertised Address",
-			Value: sub.Address,
+			Key:   "GateURL",
+			Label: "Gate URL",
+			Value: gateURL,
 			Type:  PropInput,
 		})
+		ttVal := sub.TargetType
+		if ttVal == "outbound" {
+			ttVal = "relay"
+		}
 		props = append(props, ServiceProperty{
 			Key:     "TargetType",
 			Label:   "Target Type",
-			Value:   sub.TargetType,
+			Value:   ttVal,
 			Type:    PropChoice,
-			Choices: []string{"direct", "outbound", "guest"},
+			Choices: []string{"direct", "relay", "guest"},
 		})
 
 		// Target choice depends on TargetType
 		var targetChoices []string
 		targetVal := sub.TargetAlias
-		if sub.TargetType == "outbound" {
+		if ttVal == "relay" || sub.TargetType == "outbound" {
 			if cfg != nil {
 				for _, co := range cfg.CustomOutbounds {
 					targetChoices = append(targetChoices, co.Alias)
@@ -188,7 +196,7 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 			if len(targetChoices) == 0 {
 				targetChoices = []string{"(none)"}
 			}
-		} else if sub.TargetType == "guest" {
+		} else if ttVal == "guest" {
 			if cfg != nil {
 				for _, g := range cfg.Guests {
 					targetChoices = append(targetChoices, g.Alias)
@@ -283,8 +291,12 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 				return fmt.Errorf("listen address cannot be empty")
 			}
 			sub.Listen = newVal
-		case "Address":
-			sub.Address = newVal
+		case "GateURL":
+			sub.AddressSub = newVal
+			if cfg != nil {
+				cfg.AddressSub = newVal
+				cfg.GateURL = newVal
+			}
 		case "TargetType":
 			sub.TargetType = newVal
 			if sub.TargetType == "direct" {
@@ -324,7 +336,7 @@ func serviceHasStagedChanges(active, staging *config.UserConfig, item ManagedSer
 		pActive := getPathdConfig(active)
 		return pStaging.Listen != pActive.Listen || pStaging.Token != pActive.Token || pStaging.IdleSeconds != pActive.IdleSeconds
 
-	case strings.HasPrefix(item.DisplayName, "Sub@"):
+	case item.DisplayName == "Sub" || strings.HasPrefix(item.DisplayName, "Sub@"):
 		inst := extractSubInstance(item.UnitName)
 		sStaging := getSubConfig(staging, inst)
 		if active == nil {
@@ -333,7 +345,7 @@ func serviceHasStagedChanges(active, staging *config.UserConfig, item ManagedSer
 		sActive := getSubConfig(active, inst)
 		return sStaging.Port != sActive.Port ||
 			sStaging.Listen != sActive.Listen ||
-			sStaging.Address != sActive.Address ||
+			sStaging.AddressSub != sActive.AddressSub ||
 			sStaging.TargetType != sActive.TargetType ||
 			sStaging.TargetAlias != sActive.TargetAlias ||
 			sStaging.Endpoint != sActive.Endpoint ||
