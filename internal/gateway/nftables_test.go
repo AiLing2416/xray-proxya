@@ -239,3 +239,161 @@ func TestSaveSysctlState_DoesNotOverwriteExistingBaseline(t *testing.T) {
 		t.Fatalf("saveSysctlState() overwrote existing baseline; got %s, want %s", string(content), initialData)
 	}
 }
+
+func TestForwardOnly_LANDisabled_BlocksForwarding(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	var recordedCmds [][]string
+	origRun := runCommand
+	origExec := execCommandCombinedOutput
+	origDetect := detectDefaultInterfaceFn
+	defer func() {
+		runCommand = origRun
+		execCommandCombinedOutput = origExec
+		detectDefaultInterfaceFn = origDetect
+	}()
+
+	runCommand = func(name string, args ...string) error {
+		cmd := append([]string{name}, args...)
+		recordedCmds = append(recordedCmds, cmd)
+		return nil
+	}
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte(""), errors.New("Error: No such chain")
+	}
+	detectDefaultInterfaceFn = func() (string, error) {
+		return "eth0", nil
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tun",
+			State:        "forward-only",
+			LANInterface: "eth1",
+			LocalEnabled: true,
+			LANEnabled:   false,
+		},
+	}
+
+	if err := ApplyFirewall(cfg); err != nil {
+		t.Fatalf("ApplyFirewall() error = %v", err)
+	}
+
+	hasDropRule := false
+	hasIPForwardSysctl := false
+	hasAcceptRule := false
+
+	for _, cmd := range recordedCmds {
+		cmdStr := strings.Join(cmd, " ")
+		if strings.Contains(cmdStr, "sysctl") && strings.Contains(cmdStr, "net.ipv4.ip_forward=1") {
+			hasIPForwardSysctl = true
+		}
+		if strings.Contains(cmdStr, "iifname eth1 drop") {
+			hasDropRule = true
+		}
+		if strings.Contains(cmdStr, "accept") {
+			hasAcceptRule = true
+		}
+	}
+
+	if hasIPForwardSysctl {
+		t.Error("expected net.ipv4.ip_forward=1 NOT to be called when LAN is disabled in forward-only")
+	}
+	if !hasDropRule {
+		t.Error("expected drop rule for eth1 in forward chain, but none was recorded")
+	}
+	if hasAcceptRule {
+		t.Error("expected no forward accept rules when LAN is disabled in forward-only")
+	}
+}
+
+func TestForwardOnly_LANEnabled_EnablesForwarding(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	var recordedCmds [][]string
+	origRun := runCommand
+	origExec := execCommandCombinedOutput
+	origDetect := detectDefaultInterfaceFn
+	origReadSysctl := readSysctlFn
+	defer func() {
+		runCommand = origRun
+		execCommandCombinedOutput = origExec
+		detectDefaultInterfaceFn = origDetect
+		readSysctlFn = origReadSysctl
+	}()
+
+	readSysctlFn = func(key string) (string, error) {
+		return "0", nil
+	}
+
+	runCommand = func(name string, args ...string) error {
+		cmd := append([]string{name}, args...)
+		recordedCmds = append(recordedCmds, cmd)
+		return nil
+	}
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte(""), errors.New("Error: No such chain")
+	}
+	detectDefaultInterfaceFn = func() (string, error) {
+		return "eth0", nil
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tun",
+			State:        "forward-only",
+			LANInterface: "eth1",
+			LocalEnabled: false,
+			LANEnabled:   true,
+		},
+	}
+
+	if err := ApplyFirewall(cfg); err != nil {
+		t.Fatalf("ApplyFirewall() error = %v", err)
+	}
+
+	hasDropRule := false
+	hasIPForwardSysctl := false
+	hasLANToWANAccept := false
+	hasWANToLANAccept := false
+	hasMasquerade := false
+
+	for _, cmd := range recordedCmds {
+		cmdStr := strings.Join(cmd, " ")
+		if strings.Contains(cmdStr, "sysctl") && strings.Contains(cmdStr, "net.ipv4.ip_forward=1") {
+			hasIPForwardSysctl = true
+		}
+		if strings.Contains(cmdStr, "iifname eth1 drop") {
+			hasDropRule = true
+		}
+		if strings.Contains(cmdStr, "iifname eth1 oifname eth0 accept") {
+			hasLANToWANAccept = true
+		}
+		if strings.Contains(cmdStr, "iifname eth0 oifname eth1") && strings.Contains(cmdStr, "ct state established,related accept") {
+			hasWANToLANAccept = true
+		}
+		if strings.Contains(cmdStr, "postrouting") && strings.Contains(cmdStr, "iifname eth1 oifname eth0 masquerade") {
+			hasMasquerade = true
+		}
+	}
+
+	if !hasIPForwardSysctl {
+		t.Error("expected net.ipv4.ip_forward=1 to be set when LAN is enabled in forward-only")
+	}
+	if hasDropRule {
+		t.Error("expected NO drop rule when LAN is enabled in forward-only")
+	}
+	if !hasLANToWANAccept {
+		t.Error("expected LAN to WAN accept rule")
+	}
+	if !hasWANToLANAccept {
+		t.Error("expected WAN to LAN established accept rule")
+	}
+	if !hasMasquerade {
+		t.Error("expected postrouting masquerade rule")
+	}
+}

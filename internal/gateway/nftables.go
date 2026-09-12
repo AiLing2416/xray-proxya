@@ -71,20 +71,14 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		if err := CleanupFirewall(); err != nil {
 			return err
 		}
-		if err := SetupKernel(lanIface); err != nil {
-			return fmt.Errorf("kernel setup failed: %w", err)
+		if !cfg.Gateway.LANEnabled {
+			return setupLANForwardingBlock(lanIface)
 		}
-		return nil
+		return setupDirectLANForwarding(lanIface)
 	}
 
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
-		if err := CleanupFirewall(); err != nil {
-			return err
-		}
-		if err := SetupKernel(lanIface); err != nil {
-			return fmt.Errorf("kernel setup failed: %w", err)
-		}
-		return nil
+		return CleanupFirewall()
 	}
 	if config.GatewayTunDisabled() {
 		return fmt.Errorf("gateway runtime is down; run 'xray-proxya gateway up' first")
@@ -232,6 +226,7 @@ func CleanupFirewall() error {
 	record("PathLink TTL rules", cleanupPathTTLRules())
 	record("nft table", runDelete("nft", "delete", "table", "inet", tableName))
 	record("filter forward rules", cleanupFilterForwardRules())
+	record("filter postrouting rules", cleanupFilterManagedRules("postrouting"))
 
 	rules, rulesErr := loadPolicyRules()
 	if rulesErr != nil {
@@ -1029,7 +1024,13 @@ func getSSHPorts() []string {
 	return ports
 }
 
-func run(name string, args ...string) error {
+var (
+	detectDefaultInterfaceFn  = DetectDefaultInterface
+	runCommand                = defaultRunCommand
+	execCommandCombinedOutput = defaultExecCombinedOutput
+)
+
+func defaultRunCommand(name string, args ...string) error {
 	cmd := exec.Command(name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1038,13 +1039,55 @@ func run(name string, args ...string) error {
 	return nil
 }
 
-func cleanupFilterForwardRules() error {
-	out, err := exec.Command("nft", "-a", "list", "chain", "inet", "filter", "forward").CombinedOutput()
+func defaultExecCombinedOutput(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
+}
+
+func run(name string, args ...string) error {
+	return runCommand(name, args...)
+}
+
+func setupLANForwardingBlock(lanIface string) error {
+	_ = run("nft", "add", "table", "inet", "filter")
+	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
+	if err := run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "drop", "comment", "\"xray-proxya\""); err != nil {
+		return fmt.Errorf("block LAN forwarding: %w", err)
+	}
+	return nil
+}
+
+func setupDirectLANForwarding(lanIface string) error {
+	if err := SetupKernel(lanIface); err != nil {
+		return fmt.Errorf("kernel setup failed: %w", err)
+	}
+	wanIface, err := detectDefaultInterfaceFn()
+	if err != nil {
+		return fmt.Errorf("detect default WAN interface: %w", err)
+	}
+
+	_ = run("nft", "add", "table", "inet", "filter")
+	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
+	_ = run("nft", "add", "chain", "inet", "filter", "postrouting", "{ type nat hook postrouting priority srcnat; }")
+
+	if err := run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", wanIface, "accept", "comment", "\"xray-proxya\""); err != nil {
+		return fmt.Errorf("allow LAN to WAN forwarding: %w", err)
+	}
+	if err := run("nft", "add", "rule", "inet", "filter", "forward", "iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept", "comment", "\"xray-proxya\""); err != nil {
+		return fmt.Errorf("allow WAN to LAN established forwarding: %w", err)
+	}
+	if err := run("nft", "add", "rule", "inet", "filter", "postrouting", "iifname", lanIface, "oifname", wanIface, "masquerade", "comment", "\"xray-proxya\""); err != nil {
+		return fmt.Errorf("enable direct LAN NAT masquerade: %w", err)
+	}
+	return nil
+}
+
+func cleanupFilterManagedRules(chain string) error {
+	out, err := execCommandCombinedOutput("nft", "-a", "list", "chain", "inet", "filter", chain)
 	if err != nil {
 		if isMissingKernelObject(err, out) {
 			return nil
 		}
-		return fmt.Errorf("list filter forward chain: %w (output: %q)", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("list filter %s chain: %w (output: %q)", chain, err, strings.TrimSpace(string(out)))
 	}
 	var cleanupErrs []error
 	lines := strings.Split(string(out), "\n")
@@ -1062,7 +1105,7 @@ func cleanupFilterForwardRules() error {
 					}
 				}
 				if digits != "" {
-					if err := runDelete("nft", "delete", "rule", "inet", "filter", "forward", "handle", digits); err != nil {
+					if err := runDelete("nft", "delete", "rule", "inet", "filter", chain, "handle", digits); err != nil {
 						cleanupErrs = append(cleanupErrs, err)
 					}
 				}
@@ -1070,6 +1113,10 @@ func cleanupFilterForwardRules() error {
 		}
 	}
 	return errors.Join(cleanupErrs...)
+}
+
+func cleanupFilterForwardRules() error {
+	return cleanupFilterManagedRules("forward")
 }
 
 func runDelete(name string, args ...string) error {
@@ -1123,8 +1170,10 @@ func sysctlStatePath() string {
 	return filepath.Join(config.GetConfigDir(), "gateway.sysctl.json")
 }
 
+var readSysctlFn = tune.ReadSysctl
+
 func readSysctl(key string) (string, error) {
-	return tune.ReadSysctl(key)
+	return readSysctlFn(key)
 }
 
 func ipv6Available() bool {
