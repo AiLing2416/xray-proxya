@@ -2549,7 +2549,7 @@ func testLocalProxy(cfg *config.UserConfig) tea.Cmd {
 		if cfg == nil || cfg.Gateway.State != "proxy" || !cfg.Gateway.LocalEnabled {
 			return gatewayTestResultMsg{row: 0, err: fmt.Errorf("local transparent proxy is disabled")}
 		}
-		ip, err := RunLocalProxyTest(cfg)
+		ip, err := gateway.RunLocalProxyTest(cfg)
 		return gatewayTestResultMsg{row: 0, ip: ip, err: err}
 	}
 }
@@ -2559,43 +2559,9 @@ func testLANGateway(cfg *config.UserConfig) tea.Cmd {
 		if cfg == nil || cfg.Gateway.State != "proxy" || !cfg.Gateway.LANEnabled {
 			return gatewayTestResultMsg{row: 1, err: fmt.Errorf("LAN transparent gateway is disabled")}
 		}
-		ip, err := RunSimulatedLANTest(cfg)
+		ip, err := gateway.RunSimulatedLANTest(cfg)
 		return gatewayTestResultMsg{row: 1, ip: ip, err: err}
 	}
-}
-
-var gatewayTraceEndpoints = []string{
-	"https://1.1.1.1/cdn-cgi/trace",
-	"https://1.0.0.1/cdn-cgi/trace",
-}
-
-func gatewayTestEndpoints(cfg *config.UserConfig) []string {
-	bypassed := make(map[string]struct{}, len(cfg.Gateway.BypassDNS))
-	for _, ip := range cfg.Gateway.BypassDNS {
-		bypassed[ip] = struct{}{}
-	}
-	var res []string
-	for _, ep := range gatewayTraceEndpoints {
-		host := ep
-		if strings.HasPrefix(host, "https://") {
-			host = strings.TrimPrefix(host, "https://")
-		}
-		if idx := strings.Index(host, "/"); idx != -1 {
-			host = host[:idx]
-		}
-		if _, ok := bypassed[host]; !ok {
-			res = append(res, ep)
-		}
-	}
-	return res
-}
-
-func RunLocalProxyTest(cfg *config.UserConfig) (string, error) {
-	return "203.88.112.207", nil
-}
-
-func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
-	return "203.88.112.207", nil
 }
 
 func summarizeActionResult(lines []string, err error) string {

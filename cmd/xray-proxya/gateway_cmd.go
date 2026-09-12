@@ -11,7 +11,6 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
 	proxyaSELinux "xray-proxya/internal/selinux"
-	"xray-proxya/internal/tui"
 	"xray-proxya/internal/tune"
 	"xray-proxya/pkg/utils"
 
@@ -594,7 +593,7 @@ var gatewayTestCmd = &cobra.Command{
 
 		if cfg.Gateway.LocalEnabled {
 			fmt.Println("🔍 Running Local Proxy Route Test (observing public IP through a non-bypassed endpoint)...")
-			localIP, err := tui.RunLocalProxyTest(cfg)
+			localIP, err := gateway.RunLocalProxyTest(cfg)
 			if err != nil {
 				fmt.Printf("❌ Local Proxy Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
 			} else {
@@ -606,7 +605,7 @@ var gatewayTestCmd = &cobra.Command{
 
 		if cfg.Gateway.LANEnabled {
 			fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (observing public IP through a non-bypassed endpoint)...")
-			lanIP, err := tui.RunSimulatedLANTest(cfg)
+			lanIP, err := gateway.RunSimulatedLANTest(cfg)
 			if err != nil {
 				fmt.Printf("❌ Simulated LAN Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
 			} else {
