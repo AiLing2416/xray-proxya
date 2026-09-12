@@ -8,6 +8,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/sub"
+	"xray-proxya/pkg/qrcode"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -19,6 +20,8 @@ var (
 	subGateURL, subEndpoint, subListen, subToken, subTargetType, subTargetAlias string
 	subPort                                                                     int
 	subShowGuest                                                                string
+	subShowQRCode                                                               bool
+	subShowQRInvert                                                             bool
 )
 
 var subCmd = &cobra.Command{
@@ -536,6 +539,47 @@ var subShowCmd = &cobra.Command{
 			if inst.AddressNode != "" {
 				fmt.Printf("          └─ Node Address: %s\n", inst.AddressNode)
 			}
+			if subShowQRCode && subURL != "" {
+				fmt.Println()
+				if qr, err := qrcode.RenderTerminal(subURL, subShowQRInvert); err == nil {
+					fmt.Print(qr)
+					fmt.Println()
+				}
+			}
+			fmt.Println()
+			return nil
+		}
+
+		if subShowGuest != "" {
+			var target *config.GuestConfig
+			for _, g := range cfg.Guests {
+				if g.Alias == subShowGuest {
+					target = &g
+					break
+				}
+			}
+			if target == nil {
+				return fmt.Errorf("❌ Guest '%s' not found.", subShowGuest)
+			}
+
+			fmt.Println("\n--- Guest Subscription ---")
+			fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
+			fmt.Println("-----------------------------------------------------------------------------------------")
+			state := "active"
+			if !target.Enabled {
+				state = "disabled"
+			}
+			limit := config.FormatByteSize(target.EffectiveLimitBytes())
+			used := config.FormatByteSize(target.UsedBytes)
+			url := subGuestSubURL(cfg, target.UUID)
+			fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", target.Alias, state, used+"/"+limit, target.ResetDay, url)
+			if subShowQRCode && url != "" {
+				fmt.Println()
+				if qr, err := qrcode.RenderTerminal(url, subShowQRInvert); err == nil {
+					fmt.Print(qr)
+					fmt.Println()
+				}
+			}
 			fmt.Println()
 			return nil
 		}
@@ -556,6 +600,13 @@ var subShowCmd = &cobra.Command{
 				ep = "default"
 			}
 			fmt.Printf("          └─ Endpoint: %s\n", ep)
+			if subShowQRCode && subURL != "" {
+				fmt.Println()
+				if qr, err := qrcode.RenderTerminal(subURL, subShowQRInvert); err == nil {
+					fmt.Print(qr)
+					fmt.Println()
+				}
+			}
 		}
 
 		if len(cfg.SubscriptionInstances) > 0 {
@@ -594,6 +645,13 @@ var subShowCmd = &cobra.Command{
 						ep = "default"
 					}
 					fmt.Printf("          └─ Endpoint: %s\n", ep)
+					if subShowQRCode && subURL != "" {
+						fmt.Println()
+						if qr, err := qrcode.RenderTerminal(subURL, subShowQRInvert); err == nil {
+							fmt.Print(qr)
+							fmt.Println()
+						}
+					}
 				}
 			}
 		}
@@ -603,9 +661,6 @@ var subShowCmd = &cobra.Command{
 			fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
 			fmt.Println("-----------------------------------------------------------------------------------------")
 			for _, g := range cfg.Guests {
-				if subShowGuest != "" && g.Alias != subShowGuest {
-					continue
-				}
 				state := "active"
 				if !g.Enabled {
 					state = "disabled"
@@ -614,6 +669,13 @@ var subShowCmd = &cobra.Command{
 				used := config.FormatByteSize(g.UsedBytes)
 				url := subGuestSubURL(cfg, g.UUID)
 				fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", g.Alias, state, used+"/"+limit, g.ResetDay, url)
+				if subShowQRCode && url != "" {
+					fmt.Println()
+					if qr, err := qrcode.RenderTerminal(url, subShowQRInvert); err == nil {
+						fmt.Print(qr)
+						fmt.Println()
+					}
+				}
 			}
 			fmt.Println()
 		}
@@ -670,6 +732,8 @@ func init() {
 
 	subShowCmd.ValidArgsFunction = completeSubscriptionInstanceArg
 	subShowCmd.Flags().StringVarP(&subShowGuest, "guest", "g", "", "Filter by guest alias")
+	subShowCmd.Flags().BoolVarP(&subShowQRCode, "qrcode", "q", false, "Display QR code for subscription URLs")
+	subShowCmd.Flags().BoolVar(&subShowQRInvert, "qr-invert", false, "Invert QR code colors for light-background terminals")
 	subShowCmd.RegisterFlagCompletionFunc("guest", completeGuestAliases)
 
 	subRunCmd.ValidArgsFunction = completeSubscriptionInstanceArg

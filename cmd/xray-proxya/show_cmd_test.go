@@ -546,3 +546,89 @@ func TestShowCmd_DefaultEndpointAppliedWithoutFlag(t *testing.T) {
 	}
 }
 
+func TestShowCmd_QRCodeFlag(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid-show-qr",
+		Presets: []config.ModeInfo{{
+			Mode:    config.ModeVLESSVision,
+			Enabled: true,
+			Port:    443,
+			SNI:     "example.com",
+			Settings: config.Settings{
+				PublicKey: "pub",
+				ShortID:   "abcd",
+			},
+		}},
+		Endpoints: map[string]config.EndpointConfig{
+			"default": {
+				Type: config.EndpointTypeStatic,
+				Host: "198.51.100.1",
+			},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	defer func() {
+		showQRCode = false
+		showQRInvert = false
+		showCmd.Flags().Lookup("qrcode").Changed = false
+		_ = showCmd.Flags().Lookup("qrcode").Value.Set("false")
+		showCmd.Flags().Lookup("qr-invert").Changed = false
+		_ = showCmd.Flags().Lookup("qr-invert").Value.Set("false")
+	}()
+
+	// 1. Run with --qrcode
+	showQRCode = true
+	origStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := showCmd.RunE(showCmd, []string{})
+	w.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("showCmd.RunE failed: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	output := buf.String()
+
+	if !strings.Contains(output, "vless://test-uuid-show-qr@198.51.100.1:443") {
+		t.Errorf("expected vless link in output, got: %s", output)
+	}
+	if !strings.Contains(output, "█") || !strings.Contains(output, "▀") {
+		t.Errorf("expected QR code blocks in output when --qrcode is set, got: %s", output)
+	}
+
+	// 2. Run without --qrcode
+	showQRCode = false
+	r2, w2, _ := os.Pipe()
+	os.Stdout = w2
+
+	err = showCmd.RunE(showCmd, []string{})
+	w2.Close()
+	os.Stdout = origStdout
+	if err != nil {
+		t.Fatalf("showCmd.RunE without qrcode failed: %v", err)
+	}
+
+	var buf2 bytes.Buffer
+	_, _ = io.Copy(&buf2, r2)
+	output2 := buf2.String()
+
+	if !strings.Contains(output2, "vless://test-uuid-show-qr@198.51.100.1:443") {
+		t.Errorf("expected vless link in output, got: %s", output2)
+	}
+	if strings.Contains(output2, "▀") {
+		t.Errorf("unexpected QR code blocks in output when --qrcode is false, got: %s", output2)
+	}
+}
+
+

@@ -7,6 +7,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/qrcode"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -35,6 +36,8 @@ var (
 	showOutbound string
 	showGuest    string
 	showAll      bool
+	showQRCode   bool
+	showQRInvert bool
 )
 
 var (
@@ -230,6 +233,13 @@ func runShow(cmd *cobra.Command, args []string) error {
 		fmt.Println(showDivider)
 		for _, link := range links {
 			fmt.Println(link)
+			if showQRCode {
+				fmt.Println()
+				if qr, err := qrcode.RenderTerminal(link, showQRInvert); err == nil {
+					fmt.Print(qr)
+					fmt.Println()
+				}
+			}
 		}
 	}
 
@@ -304,6 +314,8 @@ func init() {
 	showCmd.Flags().StringVarP(&showRelay, "relay", "r", "", "Show links for specific relay node")
 	showCmd.Flags().StringVarP(&showOutbound, "outbound", "o", "", "Show links for specific custom outbound (deprecated)")
 	showCmd.Flags().StringVarP(&showGuest, "guest", "g", "", "Show links for specific guest user")
+	showCmd.Flags().BoolVarP(&showQRCode, "qrcode", "q", false, "Display QR code for terminal scanning")
+	showCmd.Flags().BoolVar(&showQRInvert, "qr-invert", false, "Invert QR code colors for light-background terminals")
 	showCmd.Flags().BoolVar(&showAll, "all", false, "Show all sharing links")
 
 	showCmd.Flags().MarkHidden("outbound")

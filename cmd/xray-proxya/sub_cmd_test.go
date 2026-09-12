@@ -302,4 +302,81 @@ func TestManagedSubURLMultiInstanceGateURLPriority(t *testing.T) {
 	}
 }
 
+func TestSubShowCmd_QRCodeFlag(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		GateURL: "https://sub.example.com",
+		AdminSub: config.AdminSubConfig{
+			Token:      "admin-tok-qr",
+			Port:       8443,
+			Listen:     "127.0.0.1",
+			TargetType: "direct",
+		},
+		Guests: []config.GuestConfig{
+			{
+				Alias:   "alice",
+				UUID:    "alice-uuid-1111",
+				Enabled: true,
+			},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	defer func() {
+		subShowQRCode = false
+		subShowQRInvert = false
+		subShowGuest = ""
+		subShowCmd.Flags().Lookup("qrcode").Changed = false
+		_ = subShowCmd.Flags().Lookup("qrcode").Value.Set("false")
+		subShowCmd.Flags().Lookup("guest").Changed = false
+		_ = subShowCmd.Flags().Lookup("guest").Value.Set("")
+	}()
+
+	// 1. Run sub show --qrcode
+	subShowQRCode = true
+	out := captureStdout(t, func() {
+		err := subShowCmd.RunE(subShowCmd, []string{})
+		if err != nil {
+			t.Fatalf("subShowCmd.RunE failed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "admin-tok-qr") || !strings.Contains(out, "alice") {
+		t.Errorf("expected admin and guest in output, got: %s", out)
+	}
+	if !strings.Contains(out, "█") || !strings.Contains(out, "▀") {
+		t.Errorf("expected QR code blocks in output when --qrcode is set, got: %s", out)
+	}
+
+	// 2. Filter by specific guest: sub show -g alice --qrcode
+	subShowGuest = "alice"
+	outAlice := captureStdout(t, func() {
+		err := subShowCmd.RunE(subShowCmd, []string{})
+		if err != nil {
+			t.Fatalf("subShowCmd.RunE with guest failed: %v", err)
+		}
+	})
+	if !strings.Contains(outAlice, "Guest Subscription") || !strings.Contains(outAlice, "alice") {
+		t.Errorf("expected alice guest subscription in output, got: %s", outAlice)
+	}
+	if strings.Contains(outAlice, "Admin Subscription") {
+		t.Errorf("sub show -g alice should not contain Admin Subscription")
+	}
+	if !strings.Contains(outAlice, "█") || !strings.Contains(outAlice, "▀") {
+		t.Errorf("expected QR code blocks in output for guest alice, got: %s", outAlice)
+	}
+
+	// 3. Non-existent guest returns error
+	subShowGuest = "nonexistent"
+	err := subShowCmd.RunE(subShowCmd, []string{})
+	if err == nil || !strings.Contains(err.Error(), "Guest 'nonexistent' not found.") {
+		t.Fatalf("expected error for nonexistent guest, got: %v", err)
+	}
+}
+
+
 
