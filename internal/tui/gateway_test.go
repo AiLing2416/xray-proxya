@@ -56,7 +56,7 @@ func TestBuildGatewayReport(t *testing.T) {
 	staging.Gateway.BypassCountries = []string{"CN"}
 
 	for row := 0; row <= 6; row++ {
-		report := BuildGatewayReport(active, staging, row, true, true, true, "10.49.0.201", "10.49.0.202")
+		report := BuildGatewayReport(active, staging, row, true, true, true, "198.51.100.1", "203.0.113.1")
 		if report == "" {
 			t.Fatalf("row %d: report should not be empty", row)
 		}

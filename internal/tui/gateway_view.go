@@ -238,7 +238,18 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		}
 		tunStr := "Down"
 		if tun {
-			tunStr = "Up (proxya-tun, 10.47.0.1/24)"
+			tunStr = "Up (proxya-tun)"
+			if iface, err := net.InterfaceByName("proxya-tun"); err == nil {
+				if addrs, err := iface.Addrs(); err == nil {
+					for _, addr := range addrs {
+						ip, _, err := net.ParseCIDR(addr.String())
+						if err == nil && ip.To4() != nil {
+							tunStr = fmt.Sprintf("Up (proxya-tun, %s)", addr.String())
+							break
+						}
+					}
+				}
+			}
 		}
 		fwdStr := "Disabled"
 		if fwd {
