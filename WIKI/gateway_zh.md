@@ -68,7 +68,7 @@ ip -4 route show default
 输出中 `dev` 后面的接口就是 LAN/出口接口，例如：
 
 ```text
-default via 10.47.0.1 dev eth0 proto static
+default via 10.50.0.1 dev eth0 proto static
 ```
 
 这里接口是 `eth0`。
@@ -188,7 +188,7 @@ ip route replace default via <gateway-lan-ip> dev <client-lan-iface>
 例如：
 
 ```bash
-ip route replace default via 10.47.0.103 dev eth0
+ip route replace default via 10.50.0.103 dev eth0
 ```
 
 测试：
@@ -209,7 +209,7 @@ ip route replace default via <original-router-ip> dev <client-lan-iface>
 例如：
 
 ```bash
-ip route replace default via 10.47.0.1 dev eth0
+ip route replace default via 10.50.0.1 dev eth0
 ```
 
 ## 关闭透明网关运行态

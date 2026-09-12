@@ -68,7 +68,7 @@ ip -4 route show default
 The interface after `dev` is the LAN/egress interface, for example:
 
 ```text
-default via 10.47.0.1 dev eth0 proto static
+default via 10.50.0.1 dev eth0 proto static
 ```
 
 Here the interface is `eth0`.
@@ -188,7 +188,7 @@ ip route replace default via <gateway-lan-ip> dev <client-lan-iface>
 Example:
 
 ```bash
-ip route replace default via 10.47.0.103 dev eth0
+ip route replace default via 10.50.0.103 dev eth0
 ```
 
 Test:
@@ -209,7 +209,7 @@ ip route replace default via <original-router-ip> dev <client-lan-iface>
 Example:
 
 ```bash
-ip route replace default via 10.47.0.1 dev eth0
+ip route replace default via 10.50.0.1 dev eth0
 ```
 
 ## Bring Gateway Runtime Rules Down
