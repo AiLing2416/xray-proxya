@@ -59,7 +59,7 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 		disabled = append(disabled, !m.Enabled)
 	}
 
-	widths := fitTableWidths(headers, rows, []int{3, 10, 4, 3, 8, 8, 4}, width)
+	widths := fitTableWidths(headers, rows, []int{3, 10, 4, 3, 17, 8, 4}, width)
 
 	var b strings.Builder
 	b.WriteString(renderRow(headers, widths, true))
@@ -92,9 +92,15 @@ func getSecurityName(m config.ModeInfo) string {
 	case config.ModeVLESSXHTTP:
 		return "ML-KEM768"
 	case config.ModeVMessWS:
-		return "NONE"
+		if m.Settings.Cipher != "" {
+			return m.Settings.Cipher
+		}
+		return "chacha20-poly1305"
 	case config.ModeShadowsocksTCP:
-		return m.Settings.Cipher
+		if m.Settings.Cipher != "" {
+			return m.Settings.Cipher
+		}
+		return "aes-256-gcm"
 	}
 	return "-"
 }

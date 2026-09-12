@@ -94,6 +94,9 @@ func (n *NodeSpec) TransportSummary() string {
 	if transport != "" {
 		parts = append(parts, transport)
 	}
+	if n.Protocol == ProtoVMess && n.Method != "" {
+		parts = append(parts, n.Method)
+	}
 	if n.Security != "" && n.Security != "none" {
 		parts = append(parts, n.Security)
 	}

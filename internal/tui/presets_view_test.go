@@ -52,3 +52,46 @@ func TestRenderPresetsEmpty(t *testing.T) {
 		t.Errorf("expected 'No presets found', got: %s", out)
 	}
 }
+
+func TestGetSecurityName(t *testing.T) {
+	tests := []struct {
+		mode     config.ModeInfo
+		expected string
+	}{
+		{
+			mode:     config.ModeInfo{Mode: config.ModeVMessWS},
+			expected: "chacha20-poly1305",
+		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeVMessWS, Settings: config.Settings{Cipher: "aes-128-gcm"}},
+			expected: "aes-128-gcm",
+		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeVLESSReality},
+			expected: "Reality",
+		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeVLESSVision},
+			expected: "Vision-Reality",
+		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeVLESSXHTTP},
+			expected: "ML-KEM768",
+		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeShadowsocksTCP},
+			expected: "aes-256-gcm",
+		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeShadowsocksTCP, Settings: config.Settings{Cipher: "chacha20-poly1305"}},
+			expected: "chacha20-poly1305",
+		},
+	}
+
+	for _, tc := range tests {
+		got := getSecurityName(tc.mode)
+		if got != tc.expected {
+			t.Errorf("getSecurityName for mode %s with cipher %q: got %q, want %q", tc.mode.Mode, tc.mode.Settings.Cipher, got, tc.expected)
+		}
+	}
+}

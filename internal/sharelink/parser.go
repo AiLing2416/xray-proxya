@@ -242,6 +242,7 @@ func parseVMess(link string) (*NodeSpec, error) {
 		Ps   string  `json:"ps"`
 		Host string  `json:"host"`
 		SNI  string  `json:"sni"`
+		Scy  string  `json:"scy"`
 	}
 	if err := json.Unmarshal(decoded, &vcfg); err != nil {
 		return nil, err
@@ -266,6 +267,11 @@ func parseVMess(link string) (*NodeSpec, error) {
 		sni = vcfg.Host
 	}
 
+	method := vcfg.Scy
+	if method == "" {
+		method = "chacha20-poly1305"
+	}
+
 	return &NodeSpec{
 		Protocol:  ProtoVMess,
 		Address:   vcfg.Add,
@@ -276,6 +282,7 @@ func parseVMess(link string) (*NodeSpec, error) {
 		Security:  sec,
 		SNI:       sni,
 		Host:      vcfg.Host,
+		Method:    method,
 		Remark:    remark,
 		RawLink:   link,
 	}, nil

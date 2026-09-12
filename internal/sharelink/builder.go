@@ -122,6 +122,10 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 		return out
 
 	case ProtoVMess:
+		user := map[string]interface{}{"id": n.UUID}
+		if n.Method != "" {
+			user["security"] = n.Method
+		}
 		out := map[string]interface{}{
 			"protocol": "vmess",
 			"settings": map[string]interface{}{
@@ -130,7 +134,7 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 						"address": n.Address,
 						"port":    n.Port,
 						"users": []interface{}{
-							map[string]interface{}{"id": n.UUID},
+							user,
 						},
 					},
 				},
