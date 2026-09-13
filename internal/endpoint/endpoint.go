@@ -51,6 +51,13 @@ func isValidHost(h string) bool {
 // ResolveTargets resolves an endpoint specification (single endpoint name, comma-separated list of
 // endpoints/IPs/domains) into ordered Target objects.
 func ResolveTargets(cfg *config.UserConfig, endpointSpec string, consumer string, forSubscription bool) ([]Target, error) {
+	return ResolveTargetsWithDefaultIP(cfg, endpointSpec, consumer, forSubscription, "")
+}
+
+// ResolveTargetsWithDefaultIP resolves an endpoint specification into ordered Target objects.
+// If defaultIP is provided, it is used for 'default' tokens and auto endpoints (IPv4) instead of performing
+// blocking network calls to detect public IP.
+func ResolveTargetsWithDefaultIP(cfg *config.UserConfig, endpointSpec string, consumer string, forSubscription bool, defaultIP string) ([]Target, error) {
 	spec := strings.TrimSpace(endpointSpec)
 	if spec == "" {
 		spec = "default"
@@ -89,6 +96,8 @@ func ResolveTargets(cfg *config.UserConfig, endpointSpec string, consumer string
 					var ip string
 					if strings.EqualFold(ep.Family, "v6") {
 						ip = utils.GetSmartIP(true)
+					} else if defaultIP != "" {
+						ip = defaultIP
 					} else {
 						ip = utils.GetSmartIP(false)
 					}
@@ -131,7 +140,10 @@ func ResolveTargets(cfg *config.UserConfig, endpointSpec string, consumer string
 		}
 
 		if token == "default" {
-			ip := utils.GetSmartIP(false)
+			ip := defaultIP
+			if ip == "" {
+				ip = utils.GetSmartIP(false)
+			}
 			if ip == "" {
 				ip = "127.0.0.1"
 			}

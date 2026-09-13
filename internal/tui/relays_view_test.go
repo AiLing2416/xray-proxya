@@ -78,3 +78,80 @@ func TestRenderRelaysWithPrivateColumn(t *testing.T) {
 		t.Fatalf("expected RenderRelays to show ALLOWED for node-2, got:\n%s", rendered)
 	}
 }
+
+func TestRelayDetailAndLinkGatewayAndServer(t *testing.T) {
+	co := config.CustomOutbound{
+		Alias:               "relay-gw",
+		Enabled:             true,
+		UserUUID:            "test-uuid-1",
+		AllowPrivateTargets: false,
+		Config: map[string]interface{}{
+			"protocol": "vless",
+		},
+	}
+
+	// 1. Gateway Role: Relay link should be suppressed
+	gwCfg := &config.UserConfig{
+		Role:            "gateway",
+		CustomOutbounds: []config.CustomOutbound{co},
+	}
+	gwModel := Model{
+		staging:      gwCfg,
+		currentTab:   tabRelays,
+		cursor:       0,
+		cachedIP:     "198.51.100.99",
+		relayViewMode: make(map[string]string),
+	}
+
+	if link := gwModel.getSelectedLink(); link != "" {
+		t.Fatalf("expected empty relay link for gateway role, got: %s", link)
+	}
+	if copyContent := gwModel.getSelectedCopyContent(); copyContent != "" {
+		t.Fatalf("expected empty relay copy content for gateway role, got: %s", copyContent)
+	}
+	detailGW := gwModel.getSelectedDetailContent()
+	if strings.Contains(detailGW, "Link:") {
+		t.Fatalf("expected gateway relay detail not to contain 'Link:', got:\n%s", detailGW)
+	}
+	if !strings.Contains(detailGW, "Relay:    relay-gw") {
+		t.Fatalf("expected gateway relay detail to contain 'Relay:    relay-gw', got:\n%s", detailGW)
+	}
+
+	// 2. Server Role: Relay link uses cachedIP non-blockingly
+	serverCfg := &config.UserConfig{
+		Role:            "server",
+		UUID:            "server-uuid",
+		CustomOutbounds: []config.CustomOutbound{co},
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSReality,
+				Port:    443,
+				Enabled: true,
+				Settings: config.Settings{
+					PublicKey: "test-pubkey",
+					ShortID:   "01234567",
+				},
+			},
+		},
+	}
+	serverModel := Model{
+		staging:       serverCfg,
+		currentTab:    tabRelays,
+		cursor:        0,
+		cachedIP:      "198.51.100.88",
+		relayViewMode: make(map[string]string),
+	}
+
+	srvLink := serverModel.getSelectedLink()
+	if srvLink == "" {
+		t.Fatalf("expected non-empty link for server role with presets, got empty")
+	}
+	if !strings.Contains(srvLink, "198.51.100.88") {
+		t.Fatalf("expected server relay link to use cachedIP 198.51.100.88, got: %s", srvLink)
+	}
+	srvDetail := serverModel.getSelectedDetailContent()
+	if !strings.Contains(srvDetail, "Link:     "+srvLink) {
+		t.Fatalf("expected server relay detail to contain link, got:\n%s", srvDetail)
+	}
+}
+

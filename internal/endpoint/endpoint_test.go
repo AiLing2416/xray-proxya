@@ -854,4 +854,46 @@ func TestDynamicV6_MissingInterfaceFails(t *testing.T) {
 	}
 }
 
+func TestResolveTargetsWithDefaultIP(t *testing.T) {
+	cfg := &config.UserConfig{
+		Endpoints: map[string]config.EndpointConfig{
+			"auto-ep": {
+				Type: config.EndpointTypeAuto,
+			},
+			"static-ep": {
+				Type: config.EndpointTypeStatic,
+				Host: "198.51.100.1",
+			},
+		},
+	}
+
+	// 1. Default token with defaultIP
+	targets, err := ResolveTargetsWithDefaultIP(cfg, "default", "tui", false, "203.0.113.10")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(targets) != 1 || targets[0].Address != "203.0.113.10" {
+		t.Fatalf("expected target 203.0.113.10, got %+v", targets)
+	}
+
+	// 2. Auto endpoint with defaultIP
+	targetsAuto, err := ResolveTargetsWithDefaultIP(cfg, "auto-ep", "tui", false, "203.0.113.20")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(targetsAuto) != 1 || targetsAuto[0].Address != "203.0.113.20" {
+		t.Fatalf("expected target 203.0.113.20, got %+v", targetsAuto)
+	}
+
+	// 3. Static endpoint should still resolve normally
+	targetsStatic, err := ResolveTargetsWithDefaultIP(cfg, "static-ep", "tui", false, "203.0.113.30")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(targetsStatic) != 1 || targetsStatic[0].Address != "198.51.100.1" {
+		t.Fatalf("expected target 198.51.100.1, got %+v", targetsStatic)
+	}
+}
+
+
 

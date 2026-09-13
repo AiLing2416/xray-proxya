@@ -434,6 +434,7 @@ func InitialModel() Model {
 
 	nft, tun, fwd := checkGatewayStatus()
 	services := QueryManagedServices(active)
+	locIP := utils.GetLocalIP()
 
 	return Model{
 		active:          active,
@@ -448,8 +449,8 @@ func InitialModel() Model {
 		serviceState:    xray.GetServiceState(),
 		managedServices: services,
 		textInput:       ti,
-		cachedIP:        "127.0.0.1",
-		localIP:         utils.GetLocalIP(),
+		cachedIP:        locIP,
+		localIP:         locIP,
 		gwNftables:      nft,
 		gwTun:           tun,
 		gwForward:       fwd,
@@ -1917,7 +1918,14 @@ func (m Model) resolveTargetNodes(cfg *config.UserConfig, epSpec string) []xray.
 	if epSpec == "" {
 		epSpec = "default"
 	}
-	targets, err := endpoint.ResolveTargets(cfg, epSpec, "tui", false)
+	defaultIP := m.cachedIP
+	if defaultIP == "" {
+		defaultIP = m.localIP
+	}
+	if defaultIP == "" {
+		defaultIP = "127.0.0.1"
+	}
+	targets, err := endpoint.ResolveTargetsWithDefaultIP(cfg, epSpec, "tui", false, defaultIP)
 	if err == nil && len(targets) > 0 {
 		nodes := make([]xray.TargetNode, len(targets))
 		for i, t := range targets {
@@ -1925,14 +1933,7 @@ func (m Model) resolveTargetNodes(cfg *config.UserConfig, epSpec string) []xray.
 		}
 		return nodes
 	}
-	ip := m.cachedIP
-	if ip == "" {
-		ip = m.localIP
-	}
-	if ip == "" {
-		ip = "127.0.0.1"
-	}
-	return []xray.TargetNode{{Address: ip}}
+	return []xray.TargetNode{{Address: defaultIP}}
 }
 
 func (m Model) getSelectedCopyContent() string {
@@ -1946,6 +1947,9 @@ func (m Model) getSelectedCopyContent() string {
 	case tabPresets:
 		return m.getSelectedLink()
 	case tabRelays:
+		if m.staging != nil && m.staging.Role == "gateway" {
+			return ""
+		}
 		if m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
 			co := m.staging.CustomOutbounds[m.cursor]
 			targets := m.resolveTargetNodes(m.staging, "default")
@@ -1984,6 +1988,9 @@ func (m Model) getSelectedLink() string {
 		}
 	}
 	if m.currentTab == tabRelays && m.staging != nil && m.cursor >= 0 && m.cursor < len(m.staging.CustomOutbounds) {
+		if m.staging.Role == "gateway" {
+			return ""
+		}
 		co := m.staging.CustomOutbounds[m.cursor]
 		targets := m.resolveTargetNodes(m.staging, "default")
 		links := xray.GenerateRelayLinksWithTargets(m.staging, targets, co)
