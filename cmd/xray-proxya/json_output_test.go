@@ -175,3 +175,97 @@ func TestCertListJSONOutput(t *testing.T) {
 		t.Errorf("expected days remaining ~89, got %d", certs[0].DaysRemaining)
 	}
 }
+
+func TestProxyListJSONOutput(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "node-applied",
+				Enabled:            true,
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10809,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	proxyListJSON = true
+	t.Cleanup(func() { proxyListJSON = false })
+
+	out := captureStdout(t, func() {
+		if err := runProxyList(proxyListCmd, nil); err != nil {
+			t.Fatalf("runProxyList error: %v", err)
+		}
+	})
+
+	var proxies []ProxyListItemJSON
+	if err := json.Unmarshal([]byte(out), &proxies); err != nil {
+		t.Fatalf("failed to unmarshal proxy list JSON: %v\nOutput:\n%s", err, out)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("expected 1 proxy, got %d", len(proxies))
+	}
+	if proxies[0].Alias != "node-applied" {
+		t.Errorf("expected alias 'node-applied', got %q", proxies[0].Alias)
+	}
+	if proxies[0].State != "ON" {
+		t.Errorf("expected state 'ON', got %q", proxies[0].State)
+	}
+	if proxies[0].SocksPort != 10808 {
+		t.Errorf("expected socks_port 10808, got %d", proxies[0].SocksPort)
+	}
+	if proxies[0].HttpPort != 10809 {
+		t.Errorf("expected http_port 10809, got %d", proxies[0].HttpPort)
+	}
+	if proxies[0].ListenIP != "127.0.0.1" {
+		t.Errorf("expected listen_ip '127.0.0.1', got %q", proxies[0].ListenIP)
+	}
+	if !proxies[0].Applied {
+		t.Errorf("expected applied true")
+	}
+
+	// Staging changes: add a pending proxy
+	cfg.CustomOutbounds = append(cfg.CustomOutbounds, config.CustomOutbound{
+		Alias:              "node-pending",
+		Enabled:            true,
+		InternalProxyPort:  10810,
+		InternalHttpPort:   10811,
+		InternalListenAddr: "127.0.0.1",
+		Config:             map[string]interface{}{"protocol": "freedom"},
+	})
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx staging error: %v", err)
+	}
+
+	out2 := captureStdout(t, func() {
+		if err := runProxyList(proxyListCmd, nil); err != nil {
+			t.Fatalf("runProxyList error: %v", err)
+		}
+	})
+
+	var proxies2 []ProxyListItemJSON
+	if err := json.Unmarshal([]byte(out2), &proxies2); err != nil {
+		t.Fatalf("failed to unmarshal proxy list JSON: %v\nOutput:\n%s", err, out2)
+	}
+	if len(proxies2) != 2 {
+		t.Fatalf("expected 2 proxies, got %d", len(proxies2))
+	}
+	if proxies2[1].Alias != "node-pending" {
+		t.Errorf("expected alias 'node-pending', got %q", proxies2[1].Alias)
+	}
+	if proxies2[1].State != "PENDING" {
+		t.Errorf("expected state 'PENDING', got %q", proxies2[1].State)
+	}
+	if proxies2[1].Applied {
+		t.Errorf("expected applied false for pending item")
+	}
+}
+

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -19,6 +20,8 @@ import (
 )
 
 var (
+	proxyListJSON bool
+
 	proxySocksPort int
 	proxyHttpPort  int
 	proxyListenIP  string
@@ -51,52 +54,175 @@ var proxyCmd = &cobra.Command{
   xray-proxya proxy run node-us -p 20808 -l 0.0.0.0`,
 }
 
-var proxyListCmd = &cobra.Command{
-	Use:     "list",
-	Aliases: []string{"ls"},
-	Short:   "List all configured local SOCKS/HTTP proxies",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
+type ProxyListItemJSON struct {
+	Alias          string `json:"alias"`
+	State          string `json:"state"` // ON, DISABLED, OFF, PENDING
+	SocksPort      int    `json:"socks_port"`
+	HttpPort       int    `json:"http_port"`
+	ListenIP       string `json:"listen_ip"`
+	RemoteEndpoint string `json:"remote_endpoint"`
+	Applied        bool   `json:"applied"`
+}
+
+func isProxyApplied(stagingCO config.CustomOutbound, activeCfg *config.UserConfig) bool {
+	if !config.StagingExists() {
+		return true
+	}
+	if activeCfg == nil {
+		return false
+	}
+	var activeCO *config.CustomOutbound
+	for _, aco := range activeCfg.CustomOutbounds {
+		if aco.Alias == stagingCO.Alias {
+			activeCO = &aco
+			break
 		}
-		fmt.Printf("\n%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n", "ALIAS", "STATE", "SOCKS PORT", "HTTP PORT", "LISTEN IP", "REMOTE ENDPOINT")
-		fmt.Println("---------------------------------------------------------------------------------------------------------")
+	}
+	if stagingCO.InternalProxyPort <= 0 {
+		if activeCO != nil && activeCO.InternalProxyPort > 0 {
+			return false
+		}
+		return true
+	}
+	if activeCO == nil || activeCO.InternalProxyPort != stagingCO.InternalProxyPort {
+		return false
+	}
+	stagingHttp := stagingCO.InternalHttpPort
+	if stagingHttp <= 0 {
+		stagingHttp = stagingCO.InternalProxyPort + 1
+	}
+	activeHttp := activeCO.InternalHttpPort
+	if activeHttp <= 0 {
+		activeHttp = activeCO.InternalProxyPort + 1
+	}
+	if stagingHttp != activeHttp {
+		return false
+	}
+	stagingListen := stagingCO.InternalListenAddr
+	if stagingListen == "" {
+		stagingListen = "127.0.0.1"
+	}
+	activeListen := activeCO.InternalListenAddr
+	if activeListen == "" {
+		activeListen = "127.0.0.1"
+	}
+	if stagingListen != activeListen {
+		return false
+	}
+	if activeCO.Enabled != stagingCO.Enabled {
+		return false
+	}
+	return true
+}
+
+func runProxyList(cmd *cobra.Command, args []string) error {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+
+	var activeCfg *config.UserConfig
+	if config.StagingExists() {
+		activeCfg, _ = config.LoadConfigEx(false)
+	} else {
+		activeCfg = cfg
+	}
+
+	if proxyListJSON {
+		items := make([]ProxyListItemJSON, 0)
 		for _, co := range cfg.CustomOutbounds {
+			applied := isProxyApplied(co, activeCfg)
 			state := "OFF"
-			socksPortStr := "-"
-			httpPortStr := "-"
+			socksPort := 0
+			httpPort := 0
 			listenIP := "-"
 
 			if co.InternalProxyPort > 0 {
-				if co.Enabled {
+				if !applied {
+					state = "PENDING"
+				} else if co.Enabled {
 					state = "ON"
 				} else {
 					state = "DISABLED"
 				}
-				socksPortStr = fmt.Sprintf("%d", co.InternalProxyPort)
-				httpPort := co.InternalHttpPort
+				socksPort = co.InternalProxyPort
+				httpPort = co.InternalHttpPort
 				if httpPort <= 0 {
 					httpPort = co.InternalProxyPort + 1
 				}
-				httpPortStr = fmt.Sprintf("%d", httpPort)
-
 				listenIP = co.InternalListenAddr
 				if listenIP == "" {
 					listenIP = "127.0.0.1"
 				}
 			}
 
-			fmt.Printf(
-				"%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n",
-				co.Alias,
-				state,
-				socksPortStr,
-				httpPortStr,
-				listenIP,
-				outboundRemoteSummary(co),
-			)
+			items = append(items, ProxyListItemJSON{
+				Alias:          co.Alias,
+				State:          state,
+				SocksPort:      socksPort,
+				HttpPort:       httpPort,
+				ListenIP:       listenIP,
+				RemoteEndpoint: outboundRemoteSummary(co),
+				Applied:        applied,
+			})
 		}
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return fmt.Errorf("❌ Failed to serialize proxy list JSON: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("\n%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n", "ALIAS", "STATE", "SOCKS PORT", "HTTP PORT", "LISTEN IP", "REMOTE ENDPOINT")
+	fmt.Println("---------------------------------------------------------------------------------------------------------")
+	for _, co := range cfg.CustomOutbounds {
+		state := "OFF"
+		socksPortStr := "-"
+		httpPortStr := "-"
+		listenIP := "-"
+
+		applied := isProxyApplied(co, activeCfg)
+		if co.InternalProxyPort > 0 {
+			if !applied {
+				state = "PENDING"
+			} else if co.Enabled {
+				state = "ON"
+			} else {
+				state = "DISABLED"
+			}
+			socksPortStr = fmt.Sprintf("%d", co.InternalProxyPort)
+			httpPort := co.InternalHttpPort
+			if httpPort <= 0 {
+				httpPort = co.InternalProxyPort + 1
+			}
+			httpPortStr = fmt.Sprintf("%d", httpPort)
+
+			listenIP = co.InternalListenAddr
+			if listenIP == "" {
+				listenIP = "127.0.0.1"
+			}
+		}
+
+		fmt.Printf(
+			"%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n",
+			co.Alias,
+			state,
+			socksPortStr,
+			httpPortStr,
+			listenIP,
+			outboundRemoteSummary(co),
+		)
+	}
+	return nil
+}
+
+var proxyListCmd = &cobra.Command{
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List all configured local SOCKS/HTTP proxies",
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = runProxyList(cmd, args)
 	},
 }
 
@@ -658,6 +784,8 @@ var proxyTestCmd = &cobra.Command{
 }
 
 func init() {
+	proxyListCmd.Flags().BoolVar(&proxyListJSON, "json", false, "Output local proxies in JSON format")
+
 	proxySetCmd.Flags().IntVarP(&proxySetSocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
 	proxySetCmd.Flags().IntVar(&proxySetSocksPort, "socks-port", 0, "Specific SOCKS port")
 	proxySetCmd.Flags().IntVar(&proxySetHttpPort, "http-port", 0, "Specific HTTP port")
