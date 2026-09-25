@@ -127,7 +127,7 @@ xray-proxya gateway check
 - Disables IPv4 rp_filter
 - Creates policy routing: `fwmark 1 -> table 100`
 - Creates nftables rules to send local and LAN TCP/UDP traffic into TUN
-- Excludes the LAN subnet, private ranges, upstream server IPs, and SSH ports
+- Excludes the LAN subnet, private ranges, upstream proxy server ports, and active SSH listener ports
 
 ## Inspect Runtime State
 

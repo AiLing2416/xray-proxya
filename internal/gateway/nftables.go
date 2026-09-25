@@ -900,15 +900,8 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 		if lanIPv6CIDR != "" {
 			b.WriteString("        ip6 daddr " + lanIPv6CIDR + " return\n")
 		}
-		for _, ip := range outboundIPs(cfg) {
-			parsedIP := net.ParseIP(ip)
-			if parsedIP != nil {
-				if parsedIP.To4() != nil {
-					b.WriteString("        ip daddr " + ip + " return\n")
-				} else {
-					b.WriteString("        ip6 daddr " + ip + " return\n")
-				}
-			}
+		for _, target := range outboundEndpoints(cfg) {
+			writeOutboundEndpointRule(&b, target)
 		}
 		for _, ip := range cfg.Gateway.BypassDNS {
 			parsedIP := net.ParseIP(ip)
@@ -938,15 +931,8 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 		if lanIPv6CIDR != "" {
 			b.WriteString("        ip6 daddr " + lanIPv6CIDR + " return\n")
 		}
-		for _, ip := range outboundIPs(cfg) {
-			parsedIP := net.ParseIP(ip)
-			if parsedIP != nil {
-				if parsedIP.To4() != nil {
-					b.WriteString("        ip daddr " + ip + " return\n")
-				} else {
-					b.WriteString("        ip6 daddr " + ip + " return\n")
-				}
-			}
+		for _, target := range outboundEndpoints(cfg) {
+			writeOutboundEndpointRule(&b, target)
 		}
 		for _, ip := range cfg.Gateway.BypassDNS {
 			parsedIP := net.ParseIP(ip)
@@ -1020,30 +1006,111 @@ func getInterfaceIPv6CIDR(name string) (string, error) {
 	return "", fmt.Errorf("no IPv6 subnet found on %s", name)
 }
 
-func outboundIPs(cfg *config.UserConfig) []string {
-	var ips []string
+type outboundEndpoint struct {
+	IP   net.IP
+	Port int
+}
+
+func parsePort(v interface{}) int {
+	switch val := v.(type) {
+	case int:
+		return val
+	case float64:
+		return int(val)
+	case int64:
+		return int(val)
+	case string:
+		if p, err := strconv.Atoi(val); err == nil {
+			return p
+		}
+	}
+	return 0
+}
+
+func outboundEndpoints(cfg *config.UserConfig) []outboundEndpoint {
+	var targets []outboundEndpoint
 	seen := map[string]bool{}
+
+	addEndpoint := func(addr string, portVal interface{}) {
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			return
+		}
+		port := parsePort(portVal)
+		key := fmt.Sprintf("%s:%d", ip.String(), port)
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		targets = append(targets, outboundEndpoint{IP: ip, Port: port})
+	}
+
 	for _, co := range cfg.CustomOutbounds {
-		if !co.Enabled {
+		if !co.Enabled || co.Config == nil {
 			continue
 		}
 		settings, _ := co.Config["settings"].(map[string]interface{})
-		vnextList, _ := settings["vnext"].([]interface{})
-		for _, item := range vnextList {
-			vnext, _ := item.(map[string]interface{})
-			addr, _ := vnext["address"].(string)
-			ip := net.ParseIP(addr)
-			if ip == nil {
-				continue
+		if settings == nil {
+			continue
+		}
+		if vnextList, ok := settings["vnext"].([]interface{}); ok {
+			for _, item := range vnextList {
+				if vnext, ok := item.(map[string]interface{}); ok {
+					addr, _ := vnext["address"].(string)
+					addEndpoint(addr, vnext["port"])
+				}
 			}
-			if seen[ip.String()] {
-				continue
+		}
+		if serversList, ok := settings["servers"].([]interface{}); ok {
+			for _, item := range serversList {
+				if server, ok := item.(map[string]interface{}); ok {
+					addr, _ := server["address"].(string)
+					addEndpoint(addr, server["port"])
+				}
 			}
-			seen[ip.String()] = true
-			ips = append(ips, ip.String())
+		}
+		if peersList, ok := settings["peers"].([]interface{}); ok {
+			for _, item := range peersList {
+				if peer, ok := item.(map[string]interface{}); ok {
+					if endpoint, ok := peer["endpoint"].(string); ok {
+						if host, portStr, err := net.SplitHostPort(endpoint); err == nil {
+							addEndpoint(host, portStr)
+						}
+					}
+				}
+			}
+		}
+	}
+	return targets
+}
+
+func outboundIPs(cfg *config.UserConfig) []string {
+	var ips []string
+	seen := map[string]bool{}
+	for _, ep := range outboundEndpoints(cfg) {
+		ipStr := ep.IP.String()
+		if !seen[ipStr] {
+			seen[ipStr] = true
+			ips = append(ips, ipStr)
 		}
 	}
 	return ips
+}
+
+func writeOutboundEndpointRule(b *strings.Builder, target outboundEndpoint) {
+	if target.Port > 0 {
+		if target.IP.To4() != nil {
+			b.WriteString(fmt.Sprintf("        ip daddr %s meta l4proto { tcp, udp } th dport %d return\n", target.IP.String(), target.Port))
+		} else {
+			b.WriteString(fmt.Sprintf("        ip6 daddr %s meta l4proto { tcp, udp } th dport %d return\n", target.IP.String(), target.Port))
+		}
+	} else {
+		if target.IP.To4() != nil {
+			b.WriteString("        ip daddr " + target.IP.String() + " return\n")
+		} else {
+			b.WriteString("        ip6 daddr " + target.IP.String() + " return\n")
+		}
+	}
 }
 
 func getSSHPorts() []string {

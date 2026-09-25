@@ -127,7 +127,7 @@ xray-proxya gateway check
 - 关闭 IPv4 rp_filter
 - 创建 policy routing：`fwmark 1 -> table 100`
 - 创建 nftables 规则，把本机和 LAN 的 TCP/UDP 流量送入 TUN
-- 排除 LAN 网段、私有地址、上游服务器 IP 和 SSH 端口
+- 排除 LAN 网段、私有地址、上游代理服务器端口和 SSH 监听端口
 
 ## 检查状态
 

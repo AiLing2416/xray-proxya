@@ -177,6 +177,75 @@ func TestBuildNFTWithBypassDNS(t *testing.T) {
 	}
 }
 
+func TestBuildNFTOutboundEndpointsProxyPortOnly(t *testing.T) {
+	cfg := testGatewayConfig(true, true)
+	cfg.CustomOutbounds = []config.CustomOutbound{
+		{
+			Alias:   "vless-node",
+			Enabled: true,
+			Config: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"vnext": []interface{}{
+						map[string]interface{}{
+							"address": "87.58.209.196",
+							"port":    443,
+						},
+					},
+				},
+			},
+		},
+		{
+			Alias:   "ss-node-v6",
+			Enabled: true,
+			Config: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"servers": []interface{}{
+						map[string]interface{}{
+							"address": "2001:db8::1",
+							"port":    8388,
+						},
+					},
+				},
+			},
+		},
+		{
+			Alias:   "no-port-node",
+			Enabled: true,
+			Config: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"servers": []interface{}{
+						map[string]interface{}{
+							"address": "198.51.100.1",
+						},
+					},
+				},
+			},
+		},
+	}
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "fd00::/64")
+
+	expectedV4 := "ip daddr 87.58.209.196 meta l4proto { tcp, udp } th dport 443 return"
+	if !strings.Contains(rules, expectedV4) {
+		t.Fatalf("rules should bypass proxy port 443 for 87.58.209.196: %s", rules)
+	}
+	if strings.Contains(rules, "ip daddr 87.58.209.196 return") {
+		t.Fatalf("rules should not bypass whole IP 87.58.209.196 without port: %s", rules)
+	}
+
+	expectedV6 := "ip6 daddr 2001:db8::1 meta l4proto { tcp, udp } th dport 8388 return"
+	if !strings.Contains(rules, expectedV6) {
+		t.Fatalf("rules should bypass proxy port 8388 for 2001:db8::1: %s", rules)
+	}
+	if strings.Contains(rules, "ip6 daddr 2001:db8::1 return") {
+		t.Fatalf("rules should not bypass whole IPv6 2001:db8::1 without port: %s", rules)
+	}
+
+	expectedFallback := "ip daddr 198.51.100.1 return"
+	if !strings.Contains(rules, expectedFallback) {
+		t.Fatalf("rules should fallback to whole IP bypass for node without port: %s", rules)
+	}
+}
+
 func TestBuildNFTRoutesPathLinkICMPToDedicatedMark(t *testing.T) {
 	cfg := testGatewayConfig(true, true)
 	configurePathRelay(cfg)
