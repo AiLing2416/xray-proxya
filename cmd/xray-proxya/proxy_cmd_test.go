@@ -441,3 +441,90 @@ func TestProxyRunPortLinkageAndValidation(t *testing.T) {
 		t.Fatalf("expected error containing %q, got %q", expectedMsg, err.Error())
 	}
 }
+
+func TestProxyListFilteringAndEmptyState(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// 1. Empty state when no outbounds configured
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error = %v", err)
+	}
+
+	proxyListAll = false
+	proxyListJSON = false
+	t.Cleanup(func() {
+		proxyListAll = false
+		proxyListJSON = false
+	})
+
+	outEmpty := captureStdout(t, func() {
+		if err := proxyListCmd.RunE(proxyListCmd, nil); err != nil {
+			t.Fatalf("proxyListCmd error = %v", err)
+		}
+	})
+	if !strings.Contains(outEmpty, "No local proxy listeners configured") {
+		t.Errorf("expected empty message, got:\n%s", outEmpty)
+	}
+
+	// 2. Empty state when outbounds exist but none have InternalProxyPort > 0
+	cfg.CustomOutbounds = []config.CustomOutbound{
+		{Alias: "r1", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+		{Alias: "r2", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+		{Alias: "r3", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error = %v", err)
+	}
+
+	outNoProxies := captureStdout(t, func() {
+		if err := proxyListCmd.RunE(proxyListCmd, nil); err != nil {
+			t.Fatalf("proxyListCmd error = %v", err)
+		}
+	})
+	if !strings.Contains(outNoProxies, "No local proxy listeners configured") {
+		t.Errorf("expected empty message when no proxy configured, got:\n%s", outNoProxies)
+	}
+
+	// 3. Configure proxy on r1 only in staging (unapplied / pending)
+	cfgStaging := *cfg
+	cfgStaging.CustomOutbounds[0].InternalProxyPort = 10808
+	cfgStaging.CustomOutbounds[0].InternalHttpPort = 10809
+	if err := cfgStaging.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx staging error = %v", err)
+	}
+
+	// Default: should ONLY show r1 (not r2, r3) and show PENDING and pending warning
+	outDefault := captureStdout(t, func() {
+		if err := proxyListCmd.RunE(proxyListCmd, nil); err != nil {
+			t.Fatalf("proxyListCmd error = %v", err)
+		}
+	})
+	if !strings.Contains(outDefault, "r1") {
+		t.Errorf("expected r1 in default output, got:\n%s", outDefault)
+	}
+	if strings.Contains(outDefault, "r2") || strings.Contains(outDefault, "r3") {
+		t.Errorf("expected r2 and r3 to be filtered out in default output, got:\n%s", outDefault)
+	}
+	if !strings.Contains(outDefault, "PENDING") {
+		t.Errorf("expected PENDING state for unapplied proxy, got:\n%s", outDefault)
+	}
+	if !strings.Contains(outDefault, "Pending changes in STAGING") {
+		t.Errorf("expected staging pending notice, got:\n%s", outDefault)
+	}
+
+	// 4. With -a (--all): should show r1, r2, and r3
+	proxyListAll = true
+	outAll := captureStdout(t, func() {
+		if err := proxyListCmd.RunE(proxyListCmd, nil); err != nil {
+			t.Fatalf("proxyListCmd error = %v", err)
+		}
+	})
+	if !strings.Contains(outAll, "r1") || !strings.Contains(outAll, "r2") || !strings.Contains(outAll, "r3") {
+		t.Errorf("expected r1, r2, r3 in -a output, got:\n%s", outAll)
+	}
+}
+

@@ -21,6 +21,7 @@ import (
 
 var (
 	proxyListJSON bool
+	proxyListAll  bool
 
 	proxySocksPort int
 	proxyHttpPort  int
@@ -131,6 +132,9 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 	if proxyListJSON {
 		items := make([]ProxyListItemJSON, 0)
 		for _, co := range cfg.CustomOutbounds {
+			if !proxyListAll && co.InternalProxyPort <= 0 {
+				continue
+			}
 			applied := isProxyApplied(co, activeCfg)
 			state := "OFF"
 			socksPort := 0
@@ -174,15 +178,36 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	configuredCount := 0
+	for _, co := range cfg.CustomOutbounds {
+		if co.InternalProxyPort > 0 {
+			configuredCount++
+		}
+	}
+
+	if len(cfg.CustomOutbounds) == 0 || (!proxyListAll && configuredCount == 0) {
+		fmt.Println("ℹ️ No local proxy listeners configured. Use 'xray-proxya proxy set <alias>' to configure one.")
+		return nil
+	}
+
+	hasPending := false
 	fmt.Printf("\n%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n", "ALIAS", "STATE", "SOCKS PORT", "HTTP PORT", "LISTEN IP", "REMOTE ENDPOINT")
 	fmt.Println("---------------------------------------------------------------------------------------------------------")
 	for _, co := range cfg.CustomOutbounds {
+		if !proxyListAll && co.InternalProxyPort <= 0 {
+			continue
+		}
+
 		state := "OFF"
 		socksPortStr := "-"
 		httpPortStr := "-"
 		listenIP := "-"
 
 		applied := isProxyApplied(co, activeCfg)
+		if !applied {
+			hasPending = true
+		}
+
 		if co.InternalProxyPort > 0 {
 			if !applied {
 				state = "PENDING"
@@ -214,6 +239,10 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 			outboundRemoteSummary(co),
 		)
 	}
+
+	if hasPending {
+		fmt.Println("\n⚠️  Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
+	}
 	return nil
 }
 
@@ -221,7 +250,10 @@ var proxyListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List all configured local SOCKS/HTTP proxies",
-	RunE:    runProxyList,
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = runProxyList(cmd, args)
+	},
+	RunE: runProxyList,
 }
 
 func checkProxyPortConflict(cfg *config.UserConfig, alias string, listenIP string, socksPort, httpPort int) error {
@@ -783,6 +815,7 @@ var proxyTestCmd = &cobra.Command{
 
 func init() {
 	proxyListCmd.Flags().BoolVar(&proxyListJSON, "json", false, "Output local proxies in JSON format")
+	proxyListCmd.Flags().BoolVarP(&proxyListAll, "all", "a", false, "List all relays including those without local proxy")
 
 	proxySetCmd.Flags().IntVarP(&proxySetSocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
 	proxySetCmd.Flags().IntVar(&proxySetSocksPort, "socks-port", 0, "Specific SOCKS port")
