@@ -569,7 +569,7 @@ var proxyUnsetCmd = &cobra.Command{
   xray-proxya proxy unset node-us
   xray-proxya apply`,
 	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completeRelayAliasesArg,
+	ValidArgsFunction: completeConfiguredProxyAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = runProxyUnset(cmd, args)
 	},
@@ -899,6 +899,32 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+func completeConfiguredProxyAliasesArg(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	if len(args) != 0 {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		cfg, _ = config.LoadConfig()
+	}
+	if cfg == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
+	var results []string
+	for _, co := range cfg.CustomOutbounds {
+		if co.InternalProxyPort > 0 {
+			httpPort := co.InternalHttpPort
+			if httpPort <= 0 {
+				httpPort = co.InternalProxyPort + 1
+			}
+			desc := fmt.Sprintf("%s\tsocks:%d http:%d", co.Alias, co.InternalProxyPort, httpPort)
+			results = append(results, desc)
+		}
+	}
+	return results, cobra.ShellCompDirectiveNoFileComp
+}
+
 var proxyTestProbe bool
 
 var proxyTestCmd = &cobra.Command{
@@ -910,7 +936,7 @@ var proxyTestCmd = &cobra.Command{
   # Test connectivity and probe outbound public IP
   xray-proxya proxy test node-us --probe`,
 	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completeRelayAliasesArg,
+	ValidArgsFunction: completeConfiguredProxyAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = runProxyTest(cmd, args)
 	},
@@ -966,7 +992,7 @@ var proxyProbeCmd = &cobra.Command{
 	Example: `  # Probe outbound IPv4/IPv6 via configured local proxy
   xray-proxya proxy probe node-us`,
 	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completeRelayAliasesArg,
+	ValidArgsFunction: completeConfiguredProxyAliasesArg,
 	RunE:              runProxyProbe,
 }
 
@@ -1036,7 +1062,7 @@ var proxyEnvCmd = &cobra.Command{
   # Unset proxy environment variables
   eval $(xray-proxya proxy env --unset)`,
 	Args:              cobra.MaximumNArgs(1),
-	ValidArgsFunction: completeRelayAliasesArg,
+	ValidArgsFunction: completeConfiguredProxyAliasesArg,
 	RunE:              runProxyEnv,
 }
 

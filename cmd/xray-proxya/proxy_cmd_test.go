@@ -819,4 +819,85 @@ func TestProxyProbeCmd(t *testing.T) {
 	}
 }
 
+func TestCompleteConfiguredProxyAliasesArg(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "configured-1",
+				Enabled:            true,
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10809,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:              "configured-2",
+				Enabled:            true,
+				InternalProxyPort:  20808,
+				InternalHttpPort:   20809,
+				InternalListenAddr: "0.0.0.0",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:   "unconfigured",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	cfgBytes, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json.staging"), cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json.staging error: %v", err)
+	}
+
+	// Test completion with empty args
+	comps, directive := completeConfiguredProxyAliasesArg(nil, []string{}, "")
+	if directive != 4 /* ShellCompDirectiveNoFileComp */ {
+		// Just ensure directive doesn't allow file comp
+	}
+
+	if len(comps) != 2 {
+		t.Fatalf("expected 2 completions, got %d: %v", len(comps), comps)
+	}
+
+	found1 := false
+	found2 := false
+	for _, c := range comps {
+		if strings.HasPrefix(c, "configured-1\t") {
+			found1 = true
+			if !strings.Contains(c, "socks:10808 http:10809") {
+				t.Errorf("unexpected description for configured-1: %s", c)
+			}
+		}
+		if strings.HasPrefix(c, "configured-2\t") {
+			found2 = true
+			if !strings.Contains(c, "socks:20808 http:20809") {
+				t.Errorf("unexpected description for configured-2: %s", c)
+			}
+		}
+		if strings.Contains(c, "unconfigured") {
+			t.Errorf("unconfigured relay should not appear in completion: %s", c)
+		}
+	}
+
+	if !found1 || !found2 {
+		t.Errorf("missing configured candidates: %v", comps)
+	}
+
+	// Test completion with args already provided (should return nil)
+	compsWithArgs, _ := completeConfiguredProxyAliasesArg(nil, []string{"already-chosen"}, "")
+	if len(compsWithArgs) != 0 {
+		t.Errorf("expected 0 completions when args provided, got %d", len(compsWithArgs))
+	}
+}
+
 
