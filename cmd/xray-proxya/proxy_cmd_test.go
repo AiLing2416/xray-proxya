@@ -93,6 +93,118 @@ func TestProxySetAndUnsetCmd(t *testing.T) {
 	}
 }
 
+func TestProxySetIncrementalUpdate(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-inc",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	cfgBytes, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	cfgStagingPath := filepath.Join(configDir, "config.json.staging")
+	if err := os.WriteFile(cfgStagingPath, cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	resetFlags := func() {
+		_ = proxySetCmd.Flags().Set("port", "0")
+		_ = proxySetCmd.Flags().Set("socks-port", "0")
+		_ = proxySetCmd.Flags().Set("http-port", "0")
+		_ = proxySetCmd.Flags().Set("listen", "127.0.0.1")
+		proxySetCmd.Flags().Lookup("port").Changed = false
+		proxySetCmd.Flags().Lookup("socks-port").Changed = false
+		proxySetCmd.Flags().Lookup("http-port").Changed = false
+		proxySetCmd.Flags().Lookup("listen").Changed = false
+		proxySocksPort = 0
+		proxyHttpPort = 0
+		proxyListenIP = ""
+	}
+	defer resetFlags()
+
+	// 1. Initial set: -p 10808
+	resetFlags()
+	_ = proxySetCmd.Flags().Set("port", "10808")
+	if err := runProxySet(proxySetCmd, []string{"relay-inc"}); err != nil {
+		t.Fatalf("runProxySet error: %v", err)
+	}
+	c1, _ := config.LoadConfigEx(true)
+	if c1.CustomOutbounds[0].InternalProxyPort != 10808 {
+		t.Fatalf("step 1: SOCKS port = %d, want 10808", c1.CustomOutbounds[0].InternalProxyPort)
+	}
+	if c1.CustomOutbounds[0].InternalHttpPort != 10809 {
+		t.Fatalf("step 1: HTTP port = %d, want 10809", c1.CustomOutbounds[0].InternalHttpPort)
+	}
+	if c1.CustomOutbounds[0].InternalListenAddr != "127.0.0.1" {
+		t.Fatalf("step 1: Listen = %q, want 127.0.0.1", c1.CustomOutbounds[0].InternalListenAddr)
+	}
+
+	// 2. Incremental set: -l 0.0.0.0 (ports must be preserved)
+	resetFlags()
+	_ = proxySetCmd.Flags().Set("listen", "0.0.0.0")
+	if err := runProxySet(proxySetCmd, []string{"relay-inc"}); err != nil {
+		t.Fatalf("runProxySet error: %v", err)
+	}
+	c2, _ := config.LoadConfigEx(true)
+	if c2.CustomOutbounds[0].InternalProxyPort != 10808 {
+		t.Fatalf("step 2: SOCKS port = %d, want 10808 (preserved)", c2.CustomOutbounds[0].InternalProxyPort)
+	}
+	if c2.CustomOutbounds[0].InternalHttpPort != 10809 {
+		t.Fatalf("step 2: HTTP port = %d, want 10809 (preserved)", c2.CustomOutbounds[0].InternalHttpPort)
+	}
+	if c2.CustomOutbounds[0].InternalListenAddr != "0.0.0.0" {
+		t.Fatalf("step 2: Listen = %q, want 0.0.0.0", c2.CustomOutbounds[0].InternalListenAddr)
+	}
+
+	// 3. Incremental set: --http-port 10815 (socks and listen preserved)
+	resetFlags()
+	_ = proxySetCmd.Flags().Set("http-port", "10815")
+	if err := runProxySet(proxySetCmd, []string{"relay-inc"}); err != nil {
+		t.Fatalf("runProxySet error: %v", err)
+	}
+	c3, _ := config.LoadConfigEx(true)
+	if c3.CustomOutbounds[0].InternalProxyPort != 10808 {
+		t.Fatalf("step 3: SOCKS port = %d, want 10808 (preserved)", c3.CustomOutbounds[0].InternalProxyPort)
+	}
+	if c3.CustomOutbounds[0].InternalHttpPort != 10815 {
+		t.Fatalf("step 3: HTTP port = %d, want 10815", c3.CustomOutbounds[0].InternalHttpPort)
+	}
+	if c3.CustomOutbounds[0].InternalListenAddr != "0.0.0.0" {
+		t.Fatalf("step 3: Listen = %q, want 0.0.0.0 (preserved)", c3.CustomOutbounds[0].InternalListenAddr)
+	}
+
+	// 4. Incremental set: -p 20808 (http links to socks+1 = 20809, listen preserved)
+	resetFlags()
+	_ = proxySetCmd.Flags().Set("port", "20808")
+	if err := runProxySet(proxySetCmd, []string{"relay-inc"}); err != nil {
+		t.Fatalf("runProxySet error: %v", err)
+	}
+	c4, _ := config.LoadConfigEx(true)
+	if c4.CustomOutbounds[0].InternalProxyPort != 20808 {
+		t.Fatalf("step 4: SOCKS port = %d, want 20808", c4.CustomOutbounds[0].InternalProxyPort)
+	}
+	if c4.CustomOutbounds[0].InternalHttpPort != 20809 {
+		t.Fatalf("step 4: HTTP port = %d, want 20809 (linked)", c4.CustomOutbounds[0].InternalHttpPort)
+	}
+	if c4.CustomOutbounds[0].InternalListenAddr != "0.0.0.0" {
+		t.Fatalf("step 4: Listen = %q, want 0.0.0.0 (preserved)", c4.CustomOutbounds[0].InternalListenAddr)
+	}
+}
+
 func TestCheckProxyPortConflict(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleServer,

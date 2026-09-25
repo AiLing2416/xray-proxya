@@ -17,6 +17,14 @@ var (
 	proxySocksPort int
 	proxyHttpPort  int
 	proxyListenIP  string
+
+	proxySetSocksPort int
+	proxySetHttpPort  int
+	proxySetListenIP  string
+
+	proxyRunSocksPort int
+	proxyRunHttpPort  int
+	proxyRunListenIP  string
 )
 
 var proxyCmd = &cobra.Command{
@@ -203,36 +211,72 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 
 	for i, co := range cfg.CustomOutbounds {
 		if co.Alias == alias {
-			socksPort := proxySocksPort
-			httpPort := proxyHttpPort
+			socksSpecified := cmd.Flags().Changed("port") || cmd.Flags().Changed("socks-port")
+			socksPort := proxySetSocksPort
+			if !socksSpecified && proxySocksPort != 0 {
+				socksPort = proxySocksPort
+				socksSpecified = true
+			}
 
-			// Validate IP address format if provided
-			listenIP := proxyListenIP
-			if listenIP != "" {
+			httpSpecified := cmd.Flags().Changed("http-port")
+			httpPort := proxySetHttpPort
+			if !httpSpecified && proxyHttpPort != 0 {
+				httpPort = proxyHttpPort
+				httpSpecified = true
+			}
+
+			listenSpecified := cmd.Flags().Changed("listen")
+			listenIP := proxySetListenIP
+			if !listenSpecified && proxyListenIP != "" && proxyListenIP != "127.0.0.1" {
+				listenIP = proxyListenIP
+				listenSpecified = true
+			}
+
+			// 1. Determine listen address
+			if listenSpecified {
 				if ip := net.ParseIP(listenIP); ip == nil {
 					return fmt.Errorf("❌ Invalid listen IP address: %s", listenIP)
 				}
 			} else {
-				listenIP = "127.0.0.1"
+				if co.InternalListenAddr != "" {
+					listenIP = co.InternalListenAddr
+				} else {
+					listenIP = "127.0.0.1"
+				}
 			}
 
-			// Validate SOCKS port selection
-			if socksPort == 0 {
-				for {
-					p, _ := xray.GetFreePort()
-					if p > 0 && p < 65535 &&
-						utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
-						utils.IsPortFree(p+1) &&
-						checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
-						socksPort = p
-						break
+			// 2. Determine SOCKS port
+			socksUpdated := false
+			if socksSpecified {
+				socksUpdated = true
+			} else {
+				if co.InternalProxyPort > 0 {
+					socksPort = co.InternalProxyPort
+				} else {
+					// Allocate free port
+					for {
+						p, _ := xray.GetFreePort()
+						if p > 0 && p < 65535 &&
+							utils.IsPortFree(p) && utils.IsUDPPortFree(p) &&
+							utils.IsPortFree(p+1) &&
+							checkProxyPortConflict(cfg, alias, listenIP, p, p+1) == nil {
+							socksPort = p
+							socksUpdated = true
+							break
+						}
 					}
 				}
 			}
 
-			// Validate HTTP port selection
-			if httpPort == 0 {
-				httpPort = socksPort + 1
+			// 3. Determine HTTP port
+			if !httpSpecified {
+				if socksUpdated {
+					httpPort = socksPort + 1
+				} else if co.InternalHttpPort > 0 {
+					httpPort = co.InternalHttpPort
+				} else {
+					httpPort = socksPort + 1
+				}
 			}
 
 			if socksPort < 1 || socksPort > 65535 {
@@ -534,16 +578,16 @@ var proxyTestCmd = &cobra.Command{
 }
 
 func init() {
-	proxySetCmd.Flags().IntVarP(&proxySocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
-	proxySetCmd.Flags().IntVar(&proxySocksPort, "socks-port", 0, "Specific SOCKS port")
-	proxySetCmd.Flags().IntVar(&proxyHttpPort, "http-port", 0, "Specific HTTP port")
-	proxySetCmd.Flags().StringVarP(&proxyListenIP, "listen", "l", "127.0.0.1", "IP address to listen on")
+	proxySetCmd.Flags().IntVarP(&proxySetSocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
+	proxySetCmd.Flags().IntVar(&proxySetSocksPort, "socks-port", 0, "Specific SOCKS port")
+	proxySetCmd.Flags().IntVar(&proxySetHttpPort, "http-port", 0, "Specific HTTP port")
+	proxySetCmd.Flags().StringVarP(&proxySetListenIP, "listen", "l", "127.0.0.1", "IP address to listen on")
 	proxySetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
-	proxyRunCmd.Flags().IntVarP(&proxySocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
-	proxyRunCmd.Flags().IntVar(&proxySocksPort, "socks-port", 0, "Specific SOCKS port")
-	proxyRunCmd.Flags().IntVar(&proxyHttpPort, "http-port", 0, "Specific HTTP port")
-	proxyRunCmd.Flags().StringVarP(&proxyListenIP, "listen", "l", "", "IP address to listen on")
+	proxyRunCmd.Flags().IntVarP(&proxyRunSocksPort, "port", "p", 0, "Base port (SOCKS port, HTTP port will be SOCKS+1)")
+	proxyRunCmd.Flags().IntVar(&proxyRunSocksPort, "socks-port", 0, "Specific SOCKS port")
+	proxyRunCmd.Flags().IntVar(&proxyRunHttpPort, "http-port", 0, "Specific HTTP port")
+	proxyRunCmd.Flags().StringVarP(&proxyRunListenIP, "listen", "l", "", "IP address to listen on")
 	proxyRunCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
 	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd)
