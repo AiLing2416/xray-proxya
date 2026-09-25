@@ -17,6 +17,7 @@ import (
 	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/sharelink"
 	"xray-proxya/internal/xray"
+	"xray-proxya/pkg/utils"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -202,7 +203,11 @@ func runListOutbound(cmd *cobra.Command, args []string) error {
 		for i, co := range cfg.CustomOutbounds {
 			internal := "-"
 			if co.InternalProxyPort > 0 {
-				internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, co.InternalProxyPort+1)
+				httpPort := co.InternalHttpPort
+				if httpPort <= 0 {
+					httpPort = co.InternalProxyPort + 1
+				}
+				internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, httpPort)
 			}
 			strategy := co.DNSStrategy
 			if strategy == "" {
@@ -241,7 +246,11 @@ func runListOutbound(cmd *cobra.Command, args []string) error {
 		}
 		internal := "-"
 		if co.InternalProxyPort > 0 {
-			internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, co.InternalProxyPort+1)
+			httpPort := co.InternalHttpPort
+			if httpPort <= 0 {
+				httpPort = co.InternalProxyPort + 1
+			}
+			internal = fmt.Sprintf("socks:%d http:%d", co.InternalProxyPort, httpPort)
 		}
 		strategy := co.DNSStrategy
 		if strategy == "" {
@@ -594,8 +603,18 @@ var probeLocalOutboundCmd = &cobra.Command{
 				fmt.Printf("❌ Relay '%s' has no bound local proxy. Use 'proxy set %s'.\n", alias, alias)
 				return
 			}
-			printProxyProbe(alias, "SOCKS", probeBoundProxy("socks5h://127.0.0.1:"+fmt.Sprint(co.InternalProxyPort)))
-			printProxyProbe(alias, "HTTP", probeBoundProxy("http://127.0.0.1:"+fmt.Sprint(co.InternalProxyPort+1)))
+			listenHost := co.InternalListenAddr
+			if listenHost == "" || utils.IsWildcardIP(listenHost) {
+				listenHost = "127.0.0.1"
+			}
+			httpPort := co.InternalHttpPort
+			if httpPort <= 0 {
+				httpPort = co.InternalProxyPort + 1
+			}
+			socksTarget := net.JoinHostPort(listenHost, strconv.Itoa(co.InternalProxyPort))
+			httpTarget := net.JoinHostPort(listenHost, strconv.Itoa(httpPort))
+			printProxyProbe(alias, "SOCKS", probeBoundProxy("socks5h://"+socksTarget))
+			printProxyProbe(alias, "HTTP", probeBoundProxy("http://"+httpTarget))
 			return
 		}
 		fmt.Printf("❌ Relay '%s' not found.\n", alias)
