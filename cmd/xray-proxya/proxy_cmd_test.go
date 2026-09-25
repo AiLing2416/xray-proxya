@@ -272,6 +272,18 @@ func TestCheckProxyPortConflict(t *testing.T) {
 	if err := checkProxyPortConflict(cfg, "node-a", "127.0.0.1", 10808, 10809); err != nil {
 		t.Errorf("expected self update to not trigger conflict with itself, got %v", err)
 	}
+
+	// 8. Conflict with SkinPort (18443)
+	cfg.SkinPort = 18443
+	if err := checkProxyPortConflict(cfg, "node-new", "127.0.0.1", 18443, 10820); err == nil || !strings.Contains(err.Error(), "Web Camouflage Skin service") {
+		t.Errorf("expected conflict with SkinPort on SOCKS port, got %v", err)
+	}
+	if err := checkProxyPortConflict(cfg, "node-new", "127.0.0.1", 10820, 18443); err == nil || !strings.Contains(err.Error(), "Web Camouflage Skin service") {
+		t.Errorf("expected conflict with SkinPort on HTTP port, got %v", err)
+	}
+	if err := checkProxyPortConflict(cfg, "node-new", "192.168.1.60", 18443, 10820); err != nil {
+		t.Errorf("expected no conflict on distinct non-overlapping IP with SkinPort, got %v", err)
+	}
 }
 
 func TestProxySetActiveSelfOwnedPortExemption(t *testing.T) {

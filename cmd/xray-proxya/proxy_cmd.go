@@ -203,6 +203,16 @@ func checkProxyPortConflict(cfg *config.UserConfig, alias string, listenIP strin
 		}
 	}
 
+	// 5. Check Web Camouflage Skin Port
+	if cfg.SkinPort > 0 && utils.ListenAddressesOverlap(listenIP, "127.0.0.1") {
+		if socksPort == cfg.SkinPort {
+			return fmt.Errorf("SOCKS port %d conflicts with Web Camouflage Skin service (port %d)", socksPort, cfg.SkinPort)
+		}
+		if httpPort == cfg.SkinPort {
+			return fmt.Errorf("HTTP port %d conflicts with Web Camouflage Skin service (port %d)", httpPort, cfg.SkinPort)
+		}
+	}
+
 	return nil
 }
 
