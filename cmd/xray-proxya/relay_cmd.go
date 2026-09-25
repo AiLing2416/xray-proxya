@@ -1154,6 +1154,9 @@ func init() {
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedLink, "link", "l", "", "Custom speed test URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkDL, "link-download", "", "Custom download URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkUL, "link-upload", "", "Custom upload URL (for custom provider)")
+	_ = speedOutboundCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return relayspeed.SupportedProviders(), cobra.ShellCompDirectiveNoFileComp
+	})
 	bindInterfaceCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		switch len(args) {
 		case 0:

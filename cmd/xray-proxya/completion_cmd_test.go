@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"xray-proxya/internal/relayspeed"
 
 	"github.com/spf13/cobra"
 )
@@ -257,6 +259,19 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 			t.Errorf("relay command %q missing ValidArgsFunction", relayCommand.Name())
 		}
 	}
+	if fn, ok := speedOutboundCmd.GetFlagCompletionFunc("provider"); !ok || fn == nil {
+		t.Error("speed outbound missing --provider completion")
+	} else {
+		candidates, directive := fn(speedOutboundCmd, nil, "")
+		if directive != cobra.ShellCompDirectiveNoFileComp {
+			t.Errorf("speed --provider directive = %v, want ShellCompDirectiveNoFileComp", directive)
+		}
+		for _, p := range relayspeed.SupportedProviders() {
+			if !containsCompletion(candidates, p) {
+				t.Errorf("speed --provider completion missing %q: %v", p, candidates)
+			}
+		}
+	}
 
 	// 11. Verify tune commands completion
 	for _, tuneCommand := range []*cobra.Command{tuneDiffCmd, tuneUseCmd, tuneVerifyCmd} {
@@ -309,3 +324,44 @@ func TestListenFlagCompletionReturnsIPAddresses(t *testing.T) {
 		}
 	}
 }
+
+func TestRelaySpeedProviderFlagCompletion(t *testing.T) {
+	expected := relayspeed.SupportedProviders()
+
+	// 1. Direct flag completion function
+	fn, ok := speedOutboundCmd.GetFlagCompletionFunc("provider")
+	if !ok || fn == nil {
+		t.Fatal("speedOutboundCmd missing flag completion for provider")
+	}
+	candidates, directive := fn(speedOutboundCmd, nil, "")
+	if directive != cobra.ShellCompDirectiveNoFileComp {
+		t.Errorf("expected directive %v, got %v", cobra.ShellCompDirectiveNoFileComp, directive)
+	}
+	for _, exp := range expected {
+		if !containsCompletion(candidates, exp) {
+			t.Errorf("expected candidate %q not found in %v", exp, candidates)
+		}
+	}
+
+	// 2. Cobra __complete command with shorthand -p
+	buf := new(bytes.Buffer)
+	rootCmd.SetOut(buf)
+	rootCmd.SetErr(buf)
+	rootCmd.SetArgs([]string{"__complete", "relay", "speed", "-p", ""})
+	defer func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+	}()
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("__complete with -p error: %v", err)
+	}
+	output := buf.String()
+	for _, exp := range expected {
+		if !strings.Contains(output, exp) {
+			t.Errorf("__complete output with -p missing provider %q: %s", exp, output)
+		}
+	}
+}
+
