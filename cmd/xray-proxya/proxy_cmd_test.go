@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -268,5 +270,90 @@ func TestCheckProxyPortConflict(t *testing.T) {
 	// 7. Same node updating itself should not conflict with its own old ports
 	if err := checkProxyPortConflict(cfg, "node-a", "127.0.0.1", 10808, 10809); err != nil {
 		t.Errorf("expected self update to not trigger conflict with itself, got %v", err)
+	}
+}
+
+func TestProxySetActiveSelfOwnedPortExemption(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Find free test ports to bind
+	l1, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer l1.Close()
+	testSocksPort := l1.Addr().(*net.TCPAddr).Port
+
+	l2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer l2.Close()
+	testHttpPort := l2.Addr().(*net.TCPAddr).Port
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "relay-self",
+				Enabled:            true,
+				InternalProxyPort:  testSocksPort,
+				InternalHttpPort:   testHttpPort,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:   "relay-other",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	cfgBytes, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.json.staging"), cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json.staging error = %v", err)
+	}
+
+	resetFlags := func() {
+		_ = proxySetCmd.Flags().Set("port", "0")
+		_ = proxySetCmd.Flags().Set("socks-port", "0")
+		_ = proxySetCmd.Flags().Set("http-port", "0")
+		_ = proxySetCmd.Flags().Set("listen", "127.0.0.1")
+		proxySetCmd.Flags().Lookup("port").Changed = false
+		proxySetCmd.Flags().Lookup("socks-port").Changed = false
+		proxySetCmd.Flags().Lookup("http-port").Changed = false
+		proxySetCmd.Flags().Lookup("listen").Changed = false
+		proxySocksPort = 0
+		proxyHttpPort = 0
+		proxyListenIP = ""
+	}
+	defer resetFlags()
+
+	// 1. Setting relay-self with its own occupied ports should SUCCEED
+	resetFlags()
+	_ = proxySetCmd.Flags().Set("socks-port", fmt.Sprintf("%d", testSocksPort))
+	_ = proxySetCmd.Flags().Set("http-port", fmt.Sprintf("%d", testHttpPort))
+	if err := runProxySet(proxySetCmd, []string{"relay-self"}); err != nil {
+		t.Fatalf("expected relay-self to succeed on its own active ports, got %v", err)
+	}
+
+	// 2. Setting relay-other with the occupied ports must FAIL
+	resetFlags()
+	_ = proxySetCmd.Flags().Set("socks-port", fmt.Sprintf("%d", testSocksPort))
+	_ = proxySetCmd.Flags().Set("http-port", fmt.Sprintf("%d", testHttpPort))
+	if err := runProxySet(proxySetCmd, []string{"relay-other"}); err == nil {
+		t.Fatalf("expected relay-other to fail with port in use, but it succeeded")
 	}
 }

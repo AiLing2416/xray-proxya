@@ -290,11 +290,43 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("❌ Port conflict: %w", err)
 			}
 
-			if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
-				return fmt.Errorf("❌ SOCKS Port %d is in use on the host.", socksPort)
+			// Check if ports are already legitimately owned by this relay in active configuration
+			socksOwnedBySelf := false
+			httpOwnedBySelf := false
+			if activeCfg, _ := config.LoadConfig(); activeCfg != nil {
+				for _, aco := range activeCfg.CustomOutbounds {
+					if aco.Alias == alias && aco.InternalProxyPort > 0 {
+						activeSocks := aco.InternalProxyPort
+						activeHttp := aco.InternalHttpPort
+						if activeHttp <= 0 {
+							activeHttp = activeSocks + 1
+						}
+						activeListen := aco.InternalListenAddr
+						if activeListen == "" {
+							activeListen = "127.0.0.1"
+						}
+						if utils.ListenAddressesOverlap(listenIP, activeListen) {
+							if socksPort == activeSocks {
+								socksOwnedBySelf = true
+							}
+							if httpPort == activeHttp {
+								httpOwnedBySelf = true
+							}
+						}
+						break
+					}
+				}
 			}
-			if !utils.IsPortFree(httpPort) {
-				return fmt.Errorf("❌ HTTP Port %d is in use on the host.", httpPort)
+
+			if !socksOwnedBySelf {
+				if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
+					return fmt.Errorf("❌ SOCKS Port %d is in use on the host.", socksPort)
+				}
+			}
+			if !httpOwnedBySelf {
+				if !utils.IsPortFree(httpPort) {
+					return fmt.Errorf("❌ HTTP Port %d is in use on the host.", httpPort)
+				}
 			}
 
 			cfg.CustomOutbounds[i].InternalProxyPort = socksPort
