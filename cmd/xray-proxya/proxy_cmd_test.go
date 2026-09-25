@@ -614,4 +614,91 @@ func TestProxyTestUnappliedStagingHint(t *testing.T) {
 	}
 }
 
+func TestProxyEnvCmd_ExportAndUnset(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "env-node",
+				Enabled:            true,
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10809,
+				InternalListenAddr: "0.0.0.0", // should be normalized to 127.0.0.1
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:   "no-proxy-node",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	cfgBytes, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json.staging"), cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json.staging error: %v", err)
+	}
+
+	defer func() {
+		proxyEnvUnset = false
+	}()
+
+	// 1. Export valid proxy
+	proxyEnvUnset = false
+	outExport := captureStdout(t, func() {
+		if err := runProxyEnv(proxyEnvCmd, []string{"env-node"}); err != nil {
+			t.Fatalf("runProxyEnv error = %v", err)
+		}
+	})
+
+	expectedExports := []string{
+		`export http_proxy="http://127.0.0.1:10809"`,
+		`export https_proxy="http://127.0.0.1:10809"`,
+		`export all_proxy="socks5h://127.0.0.1:10808"`,
+		`export HTTP_PROXY="http://127.0.0.1:10809"`,
+		`export HTTPS_PROXY="http://127.0.0.1:10809"`,
+		`export ALL_PROXY="socks5h://127.0.0.1:10808"`,
+	}
+	for _, exp := range expectedExports {
+		if !strings.Contains(outExport, exp) {
+			t.Errorf("expected output to contain %q, got:\n%s", exp, outExport)
+		}
+	}
+
+	// 2. Unset
+	proxyEnvUnset = true
+	outUnset := captureStdout(t, func() {
+		if err := runProxyEnv(proxyEnvCmd, []string{}); err != nil {
+			t.Fatalf("runProxyEnv unset error = %v", err)
+		}
+	})
+	expectedUnset := "unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY"
+	if !strings.Contains(outUnset, expectedUnset) {
+		t.Errorf("expected unset output to contain %q, got:\n%s", expectedUnset, outUnset)
+	}
+
+	// 3. Error: missing alias without unset
+	proxyEnvUnset = false
+	if err := runProxyEnv(proxyEnvCmd, []string{}); err == nil {
+		t.Error("expected error when no alias provided without --unset")
+	}
+
+	// 4. Error: non-existent alias
+	if err := runProxyEnv(proxyEnvCmd, []string{"non-existent"}); err == nil {
+		t.Error("expected error for non-existent alias")
+	}
+
+	// 5. Error: alias without configured proxy
+	if err := runProxyEnv(proxyEnvCmd, []string{"no-proxy-node"}); err == nil {
+		t.Error("expected error for alias without proxy configured")
+	}
+}
+
 

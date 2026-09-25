@@ -907,6 +907,76 @@ var proxyTestCmd = &cobra.Command{
 	RunE: runProxyTest,
 }
 
+var proxyEnvUnset bool
+
+func runProxyEnv(cmd *cobra.Command, args []string) error {
+	if proxyEnvUnset {
+		fmt.Println("unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY")
+		return nil
+	}
+
+	if len(args) == 0 {
+		return fmt.Errorf("❌ Please specify a relay alias (e.g. 'xray-proxya proxy env <alias>') or use --unset")
+	}
+
+	alias := args[0]
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+
+	var targetCO *config.CustomOutbound
+	for _, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			targetCO = &co
+			break
+		}
+	}
+	if targetCO == nil {
+		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	}
+
+	if targetCO.InternalProxyPort <= 0 {
+		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
+	}
+
+	listenIP := normalizeProbeListenIP(targetCO.InternalListenAddr)
+	if strings.Contains(listenIP, ":") && !strings.HasPrefix(listenIP, "[") {
+		listenIP = "[" + listenIP + "]"
+	}
+
+	socksPort := targetCO.InternalProxyPort
+	httpPort := targetCO.InternalHttpPort
+	if httpPort <= 0 {
+		httpPort = socksPort + 1
+	}
+
+	httpURL := fmt.Sprintf("http://%s:%d", listenIP, httpPort)
+	socksURL := fmt.Sprintf("socks5h://%s:%d", listenIP, socksPort)
+
+	fmt.Printf("export http_proxy=%q\n", httpURL)
+	fmt.Printf("export https_proxy=%q\n", httpURL)
+	fmt.Printf("export all_proxy=%q\n", socksURL)
+	fmt.Printf("export HTTP_PROXY=%q\n", httpURL)
+	fmt.Printf("export HTTPS_PROXY=%q\n", httpURL)
+	fmt.Printf("export ALL_PROXY=%q\n", socksURL)
+	return nil
+}
+
+var proxyEnvCmd = &cobra.Command{
+	Use:   "env [alias]",
+	Short: "Output shell export commands for local HTTP/SOCKS proxy",
+	Long:  "Generate shell export/unset statements for http_proxy, https_proxy, and all_proxy. Can be used with 'eval $(xray-proxya proxy env <alias>)'.",
+	Example: `  # Set proxy environment variables in current shell
+  eval $(xray-proxya proxy env node-us)
+
+  # Unset proxy environment variables
+  eval $(xray-proxya proxy env --unset)`,
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE:              runProxyEnv,
+}
+
 func init() {
 	proxyListCmd.Flags().BoolVar(&proxyListJSON, "json", false, "Output local proxies in JSON format")
 	proxyListCmd.Flags().BoolVarP(&proxyListAll, "all", "a", false, "List all relays including those without local proxy")
@@ -923,6 +993,8 @@ func init() {
 	proxyRunCmd.Flags().StringVarP(&proxyRunListenIP, "listen", "l", "", "IP address to listen on")
 	proxyRunCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
-	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd)
+	proxyEnvCmd.Flags().BoolVarP(&proxyEnvUnset, "unset", "u", false, "Output shell unset commands")
+
+	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd, proxyEnvCmd)
 	rootCmd.AddCommand(proxyCmd)
 }
