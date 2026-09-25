@@ -528,3 +528,90 @@ func TestProxyListFilteringAndEmptyState(t *testing.T) {
 	}
 }
 
+func TestNormalizeProbeListenIP(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"", "127.0.0.1"},
+		{"0.0.0.0", "127.0.0.1"},
+		{"::", "::1"},
+		{"127.0.0.1", "127.0.0.1"},
+		{"::1", "::1"},
+		{"192.168.1.100", "192.168.1.100"},
+	}
+	for _, tc := range tests {
+		got := normalizeProbeListenIP(tc.input)
+		if got != tc.want {
+			t.Errorf("normalizeProbeListenIP(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestProxyTestUnappliedStagingHint(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	// Active config: no proxy configured
+	activeCfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "test-node",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	activeBytes, _ := json.Marshal(activeCfg)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), activeBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json error: %v", err)
+	}
+
+	// Staging config: proxy configured with non-listening port
+	// Find an unused local port
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	freePort := l.Addr().(*net.TCPAddr).Port
+	l.Close() // Close immediately so it's not listening
+
+	stagingCfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "test-node",
+				Enabled:            true,
+				InternalProxyPort:  freePort,
+				InternalHttpPort:   freePort + 1,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	stagingBytes, _ := json.Marshal(stagingCfg)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json.staging"), stagingBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json.staging error: %v", err)
+	}
+
+	// Run proxy test - it should fail to connect and print the hint
+	out := captureStdout(t, func() {
+		err := runProxyTest(proxyTestCmd, []string{"test-node"})
+		if err == nil {
+			t.Fatal("expected runProxyTest to fail, but it succeeded")
+		}
+	})
+
+	expectedHint := "💡 Hint: Local proxy for 'test-node' is in STAGING but not yet active. Run 'xray-proxya apply' to start it."
+	if !strings.Contains(out, expectedHint) {
+		t.Errorf("expected output to contain hint:\n%q\nGot:\n%s", expectedHint, out)
+	}
+}
+
+

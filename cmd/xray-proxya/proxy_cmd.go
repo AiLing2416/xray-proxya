@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -746,6 +748,61 @@ var proxyRunCmd = &cobra.Command{
 	RunE:              runProxyRun,
 }
 
+func normalizeProbeListenIP(listenIP string) string {
+	if listenIP == "" || listenIP == "0.0.0.0" {
+		return "127.0.0.1"
+	}
+	if listenIP == "::" {
+		return "::1"
+	}
+	return listenIP
+}
+
+func testHTTPProxy(proxyAddr string) error {
+	proxyURL, err := url.Parse("http://" + proxyAddr)
+	if err != nil {
+		return err
+	}
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(proxyURL),
+		DialContext: (&net.Dialer{
+			Timeout:   8 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ResponseHeaderTimeout: 8 * time.Second,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   12 * time.Second,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	targets := []string{
+		"http://cp.cloudflare.com/generate_204",
+		"http://connectivitycheck.gstatic.com/generate_204",
+		"http://1.1.1.1",
+	}
+	var lastErr error
+	for _, target := range targets {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, target, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+		resp, err := client.Do(req)
+		cancel()
+		if err == nil {
+			resp.Body.Close()
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
 func runProxyTest(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
@@ -768,35 +825,72 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
 	}
 
+	var activeCfg *config.UserConfig
+	if config.StagingExists() {
+		activeCfg, _ = config.LoadConfigEx(false)
+	} else {
+		activeCfg = cfg
+	}
+	applied := isProxyApplied(*targetCO, activeCfg)
+
 	socksPort := targetCO.InternalProxyPort
-	listenIP := targetCO.InternalListenAddr
-	if listenIP == "" {
-		listenIP = "127.0.0.1"
+	httpPort := targetCO.InternalHttpPort
+	if httpPort <= 0 {
+		httpPort = socksPort + 1
 	}
 
-	socksAddr := fmt.Sprintf("%s:%d", listenIP, socksPort)
+	probeListenIP := normalizeProbeListenIP(targetCO.InternalListenAddr)
+	socksAddr := net.JoinHostPort(probeListenIP, strconv.Itoa(socksPort))
+	httpAddr := net.JoinHostPort(probeListenIP, strconv.Itoa(httpPort))
+
 	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
 	if err != nil {
+		if !applied {
+			fmt.Printf("💡 Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
+		}
 		return fmt.Errorf("❌ Failed to create SOCKS dialer: %w", err)
 	}
 
-	fmt.Printf("🔍 Testing local proxy at %s...\n", socksAddr)
+	fmt.Printf("🔍 Testing local SOCKS5 proxy at %s...\n", socksAddr)
 
-	// We'll test TCP connection to a public IP
-	conn, err := dialer.Dial("tcp", "8.8.8.8:53")
-	if err != nil {
-		return fmt.Errorf("❌ TCP test failed: %w", err)
+	socksTargets := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"}
+	var lastTCPErr error
+	tcpOK := false
+	for _, target := range socksTargets {
+		conn, err := dialer.Dial("tcp", target)
+		if err == nil {
+			conn.Close()
+			tcpOK = true
+			break
+		}
+		lastTCPErr = err
 	}
-	conn.Close()
-	fmt.Println("✅ TCP connectivity OK.")
+	if !tcpOK {
+		if !applied {
+			fmt.Printf("💡 Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
+		}
+		return fmt.Errorf("❌ TCP test failed: %w", lastTCPErr)
+	}
+	fmt.Println("✅ SOCKS5 TCP connectivity OK.")
 
 	// Test UDP query/ping if supported
 	duration, err := xray.TestUDP(socksAddr, "user-"+alias, "test")
 	if err == nil {
-		fmt.Printf("✅ UDP connectivity OK (%dms).\n", duration.Milliseconds())
+		fmt.Printf("✅ SOCKS5 UDP connectivity OK (%dms).\n", duration.Milliseconds())
 	} else {
-		fmt.Printf("⚠️  UDP test failed: %v\n", err)
+		fmt.Printf("⚠️  SOCKS5 UDP test failed: %v\n", err)
 	}
+
+	// Test HTTP proxy
+	fmt.Printf("🔍 Testing local HTTP proxy at %s...\n", httpAddr)
+	if err := testHTTPProxy(httpAddr); err != nil {
+		if !applied {
+			fmt.Printf("💡 Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
+		}
+		return fmt.Errorf("❌ HTTP proxy test failed: %w", err)
+	}
+	fmt.Println("✅ HTTP proxy connectivity OK.")
+
 	return nil
 }
 
