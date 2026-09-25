@@ -701,4 +701,122 @@ func TestProxyEnvCmd_ExportAndUnset(t *testing.T) {
 	}
 }
 
+func TestResolveProxyTargets(t *testing.T) {
+	tests := []struct {
+		name         string
+		co           config.CustomOutbound
+		wantSocksHost string
+		wantHttpHost  string
+		wantSocksPort int
+		wantHttpPort  int
+	}{
+		{
+			name: "wildcard 0.0.0.0",
+			co: config.CustomOutbound{
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10815,
+				InternalListenAddr: "0.0.0.0",
+			},
+			wantSocksHost: "127.0.0.1",
+			wantHttpHost:  "127.0.0.1",
+			wantSocksPort: 10808,
+			wantHttpPort:  10815,
+		},
+		{
+			name: "empty listen with default http",
+			co: config.CustomOutbound{
+				InternalProxyPort:  10808,
+				InternalHttpPort:   0,
+				InternalListenAddr: "",
+			},
+			wantSocksHost: "127.0.0.1",
+			wantHttpHost:  "127.0.0.1",
+			wantSocksPort: 10808,
+			wantHttpPort:  10809,
+		},
+		{
+			name: "ipv6 wildcard",
+			co: config.CustomOutbound{
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10809,
+				InternalListenAddr: "::",
+			},
+			wantSocksHost: "::1",
+			wantHttpHost:  "::1",
+			wantSocksPort: 10808,
+			wantHttpPort:  10809,
+		},
+		{
+			name: "lan IP",
+			co: config.CustomOutbound{
+				InternalProxyPort:  10810,
+				InternalHttpPort:   10820,
+				InternalListenAddr: "192.168.1.50",
+			},
+			wantSocksHost: "192.168.1.50",
+			wantHttpHost:  "192.168.1.50",
+			wantSocksPort: 10810,
+			wantHttpPort:  10820,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			sTarget, hTarget := resolveProxyTargets(tc.co)
+			expectedSocks := net.JoinHostPort(tc.wantSocksHost, fmt.Sprintf("%d", tc.wantSocksPort))
+			expectedHttp := net.JoinHostPort(tc.wantHttpHost, fmt.Sprintf("%d", tc.wantHttpPort))
+			if sTarget != expectedSocks {
+				t.Errorf("resolveProxyTargets socksTarget = %q, want %q", sTarget, expectedSocks)
+			}
+			if hTarget != expectedHttp {
+				t.Errorf("resolveProxyTargets httpTarget = %q, want %q", hTarget, expectedHttp)
+			}
+		})
+	}
+}
+
+func TestProxyProbeCmd(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "no-proxy",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	cfgBytes, _ := json.Marshal(cfg)
+	if err := os.WriteFile(filepath.Join(configDir, "config.json.staging"), cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json.staging error: %v", err)
+	}
+
+	// 1. Non-existent relay
+	if err := runProxyProbe(proxyProbeCmd, []string{"does-not-exist"}); err == nil {
+		t.Error("expected error for non-existent relay")
+	}
+
+	// 2. Unconfigured proxy
+	if err := runProxyProbe(proxyProbeCmd, []string{"no-proxy"}); err == nil {
+		t.Error("expected error for relay without configured proxy")
+	}
+
+	// 3. Verify --probe flag exists on proxyTestCmd
+	probeFlag := proxyTestCmd.Flags().Lookup("probe")
+	if probeFlag == nil {
+		t.Fatal("expected 'probe' flag on proxy test command")
+	}
+	if probeFlag.Shorthand != "p" {
+		t.Errorf("expected shorthand 'p', got %q", probeFlag.Shorthand)
+	}
+}
+
 

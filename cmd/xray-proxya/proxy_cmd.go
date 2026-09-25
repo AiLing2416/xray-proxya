@@ -891,20 +891,83 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("✅ HTTP proxy connectivity OK.")
 
+	if proxyTestProbe {
+		fmt.Printf("\n🌐 Probing outbound IP via local proxy...\n")
+		runProxyProbeTarget(alias, *targetCO)
+	}
+
 	return nil
 }
+
+var proxyTestProbe bool
 
 var proxyTestCmd = &cobra.Command{
 	Use:               "test [alias]",
 	Short:             "Test connectivity of a configured local proxy",
 	Example: `  # Test connectivity of configured local proxy
-  xray-proxya proxy test node-us`,
+  xray-proxya proxy test node-us
+
+  # Test connectivity and probe outbound public IP
+  xray-proxya proxy test node-us --probe`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = runProxyTest(cmd, args)
 	},
 	RunE: runProxyTest,
+}
+
+func resolveProxyTargets(co config.CustomOutbound) (string, string) {
+	listenHost := normalizeProbeListenIP(co.InternalListenAddr)
+	httpPort := co.InternalHttpPort
+	if httpPort <= 0 {
+		httpPort = co.InternalProxyPort + 1
+	}
+	socksTarget := net.JoinHostPort(listenHost, strconv.Itoa(co.InternalProxyPort))
+	httpTarget := net.JoinHostPort(listenHost, strconv.Itoa(httpPort))
+	return socksTarget, httpTarget
+}
+
+func runProxyProbeTarget(alias string, co config.CustomOutbound) {
+	socksTarget, httpTarget := resolveProxyTargets(co)
+	printProxyProbe(alias, "SOCKS", probeBoundProxy("socks5h://"+socksTarget))
+	printProxyProbe(alias, "HTTP", probeBoundProxy("http://"+httpTarget))
+}
+
+func runProxyProbe(cmd *cobra.Command, args []string) error {
+	alias := args[0]
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return fmt.Errorf("❌ Failed to load staging config.")
+	}
+
+	var targetCO *config.CustomOutbound
+	for _, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			targetCO = &co
+			break
+		}
+	}
+	if targetCO == nil {
+		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	}
+
+	if targetCO.InternalProxyPort <= 0 {
+		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
+	}
+
+	runProxyProbeTarget(alias, *targetCO)
+	return nil
+}
+
+var proxyProbeCmd = &cobra.Command{
+	Use:               "probe [alias]",
+	Short:             "Probe outbound public IP addresses via configured local proxy",
+	Example: `  # Probe outbound IPv4/IPv6 via configured local proxy
+  xray-proxya proxy probe node-us`,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE:              runProxyProbe,
 }
 
 var proxyEnvUnset bool
@@ -993,8 +1056,10 @@ func init() {
 	proxyRunCmd.Flags().StringVarP(&proxyRunListenIP, "listen", "l", "", "IP address to listen on")
 	proxyRunCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
+	proxyTestCmd.Flags().BoolVarP(&proxyTestProbe, "probe", "p", false, "Probe outbound IP address after connectivity tests")
+
 	proxyEnvCmd.Flags().BoolVarP(&proxyEnvUnset, "unset", "u", false, "Output shell unset commands")
 
-	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd, proxyEnvCmd)
+	proxyCmd.AddCommand(proxyListCmd, proxySetCmd, proxyUnsetCmd, proxyRunCmd, proxyTestCmd, proxyEnvCmd, proxyProbeCmd)
 	rootCmd.AddCommand(proxyCmd)
 }

@@ -17,7 +17,6 @@ import (
 	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/sharelink"
 	"xray-proxya/internal/xray"
-	"xray-proxya/pkg/utils"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -603,18 +602,7 @@ var probeLocalOutboundCmd = &cobra.Command{
 				fmt.Printf("❌ Relay '%s' has no bound local proxy. Use 'proxy set %s'.\n", alias, alias)
 				return
 			}
-			listenHost := co.InternalListenAddr
-			if listenHost == "" || utils.IsWildcardIP(listenHost) {
-				listenHost = "127.0.0.1"
-			}
-			httpPort := co.InternalHttpPort
-			if httpPort <= 0 {
-				httpPort = co.InternalProxyPort + 1
-			}
-			socksTarget := net.JoinHostPort(listenHost, strconv.Itoa(co.InternalProxyPort))
-			httpTarget := net.JoinHostPort(listenHost, strconv.Itoa(httpPort))
-			printProxyProbe(alias, "SOCKS", probeBoundProxy("socks5h://"+socksTarget))
-			printProxyProbe(alias, "HTTP", probeBoundProxy("http://"+httpTarget))
+			runProxyProbeTarget(alias, co)
 			return
 		}
 		fmt.Printf("❌ Relay '%s' not found.\n", alias)
