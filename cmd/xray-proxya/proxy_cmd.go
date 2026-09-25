@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
+	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
@@ -403,48 +408,40 @@ var proxyUnsetCmd = &cobra.Command{
 	RunE: runProxyUnset,
 }
 
-var proxyRunCmd = &cobra.Command{
-	Use:   "run [alias]",
-	Short: "Run a temporary standalone local SOCKS/HTTP proxy for a relay",
-	Example: `  # Run temporary proxy in foreground
-  xray-proxya proxy run node-us -p 20808
+func runProxyRun(cmd *cobra.Command, args []string) error {
+	alias := args[0]
+	cfg, _ := config.LoadConfigEx(true)
+	if cfg == nil {
+		cfg, _ = config.LoadConfig()
+	}
+	if cfg == nil {
+		return fmt.Errorf("❌ Configuration could not be loaded.")
+	}
 
-  # Run temporary proxy with LAN sharing
-  xray-proxya proxy run node-us -p 20808 -l 0.0.0.0`,
-	Args:              cobra.ExactArgs(1),
-	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		alias := args[0]
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			cfg, _ = config.LoadConfig()
+	var targetCO *config.CustomOutbound
+	for _, co := range cfg.CustomOutbounds {
+		if co.Alias == alias {
+			targetCO = &co
+			break
 		}
-		if cfg == nil {
-			fmt.Println("❌ Error: Configuration could not be loaded.")
-			return
-		}
+	}
+	if targetCO == nil {
+		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	}
 
-		var targetCO *config.CustomOutbound
-		for _, co := range cfg.CustomOutbounds {
-			if co.Alias == alias {
-				targetCO = &co
-				break
-			}
-		}
-		if targetCO == nil {
-			fmt.Printf("❌ Relay '%s' not found.\n", alias)
-			return
-		}
+	socksSpecified := cmd.Flags().Changed("port") || cmd.Flags().Changed("socks-port") || proxyRunSocksPort != 0
+	httpSpecified := cmd.Flags().Changed("http-port") || proxyRunHttpPort != 0
+	listenSpecified := cmd.Flags().Changed("listen") || proxyRunListenIP != ""
 
-		socksPort := proxySocksPort
-		httpPort := proxyHttpPort
-		listenIP := proxyListenIP
+	socksPort := proxyRunSocksPort
+	httpPort := proxyRunHttpPort
+	listenIP := proxyRunListenIP
 
-		// If flags aren't specified, try to fall back to configured values
-		if socksPort == 0 {
+	// SOCKS port
+	if !socksSpecified {
+		if targetCO.InternalProxyPort > 0 {
 			socksPort = targetCO.InternalProxyPort
-		}
-		if socksPort == 0 {
+		} else {
 			for {
 				p, _ := xray.GetFreePort()
 				if p > 0 && p < 65535 &&
@@ -455,91 +452,132 @@ var proxyRunCmd = &cobra.Command{
 				}
 			}
 		}
-		if httpPort == 0 {
-			httpPort = targetCO.InternalHttpPort
-		}
-		if httpPort == 0 {
-			httpPort = socksPort + 1
-		}
-		if listenIP == "" {
+	}
+
+	// HTTP port: if socks is explicitly set and http is not, link http = socks + 1
+	if httpSpecified {
+		// Use explicitly specified httpPort
+	} else if socksSpecified {
+		httpPort = socksPort + 1
+	} else if targetCO.InternalHttpPort > 0 {
+		httpPort = targetCO.InternalHttpPort
+	} else {
+		httpPort = socksPort + 1
+	}
+
+	// Listen IP
+	if !listenSpecified {
+		if targetCO.InternalListenAddr != "" {
 			listenIP = targetCO.InternalListenAddr
-		}
-		if listenIP == "" {
+		} else {
 			listenIP = "127.0.0.1"
 		}
+	}
 
-		if socksPort < 1 || socksPort > 65535 {
-			fmt.Printf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)\n", socksPort)
-			return
-		}
-		if httpPort < 1 || httpPort > 65535 {
-			fmt.Printf("❌ Invalid HTTP port: %d (must be between 1 and 65535)\n", httpPort)
-			return
-		}
-		if socksPort == httpPort {
-			fmt.Printf("❌ SOCKS port and HTTP port cannot be the same (%d).\n", socksPort)
-			return
-		}
+	if socksPort < 1 || socksPort > 65535 {
+		return fmt.Errorf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)", socksPort)
+	}
+	if httpPort < 1 || httpPort > 65535 {
+		return fmt.Errorf("❌ Invalid HTTP port: %d (must be between 1 and 65535)", httpPort)
+	}
+	if socksPort == httpPort {
+		return fmt.Errorf("❌ SOCKS port and HTTP port cannot be the same (%d).", socksPort)
+	}
 
-		if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
-			fmt.Printf("❌ SOCKS Port %d is in use on the host.\n", socksPort)
-			return
+	if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
+		return fmt.Errorf("❌ SOCKS Port %d is in use on the host.", socksPort)
+	}
+	if !utils.IsPortFree(httpPort) {
+		return fmt.Errorf("❌ HTTP Port %d is in use on the host.", httpPort)
+	}
+	if ip := net.ParseIP(listenIP); ip == nil {
+		return fmt.Errorf("❌ Invalid listen IP address: %s", listenIP)
+	}
+
+	// Setup a temporary configuration copy with only our target node and configured proxy ports
+	tempCfg := *cfg
+	tempCfg.Role = config.RoleServer
+	tempCfg.Gateway = config.GatewayConfig{}
+	tempCfg.Presets = []config.ModeInfo{} // disable all presets to avoid port conflicts
+
+	// Find and configure only the target outbound, ensuring it's enabled and has the right ports
+	tempCfg.CustomOutbounds = []config.CustomOutbound{}
+	coCopy := *targetCO
+	coCopy.Enabled = true
+	coCopy.InternalProxyPort = socksPort
+	coCopy.InternalHttpPort = httpPort
+	coCopy.InternalListenAddr = listenIP
+	tempCfg.CustomOutbounds = append(tempCfg.CustomOutbounds, coCopy)
+
+	// Build and start
+	apiPort, _ := xray.GetFreePort()
+	overrides := map[string]int{
+		"api":        apiPort,
+		"test-socks": 0, // Disable global test socks for clarity
+	}
+	jsonData, err := xray.GenerateXrayJSON(&tempCfg, overrides, "")
+	if err != nil {
+		return fmt.Errorf("❌ Failed to generate config: %w", err)
+	}
+
+	var stderrBuf bytes.Buffer
+	cmdProc, cleanup, err := xray.StartXrayTempWithOutput(jsonData, &stderrBuf)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to start temporary Xray instance: %w", err)
+	}
+	defer cleanup()
+
+	// Wait for SOCKS listener to become ready
+	dialAddr := net.JoinHostPort(listenIP, strconv.Itoa(socksPort))
+	if utils.IsWildcardIP(listenIP) {
+		dialAddr = net.JoinHostPort("127.0.0.1", strconv.Itoa(socksPort))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := utils.WaitForTCPPort(ctx, dialAddr, 5*time.Second); err != nil {
+		if cmdProc.Process != nil {
+			if sigErr := cmdProc.Process.Signal(syscall.Signal(0)); sigErr != nil {
+				out := strings.TrimSpace(stderrBuf.String())
+				if out != "" {
+					return fmt.Errorf("❌ Temporary Xray instance exited prematurely: %s", out)
+				}
+				return fmt.Errorf("❌ Temporary Xray instance exited prematurely: %w", sigErr)
+			}
 		}
-		if !utils.IsPortFree(httpPort) {
-			fmt.Printf("❌ HTTP Port %d is in use on the host.\n", httpPort)
-			return
+		out := strings.TrimSpace(stderrBuf.String())
+		if out != "" {
+			return fmt.Errorf("❌ SOCKS listener %s not ready: %v (xray stderr: %s)", dialAddr, err, out)
 		}
-		if ip := net.ParseIP(listenIP); ip == nil {
-			fmt.Printf("❌ Invalid listen IP address: %s\n", listenIP)
-			return
-		}
+		return fmt.Errorf("❌ SOCKS listener %s not ready: %w", dialAddr, err)
+	}
 
-		// Setup a temporary configuration copy with only our target node and configured proxy ports
-		tempCfg := *cfg
-		tempCfg.Role = config.RoleServer
-		tempCfg.Gateway = config.GatewayConfig{}
-		tempCfg.Presets = []config.ModeInfo{} // disable all presets to avoid port conflicts
+	fmt.Printf("✅ Temporary SOCKS/HTTP proxy started successfully!\n")
+	fmt.Printf("   👉 SOCKS5: %s:%d\n", listenIP, socksPort)
+	fmt.Printf("   👉 HTTP:   %s:%d\n", listenIP, httpPort)
+	fmt.Printf("   Target:    %s (%s)\n", alias, outboundRemoteSummary(coCopy))
+	fmt.Println("\nPress Ctrl+C to terminate...")
 
-		// Find and configure only the target outbound, ensuring it's enabled and has the right ports
-		tempCfg.CustomOutbounds = []config.CustomOutbound{}
-		coCopy := *targetCO
-		coCopy.Enabled = true
-		coCopy.InternalProxyPort = socksPort
-		coCopy.InternalHttpPort = httpPort
-		coCopy.InternalListenAddr = listenIP
-		tempCfg.CustomOutbounds = append(tempCfg.CustomOutbounds, coCopy)
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	<-sigChan
 
-		// Build and start
-		apiPort, _ := xray.GetFreePort()
-		overrides := map[string]int{
-			"api":        apiPort,
-			"test-socks": 0, // Disable global test socks for clarity
-		}
-		jsonData, err := xray.GenerateXrayJSON(&tempCfg, overrides, "")
-		if err != nil {
-			fmt.Printf("❌ Failed to generate config: %v\n", err)
-			return
-		}
+	fmt.Println("\nStopping proxy...")
+	return nil
+}
 
-		_, cleanup, err := xray.StartXrayTemp(jsonData)
-		if err != nil {
-			fmt.Printf("❌ Failed to start temporary Xray instance: %v\n", err)
-			return
-		}
-		defer cleanup()
+var proxyRunCmd = &cobra.Command{
+	Use:   "run [alias]",
+	Short: "Run a temporary standalone local SOCKS/HTTP proxy for a relay",
+	Example: `  # Run temporary proxy in foreground
+  xray-proxya proxy run node-us -p 20808
 
-		fmt.Printf("✅ Temporary SOCKS/HTTP proxy started successfully!\n")
-		fmt.Printf("   👉 SOCKS5: %s:%d\n", listenIP, socksPort)
-		fmt.Printf("   👉 HTTP:   %s:%d\n", listenIP, httpPort)
-		fmt.Printf("   Target:    %s (%s)\n", alias, outboundRemoteSummary(coCopy))
-		fmt.Println("\nPress Ctrl+C to terminate...")
-
-		sigChan := make(chan os.Signal, 1)
-		signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-		<-sigChan
-
-		fmt.Println("\nStopping proxy...")
-	},
+  # Run temporary proxy with LAN sharing
+  xray-proxya proxy run node-us -p 20808 -l 0.0.0.0`,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE:              runProxyRun,
 }
 
 func runProxyTest(cmd *cobra.Command, args []string) error {

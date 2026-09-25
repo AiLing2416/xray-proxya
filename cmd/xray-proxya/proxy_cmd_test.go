@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -355,5 +356,76 @@ func TestProxySetActiveSelfOwnedPortExemption(t *testing.T) {
 	_ = proxySetCmd.Flags().Set("http-port", fmt.Sprintf("%d", testHttpPort))
 	if err := runProxySet(proxySetCmd, []string{"relay-other"}); err == nil {
 		t.Fatalf("expected relay-other to fail with port in use, but it succeeded")
+	}
+}
+
+func TestProxyRunPortLinkageAndValidation(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	configDir := filepath.Join(tmpHome, ".config", "xray-proxya")
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:              "relay-run",
+				Enabled:            true,
+				InternalProxyPort:  10808,
+				InternalHttpPort:   10809,
+				InternalListenAddr: "127.0.0.1",
+				Config:             map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	cfgBytes, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "config.json"), cfgBytes, 0600); err != nil {
+		t.Fatalf("WriteFile config.json error = %v", err)
+	}
+
+	// 1. Non-existent relay
+	err = runProxyRun(proxyRunCmd, []string{"non-existent"})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected not found error, got %v", err)
+	}
+
+	// 2. Occupy a port to test linkage
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen failed: %v", err)
+	}
+	defer l.Close()
+	occupiedPort := l.Addr().(*net.TCPAddr).Port
+	basePort := occupiedPort - 1
+
+	// Test: running with -p basePort should link httpPort to basePort + 1 (occupiedPort)
+	_ = proxyRunCmd.Flags().Set("port", fmt.Sprintf("%d", basePort))
+	defer func() {
+		_ = proxyRunCmd.Flags().Set("port", "0")
+		_ = proxyRunCmd.Flags().Set("socks-port", "0")
+		_ = proxyRunCmd.Flags().Set("http-port", "0")
+		_ = proxyRunCmd.Flags().Set("listen", "")
+		proxyRunCmd.Flags().Lookup("port").Changed = false
+		proxyRunCmd.Flags().Lookup("socks-port").Changed = false
+		proxyRunCmd.Flags().Lookup("http-port").Changed = false
+		proxyRunCmd.Flags().Lookup("listen").Changed = false
+		proxyRunSocksPort = 0
+		proxyRunHttpPort = 0
+		proxyRunListenIP = ""
+	}()
+
+	err = runProxyRun(proxyRunCmd, []string{"relay-run"})
+	if err == nil {
+		t.Fatalf("expected error due to occupied HTTP port %d, got nil", occupiedPort)
+	}
+	expectedMsg := fmt.Sprintf("HTTP Port %d is in use on the host.", occupiedPort)
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Fatalf("expected error containing %q, got %q", expectedMsg, err.Error())
 	}
 }
