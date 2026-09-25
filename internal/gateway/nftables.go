@@ -959,8 +959,11 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 			}
 		}
 		for _, port := range getSSHPorts() {
+			// Exclude the SSH listener's reply traffic (source port) to prevent
+			// inbound management sessions from being intercepted or broken.
+			// Outbound SSH connections initiated by the host (destination port)
+			// should still be proxied through the transparent gateway.
 			b.WriteString("        tcp sport " + port + " return\n")
-			b.WriteString("        tcp dport " + port + " return\n")
 		}
 		if pathTunnelEnabled(cfg) {
 			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")

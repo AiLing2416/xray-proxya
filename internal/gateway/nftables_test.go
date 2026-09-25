@@ -136,14 +136,14 @@ func TestBuildNFT_Proxy_LANOnly_GeneratesPreroutingOnly(t *testing.T) {
 	}
 }
 
-func TestBuildNFTProtectsSSHSourceAndDestinationPorts(t *testing.T) {
+func TestBuildNFTProtectsSSHSourcePortOnly(t *testing.T) {
 	rules := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24", "")
 	for _, port := range getSSHPorts() {
 		if !strings.Contains(rules, "tcp sport "+port+" return") {
 			t.Fatalf("rules should protect SSH source port %s: %s", port, rules)
 		}
-		if !strings.Contains(rules, "tcp dport "+port+" return") {
-			t.Fatalf("rules should protect SSH destination port %s: %s", port, rules)
+		if strings.Contains(rules, "tcp dport "+port+" return") {
+			t.Fatalf("rules should not exclude outbound SSH destination port %s: %s", port, rules)
 		}
 	}
 }
