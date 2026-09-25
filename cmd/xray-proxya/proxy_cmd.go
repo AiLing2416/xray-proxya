@@ -221,9 +221,7 @@ var proxyListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List all configured local SOCKS/HTTP proxies",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runProxyList(cmd, args)
-	},
+	RunE:    runProxyList,
 }
 
 func checkProxyPortConflict(cfg *config.UserConfig, alias string, listenIP string, socksPort, httpPort int) error {

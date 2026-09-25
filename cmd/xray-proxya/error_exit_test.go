@@ -14,6 +14,12 @@ func TestErrorExitCodes(t *testing.T) {
 	if err := statusCmd.RunE(statusCmd, nil); err == nil {
 		t.Fatalf("expected statusCmd to return error when uninitialized")
 	}
+	if err := proxyListCmd.RunE(proxyListCmd, nil); err == nil {
+		t.Fatalf("expected proxyListCmd to return error when uninitialized")
+	}
+	if err := proxyRunCmd.RunE(proxyRunCmd, []string{"non-existent"}); err == nil {
+		t.Fatalf("expected proxyRunCmd to return error when uninitialized")
+	}
 
 	// Initialize empty staging config
 	cfg := &config.UserConfig{
@@ -63,6 +69,9 @@ func TestErrorExitCodes(t *testing.T) {
 	}
 	if err := proxyUnsetCmd.RunE(proxyUnsetCmd, []string{"non-existent"}); err == nil {
 		t.Fatalf("expected proxyUnsetCmd to return error for non-existent relay")
+	}
+	if err := proxyRunCmd.RunE(proxyRunCmd, []string{"non-existent"}); err == nil {
+		t.Fatalf("expected proxyRunCmd to return error for non-existent relay")
 	}
 	if err := proxyTestCmd.RunE(proxyTestCmd, []string{"non-existent"}); err == nil {
 		t.Fatalf("expected proxyTestCmd to return error for non-existent relay")
