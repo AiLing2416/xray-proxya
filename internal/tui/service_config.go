@@ -53,11 +53,11 @@ func isConfigurableService(item ManagedServiceItem) bool {
 
 func getPathdConfig(cfg *config.UserConfig) config.PathConfig {
 	if cfg == nil {
-		return config.PathConfig{Listen: "127.0.0.1:2828", IdleSeconds: 20}
+		return config.PathConfig{Listen: pathd.DefaultListenAddress, IdleSeconds: 20}
 	}
 	p := cfg.Path
 	if p.Listen == "" {
-		p.Listen = "127.0.0.1:2828"
+		p.Listen = pathd.DefaultListenAddress
 	}
 	if p.IdleSeconds <= 0 {
 		p.IdleSeconds = 20

@@ -74,6 +74,9 @@ func Listen(address, token string, idle time.Duration) (*Server, error) {
 	}, nil
 }
 
+// DefaultListenAddress is the loopback endpoint where pathd listens by default.
+const DefaultListenAddress = "127.0.0.1:2828"
+
 // ValidateListenAddress guarantees that pathd cannot accidentally become a
 // public service. PathLink is reached only after the proxy relay terminates.
 func ValidateListenAddress(address string) error {

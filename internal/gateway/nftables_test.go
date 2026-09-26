@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/pathd"
 )
 
 func TestIsMissingKernelObject(t *testing.T) {
@@ -162,7 +163,7 @@ func testGatewayConfig(local, lan bool) *config.UserConfig {
 }
 
 func configurePathRelay(cfg *config.UserConfig) {
-	cfg.CustomOutbounds[0].Path = &config.PathConfig{Listen: "127.0.0.1:39091", Token: "token", IdleSeconds: 20}
+	cfg.CustomOutbounds[0].Path = &config.PathConfig{Listen: pathd.DefaultListenAddress, Token: "token", IdleSeconds: 20}
 }
 
 func TestBuildNFTWithBypassDNS(t *testing.T) {

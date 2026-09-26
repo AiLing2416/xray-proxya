@@ -142,7 +142,7 @@ func setPathEndpoint(cmd *cobra.Command, endpoint *config.PathConfig, requireTok
 		endpoint.Token = generated
 	}
 	if endpoint.Listen == "" {
-		endpoint.Listen = "127.0.0.1:39091"
+		endpoint.Listen = pathd.DefaultListenAddress
 	}
 	if endpoint.IdleSeconds <= 0 {
 		endpoint.IdleSeconds = 20
@@ -408,7 +408,7 @@ func selectedGatewayPath(cfg *config.UserConfig) (*config.PathConfig, string, er
 		}
 		endpoint := *outbound.Path
 		if endpoint.Listen == "" {
-			endpoint.Listen = "127.0.0.1:39091"
+			endpoint.Listen = pathd.DefaultListenAddress
 		}
 		if endpoint.IdleSeconds <= 0 {
 			endpoint.IdleSeconds = 20

@@ -17,7 +17,7 @@ func main() {
 		os.Exit(2)
 	}
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
-	listen := flags.String("listen", "127.0.0.1:39091", "loopback listen address")
+	listen := flags.String("listen", pathd.DefaultListenAddress, "loopback listen address")
 	token := flags.String("token", "", "PathLink authentication token")
 	idle := flags.Duration("idle", 20*time.Second, "idle connection timeout")
 	configPath := flags.String("config", "", "private pathd JSON configuration")

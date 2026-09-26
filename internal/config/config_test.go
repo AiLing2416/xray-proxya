@@ -12,13 +12,13 @@ func TestBackfillMigratesEnabledLegacyGatewayPathToSelectedRelay(t *testing.T) {
   "role": "gateway",
   "gateway": {"relay_alias": "remote", "state": "proxy"},
   "custom_outbounds": [{"alias": "remote", "enabled": true, "config": {}}],
-  "path": {"enabled": true, "listen": "127.0.0.1:39091", "token": "legacy-token", "idle_seconds": 20}
+  "path": {"enabled": true, "listen": "127.0.0.1:2828", "token": "legacy-token", "idle_seconds": 20}
 }`)
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		t.Fatal(err)
 	}
 	changes := cfg.BackfillDefaults()
-	if cfg.CustomOutbounds[0].Path == nil || cfg.CustomOutbounds[0].Path.Token != "legacy-token" {
+	if cfg.CustomOutbounds[0].Path == nil || cfg.CustomOutbounds[0].Path.Token != "legacy-token" || cfg.CustomOutbounds[0].Path.Listen != "127.0.0.1:2828" {
 		t.Fatalf("legacy PathLink was not assigned to selected relay: %#v", cfg.CustomOutbounds[0].Path)
 	}
 	if cfg.Path.Token != "" {

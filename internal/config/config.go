@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xray-proxya/internal/pathd"
 )
 
 type AppRole string
@@ -717,8 +718,8 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	changes = append(changes, cfg.migrateLegacyPath()...)
 	if cfg.Role == RoleServer && cfg.Path.Token != "" {
 		if cfg.Path.Listen == "" {
-			cfg.Path.Listen = "127.0.0.1:39091"
-			changes = append(changes, "set missing pathd.listen=127.0.0.1:39091")
+			cfg.Path.Listen = pathd.DefaultListenAddress
+			changes = append(changes, "set missing pathd.listen="+pathd.DefaultListenAddress)
 		}
 		if cfg.Path.IdleSeconds <= 0 {
 			cfg.Path.IdleSeconds = 20
@@ -1094,7 +1095,7 @@ func (cfg *UserConfig) migrateLegacyPath() []string {
 				endpoint := cfg.Path
 				endpoint.LegacyEnabled = false
 				if endpoint.Listen == "" {
-					endpoint.Listen = "127.0.0.1:39091"
+					endpoint.Listen = pathd.DefaultListenAddress
 				}
 				if endpoint.IdleSeconds <= 0 {
 					endpoint.IdleSeconds = 20

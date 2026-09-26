@@ -389,7 +389,7 @@ func pathTunnelEnabled(cfg *config.UserConfig) bool {
 			}
 			listen := outbound.Path.Listen
 			if listen == "" {
-				listen = "127.0.0.1:39091"
+				listen = pathd.DefaultListenAddress
 			}
 			return pathd.ValidateListenAddress(listen) == nil
 		}

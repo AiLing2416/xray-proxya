@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/pathd"
 )
 
 func TestWantsTunnel(t *testing.T) {
@@ -40,7 +41,7 @@ func TestPathTunnelDisabledMarkerDegradesOnlyPathLink(t *testing.T) {
 		},
 		CustomOutbounds: []config.CustomOutbound{{
 			Alias: "relay-a", Enabled: true,
-			Path: &config.PathConfig{Listen: "127.0.0.1:39091", Token: "token", IdleSeconds: 20},
+			Path: &config.PathConfig{Listen: pathd.DefaultListenAddress, Token: "token", IdleSeconds: 20},
 		}},
 	}
 	if !WantsTunnel(cfg) || !pathTunnelEnabled(cfg) {

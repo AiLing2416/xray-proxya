@@ -185,8 +185,8 @@ On the paired Gateway, bind that token to each relay that can reach a Pathd.
 Gateway relay selection automatically selects its matching credentials:
 
 ```bash
-xray-proxya path set --relay hk --token <hk-token> --listen 127.0.0.1:39091
-xray-proxya path set --relay sg --token <sg-token> --listen 127.0.0.1:39091
+xray-proxya path set --relay hk --token <hk-token> --listen 127.0.0.1:2828
+xray-proxya path set --relay sg --token <sg-token> --listen 127.0.0.1:2828
 xray-proxya apply
 xray-proxya gateway set --relay hk
 xray-proxya gateway up

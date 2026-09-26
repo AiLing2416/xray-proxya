@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/pathd"
 )
 
 func TestPathRequiresDirectRootShell(t *testing.T) {
@@ -100,7 +101,7 @@ func TestPathStatusJSON(t *testing.T) {
 	cfgServer := &config.UserConfig{
 		Role: config.RoleServer,
 		Path: config.PathConfig{
-			Listen: "127.0.0.1:39091",
+			Listen: pathd.DefaultListenAddress,
 			Token:  "test-tok",
 		},
 	}
@@ -124,8 +125,8 @@ func TestPathStatusJSON(t *testing.T) {
 	if parsedServer.Role != "server" {
 		t.Errorf("role = %q, want server", parsedServer.Role)
 	}
-	if parsedServer.Listen != "127.0.0.1:39091" {
-		t.Errorf("listen = %q, want 127.0.0.1:39091", parsedServer.Listen)
+	if parsedServer.Listen != pathd.DefaultListenAddress {
+		t.Errorf("listen = %q, want %s", parsedServer.Listen, pathd.DefaultListenAddress)
 	}
 
 	// 2. Test Gateway Role
