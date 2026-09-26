@@ -605,6 +605,65 @@ func TestPathPingFlagsValidation(t *testing.T) {
 	resetPingFlags()
 }
 
+func TestPathTraceAndMTUFlagsValidation(t *testing.T) {
+	setupTestConfigDir(t)
 
+	cfgGateway := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias:   "hk-relay",
+			State:        "proxy",
+			LocalEnabled: true,
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "hk-relay",
+				Enabled: true,
+				Path: &config.PathConfig{
+					Listen: pathd.DefaultListenAddress,
+					Token:  "token-hk",
+				},
+			},
+		},
+	}
+	if err := cfgGateway.Save(); err != nil {
+		t.Fatalf("save gateway config: %v", err)
+	}
 
+	// 1. Trace: Invalid max-hops
+	_ = pathTraceCmd.Flags().Set("max-hops", "0")
+	_ = pathTraceCmd.Flags().Set("timeout", "2s")
+	if err := pathTraceCmd.RunE(pathTraceCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--max-hops") {
+		t.Fatalf("expected --max-hops error for 0, got: %v", err)
+	}
 
+	_ = pathTraceCmd.Flags().Set("max-hops", "300")
+	if err := pathTraceCmd.RunE(pathTraceCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--max-hops") {
+		t.Fatalf("expected --max-hops error for 300, got: %v", err)
+	}
+
+	// 2. Trace: Invalid timeout
+	_ = pathTraceCmd.Flags().Set("max-hops", "16")
+	_ = pathTraceCmd.Flags().Set("timeout", "50ms")
+	if err := pathTraceCmd.RunE(pathTraceCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Fatalf("expected --timeout error for 50ms, got: %v", err)
+	}
+
+	_ = pathTraceCmd.Flags().Set("timeout", "20s")
+	if err := pathTraceCmd.RunE(pathTraceCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Fatalf("expected --timeout error for 20s, got: %v", err)
+	}
+	_ = pathTraceCmd.Flags().Set("timeout", "2s")
+
+	// 3. MTU: Invalid timeout
+	_ = pathMTUCmd.Flags().Set("timeout", "10ms")
+	if err := pathMTUCmd.RunE(pathMTUCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Fatalf("expected --timeout error on mtu for 10ms, got: %v", err)
+	}
+
+	_ = pathMTUCmd.Flags().Set("timeout", "25s")
+	if err := pathMTUCmd.RunE(pathMTUCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Fatalf("expected --timeout error on mtu for 25s, got: %v", err)
+	}
+	_ = pathMTUCmd.Flags().Set("timeout", "2s")
+}

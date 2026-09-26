@@ -34,8 +34,10 @@ var (
 	pathPingSize     int
 	pathPingTimeout  time.Duration
 	pathTraceHops    int
+	pathTraceTimeout time.Duration
 	pathMTUMin       int
 	pathMTUMax       int
+	pathMTUTimeout   time.Duration
 	pathListJSON     bool
 	pathStatusJSON   bool
 	pathPingJSON     bool
@@ -973,11 +975,14 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 	if cfg.Role == config.RoleServer {
 		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
 	}
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("❌ path trace requires root on the Gateway.")
-	}
 	if pathTraceHops < 1 || pathTraceHops > 255 {
 		return fmt.Errorf("❌ --max-hops must be between 1 and 255.")
+	}
+	if pathTraceTimeout < 100*time.Millisecond || pathTraceTimeout > 15*time.Second {
+		return fmt.Errorf("❌ --timeout must be between 100ms and 15s")
+	}
+	if os.Geteuid() != 0 {
+		return fmt.Errorf("❌ path trace requires root on the Gateway.")
 	}
 	endpoint, relay, err := selectedGatewayPath(cfg)
 	if err != nil {
@@ -994,6 +999,12 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
 
+	timeoutMS := int(pathTraceTimeout.Milliseconds())
+	probeOpts := pathd.ProbeOptions{
+		PayloadSize: 8,
+		TimeoutMS:   timeoutMS,
+	}
+
 	if pathTraceJSON {
 		traceJSON := PathTraceJSON{
 			TargetIP: ip.String(),
@@ -1002,12 +1013,17 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 			Hops:     []PathTraceHopJSON{},
 		}
 		for ttl := 1; ttl <= pathTraceHops; ttl++ {
-			probe, probeErr := client.ProbeTTL(ip, ttl)
+			probeOpts.TTL = ttl
+			probe, probeErr := client.ProbeWithOptions(ip, probeOpts)
 			hop := PathTraceHopJSON{
 				TTL: ttl,
 			}
 			if probeErr != nil {
-				hop.Status = probeErr.Error()
+				if strings.Contains(strings.ToLower(probeErr.Error()), "timeout") || strings.Contains(strings.ToLower(probeErr.Error()), "timed out") {
+					hop.Status = "request timed out"
+				} else {
+					hop.Status = probeErr.Error()
+				}
 				traceJSON.Hops = append(traceJSON.Hops, hop)
 				continue
 			}
@@ -1035,9 +1051,14 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 
 	fmt.Printf("Path trace to %s through %s (max %d hops)\n", ip, relay, pathTraceHops)
 	for ttl := 1; ttl <= pathTraceHops; ttl++ {
-		probe, probeErr := client.ProbeTTL(ip, ttl)
+		probeOpts.TTL = ttl
+		probe, probeErr := client.ProbeWithOptions(ip, probeOpts)
 		if probeErr != nil {
-			fmt.Printf("%2d  *  %v\n", ttl, probeErr)
+			if strings.Contains(strings.ToLower(probeErr.Error()), "timeout") || strings.Contains(strings.ToLower(probeErr.Error()), "timed out") {
+				fmt.Printf("%2d  %-39s  *  request timed out\n", ttl, "*")
+			} else {
+				fmt.Printf("%2d  *  %v\n", ttl, probeErr)
+			}
 			continue
 		}
 		responder := "unknown"
@@ -1071,6 +1092,9 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 	}
 	if cfg.Role == config.RoleServer {
 		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+	}
+	if pathMTUTimeout < 100*time.Millisecond || pathMTUTimeout > 15*time.Second {
+		return fmt.Errorf("❌ --timeout must be between 100ms and 15s")
 	}
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("❌ path mtu requires root on the Gateway.")
@@ -1108,6 +1132,7 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 		minimum = ipHeader + icmpHeader
 	}
 	probeKind := map[bool]string{true: "IPv4 DF", false: "IPv6"}[ip.To4() != nil]
+	timeoutMS := int(pathMTUTimeout.Milliseconds())
 
 	if !pathMTUJSON {
 		fmt.Printf("Active PMTU to %s through %s (%d–%d bytes)\n", ip, relay, minimum, pathMTUMax)
@@ -1115,11 +1140,23 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 	low, high, best := minimum, pathMTUMax, 0
 	for low <= high {
 		candidate := low + (high-low)/2
-		probe, probeErr := client.ProbeWithOptions(ip, pathd.ProbeOptions{TTL: 64, PayloadSize: candidate - ipHeader - icmpHeader, DontFragment: ip.To4() != nil})
+		probe, probeErr := client.ProbeWithOptions(ip, pathd.ProbeOptions{
+			TTL:          64,
+			PayloadSize:  candidate - ipHeader - icmpHeader,
+			DontFragment: ip.To4() != nil,
+			TimeoutMS:    timeoutMS,
+		})
 		if probeErr != nil {
 			if strings.Contains(strings.ToLower(probeErr.Error()), "message too long") {
 				if !pathMTUJSON {
 					fmt.Printf("  %d bytes: too large\n", candidate)
+				}
+				high = candidate - 1
+				continue
+			}
+			if strings.Contains(strings.ToLower(probeErr.Error()), "timeout") || strings.Contains(strings.ToLower(probeErr.Error()), "timed out") {
+				if !pathMTUJSON {
+					fmt.Printf("  %d bytes: timeout (potential black hole, packet dropped)\n", candidate)
 				}
 				high = candidate - 1
 				continue
@@ -1300,10 +1337,12 @@ func init() {
 	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "output in JSON format")
 	pathPingCmd.ValidArgsFunction = noFileComp
 	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
+	pathTraceCmd.Flags().DurationVarP(&pathTraceTimeout, "timeout", "W", 2*time.Second, "timeout per hop probe")
 	pathTraceCmd.Flags().BoolVar(&pathTraceJSON, "json", false, "output in JSON format")
 	pathTraceCmd.ValidArgsFunction = noFileComp
 	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
 	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "largest IP packet MTU to probe")
+	pathMTUCmd.Flags().DurationVarP(&pathMTUTimeout, "timeout", "W", 2*time.Second, "timeout per MTU probe")
 	pathMTUCmd.Flags().BoolVar(&pathMTUJSON, "json", false, "output in JSON format")
 	pathMTUCmd.ValidArgsFunction = noFileComp
 
