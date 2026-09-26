@@ -42,7 +42,7 @@ func ApplyPending(opts Options) ([]string, error) {
 
 func applyPendingLocked(opts Options) ([]string, error) {
 	if !config.StagingExists() {
-		return []string{"❌ No pending changes in STAGING."}, nil
+		return []string{"ℹ️  No pending changes in STAGING (working configuration is clean)."}, nil
 	}
 
 	activeCfg, err := config.LoadConfigEx(false)
