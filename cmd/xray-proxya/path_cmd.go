@@ -175,108 +175,131 @@ func validatePathRole(role config.AppRole, relay string) error {
 	return nil
 }
 
-var pathSetCmd = &cobra.Command{Use: "set", Short: "Configure Pathd or a relay PathLink credential in STAGING", Run: func(cmd *cobra.Command, args []string) {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil {
-		fmt.Println("❌", err)
-		return
+func resolvePathRelay(cmd *cobra.Command, args []string) (string, error) {
+	relay := pathRelay
+	if len(args) > 0 {
+		pos := strings.TrimSpace(args[0])
+		if cmd.Flags().Changed("relay") && pathRelay != pos {
+			return "", fmt.Errorf("conflicting relay specified: '%s' and --relay '%s'", pos, pathRelay)
+		}
+		relay = pos
 	}
-	switch cfg.Role {
-	case config.RoleServer:
-		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
-			fmt.Println("❌", err)
-			return
-		}
-		generated, err := setPathEndpoint(cmd, &cfg.Path, false)
+	return relay, nil
+}
+
+var pathSetCmd = &cobra.Command{
+	Use:               "set [relay]",
+	Short:             "Configure Pathd or a relay PathLink credential in STAGING",
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
-			fmt.Println("❌", err)
-			return
+			return fmt.Errorf("❌ %w", err)
 		}
-		if err := cfg.SaveEx(true); err != nil {
-			fmt.Println("❌", err)
-			return
+		relay, err := resolvePathRelay(cmd, args)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
-		fmt.Printf("✅ Server Pathd configured in STAGING (%s). Run 'apply', then manage it with 'service enable --now xray-proxya-pathd'.\n", cfg.Path.Listen)
-		if generated != "" {
-			fmt.Printf("🔐 Generated token (save it now): %s\n", generated)
-		}
-	case config.RoleGateway:
-		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
-			fmt.Println("❌", err)
-			return
-		}
-		if pathGenerate {
-			fmt.Println("❌ Gateway credentials must match the remote Pathd; pass --token instead of --generate-token.")
-			return
-		}
-		for i := range cfg.CustomOutbounds {
-			outbound := &cfg.CustomOutbounds[i]
-			if outbound.Alias != pathRelay {
-				continue
+		switch cfg.Role {
+		case config.RoleServer:
+			if err := validatePathRole(cfg.Role, relay); err != nil {
+				return fmt.Errorf("❌ %w", err)
 			}
-			if outbound.Path == nil {
-				outbound.Path = &config.PathConfig{}
-			}
-			if _, err := setPathEndpoint(cmd, outbound.Path, outbound.Path.Token == ""); err != nil {
-				fmt.Println("❌", err)
-				return
+			generated, err := setPathEndpoint(cmd, &cfg.Path, false)
+			if err != nil {
+				return fmt.Errorf("❌ %w", err)
 			}
 			if err := cfg.SaveEx(true); err != nil {
-				fmt.Println("❌", err)
-				return
+				return fmt.Errorf("❌ %w", err)
 			}
-			fmt.Printf("✅ PathLink credentials for relay '%s' saved in STAGING. Run 'apply'.\n", pathRelay)
-			return
+			fmt.Printf("✅ Server Pathd configured in STAGING (%s). Run 'apply', then manage it with 'service enable --now xray-proxya-pathd'.\n", cfg.Path.Listen)
+			if generated != "" {
+				fmt.Printf("🔐 Generated token (save it now): %s\n", generated)
+			}
+			return nil
+		case config.RoleGateway:
+			if err := validatePathRole(cfg.Role, relay); err != nil {
+				return fmt.Errorf("❌ %w", err)
+			}
+			if pathGenerate {
+				return fmt.Errorf("❌ Gateway credentials must match the remote Pathd; pass --token instead of --generate-token.")
+			}
+			for i := range cfg.CustomOutbounds {
+				outbound := &cfg.CustomOutbounds[i]
+				if outbound.Alias != relay {
+					continue
+				}
+				if outbound.Path == nil {
+					outbound.Path = &config.PathConfig{}
+				}
+				if _, err := setPathEndpoint(cmd, outbound.Path, outbound.Path.Token == ""); err != nil {
+					return fmt.Errorf("❌ %w", err)
+				}
+				if err := cfg.SaveEx(true); err != nil {
+					return fmt.Errorf("❌ %w", err)
+				}
+				fmt.Printf("✅ PathLink credentials for relay '%s' saved in STAGING. Run 'apply'.\n", relay)
+				return nil
+			}
+			return fmt.Errorf("❌ Relay '%s' not found.", relay)
+		default:
+			return fmt.Errorf("❌ Unsupported role %q.", cfg.Role)
 		}
-		fmt.Printf("❌ Relay '%s' not found.\n", pathRelay)
-	default:
-		fmt.Printf("❌ Unsupported role %q.\n", cfg.Role)
-	}
-}}
+	},
+}
 
-var pathUnsetCmd = &cobra.Command{Use: "unset", Short: "Remove a relay PathLink credential from STAGING", Run: func(cmd *cobra.Command, args []string) {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil {
-		fmt.Println("❌", err)
-		return
-	}
-	if cfg.Role == config.RoleServer {
-		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
-			fmt.Println("❌", err)
-			return
+var pathUnsetCmd = &cobra.Command{
+	Use:               "unset [relay]",
+	Short:             "Remove a relay PathLink credential from STAGING",
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
-		if service.IsUnitActive(service.PathdUnit) {
-			fmt.Println("❌ Stop or disable xray-proxya-pathd with the service command before removing its configuration.")
-			return
+		relay, err := resolvePathRelay(cmd, args)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
-		cfg.Path = config.PathConfig{}
-	} else if cfg.Role == config.RoleGateway {
-		if err := validatePathRole(cfg.Role, pathRelay); err != nil {
-			fmt.Println("❌", err)
-			return
-		}
-		found := false
-		for i := range cfg.CustomOutbounds {
-			if cfg.CustomOutbounds[i].Alias == pathRelay {
-				cfg.CustomOutbounds[i].Path = nil
-				found = true
-				break
+		if cfg.Role == config.RoleServer {
+			if err := validatePathRole(cfg.Role, relay); err != nil {
+				return fmt.Errorf("❌ %w", err)
 			}
+			if service.IsUnitActive(service.PathdUnit) {
+				return fmt.Errorf("❌ Stop or disable xray-proxya-pathd with the service command before removing its configuration.")
+			}
+			cfg.Path = config.PathConfig{}
+			if err := cfg.SaveEx(true); err != nil {
+				return fmt.Errorf("❌ %w", err)
+			}
+			fmt.Println("✅ Server Pathd configuration removed from STAGING. Run 'apply'.")
+			return nil
+		} else if cfg.Role == config.RoleGateway {
+			if err := validatePathRole(cfg.Role, relay); err != nil {
+				return fmt.Errorf("❌ %w", err)
+			}
+			found := false
+			for i := range cfg.CustomOutbounds {
+				if cfg.CustomOutbounds[i].Alias == relay {
+					cfg.CustomOutbounds[i].Path = nil
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("❌ Relay '%s' not found.", relay)
+			}
+			if err := cfg.SaveEx(true); err != nil {
+				return fmt.Errorf("❌ %w", err)
+			}
+			fmt.Printf("✅ PathLink credentials for relay '%s' removed from STAGING. Run 'apply'.\n", relay)
+			return nil
 		}
-		if !found {
-			fmt.Printf("❌ Relay '%s' not found.\n", pathRelay)
-			return
-		}
-	} else {
-		fmt.Printf("❌ Unsupported role %q.\n", cfg.Role)
-		return
-	}
-	if err := cfg.SaveEx(true); err != nil {
-		fmt.Println("❌", err)
-		return
-	}
-	fmt.Println("✅ PathLink configuration removed from STAGING. Run 'apply'.")
-}}
+		return fmt.Errorf("❌ Unsupported role %q.", cfg.Role)
+	},
+}
 var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service state", RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {

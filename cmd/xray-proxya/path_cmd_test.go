@@ -158,3 +158,154 @@ func TestPathStatusJSON(t *testing.T) {
 	}
 }
 
+func resetPathSetFlags() {
+	pathRelay = ""
+	pathListen = ""
+	pathToken = ""
+	pathIdle = 20
+	pathGenerate = false
+	_ = pathSetCmd.Flags().Set("relay", "")
+	_ = pathSetCmd.Flags().Set("listen", "")
+	_ = pathSetCmd.Flags().Set("token", "")
+	_ = pathSetCmd.Flags().Set("idle", "20")
+	_ = pathSetCmd.Flags().Set("generate-token", "false")
+	pathSetCmd.Flags().Lookup("relay").Changed = false
+	pathSetCmd.Flags().Lookup("listen").Changed = false
+	pathSetCmd.Flags().Lookup("token").Changed = false
+	pathSetCmd.Flags().Lookup("idle").Changed = false
+	pathSetCmd.Flags().Lookup("generate-token").Changed = false
+}
+
+func resetPathUnsetFlags() {
+	pathRelay = ""
+	_ = pathUnsetCmd.Flags().Set("relay", "")
+	pathUnsetCmd.Flags().Lookup("relay").Changed = false
+}
+
+func TestPathSetUnsetPositionalAndFlags(t *testing.T) {
+	setupTestConfigDir(t)
+
+	// 1. Gateway Role Tests
+	cfgGateway := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "hk-relay",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "hk-relay", Enabled: true},
+			{Alias: "jp-relay", Enabled: true},
+		},
+	}
+	if err := cfgGateway.SaveEx(true); err != nil {
+		t.Fatalf("save gateway staging config: %v", err)
+	}
+
+	// 1.1 Test positional relay in path set
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("token", "token-hk-123")
+	if err := pathSetCmd.RunE(pathSetCmd, []string{"hk-relay"}); err != nil {
+		t.Fatalf("path set positional relay failed: %v", err)
+	}
+	stagingCfg, _ := config.LoadConfigEx(true)
+	if stagingCfg.CustomOutbounds[0].Path == nil || stagingCfg.CustomOutbounds[0].Path.Token != "token-hk-123" {
+		t.Fatalf("expected token-hk-123 for hk-relay, got: %+v", stagingCfg.CustomOutbounds[0].Path)
+	}
+
+	// 1.2 Test flag --relay in path set
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("relay", "jp-relay")
+	_ = pathSetCmd.Flags().Set("token", "token-jp-456")
+	if err := pathSetCmd.RunE(pathSetCmd, nil); err != nil {
+		t.Fatalf("path set --relay flag failed: %v", err)
+	}
+	stagingCfg, _ = config.LoadConfigEx(true)
+	if stagingCfg.CustomOutbounds[1].Path == nil || stagingCfg.CustomOutbounds[1].Path.Token != "token-jp-456" {
+		t.Fatalf("expected token-jp-456 for jp-relay, got: %+v", stagingCfg.CustomOutbounds[1].Path)
+	}
+
+	// 1.3 Test conflicting positional and flag
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("relay", "jp-relay")
+	_ = pathSetCmd.Flags().Set("token", "token-conflict")
+	if err := pathSetCmd.RunE(pathSetCmd, []string{"hk-relay"}); err == nil {
+		t.Fatal("expected error on conflicting relay positional and flag")
+	}
+
+	// 1.4 Test non-existent relay on gateway
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("token", "token-nonexistent")
+	if err := pathSetCmd.RunE(pathSetCmd, []string{"us-relay"}); err == nil {
+		t.Fatal("expected error for non-existent relay")
+	}
+
+	// 1.5 Test missing relay on gateway
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("token", "token-no-relay")
+	if err := pathSetCmd.RunE(pathSetCmd, nil); err == nil {
+		t.Fatal("expected error when relay is omitted on gateway")
+	}
+
+	// 1.6 Test positional unset on gateway
+	resetPathUnsetFlags()
+	if err := pathUnsetCmd.RunE(pathUnsetCmd, []string{"hk-relay"}); err != nil {
+		t.Fatalf("path unset positional failed: %v", err)
+	}
+	stagingCfg, _ = config.LoadConfigEx(true)
+	if stagingCfg.CustomOutbounds[0].Path != nil {
+		t.Fatalf("expected hk-relay Path to be nil after unset, got: %+v", stagingCfg.CustomOutbounds[0].Path)
+	}
+
+	// 1.7 Test flag unset on gateway
+	resetPathUnsetFlags()
+	_ = pathUnsetCmd.Flags().Set("relay", "jp-relay")
+	if err := pathUnsetCmd.RunE(pathUnsetCmd, nil); err != nil {
+		t.Fatalf("path unset --relay flag failed: %v", err)
+	}
+	stagingCfg, _ = config.LoadConfigEx(true)
+	if stagingCfg.CustomOutbounds[1].Path != nil {
+		t.Fatalf("expected jp-relay Path to be nil after unset, got: %+v", stagingCfg.CustomOutbounds[1].Path)
+	}
+
+	// 1.8 Test unset non-existent relay on gateway
+	resetPathUnsetFlags()
+	if err := pathUnsetCmd.RunE(pathUnsetCmd, []string{"us-relay"}); err == nil {
+		t.Fatal("expected error when unsetting non-existent relay")
+	}
+
+	// 2. Server Role Tests
+	cfgServer := &config.UserConfig{
+		Role: config.RoleServer,
+	}
+	if err := cfgServer.SaveEx(true); err != nil {
+		t.Fatalf("save server staging config: %v", err)
+	}
+
+	// 2.1 Test server rejects relay arg
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("token", "server-tok")
+	if err := pathSetCmd.RunE(pathSetCmd, []string{"hk-relay"}); err == nil {
+		t.Fatal("expected error when relay is specified on server")
+	}
+
+	// 2.2 Test server path set with --generate-token
+	resetPathSetFlags()
+	_ = pathSetCmd.Flags().Set("generate-token", "true")
+	if err := pathSetCmd.RunE(pathSetCmd, nil); err != nil {
+		t.Fatalf("server path set --generate-token failed: %v", err)
+	}
+	stagingCfg, _ = config.LoadConfigEx(true)
+	if stagingCfg.Path.Token == "" {
+		t.Fatal("expected generated token on server")
+	}
+
+	// 2.3 Test server path unset
+	resetPathUnsetFlags()
+	if err := pathUnsetCmd.RunE(pathUnsetCmd, nil); err != nil {
+		t.Fatalf("server path unset failed: %v", err)
+	}
+	stagingCfg, _ = config.LoadConfigEx(true)
+	if stagingCfg.Path.Token != "" {
+		t.Fatalf("expected empty token on server after unset, got: %s", stagingCfg.Path.Token)
+	}
+}
+
