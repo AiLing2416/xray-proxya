@@ -316,4 +316,50 @@ func TestConfigUpgradeUpgradesEndpointsAndGateURL(t *testing.T) {
 	}
 }
 
+func TestConfigDiffCmd(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	// 1. Uninitialized
+	if err := configDiffCmd.RunE(configDiffCmd, nil); err == nil {
+		t.Fatalf("expected error on uninitialized")
+	}
+
+	// 2. Initialized and clean
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid",
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	outClean := captureStdout(t, func() {
+		if err := configDiffCmd.RunE(configDiffCmd, nil); err != nil {
+			t.Fatalf("configDiffCmd error: %v", err)
+		}
+	})
+	if !strings.Contains(outClean, "clean") {
+		t.Errorf("expected clean message, got: %s", outClean)
+	}
+
+	// 3. Staging changes exist
+	cfg.CustomOutbounds = append(cfg.CustomOutbounds, config.CustomOutbound{
+		Alias:  "new-relay",
+		Config: map[string]interface{}{"protocol": "vless"},
+	})
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx staging error: %v", err)
+	}
+
+	outDiff := captureStdout(t, func() {
+		if err := diffCmd.RunE(diffCmd, nil); err != nil {
+			t.Fatalf("diffCmd error: %v", err)
+		}
+	})
+	if !strings.Contains(outDiff, `Added relay "new-relay"`) {
+		t.Errorf("expected diff showing added relay, got: %s", outDiff)
+	}
+}
+
 

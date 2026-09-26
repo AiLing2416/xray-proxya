@@ -257,6 +257,61 @@ var configShowCmd = &cobra.Command{
 	},
 }
 
+var configDiffCmd = &cobra.Command{
+	Use:   "diff",
+	Short: "Show differences between active and staging configurations",
+	Long: strings.TrimSpace(`
+Compare the currently active configuration with pending changes in STAGING.
+If no staging changes exist, reports that the configuration is clean.
+`),
+	Args: cobra.NoArgs,
+	RunE: runConfigDiff,
+}
+
+var diffCmd = &cobra.Command{
+	Use:   "diff",
+	Short: "Show differences between active and staging configurations (alias for 'config diff')",
+	Long: strings.TrimSpace(`
+Compare the currently active configuration with pending changes in STAGING.
+If no staging changes exist, reports that the configuration is clean.
+`),
+	Args: cobra.NoArgs,
+	RunE: runConfigDiff,
+}
+
+func runConfigDiff(cmd *cobra.Command, args []string) error {
+	if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
+		return fmt.Errorf("❌ xray-proxya has not been initialized. Run 'init' first.")
+	}
+
+	if !config.StagingExists() {
+		fmt.Println("ℹ️  STAGING is clean (in sync with active configuration).")
+		return nil
+	}
+
+	activeCfg, err := config.LoadConfigEx(false)
+	if err != nil {
+		activeCfg = nil
+	}
+	stagingCfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return fmt.Errorf("❌ Failed to load staging config: %w", err)
+	}
+
+	diffs := config.DiffUserConfig(activeCfg, stagingCfg)
+	if len(diffs) == 0 {
+		fmt.Println("ℹ️  STAGING is clean (in sync with active configuration).")
+		return nil
+	}
+
+	fmt.Println("🔎 STAGING configuration diff:")
+	for _, line := range diffs {
+		fmt.Println(line)
+	}
+	fmt.Println("\n🚀 Run 'apply' to commit changes, or 'undo' to discard.")
+	return nil
+}
+
 func init() {
 	configUpgradeCmd.Flags().BoolVar(&configUpgradeStaging, "staging", false, "Upgrade the staging config instead of the active config")
 	configUpgradeCmd.Flags().BoolVar(&configUpgradeDryRun, "dry-run", false, "Preview upgrade changes without writing the config file")
@@ -276,6 +331,6 @@ func init() {
 		}, cobra.ShellCompDirectiveNoFileComp
 	})
 
-	configCmd.AddCommand(configUpgradeCmd, configPathCmd, configShowCmd)
-	rootCmd.AddCommand(configCmd)
+	configCmd.AddCommand(configUpgradeCmd, configPathCmd, configShowCmd, configDiffCmd)
+	rootCmd.AddCommand(configCmd, diffCmd)
 }
