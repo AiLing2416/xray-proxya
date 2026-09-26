@@ -597,4 +597,36 @@ func TestGatewayFull6StateMatrixConfiguration(t *testing.T) {
 	}
 }
 
+func TestGatewaySetPositionalRelay(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode: "tun",
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, []string{"my-positional-relay"}); err != nil {
+		t.Fatalf("gatewaySetCmd with positional relay failed: %v", err)
+	}
+
+	updated, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("LoadConfigEx error: %v", err)
+	}
+	if updated.Gateway.RelayAlias != "my-positional-relay" {
+		t.Fatalf("expected RelayAlias 'my-positional-relay', got %q", updated.Gateway.RelayAlias)
+	}
+}
+
+
 

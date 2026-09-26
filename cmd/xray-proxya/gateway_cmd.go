@@ -279,16 +279,20 @@ func runGatewayDisable(cmd *cobra.Command, args []string) error {
 }
 
 var gatewaySetCmd = &cobra.Command{
-	Use:   "set",
-	Short: "Configure gateway parameters in STAGING",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGatewaySet(cmd, args)
-	},
-	RunE: runGatewaySet,
+	Use:               "set [relay]",
+	Short:             "Configure gateway parameters in STAGING",
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE:              runGatewaySet,
 }
 
 func runGatewaySet(cmd *cobra.Command, args []string) error {
-	hasChanged := false
+	var positionalRelay string
+	if len(args) == 1 {
+		positionalRelay = strings.TrimSpace(args[0])
+	}
+
+	hasChanged := positionalRelay != ""
 	cmd.Flags().VisitAll(func(f *pflag.Flag) {
 		if f.Changed {
 			hasChanged = true
@@ -351,7 +355,12 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 	cfg.Gateway.Mode = "tun"
 	if cmd.Flags().Changed("relay") {
 		relay, _ := cmd.Flags().GetString("relay")
+		if positionalRelay != "" && relay != positionalRelay {
+			return fmt.Errorf("❌ Error: Positional relay %q conflicts with --relay flag %q", positionalRelay, relay)
+		}
 		cfg.Gateway.RelayAlias = relay
+	} else if positionalRelay != "" {
+		cfg.Gateway.RelayAlias = positionalRelay
 	}
 
 	var iface string
