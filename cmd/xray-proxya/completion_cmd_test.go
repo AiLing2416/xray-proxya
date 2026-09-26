@@ -223,7 +223,7 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 	if fn, ok := pathUnsetCmd.GetFlagCompletionFunc("relay"); !ok || fn == nil {
 		t.Error("path unset missing --relay completion")
 	}
-	for _, pathCmd := range []*cobra.Command{pathPingCmd, pathTraceCmd, pathMTUCmd} {
+	for _, pathCmd := range []*cobra.Command{pathListCmd, pathSetCmd, pathUnsetCmd, pathPingCmd, pathTraceCmd, pathMTUCmd} {
 		if pathCmd.ValidArgsFunction == nil {
 			t.Errorf("path command %q missing ValidArgsFunction", pathCmd.Name())
 		}

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
@@ -30,11 +31,22 @@ var (
 	pathTraceHops  int
 	pathMTUMin     int
 	pathMTUMax     int
+	pathListJSON   bool
 	pathStatusJSON bool
 	pathPingJSON   bool
 	pathTraceJSON  bool
 	pathMTUJSON    bool
 )
+
+type PathListItemJSON struct {
+	Alias           string `json:"alias"`
+	PathLink        string `json:"pathlink"`
+	Listen          string `json:"listen,omitempty"`
+	IdleSeconds     int    `json:"idle_seconds,omitempty"`
+	TokenConfigured bool   `json:"token_configured"`
+	IsActiveRelay   bool   `json:"is_active_relay"`
+	Pending         bool   `json:"pending"`
+}
 
 type PathStatusJSON struct {
 	Role           string `json:"role"`
@@ -185,6 +197,156 @@ func resolvePathRelay(cmd *cobra.Command, args []string) (string, error) {
 		relay = pos
 	}
 	return relay, nil
+}
+
+var pathListCmd = &cobra.Command{
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "List PathLink credential bindings for all relays",
+	Args:    cobra.NoArgs,
+	RunE:    runPathList,
+}
+
+func runPathList(cmd *cobra.Command, args []string) error {
+	activeCfg, _ := config.LoadConfig()
+	stagingCfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		if activeCfg != nil {
+			stagingCfg = activeCfg
+		} else {
+			return fmt.Errorf("❌ %w", err)
+		}
+	}
+	if stagingCfg.Role == config.RoleServer {
+		if pathListJSON {
+			data, err := json.MarshalIndent(map[string]interface{}{
+				"role":             "server",
+				"listen":           stagingCfg.Path.Listen,
+				"idle_seconds":     stagingCfg.Path.IdleSeconds,
+				"token_configured": stagingCfg.Path.Token != "",
+			}, "", "  ")
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(data))
+			return nil
+		}
+		fmt.Println("Server role uses local Pathd responder daemon.")
+		fmt.Println("Use 'xray-proxya path status' to view service state.")
+		return nil
+	}
+	if stagingCfg.Role != config.RoleGateway {
+		return fmt.Errorf("❌ Unsupported role %q", stagingCfg.Role)
+	}
+
+	if len(stagingCfg.CustomOutbounds) == 0 {
+		if pathListJSON {
+			fmt.Println("[]")
+			return nil
+		}
+		fmt.Println("No custom relays configured.")
+		return nil
+	}
+
+	var activeByAlias map[string]*config.PathConfig
+	if activeCfg != nil {
+		activeByAlias = make(map[string]*config.PathConfig, len(activeCfg.CustomOutbounds))
+		for i := range activeCfg.CustomOutbounds {
+			activeByAlias[activeCfg.CustomOutbounds[i].Alias] = activeCfg.CustomOutbounds[i].Path
+		}
+	}
+
+	hasPending := false
+	items := make([]PathListItemJSON, 0, len(stagingCfg.CustomOutbounds))
+	for _, co := range stagingCfg.CustomOutbounds {
+		activePath, hadInActive := activeByAlias[co.Alias]
+		pending := false
+		if activeCfg != nil {
+			if !hadInActive {
+				pending = true
+			} else if !reflect.DeepEqual(activePath, co.Path) {
+				pending = true
+			}
+		}
+		if pending {
+			hasPending = true
+		}
+
+		state := "DISABLED"
+		listenAddr := ""
+		tokenConfigured := false
+		idleSec := 0
+
+		if co.Path != nil && co.Path.Token != "" {
+			tokenConfigured = true
+			listenAddr = co.Path.Listen
+			if listenAddr == "" {
+				listenAddr = pathd.DefaultListenAddress
+			}
+			idleSec = co.Path.IdleSeconds
+			if idleSec <= 0 {
+				idleSec = 20
+			}
+
+			if pending {
+				state = "PENDING"
+			} else if co.Enabled {
+				state = "ENABLED"
+			} else {
+				state = "DISABLED"
+			}
+		} else if pending && activePath != nil && activePath.Token != "" {
+			state = "PENDING"
+		}
+
+		isActive := (co.Alias == stagingCfg.Gateway.RelayAlias)
+		items = append(items, PathListItemJSON{
+			Alias:           co.Alias,
+			PathLink:        state,
+			Listen:          listenAddr,
+			IdleSeconds:     idleSec,
+			TokenConfigured: tokenConfigured,
+			IsActiveRelay:   isActive,
+			Pending:         pending,
+		})
+	}
+
+	if pathListJSON {
+		data, err := json.MarshalIndent(items, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("\n%-15s | %-10s | %-17s | %-6s | %-9s | %-s\n", "ALIAS", "PATHLINK", "LISTEN", "IDLE", "TOKEN", "ACTIVE")
+	fmt.Println("-------------------------------------------------------------------------")
+	for _, item := range items {
+		activeMarker := "-"
+		if item.IsActiveRelay {
+			activeMarker = "*active"
+		}
+		listen := item.Listen
+		if listen == "" {
+			listen = "-"
+		}
+		idle := "-"
+		if item.IdleSeconds > 0 {
+			idle = fmt.Sprintf("%ds", item.IdleSeconds)
+		}
+		token := "NOT SET"
+		if item.TokenConfigured {
+			token = "SET"
+		}
+		fmt.Printf("%-15s | %-10s | %-17s | %-6s | %-9s | %-s\n",
+			item.Alias, item.PathLink, listen, idle, token, activeMarker)
+	}
+
+	if hasPending {
+		fmt.Println("\n⚠️  Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
+	}
+	return nil
 }
 
 var pathSetCmd = &cobra.Command{
@@ -835,6 +997,8 @@ func init() {
 	noFileComp := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
+	pathListCmd.Flags().BoolVar(&pathListJSON, "json", false, "output in JSON format")
+	pathListCmd.ValidArgsFunction = noFileComp
 	pathStatusCmd.Flags().BoolVar(&pathStatusJSON, "json", false, "output in JSON format")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
 	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "output in JSON format")
@@ -847,6 +1011,6 @@ func init() {
 	pathMTUCmd.Flags().BoolVar(&pathMTUJSON, "json", false, "output in JSON format")
 	pathMTUCmd.ValidArgsFunction = noFileComp
 
-	pathCmd.AddCommand(pathSetCmd, pathUnsetCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
+	pathCmd.AddCommand(pathListCmd, pathSetCmd, pathUnsetCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)
 	rootCmd.AddCommand(pathCmd)
 }

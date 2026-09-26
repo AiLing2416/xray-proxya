@@ -309,3 +309,135 @@ func TestPathSetUnsetPositionalAndFlags(t *testing.T) {
 	}
 }
 
+func TestPathListCmd(t *testing.T) {
+	setupTestConfigDir(t)
+
+	// 1. Gateway with multiple relays and mixed PathLink configurations
+	cfgActive := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "hk-relay",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "hk-relay",
+				Enabled: true,
+				Path: &config.PathConfig{
+					Listen:      pathd.DefaultListenAddress,
+					Token:       "token-hk",
+					IdleSeconds: 20,
+				},
+			},
+			{
+				Alias:   "jp-relay",
+				Enabled: true,
+				Path: &config.PathConfig{
+					Listen:      "127.0.0.1:2829",
+					Token:       "token-jp",
+					IdleSeconds: 30,
+				},
+			},
+			{
+				Alias:   "us-relay",
+				Enabled: true,
+			},
+		},
+	}
+	if err := cfgActive.Save(); err != nil {
+		t.Fatalf("save active config: %v", err)
+	}
+	// Copy to staging
+	if err := cfgActive.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	// 1.1 Test table output
+	_ = pathListCmd.Flags().Set("json", "false")
+	outTable := captureStdout(t, func() {
+		if err := pathListCmd.RunE(pathListCmd, nil); err != nil {
+			t.Fatalf("path list run failed: %v", err)
+		}
+	})
+	for _, expected := range []string{"hk-relay", "*active", "jp-relay", "us-relay", "127.0.0.1:2828", "127.0.0.1:2829", "ENABLED", "DISABLED"} {
+		if !strings.Contains(outTable, expected) {
+			t.Errorf("expected table output to contain %q, got:\n%s", expected, outTable)
+		}
+	}
+	if strings.Contains(outTable, "Pending changes in STAGING") {
+		t.Error("unexpected pending changes warning when staging matches active")
+	}
+
+	// 1.2 Test JSON output
+	_ = pathListCmd.Flags().Set("json", "true")
+	defer pathListCmd.Flags().Set("json", "false")
+
+	outJSON := captureStdout(t, func() {
+		if err := pathListCmd.RunE(pathListCmd, nil); err != nil {
+			t.Fatalf("path list --json failed: %v", err)
+		}
+	})
+	var items []PathListItemJSON
+	if err := json.Unmarshal([]byte(outJSON), &items); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v\nOutput: %s", err, outJSON)
+	}
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+	if items[0].Alias != "hk-relay" || !items[0].IsActiveRelay || !items[0].TokenConfigured || items[0].PathLink != "ENABLED" {
+		t.Errorf("unexpected item 0: %+v", items[0])
+	}
+	if items[1].Alias != "jp-relay" || items[1].IsActiveRelay || !items[1].TokenConfigured || items[1].IdleSeconds != 30 {
+		t.Errorf("unexpected item 1: %+v", items[1])
+	}
+	if items[2].Alias != "us-relay" || items[2].TokenConfigured || items[2].PathLink != "DISABLED" {
+		t.Errorf("unexpected item 2: %+v", items[2])
+	}
+
+	// 1.3 Test Pending state detection when staging is modified
+	cfgStaging, _ := config.LoadConfigEx(true)
+	cfgStaging.CustomOutbounds[2].Path = &config.PathConfig{
+		Listen:      pathd.DefaultListenAddress,
+		Token:       "token-us",
+		IdleSeconds: 20,
+	}
+	if err := cfgStaging.SaveEx(true); err != nil {
+		t.Fatalf("save modified staging: %v", err)
+	}
+
+	_ = pathListCmd.Flags().Set("json", "false")
+	outPending := captureStdout(t, func() {
+		if err := pathListCmd.RunE(pathListCmd, nil); err != nil {
+			t.Fatalf("path list pending run failed: %v", err)
+		}
+	})
+	if !strings.Contains(outPending, "PENDING") {
+		t.Errorf("expected PENDING in table output, got:\n%s", outPending)
+	}
+	if !strings.Contains(outPending, "Pending changes in STAGING") {
+		t.Errorf("expected pending warning banner, got:\n%s", outPending)
+	}
+
+	// 2. Server Role Test
+	cfgServer := &config.UserConfig{
+		Role: config.RoleServer,
+		Path: config.PathConfig{
+			Listen:      pathd.DefaultListenAddress,
+			Token:       "server-token",
+			IdleSeconds: 20,
+		},
+	}
+	if err := cfgServer.SaveEx(true); err != nil {
+		t.Fatalf("save server config: %v", err)
+	}
+	_ = pathListCmd.Flags().Set("json", "false")
+	outServer := captureStdout(t, func() {
+		if err := pathListCmd.RunE(pathListCmd, nil); err != nil {
+			t.Fatalf("path list server failed: %v", err)
+		}
+	})
+	if !strings.Contains(outServer, "Server role uses local Pathd") {
+		t.Errorf("unexpected server output: %s", outServer)
+	}
+}
+
+
