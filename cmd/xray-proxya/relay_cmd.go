@@ -378,10 +378,10 @@ var testOutboundCmd = &cobra.Command{
 	Use:               "test [alias]",
 	Short:             "Verify relay node connectivity and protocol health",
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return
+			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 
 		mode := relaytest.ModeSimple
@@ -401,14 +401,12 @@ var testOutboundCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				fmt.Printf("❌ Relay '%s' not found.\n", target)
-				return
+				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
 			res, err := relaytest.RunTest(ctx, cfg, target, mode)
 			if err != nil {
-				fmt.Printf("❌ Error: %v\n", err)
-				return
+				return fmt.Errorf("❌ Error: %w", err)
 			}
 			if relayTestJSON {
 				out, _ := relaytest.RenderJSON(res)
@@ -417,12 +415,12 @@ var testOutboundCmd = &cobra.Command{
 				fmt.Print(relaytest.RenderTerminal([]*relaytest.TestResult{res}))
 				fmt.Println()
 			}
-			return
+			return nil
 		}
 
 		if len(cfg.CustomOutbounds) == 0 {
 			fmt.Println("No custom relay nodes configured.")
-			return
+			return nil
 		}
 
 		var aliases []string
@@ -432,8 +430,7 @@ var testOutboundCmd = &cobra.Command{
 
 		results, err := relaytest.RunTests(ctx, cfg, aliases, mode, relayTestConcurrency)
 		if err != nil {
-			fmt.Printf("❌ Error: %v\n", err)
-			return
+			return fmt.Errorf("❌ Error: %w", err)
 		}
 
 		if relayTestJSON {
@@ -442,6 +439,7 @@ var testOutboundCmd = &cobra.Command{
 		} else {
 			fmt.Print(relaytest.RenderTerminal(results))
 		}
+		return nil
 	},
 }
 
@@ -449,10 +447,10 @@ var infoOutboundCmd = &cobra.Command{
 	Use:               "info [alias...]",
 	Short:             "Fetch detailed landing profile and media unlock status",
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return
+			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 
 		mode := relayinfo.ModeSimple
@@ -481,14 +479,12 @@ var infoOutboundCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				fmt.Printf("❌ Relay '%s' not found.\n", target)
-				return
+				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
 			res, err := relayinfo.RunInfo(ctx, cfg, target, mode, family)
 			if err != nil {
-				fmt.Printf("❌ Error: %v\n", err)
-				return
+				return fmt.Errorf("❌ Error: %w", err)
 			}
 			if relayInfoJSON {
 				out, _ := relayinfo.RenderJSON(res)
@@ -496,7 +492,7 @@ var infoOutboundCmd = &cobra.Command{
 			} else {
 				fmt.Print(relayinfo.RenderTerminal([]*relayinfo.InfoResult{res}))
 			}
-			return
+			return nil
 		}
 
 		var targets []string
@@ -510,15 +506,14 @@ var infoOutboundCmd = &cobra.Command{
 					}
 				}
 				if !found {
-					fmt.Printf("❌ Relay '%s' not found.\n", a)
-					return
+					return fmt.Errorf("❌ Relay '%s' not found.", a)
 				}
 				targets = append(targets, a)
 			}
 		} else {
 			if len(cfg.CustomOutbounds) == 0 {
 				fmt.Println("No custom relay nodes configured.")
-				return
+				return nil
 			}
 			for _, co := range cfg.CustomOutbounds {
 				targets = append(targets, co.Alias)
@@ -527,8 +522,7 @@ var infoOutboundCmd = &cobra.Command{
 
 		results, err := relayinfo.RunInfos(ctx, cfg, targets, mode, family, relayInfoConcurrency)
 		if err != nil {
-			fmt.Printf("❌ Error: %v\n", err)
-			return
+			return fmt.Errorf("❌ Error: %w", err)
 		}
 
 		if relayInfoJSON {
@@ -537,6 +531,7 @@ var infoOutboundCmd = &cobra.Command{
 		} else {
 			fmt.Print(relayinfo.RenderTerminal(results))
 		}
+		return nil
 	},
 }
 
@@ -588,24 +583,23 @@ var probeLocalOutboundCmd = &cobra.Command{
 	Short:             "Probe a relay's bound local socks/http listeners",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return
+			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 		for _, co := range cfg.CustomOutbounds {
 			if co.Alias != alias {
 				continue
 			}
 			if co.InternalProxyPort <= 0 {
-				fmt.Printf("❌ Relay '%s' has no bound local proxy. Use 'proxy set %s'.\n", alias, alias)
-				return
+				return fmt.Errorf("❌ Relay '%s' has no bound local proxy. Use 'proxy set %s'.", alias, alias)
 			}
 			runProxyProbeTarget(alias, co)
-			return
+			return nil
 		}
-		fmt.Printf("❌ Relay '%s' not found.\n", alias)
+		return fmt.Errorf("❌ Relay '%s' not found.", alias)
 	},
 }
 
@@ -630,11 +624,11 @@ without changing the running service.
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	},
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		alias, domain := args[0], args[1]
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return
+			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 
 		found := false
@@ -645,8 +639,7 @@ without changing the running service.
 			}
 		}
 		if !found {
-			fmt.Printf("❌ Relay '%s' not found.\n", alias)
-			return
+			return fmt.Errorf("❌ Relay '%s' not found.", alias)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -654,8 +647,7 @@ without changing the running service.
 
 		session, err := relaytest.StartTestSession(ctx, cfg, alias, relaytest.WithDNS())
 		if err != nil {
-			fmt.Printf("❌ Failed to start test session: %v\n", err)
-			return
+			return fmt.Errorf("❌ Failed to start test session: %w", err)
 		}
 		defer session.Close()
 
@@ -677,6 +669,7 @@ without changing the running service.
 			}
 			fmt.Printf("%s  %s  %s  (%dms)\n", alias, queryType.label, strings.Join(answers, ", "), duration.Milliseconds())
 		}
+		return nil
 	},
 }
 
@@ -684,10 +677,10 @@ var speedOutboundCmd = &cobra.Command{
 	Use:               "speed [alias...]",
 	Short:             "Measure relay throughput and latency under load across providers with queue execution",
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return
+			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 
 		sizeLimit := int64(25 * 1024 * 1024)
@@ -695,8 +688,7 @@ var speedOutboundCmd = &cobra.Command{
 			var err error
 			sizeLimit, err = relayspeed.ParseSize(relaySpeedSize)
 			if err != nil {
-				fmt.Printf("❌ Invalid size: %v\n", err)
-				return
+				return fmt.Errorf("❌ Invalid size: %w", err)
 			}
 		}
 
@@ -738,8 +730,7 @@ var speedOutboundCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				fmt.Printf("❌ Relay '%s' not found.\n", target)
-				return
+				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
 			if !relaySpeedJSON {
@@ -752,8 +743,7 @@ var speedOutboundCmd = &cobra.Command{
 
 			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, nil)
 			if err != nil {
-				fmt.Printf("❌ Error: %v\n", err)
-				return
+				return fmt.Errorf("❌ Error: %w", err)
 			}
 
 			if relaySpeedJSON {
@@ -762,7 +752,7 @@ var speedOutboundCmd = &cobra.Command{
 			} else {
 				fmt.Print(relayspeed.RenderSingleCard(res))
 			}
-			return
+			return nil
 		}
 
 		// Multiple nodes / All nodes (Queue execution)
@@ -777,15 +767,14 @@ var speedOutboundCmd = &cobra.Command{
 					}
 				}
 				if !found {
-					fmt.Printf("❌ Relay '%s' not found.\n", a)
-					return
+					return fmt.Errorf("❌ Relay '%s' not found.", a)
 				}
 				targets = append(targets, a)
 			}
 		} else {
 			if len(cfg.CustomOutbounds) == 0 {
 				fmt.Println("No custom relay nodes configured.")
-				return
+				return nil
 			}
 			for _, co := range cfg.CustomOutbounds {
 				targets = append(targets, co.Alias)
@@ -802,8 +791,7 @@ var speedOutboundCmd = &cobra.Command{
 
 		results, err := relayspeed.RunSpeedQueue(ctx, cfg, targets, opts, nil)
 		if err != nil {
-			fmt.Printf("❌ Error: %v\n", err)
-			return
+			return fmt.Errorf("❌ Error: %w", err)
 		}
 
 		if relaySpeedJSON {
@@ -812,6 +800,7 @@ var speedOutboundCmd = &cobra.Command{
 		} else {
 			fmt.Print(relayspeed.RenderTable(results))
 		}
+		return nil
 	},
 }
 

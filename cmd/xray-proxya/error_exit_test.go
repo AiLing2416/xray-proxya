@@ -20,6 +20,9 @@ func TestErrorExitCodes(t *testing.T) {
 	if err := proxyRunCmd.RunE(proxyRunCmd, []string{"non-existent"}); err == nil {
 		t.Fatalf("expected proxyRunCmd to return error when uninitialized")
 	}
+	if err := presetsListCmd.RunE(presetsListCmd, nil); err == nil {
+		t.Fatalf("expected presetsListCmd to return error when uninitialized")
+	}
 
 	// Initialize empty staging config
 	cfg := &config.UserConfig{
@@ -55,6 +58,21 @@ func TestErrorExitCodes(t *testing.T) {
 	}
 	if err := addOutboundCmd.RunE(addOutboundCmd, []string{"alias", "invalid-link"}); err == nil {
 		t.Fatalf("expected addOutboundCmd to return error for invalid link")
+	}
+	if err := testOutboundCmd.RunE(testOutboundCmd, []string{"non-existent"}); err == nil {
+		t.Fatalf("expected testOutboundCmd to return error for non-existent relay")
+	}
+	if err := infoOutboundCmd.RunE(infoOutboundCmd, []string{"non-existent"}); err == nil {
+		t.Fatalf("expected infoOutboundCmd to return error for non-existent relay")
+	}
+	if err := probeLocalOutboundCmd.RunE(probeLocalOutboundCmd, []string{"non-existent"}); err == nil {
+		t.Fatalf("expected probeLocalOutboundCmd to return error for non-existent relay")
+	}
+	if err := speedOutboundCmd.RunE(speedOutboundCmd, []string{"non-existent"}); err == nil {
+		t.Fatalf("expected speedOutboundCmd to return error for non-existent relay")
+	}
+	if err := resolveOutboundCmd.RunE(resolveOutboundCmd, []string{"non-existent", "example.com"}); err == nil {
+		t.Fatalf("expected resolveOutboundCmd to return error for non-existent relay")
 	}
 	if err := setDNSRelayCmd.RunE(setDNSRelayCmd, []string{"non-existent"}); err == nil {
 		t.Fatalf("expected setDNSRelayCmd to return error when no flags or non-existent")

@@ -72,10 +72,10 @@ func validateManualTarget(sni, target string) error {
 var presetsListCmd = &cobra.Command{
 	Use:   "list",
 	Short: "Show all available preset slots and their status",
-	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfigEx(true)
-		if cfg == nil {
-			return
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil || cfg == nil {
+			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 
 		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-26s | %-24s | %-12s | %-s\n",
@@ -115,6 +115,7 @@ var presetsListCmd = &cobra.Command{
 			fmt.Printf("\n🎨 Web Camouflage Skin Port: %d (127.0.0.1:%d)\n", cfg.SkinPort, cfg.SkinPort)
 		}
 		fmt.Println()
+		return nil
 	},
 }
 
