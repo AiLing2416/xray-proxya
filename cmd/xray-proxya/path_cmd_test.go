@@ -536,5 +536,75 @@ func TestPathStatusTargetRelay(t *testing.T) {
 	}
 }
 
+func TestPathPingFlagsValidation(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfgGateway := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "hk-relay",
+			State:      "proxy",
+			LocalEnabled: true,
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "hk-relay",
+				Enabled: true,
+				Path: &config.PathConfig{
+					Listen: pathd.DefaultListenAddress,
+					Token:  "token-hk",
+				},
+			},
+		},
+	}
+	if err := cfgGateway.Save(); err != nil {
+		t.Fatalf("save gateway config: %v", err)
+	}
+
+	resetPingFlags := func() {
+		_ = pathPingCmd.Flags().Set("count", "1")
+		_ = pathPingCmd.Flags().Set("size", "8")
+		_ = pathPingCmd.Flags().Set("ttl", "64")
+		_ = pathPingCmd.Flags().Set("timeout", "2s")
+		_ = pathPingCmd.Flags().Set("interval", "1s")
+	}
+
+	// 1. Invalid count
+	resetPingFlags()
+	_ = pathPingCmd.Flags().Set("count", "0")
+	if err := pathPingCmd.RunE(pathPingCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--count") {
+		t.Fatalf("expected --count error, got: %v", err)
+	}
+
+	// 2. Invalid size
+	resetPingFlags()
+	_ = pathPingCmd.Flags().Set("size", "4")
+	if err := pathPingCmd.RunE(pathPingCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--size") {
+		t.Fatalf("expected --size error for small payload, got: %v", err)
+	}
+
+	resetPingFlags()
+	_ = pathPingCmd.Flags().Set("size", "2000")
+	if err := pathPingCmd.RunE(pathPingCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--size") {
+		t.Fatalf("expected --size error for large payload, got: %v", err)
+	}
+
+	// 3. Invalid TTL
+	resetPingFlags()
+	_ = pathPingCmd.Flags().Set("ttl", "0")
+	if err := pathPingCmd.RunE(pathPingCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--ttl") {
+		t.Fatalf("expected --ttl error, got: %v", err)
+	}
+
+	// 4. Invalid timeout
+	resetPingFlags()
+	_ = pathPingCmd.Flags().Set("timeout", "10ms")
+	if err := pathPingCmd.RunE(pathPingCmd, []string{"1.1.1.1"}); err == nil || !strings.Contains(err.Error(), "--timeout") {
+		t.Fatalf("expected --timeout error, got: %v", err)
+	}
+	resetPingFlags()
+}
+
+
 
 

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -22,20 +23,24 @@ import (
 const pathdUnit = "xray-proxya-pathd"
 
 var (
-	pathListen     string
-	pathToken      string
-	pathIdle       int
-	pathRelay      string
-	pathGenerate   bool
-	pathPingTTL    int
-	pathTraceHops  int
-	pathMTUMin     int
-	pathMTUMax     int
-	pathListJSON   bool
-	pathStatusJSON bool
-	pathPingJSON   bool
-	pathTraceJSON  bool
-	pathMTUJSON    bool
+	pathListen       string
+	pathToken        string
+	pathIdle         int
+	pathRelay        string
+	pathGenerate     bool
+	pathPingTTL      int
+	pathPingCount    int
+	pathPingInterval time.Duration
+	pathPingSize     int
+	pathPingTimeout  time.Duration
+	pathTraceHops    int
+	pathMTUMin       int
+	pathMTUMax       int
+	pathListJSON     bool
+	pathStatusJSON   bool
+	pathPingJSON     bool
+	pathTraceJSON    bool
+	pathMTUJSON      bool
 )
 
 type PathListItemJSON struct {
@@ -66,14 +71,35 @@ type PathStatusJSON struct {
 	LastError       string `json:"last_error,omitempty"`
 }
 
-type PathPingJSON struct {
-	TargetIP   string `json:"target_ip"`
-	Relay      string `json:"relay"`
+type PathPingResultJSON struct {
+	Seq        int    `json:"seq"`
 	Success    bool   `json:"success"`
 	Echo       bool   `json:"echo"`
 	RTTMs      int64  `json:"rtt_ms"`
 	DurationMs int64  `json:"duration_ms"`
 	Error      string `json:"error,omitempty"`
+}
+
+type PathPingSummaryJSON struct {
+	Transmitted int     `json:"transmitted"`
+	Received    int     `json:"received"`
+	LossPercent float64 `json:"loss_percent"`
+	MinRTTMs    float64 `json:"min_rtt_ms,omitempty"`
+	AvgRTTMs    float64 `json:"avg_rtt_ms,omitempty"`
+	MaxRTTMs    float64 `json:"max_rtt_ms,omitempty"`
+	MdevRTTMs   float64 `json:"mdev_rtt_ms,omitempty"`
+}
+
+type PathPingJSON struct {
+	TargetIP   string               `json:"target_ip"`
+	Relay      string               `json:"relay"`
+	Success    bool                 `json:"success"`
+	Echo       bool                 `json:"echo"`
+	RTTMs      int64                `json:"rtt_ms"`
+	DurationMs int64                `json:"duration_ms"`
+	Error      string               `json:"error,omitempty"`
+	Probes     []PathPingResultJSON `json:"probes,omitempty"`
+	Summary    *PathPingSummaryJSON `json:"summary,omitempty"`
 }
 
 type PathTraceHopJSON struct {
@@ -738,76 +764,206 @@ func selectedGatewayPath(cfg *config.UserConfig) (*config.PathConfig, string, er
 	return nil, "", fmt.Errorf("selected relay %q does not exist", cfg.Gateway.RelayAlias)
 }
 
-var pathPingCmd = &cobra.Command{Use: "ping <hostname-or-ip>", Short: "Send one real ICMP echo through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
-	if cfg.Role == config.RoleServer {
-		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
-	}
-	if os.Geteuid() != 0 {
-		return fmt.Errorf("❌ path ping requires root on the Gateway.")
-	}
-	endpoint, relay, err := selectedGatewayPath(cfg)
-	if err != nil {
-		return fmt.Errorf("❌ path ping requires Gateway PathLink credentials: %w", err)
-	}
-	ip, err := resolvePublicTarget(args[0])
-	if err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
-	socks, err := activePathdSOCKSAddress()
-	if err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
-	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
-	defer client.Close()
-	started := time.Now()
-	probe, probeErr := client.ProbeTTL(ip, pathPingTTL)
-	duration := time.Since(started)
+var pathPingCmd = &cobra.Command{
+	Use:   "ping <hostname-or-ip>",
+	Short: "Send ICMP echo requests through the selected relay",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		if cfg.Role == config.RoleServer {
+			return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+		}
+		if pathPingCount < 1 {
+			return fmt.Errorf("❌ --count must be at least 1")
+		}
+		if pathPingTTL < 1 || pathPingTTL > 255 {
+			return fmt.Errorf("❌ --ttl must be between 1 and 255")
+		}
+		if pathPingSize < 8 || pathPingSize > 1024 {
+			return fmt.Errorf("❌ --size must be between 8 and 1024 bytes")
+		}
+		if pathPingTimeout < 100*time.Millisecond || pathPingTimeout > 15*time.Second {
+			return fmt.Errorf("❌ --timeout must be between 100ms and 15s")
+		}
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("❌ path ping requires root on the Gateway.")
+		}
 
-	if pathPingJSON {
-		out := PathPingJSON{
-			TargetIP:   ip.String(),
-			Relay:      relay,
-			DurationMs: duration.Milliseconds(),
+		endpoint, relay, err := selectedGatewayPath(cfg)
+		if err != nil {
+			return fmt.Errorf("❌ path ping requires Gateway PathLink credentials: %w", err)
 		}
-		if probeErr != nil {
-			out.Success = false
-			out.Error = probeErr.Error()
-			data, _ := json.MarshalIndent(out, "", "  ")
-			fmt.Println(string(data))
-			return fmt.Errorf("probe failed: %w", probeErr)
+		ip, err := resolvePublicTarget(args[0])
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
-		out.Echo = probe.Echo
-		out.Success = probe.Echo
-		out.RTTMs = probe.RTT.Milliseconds()
-		if !probe.Echo {
-			if probe.Error() != nil {
-				out.Error = probe.Error().Error()
+		socks, err := activePathdSOCKSAddress()
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
+		defer client.Close()
+
+		timeoutMS := int(pathPingTimeout.Milliseconds())
+		probeOpts := pathd.ProbeOptions{
+			TTL:         pathPingTTL,
+			PayloadSize: pathPingSize,
+			TimeoutMS:   timeoutMS,
+		}
+
+		if pathPingCount > 1 && !pathPingJSON {
+			fmt.Printf("PING %s (%s) via relay %s: %d data bytes\n", args[0], ip, relay, pathPingSize)
+		}
+
+		var (
+			probes    []PathPingResultJSON
+			rttFloats []float64
+			received  int
+			lastProbe pathd.ProbeResult
+			lastErr   error
+			lastDur   time.Duration
+		)
+
+		for seq := 1; seq <= pathPingCount; seq++ {
+			if seq > 1 && pathPingInterval > 0 {
+				time.Sleep(pathPingInterval)
+			}
+			started := time.Now()
+			probe, probeErr := client.ProbeWithOptions(ip, probeOpts)
+			duration := time.Since(started)
+			lastProbe = probe
+			lastErr = probeErr
+			lastDur = duration
+
+			res := PathPingResultJSON{
+				Seq:        seq,
+				DurationMs: duration.Milliseconds(),
+			}
+
+			if probeErr != nil {
+				res.Success = false
+				res.Error = probeErr.Error()
+				if pathPingCount > 1 && !pathPingJSON {
+					fmt.Printf("Request timeout for icmp_seq %d: %v\n", seq, probeErr)
+				}
+			} else if !probe.Echo {
+				res.Success = false
+				if probe.Error() != nil {
+					res.Error = probe.Error().Error()
+				} else {
+					res.Error = "no echo reply received"
+				}
+				if pathPingCount > 1 && !pathPingJSON {
+					fmt.Printf("From %s icmp_seq=%d %s\n", ip, seq, res.Error)
+				}
 			} else {
-				out.Error = "no echo reply received"
+				res.Success = true
+				res.Echo = true
+				res.RTTMs = probe.RTT.Milliseconds()
+				received++
+				rttMs := float64(probe.RTT.Nanoseconds()) / 1e6
+				rttFloats = append(rttFloats, rttMs)
+				if pathPingCount > 1 && !pathPingJSON {
+					fmt.Printf("%d bytes from %s: icmp_seq=%d time=%.1f ms (PathLink: %.1f ms)\n",
+						pathPingSize, ip, seq, rttMs, float64(duration.Nanoseconds())/1e6)
+				}
+			}
+			probes = append(probes, res)
+		}
+
+		lossPercent := float64(pathPingCount-received) / float64(pathPingCount) * 100.0
+		var summary *PathPingSummaryJSON
+		if pathPingCount > 1 || len(rttFloats) > 0 {
+			summary = &PathPingSummaryJSON{
+				Transmitted: pathPingCount,
+				Received:    received,
+				LossPercent: lossPercent,
+			}
+			if len(rttFloats) > 0 {
+				minRTT := rttFloats[0]
+				maxRTT := rttFloats[0]
+				sum := 0.0
+				for _, r := range rttFloats {
+					if r < minRTT {
+						minRTT = r
+					}
+					if r > maxRTT {
+						maxRTT = r
+					}
+					sum += r
+				}
+				avgRTT := sum / float64(len(rttFloats))
+				var sumDiff float64
+				for _, r := range rttFloats {
+					sumDiff += math.Abs(r - avgRTT)
+				}
+				mdevRTT := sumDiff / float64(len(rttFloats))
+				summary.MinRTTMs = math.Round(minRTT*100) / 100
+				summary.AvgRTTMs = math.Round(avgRTT*100) / 100
+				summary.MaxRTTMs = math.Round(maxRTT*100) / 100
+				summary.MdevRTTMs = math.Round(mdevRTT*100) / 100
+			}
+		}
+
+		if pathPingJSON {
+			out := PathPingJSON{
+				TargetIP:   ip.String(),
+				Relay:      relay,
+				DurationMs: lastDur.Milliseconds(),
+			}
+			if pathPingCount == 1 {
+				out.Success = probes[0].Success
+				out.Echo = probes[0].Echo
+				out.RTTMs = probes[0].RTTMs
+				out.Error = probes[0].Error
+			} else {
+				out.Success = received > 0
+				out.Echo = received > 0
+				out.Probes = probes
+				out.Summary = summary
 			}
 			data, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(data))
-			return fmt.Errorf("probe did not receive echo reply: %s", out.Error)
+			if pathPingCount == 1 && !out.Success {
+				if lastErr != nil {
+					return fmt.Errorf("probe failed: %w", lastErr)
+				}
+				return fmt.Errorf("probe did not receive echo reply: %s", out.Error)
+			}
+			if pathPingCount > 1 && received == 0 {
+				return fmt.Errorf("all %d probes failed (100%% packet loss)", pathPingCount)
+			}
+			return nil
 		}
-		data, _ := json.MarshalIndent(out, "", "  ")
-		fmt.Println(string(data))
-		return nil
-	}
 
-	if probeErr != nil {
-		return fmt.Errorf("❌ %s through %s: %w", ip, relay, probeErr)
-	}
-	if !probe.Echo {
-		fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, duration.Round(time.Millisecond), probe.Error())
-		return fmt.Errorf("probe did not receive echo reply: %v", probe.Error())
-	}
-	fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, duration.Round(time.Millisecond), probe.RTT.Round(time.Millisecond))
-	return nil
-}}
+		// Text mode
+		if pathPingCount == 1 {
+			if lastErr != nil {
+				return fmt.Errorf("❌ %s through %s: %w", ip, relay, lastErr)
+			}
+			if !lastProbe.Echo {
+				fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, lastDur.Round(time.Millisecond), lastProbe.Error())
+				return fmt.Errorf("probe did not receive echo reply: %v", lastProbe.Error())
+			}
+			fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, lastDur.Round(time.Millisecond), lastProbe.RTT.Round(time.Millisecond))
+			return nil
+		}
+
+		// Count > 1: Print summary statistics
+		fmt.Printf("\n--- %s ping statistics through %s ---\n", ip, relay)
+		fmt.Printf("%d packets transmitted, %d received, %.1f%% packet loss\n", pathPingCount, received, lossPercent)
+		if len(rttFloats) > 0 && summary != nil {
+			fmt.Printf("rtt min/avg/max/mdev = %.3f/%.3f/%.3f/%.3f ms\n", summary.MinRTTMs, summary.AvgRTTMs, summary.MaxRTTMs, summary.MdevRTTMs)
+		}
+		if received == 0 {
+			return fmt.Errorf("all %d probes failed (100%% packet loss)", pathPingCount)
+		}
+		return nil
+	},
+}
 
 var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace remote ICMP hops through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
@@ -1137,6 +1293,10 @@ func init() {
 	})
 	pathStatusCmd.Flags().BoolVar(&pathStatusJSON, "json", false, "output in JSON format")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
+	pathPingCmd.Flags().IntVarP(&pathPingCount, "count", "c", 1, "number of ICMP echo requests to send")
+	pathPingCmd.Flags().DurationVarP(&pathPingInterval, "interval", "i", time.Second, "wait interval between packets")
+	pathPingCmd.Flags().IntVarP(&pathPingSize, "size", "s", 8, "ICMP payload size in bytes (8-1024)")
+	pathPingCmd.Flags().DurationVarP(&pathPingTimeout, "timeout", "W", 2*time.Second, "timeout per ICMP probe")
 	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "output in JSON format")
 	pathPingCmd.ValidArgsFunction = noFileComp
 	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")

@@ -89,10 +89,14 @@ func (c *IdleClient) probe(ip net.IP, options ProbeOptions, relay bool, echoData
 	c.mu.Unlock()
 	var result ProbeResult
 	var err error
+	timeoutMS := options.TimeoutMS
+	if timeoutMS <= 0 {
+		timeoutMS = 8000
+	}
 	if relay {
-		result, err = client.RelayEcho(ip.String(), 8000, options.TTL, echoData, options.DontFragment)
+		result, err = client.RelayEcho(ip.String(), timeoutMS, options.TTL, echoData, options.DontFragment)
 	} else {
-		result, err = client.ProbeWithOptions(ip.String(), 8000, options)
+		result, err = client.ProbeWithOptions(ip.String(), timeoutMS, options)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

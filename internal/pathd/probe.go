@@ -22,6 +22,7 @@ type ProbeOptions struct {
 	TTL          int
 	PayloadSize  int
 	DontFragment bool
+	TimeoutMS    int
 }
 
 func (r ProbeResult) IsPacketTooBig(ip net.IP) bool {
