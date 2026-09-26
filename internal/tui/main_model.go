@@ -1155,15 +1155,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 
-			case " ":
-				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
-					m.staging.CustomOutbounds[m.cursor].Enabled = !m.staging.CustomOutbounds[m.cursor].Enabled
-					m.staging.SaveEx(true)
-					m.overrideMsg = ""
-					return m, m.setNotice(fmt.Sprintf("relay %s toggled", m.staging.CustomOutbounds[m.cursor].Alias))
-				}
-				return m, nil
-
 			case "t", "T":
 				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds) {
 					alias := m.staging.CustomOutbounds[m.cursor].Alias
@@ -2376,7 +2367,7 @@ func (m Model) renderFooter() string {
 		case tabPresets:
 			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy")
 		case tabRelays:
-			badges = append(badges, "[Space] Toggle", "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy")
+			badges = append(badges, "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy")
 		case tabGuests:
 			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy")
 		case tabGateway:

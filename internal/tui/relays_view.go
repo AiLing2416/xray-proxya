@@ -13,14 +13,14 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 		return "No configuration found."
 	}
 
-	headers := []string{"  ", "ALIAS", "STATE", "PRIVATE", "PROTO", "PORT", "TCP", "UDP", "DNS", "IPv4", "IPv6"}
+	headers := []string{"  ", "ALIAS", "PRIVATE", "PROTO", "PORT", "TCP", "UDP", "DNS", "IPv4", "IPv6"}
 	var rows [][]string
 	for _, co := range staging.CustomOutbounds {
 		indicator := "   "
 		isStaging := true
 		if active != nil {
 			for _, aco := range active.CustomOutbounds {
-				if aco.Alias == co.Alias && aco.UserUUID == co.UserUUID && aco.Enabled == co.Enabled && aco.AllowPrivateTargets == co.AllowPrivateTargets {
+				if aco.Alias == co.Alias && aco.UserUUID == co.UserUUID && aco.AllowPrivateTargets == co.AllowPrivateTargets {
 					isStaging = false
 					break
 				}
@@ -32,10 +32,6 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 
 		spec := sharelink.FromOutbound(co.Config)
 
-		state := "OFF"
-		if co.Enabled {
-			state = "ON"
-		}
 		priv := "BLOCKED"
 		if co.AllowPrivateTargets {
 			priv = "ALLOWED"
@@ -48,7 +44,6 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 		row := []string{
 			indicator,
 			co.Alias,
-			state,
 			priv,
 			spec.DisplayProtocol(),
 			spec.DisplayPort(),
@@ -65,7 +60,7 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 		return lipgloss.NewStyle().Padding(2, 5).Render("No custom relays. Press [N] to add.")
 	}
 
-	widths := fitTableWidths(headers, rows, []int{3, 8, 3, 7, 5, 4, 6, 4, 4, 6, 6}, width)
+	widths := fitTableWidths(headers, rows, []int{3, 8, 7, 5, 4, 6, 4, 4, 6, 6}, width)
 
 	var b strings.Builder
 	b.WriteString(renderRow(headers, widths, true))
