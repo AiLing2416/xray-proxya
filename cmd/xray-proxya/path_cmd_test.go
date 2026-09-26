@@ -440,4 +440,101 @@ func TestPathListCmd(t *testing.T) {
 	}
 }
 
+func TestPathStatusTargetRelay(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfgGateway := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "hk-relay",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "hk-relay",
+				Enabled: true,
+				Path: &config.PathConfig{
+					Listen:      pathd.DefaultListenAddress,
+					Token:       "token-hk",
+					IdleSeconds: 20,
+				},
+			},
+			{
+				Alias:   "jp-relay",
+				Enabled: true,
+				Path: &config.PathConfig{
+					Listen:      "127.0.0.1:2829",
+					Token:       "token-jp",
+					IdleSeconds: 35,
+				},
+			},
+			{
+				Alias:   "unconfigured-relay",
+				Enabled: true,
+			},
+		},
+	}
+	if err := cfgGateway.Save(); err != nil {
+		t.Fatalf("save gateway config: %v", err)
+	}
+
+	// 1. Inspect specific standby relay via positional arg
+	_ = pathStatusCmd.Flags().Set("relay", "")
+	_ = pathStatusCmd.Flags().Set("json", "false")
+	outPositional := captureStdout(t, func() {
+		if err := pathStatusCmd.RunE(pathStatusCmd, []string{"jp-relay"}); err != nil {
+			t.Fatalf("path status jp-relay failed: %v", err)
+		}
+	})
+	for _, expected := range []string{"Target Relay: jp-relay (standby)", "127.0.0.1:2829", "idle 35s", "Token: configured"} {
+		if !strings.Contains(outPositional, expected) {
+			t.Errorf("expected output to contain %q, got:\n%s", expected, outPositional)
+		}
+	}
+
+	// 2. Inspect specific standby relay via --json
+	_ = pathStatusCmd.Flags().Set("json", "true")
+	defer pathStatusCmd.Flags().Set("json", "false")
+
+	outJSON := captureStdout(t, func() {
+		if err := pathStatusCmd.RunE(pathStatusCmd, []string{"jp-relay"}); err != nil {
+			t.Fatalf("path status jp-relay json failed: %v", err)
+		}
+	})
+	var parsed PathStatusJSON
+	if err := json.Unmarshal([]byte(outJSON), &parsed); err != nil {
+		t.Fatalf("unmarshal json: %v\nOutput: %s", err, outJSON)
+	}
+	if parsed.Relay != "jp-relay" || parsed.Listen != "127.0.0.1:2829" || parsed.IdleSeconds != 35 || !parsed.TokenConfigured || parsed.IsActiveRelay {
+		t.Errorf("unexpected parsed status json: %+v", parsed)
+	}
+
+	// 3. Inspect unconfigured relay
+	_ = pathStatusCmd.Flags().Set("json", "false")
+	outUnconf := captureStdout(t, func() {
+		if err := pathStatusCmd.RunE(pathStatusCmd, []string{"unconfigured-relay"}); err != nil {
+			t.Fatalf("path status unconfigured failed: %v", err)
+		}
+	})
+	if !strings.Contains(outUnconf, "PathLink Status: not configured") {
+		t.Errorf("expected not configured message, got:\n%s", outUnconf)
+	}
+
+	// 4. Non-existent relay returns error
+	if err := pathStatusCmd.RunE(pathStatusCmd, []string{"no-such-relay"}); err == nil {
+		t.Fatal("expected error for non-existent relay")
+	}
+
+	// 5. Server role rejects relay argument
+	cfgServer := &config.UserConfig{
+		Role: config.RoleServer,
+	}
+	if err := cfgServer.Save(); err != nil {
+		t.Fatalf("save server config: %v", err)
+	}
+	if err := pathStatusCmd.RunE(pathStatusCmd, []string{"hk-relay"}); err == nil {
+		t.Fatal("expected server role to reject relay argument on status")
+	}
+}
+
+
 

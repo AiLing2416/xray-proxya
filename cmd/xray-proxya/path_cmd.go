@@ -49,16 +49,21 @@ type PathListItemJSON struct {
 }
 
 type PathStatusJSON struct {
-	Role           string `json:"role"`
-	ServiceState   string `json:"service_state"`
-	ServiceEnabled string `json:"service_enabled"`
-	Listen         string `json:"listen,omitempty"`
-	Relay          string `json:"relay,omitempty"`
-	Connected      bool   `json:"connected"`
-	InFlight       int    `json:"in_flight"`
-	LastActivity   string `json:"last_activity,omitempty"`
-	LastRTTMs      int64  `json:"last_rtt_ms,omitempty"`
-	LastError      string `json:"last_error,omitempty"`
+	Role            string `json:"role"`
+	ServiceState    string `json:"service_state,omitempty"`
+	ServiceEnabled  string `json:"service_enabled,omitempty"`
+	Listen          string `json:"listen,omitempty"`
+	Relay           string `json:"relay,omitempty"`
+	TunInterface    string `json:"tun_interface,omitempty"`
+	SocksInbound    string `json:"socks_inbound,omitempty"`
+	IsActiveRelay   bool   `json:"is_active_relay,omitempty"`
+	TokenConfigured bool   `json:"token_configured,omitempty"`
+	IdleSeconds     int    `json:"idle_seconds,omitempty"`
+	Connected       bool   `json:"connected"`
+	InFlight        int    `json:"in_flight"`
+	LastActivity    string `json:"last_activity,omitempty"`
+	LastRTTMs       int64  `json:"last_rtt_ms,omitempty"`
+	LastError       string `json:"last_error,omitempty"`
 }
 
 type PathPingJSON struct {
@@ -191,7 +196,7 @@ func resolvePathRelay(cmd *cobra.Command, args []string) (string, error) {
 	relay := pathRelay
 	if len(args) > 0 {
 		pos := strings.TrimSpace(args[0])
-		if cmd.Flags().Changed("relay") && pathRelay != pos {
+		if cmd.Flags().Changed("relay") && pathRelay != "" && pathRelay != pos {
 			return "", fmt.Errorf("conflicting relay specified: '%s' and --relay '%s'", pos, pathRelay)
 		}
 		relay = pos
@@ -462,33 +467,198 @@ var pathUnsetCmd = &cobra.Command{
 		return fmt.Errorf("❌ Unsupported role %q.", cfg.Role)
 	},
 }
-var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service state", RunE: func(cmd *cobra.Command, args []string) error {
-	cfg, err := config.LoadConfig()
-	if err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
-	serviceState := "unknown"
-	serviceEnabled := "unknown"
-	if os.Geteuid() == 0 {
-		if service.IsUnitActive(service.PathdUnit) {
-			serviceState = "active"
-		} else {
-			serviceState = "inactive"
+var pathStatusCmd = &cobra.Command{
+	Use:               "status [relay]",
+	Short:             "Show pathd service state or relay PathLink parameters",
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
-		if service.IsUnitEnabled(service.PathdUnit) {
-			serviceEnabled = "enabled"
-		} else {
-			serviceEnabled = "disabled"
+		targetRelay, err := resolvePathRelay(cmd, args)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
-	}
+		if cfg.Role == config.RoleServer {
+			if targetRelay != "" {
+				return fmt.Errorf("❌ Server Pathd is local; --relay is only valid on a Gateway")
+			}
+			serviceState := "unknown"
+			serviceEnabled := "unknown"
+			if os.Geteuid() == 0 {
+				if service.IsUnitActive(service.PathdUnit) {
+					serviceState = "active"
+				} else {
+					serviceState = "inactive"
+				}
+				if service.IsUnitEnabled(service.PathdUnit) {
+					serviceEnabled = "enabled"
+				} else {
+					serviceEnabled = "disabled"
+				}
+			}
+			var statusJSON PathStatusJSON
+			statusJSON.Role = string(cfg.Role)
+			statusJSON.ServiceState = serviceState
+			statusJSON.ServiceEnabled = serviceEnabled
+			statusJSON.Listen = cfg.Path.Listen
+			statusJSON.IdleSeconds = cfg.Path.IdleSeconds
+			statusJSON.TokenConfigured = cfg.Path.Token != ""
 
-	var statusJSON PathStatusJSON
-	statusJSON.Role = string(cfg.Role)
-	statusJSON.ServiceState = serviceState
-	statusJSON.ServiceEnabled = serviceEnabled
+			if pathStatusJSON {
+				data, err := json.MarshalIndent(statusJSON, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(data))
+				return nil
+			}
+			fmt.Printf("Role: %s\n", cfg.Role)
+			if cfg.Path.Token == "" {
+				fmt.Printf("Agent: %s (%s); configuration: missing\n", serviceState, serviceEnabled)
+				return nil
+			}
+			fmt.Printf("Agent: %s (%s), %s\n", serviceState, serviceEnabled, cfg.Path.Listen)
+			return nil
+		}
+		if cfg.Role != config.RoleGateway {
+			var statusJSON PathStatusJSON
+			statusJSON.Role = string(cfg.Role)
+			if pathStatusJSON {
+				data, _ := json.MarshalIndent(statusJSON, "", "  ")
+				fmt.Println(string(data))
+				return nil
+			}
+			fmt.Printf("Role: %s\n", cfg.Role)
+			return nil
+		}
 
-	if cfg.Role == config.RoleServer {
-		statusJSON.Listen = cfg.Path.Listen
+		// Gateway role: specific relay requested
+		if targetRelay != "" {
+			var targetCO *config.CustomOutbound
+			for i := range cfg.CustomOutbounds {
+				if cfg.CustomOutbounds[i].Alias == targetRelay {
+					targetCO = &cfg.CustomOutbounds[i]
+					break
+				}
+			}
+			if targetCO == nil {
+				return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
+			}
+
+			isActive := (targetCO.Alias == cfg.Gateway.RelayAlias)
+			tokenSet := targetCO.Path != nil && targetCO.Path.Token != ""
+			listenAddr := pathd.DefaultListenAddress
+			idleSec := 20
+			if targetCO.Path != nil {
+				if targetCO.Path.Listen != "" {
+					listenAddr = targetCO.Path.Listen
+				}
+				if targetCO.Path.IdleSeconds > 0 {
+					idleSec = targetCO.Path.IdleSeconds
+				}
+			}
+
+			if pathStatusJSON {
+				out := PathStatusJSON{
+					Role:            string(cfg.Role),
+					Relay:           targetCO.Alias,
+					Listen:          listenAddr,
+					IdleSeconds:     idleSec,
+					TokenConfigured: tokenSet,
+					IsActiveRelay:   isActive,
+				}
+				if isActive {
+					state, runtimeErr := readPathRuntime()
+					if runtimeErr == nil {
+						out.Connected = state.Connected
+						out.InFlight = state.InFlight
+						if !state.LastActivity.IsZero() {
+							out.LastActivity = time.Since(state.LastActivity).Round(time.Second).String()
+						}
+						out.LastRTTMs = state.LastRTTMs
+						out.LastError = state.LastError
+					}
+				}
+				data, _ := json.MarshalIndent(out, "", "  ")
+				fmt.Println(string(data))
+				return nil
+			}
+
+			fmt.Printf("Role: %s\n", cfg.Role)
+			standby := "standby"
+			if isActive {
+				standby = "active"
+			}
+			fmt.Printf("Target Relay: %s (%s)\n", targetCO.Alias, standby)
+			if !tokenSet {
+				fmt.Println("PathLink Status: not configured")
+				fmt.Printf("ℹ️  Configure PathLink credentials with: xray-proxya path set %s --token <token>\n", targetCO.Alias)
+				return nil
+			}
+			fmt.Printf("PathLink Status: configured (%s, idle %ds)\n", listenAddr, idleSec)
+			fmt.Println("Token: configured [SET]")
+			if !isActive {
+				fmt.Printf("\nℹ️  Relay '%s' is currently standby. To route gateway ICMP via this node:\n", targetCO.Alias)
+				fmt.Printf("   xray-proxya gateway set --relay %s && xray-proxya apply\n", targetCO.Alias)
+			} else {
+				state, runtimeErr := readPathRuntime()
+				if runtimeErr == nil {
+					connection := "idle/disconnected"
+					if state.Connected {
+						connection = "connected"
+					}
+					fmt.Printf("\nPathLink connection: %s; in-flight: %d\n", connection, state.InFlight)
+					if !state.LastActivity.IsZero() {
+						fmt.Printf("Last activity: %s ago\n", time.Since(state.LastActivity).Round(time.Second))
+					}
+					if state.LastRTTMs > 0 {
+						fmt.Printf("Last remote ICMP RTT: %dms\n", state.LastRTTMs)
+					}
+					if state.LastError != "" {
+						fmt.Printf("Last error: %s\n", state.LastError)
+					}
+				}
+			}
+			return nil
+		}
+
+		// Gateway role: global/active status
+		var statusJSON PathStatusJSON
+		statusJSON.Role = string(cfg.Role)
+		statusJSON.Relay = cfg.Gateway.RelayAlias
+		endpoint, relay, pathErr := selectedGatewayPath(cfg)
+		if pathErr == nil && endpoint != nil {
+			statusJSON.Listen = endpoint.Listen
+			statusJSON.IdleSeconds = endpoint.IdleSeconds
+			statusJSON.TokenConfigured = true
+			statusJSON.IsActiveRelay = true
+		}
+
+		tunStatus := "not active"
+		if iface, err := net.InterfaceByName("path-tun"); err == nil {
+			tunStatus = fmt.Sprintf("UP (path-tun, MTU: %d)", iface.MTU)
+		} else if config.GatewayTunDisabled() {
+			tunStatus = "disabled (gateway-tun-disabled)"
+		}
+		statusJSON.TunInterface = tunStatus
+
+		socksAddr, _ := activePathdSOCKSAddress()
+		statusJSON.SocksInbound = socksAddr
+
+		state, runtimeErr := readPathRuntime()
+		if runtimeErr == nil {
+			statusJSON.Connected = state.Connected
+			statusJSON.InFlight = state.InFlight
+			if !state.LastActivity.IsZero() {
+				statusJSON.LastActivity = time.Since(state.LastActivity).Round(time.Second).String()
+			}
+			statusJSON.LastRTTMs = state.LastRTTMs
+			statusJSON.LastError = state.LastError
+		}
+
 		if pathStatusJSON {
 			data, err := json.MarshalIndent(statusJSON, "", "  ")
 			if err != nil {
@@ -497,78 +667,40 @@ var pathStatusCmd = &cobra.Command{Use: "status", Short: "Show pathd service sta
 			fmt.Println(string(data))
 			return nil
 		}
+
 		fmt.Printf("Role: %s\n", cfg.Role)
-		if cfg.Path.Token == "" {
-			fmt.Printf("Agent: %s (%s); configuration: missing\n", serviceState, serviceEnabled)
+		fmt.Printf("Relay: %s\n", cfg.Gateway.RelayAlias)
+		if pathErr != nil {
+			fmt.Printf("PathLink credentials: unavailable (%v)\n", pathErr)
 			return nil
 		}
-		fmt.Printf("Agent: %s (%s), %s\n", serviceState, serviceEnabled, cfg.Path.Listen)
-		return nil
-	}
-	if cfg.Role != config.RoleGateway {
-		if pathStatusJSON {
-			data, _ := json.MarshalIndent(statusJSON, "", "  ")
-			fmt.Println(string(data))
+		fmt.Printf("PathLink credentials: configured for %s (%s, idle %ds)\n", relay, endpoint.Listen, endpoint.IdleSeconds)
+		fmt.Printf("Path-TUN Interface: %s\n", tunStatus)
+		if socksAddr != "" {
+			fmt.Printf("Inbound SOCKS Port: %s (pathd-socks)\n", socksAddr)
+		}
+
+		if runtimeErr == nil {
+			connection := "idle/disconnected"
+			if state.Connected {
+				connection = "connected"
+			}
+			fmt.Printf("PathLink connection: %s; in-flight: %d\n", connection, state.InFlight)
+			if !state.LastActivity.IsZero() {
+				fmt.Printf("Last activity: %s ago\n", time.Since(state.LastActivity).Round(time.Second))
+			}
+			if state.LastRTTMs > 0 {
+				fmt.Printf("Last remote ICMP RTT: %dms\n", state.LastRTTMs)
+			}
+			if state.LastError != "" {
+				fmt.Printf("Last error: %s\n", state.LastError)
+			}
 			return nil
 		}
-		fmt.Printf("Role: %s\n", cfg.Role)
+		fmt.Println("PathLink runtime: unavailable (run gateway up with PathLink credentials configured)")
 		return nil
-	}
-
-	statusJSON.Relay = cfg.Gateway.RelayAlias
-	endpoint, relay, pathErr := selectedGatewayPath(cfg)
-	if pathErr == nil && endpoint != nil {
-		statusJSON.Listen = endpoint.Listen
-	}
-
-	state, runtimeErr := readPathRuntime()
-	if runtimeErr == nil {
-		statusJSON.Connected = state.Connected
-		statusJSON.InFlight = state.InFlight
-		if !state.LastActivity.IsZero() {
-			statusJSON.LastActivity = time.Since(state.LastActivity).Round(time.Second).String()
-		}
-		statusJSON.LastRTTMs = state.LastRTTMs
-		statusJSON.LastError = state.LastError
-	}
-
-	if pathStatusJSON {
-		data, err := json.MarshalIndent(statusJSON, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Println(string(data))
-		return nil
-	}
-
-	fmt.Printf("Role: %s\n", cfg.Role)
-	fmt.Printf("Relay: %s\n", cfg.Gateway.RelayAlias)
-	if pathErr != nil {
-		fmt.Printf("PathLink credentials: unavailable (%v)\n", pathErr)
-		return nil
-	}
-	fmt.Printf("PathLink credentials: configured for %s (%s)\n", relay, endpoint.Listen)
-
-	if runtimeErr == nil {
-		connection := "idle/disconnected"
-		if state.Connected {
-			connection = "connected"
-		}
-		fmt.Printf("PathLink connection: %s; in-flight: %d\n", connection, state.InFlight)
-		if !state.LastActivity.IsZero() {
-			fmt.Printf("Last activity: %s ago\n", time.Since(state.LastActivity).Round(time.Second))
-		}
-		if state.LastRTTMs > 0 {
-			fmt.Printf("Last remote ICMP RTT: %dms\n", state.LastRTTMs)
-		}
-		if state.LastError != "" {
-			fmt.Printf("Last error: %s\n", state.LastError)
-		}
-		return nil
-	}
-	fmt.Println("PathLink runtime: unavailable (run gateway up with PathLink credentials configured)")
-	return nil
-}}
+	},
+}
 
 func selectedGatewayPath(cfg *config.UserConfig) (*config.PathConfig, string, error) {
 	if cfg == nil || cfg.Role != config.RoleGateway {
@@ -999,6 +1131,10 @@ func init() {
 	}
 	pathListCmd.Flags().BoolVar(&pathListJSON, "json", false, "output in JSON format")
 	pathListCmd.ValidArgsFunction = noFileComp
+	pathStatusCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay whose PathLink status to inspect (Gateway only)")
+	pathStatusCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
+	})
 	pathStatusCmd.Flags().BoolVar(&pathStatusJSON, "json", false, "output in JSON format")
 	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
 	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "output in JSON format")
