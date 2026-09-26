@@ -23,6 +23,9 @@ func TestErrorExitCodes(t *testing.T) {
 	if err := presetsListCmd.RunE(presetsListCmd, nil); err == nil {
 		t.Fatalf("expected presetsListCmd to return error when uninitialized")
 	}
+	if err := tuiCmd.RunE(tuiCmd, nil); err == nil {
+		t.Fatalf("expected tuiCmd to return error when uninitialized")
+	}
 
 	// Initialize empty staging config
 	cfg := &config.UserConfig{
