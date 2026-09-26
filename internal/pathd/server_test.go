@@ -25,7 +25,7 @@ func TestHandleProbeRejectsOversizedPayload(t *testing.T) {
 }
 
 func TestServerLimitsAreFinite(t *testing.T) {
-	if maxGlobalInFlight <= maxInFlight || maxConnections <= 0 || maxPayloadSize != 1024 {
+	if maxGlobalInFlight <= maxInFlight || maxConnections <= 0 || maxPayloadSize != 65507 {
 		t.Fatalf("unexpected limits: global=%d per-connection=%d connections=%d payload=%d", maxGlobalInFlight, maxInFlight, maxConnections, maxPayloadSize)
 	}
 }

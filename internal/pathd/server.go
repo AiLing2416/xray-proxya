@@ -21,7 +21,7 @@ import (
 const (
 	maxGlobalInFlight = 128
 	maxConnections    = 64
-	maxPayloadSize    = 1024
+	maxPayloadSize    = 65507
 )
 
 // Server listens only on a local address. It has no HTTP or public listener.
@@ -339,12 +339,15 @@ func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, r
 		return ProbeResult{}, err
 	}
 	p.sendMu.Lock()
-	var sendErr error
+	var (
+		sendErr    error
+		emsgResult *ProbeResult
+	)
 	if p.proto == 1 && options.DontFragment {
 		var mtu int
 		mtu, sendErr = p.sendIPv4DontFragment(b, ip, ttl)
 		if errors.Is(sendErr, unix.EMSGSIZE) {
-			return ProbeResult{ICMPType: 3, ICMPCode: 4, MTU: mtu}, nil
+			emsgResult = &ProbeResult{ICMPType: 3, ICMPCode: 4, MTU: mtu}
 		}
 	} else if p.proto == 1 {
 		sendErr = p.conn.IPv4PacketConn().SetTTL(ttl)
@@ -360,6 +363,9 @@ func (p *pinger) probe(ip net.IP, timeout time.Duration, options ProbeOptions, r
 		_ = p.conn.IPv6PacketConn().SetHopLimit(64)
 	}
 	p.sendMu.Unlock()
+	if emsgResult != nil {
+		return *emsgResult, nil
+	}
 	if sendErr != nil {
 		return ProbeResult{}, sendErr
 	}
