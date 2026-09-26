@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestIsConfigurableService(t *testing.T) {
@@ -211,5 +213,149 @@ func TestRenderServiceListStagedIndicator(t *testing.T) {
 	out = RenderServiceList(active, staging, services, 0, 80)
 	if !strings.Contains(out, "[*]") {
 		t.Errorf("expected [*] indicator for Pathd when staging differs from active, got:\n%s", out)
+	}
+}
+
+func TestGatewayPathdConfigValidationAndStaging(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			RelayAlias: "hk-relay",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "hk-relay", Enabled: true},
+			{Alias: "jp-relay", Enabled: true},
+		},
+	}
+	item := ManagedServiceItem{DisplayName: "Pathd", UnitName: "xray-proxya-pathd.service"}
+
+	props := loadServiceProperties(cfg, item)
+	if len(props) != 4 {
+		t.Fatalf("expected 4 properties for Gateway Pathd, got %d", len(props))
+	}
+	if props[0].Key != "Relay" || props[0].Value != "hk-relay" {
+		t.Errorf("expected Relay property defaulting to hk-relay, got %s=%s", props[0].Key, props[0].Value)
+	}
+
+	// 1. Switch relay to jp-relay
+	err := validateAndApplyServiceProp(cfg, item, props[0], "jp-relay")
+	if err != nil {
+		t.Fatalf("expected switching relay to succeed, got %v", err)
+	}
+	props = loadServiceProperties(cfg, item)
+	if props[0].Value != "jp-relay" {
+		t.Errorf("expected selected relay to be jp-relay, got %s", props[0].Value)
+	}
+
+	// 2. Set token for jp-relay
+	err = validateAndApplyServiceProp(cfg, item, props[1], "secret-token-jp")
+	if err != nil {
+		t.Fatalf("expected setting token to succeed, got %v", err)
+	}
+	if cfg.CustomOutbounds[1].Path == nil || cfg.CustomOutbounds[1].Path.Token != "secret-token-jp" {
+		t.Fatalf("expected jp-relay Path.Token to be secret-token-jp, got %#v", cfg.CustomOutbounds[1].Path)
+	}
+	// Verify hk-relay was not modified
+	if cfg.CustomOutbounds[0].Path != nil {
+		t.Fatalf("expected hk-relay Path to remain nil, got %#v", cfg.CustomOutbounds[0].Path)
+	}
+
+	// 3. Set listen and idle for jp-relay
+	err = validateAndApplyServiceProp(cfg, item, props[2], "127.0.0.1:2828")
+	if err != nil {
+		t.Fatalf("expected valid listen, got %v", err)
+	}
+	err = validateAndApplyServiceProp(cfg, item, props[3], "45")
+	if err != nil {
+		t.Fatalf("expected valid idle, got %v", err)
+	}
+	if cfg.CustomOutbounds[1].Path.IdleSeconds != 45 {
+		t.Errorf("expected idle 45, got %d", cfg.CustomOutbounds[1].Path.IdleSeconds)
+	}
+
+	// 4. Staging detection on gateway
+	active := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{RelayAlias: "hk-relay"},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "hk-relay", Enabled: true},
+			{Alias: "jp-relay", Enabled: true},
+		},
+	}
+	if !serviceHasStagedChanges(active, cfg, item) {
+		t.Errorf("expected staged changes detected when jp-relay has Path config in staging but not active")
+	}
+
+	// 5. Unset token with "-"
+	err = validateAndApplyServiceProp(cfg, item, props[1], "-")
+	if err != nil {
+		t.Fatalf("expected unsetting token with '-' to succeed, got %v", err)
+	}
+	if cfg.CustomOutbounds[1].Path != nil {
+		t.Fatalf("expected jp-relay Path to be unset (nil), got %#v", cfg.CustomOutbounds[1].Path)
+	}
+}
+
+func TestAltGTokenGeneration(t *testing.T) {
+	// 1. Key recognition
+	keyAltG := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}, Alt: true}
+	keyAltGCap := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'G'}, Alt: true}
+	keyOtherAlt := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}, Alt: true}
+	keyNoAlt := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}, Alt: false}
+
+	if !isAltG(keyAltG) {
+		t.Errorf("expected isAltG to recognize alt+g")
+	}
+	if !isAltG(keyAltGCap) {
+		t.Errorf("expected isAltG to recognize alt+G")
+	}
+	if isAltG(keyOtherAlt) {
+		t.Errorf("expected isAltG to reject alt+a")
+	}
+	if isAltG(keyNoAlt) {
+		t.Errorf("expected isAltG to reject plain g")
+	}
+
+	// 2. Footer badges show [Alt + G] only when editing Token
+	m := Model{
+		servicePropEdit:  true,
+		servicePropIndex: 0,
+		serviceProps: []ServiceProperty{
+			{Key: "Token", Label: "Auth Token", Type: PropInput},
+			{Key: "Listen", Label: "Listen Address", Type: PropInput},
+		},
+	}
+	footer := m.renderFooter()
+	if !strings.Contains(footer, "[Alt + G] Generate") {
+		t.Errorf("expected footer to contain '[Alt + G] Generate' when editing Token, got:\n%s", footer)
+	}
+
+	// When editing Listen, footer should NOT contain [Alt + G]
+	m.servicePropIndex = 1
+	footer = m.renderFooter()
+	if strings.Contains(footer, "[Alt + G] Generate") {
+		t.Errorf("expected footer NOT to contain '[Alt + G] Generate' when editing Listen, got:\n%s", footer)
+	}
+
+	// When not editing (servicePropEdit = false), footer should NOT contain [Alt + G]
+	m.servicePropEdit = false
+	m.servicePropMode = true
+	footer = m.renderFooter()
+	if strings.Contains(footer, "[Alt + G] Generate") {
+		t.Errorf("expected footer NOT to contain '[Alt + G] Generate' when not editing, got:\n%s", footer)
+	}
+
+	// 3. Alt+G generation in Update
+	m.servicePropEdit = true
+	m.servicePropIndex = 0
+	m.textInput.SetValue("")
+	newModel, cmd := m.Update(keyAltG)
+	if cmd != nil {
+		t.Errorf("expected nil cmd from Alt+G token generation")
+	}
+	updatedM := newModel.(Model)
+	val := updatedM.textInput.Value()
+	if len(val) != 16 {
+		t.Errorf("expected 16-char token generated by Alt+G, got length %d: %q", len(val), val)
 	}
 }

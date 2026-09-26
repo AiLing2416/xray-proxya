@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -179,11 +177,7 @@ func setPathEndpoint(cmd *cobra.Command, endpoint *config.PathConfig, requireTok
 		endpoint.Token = pathToken
 	}
 	if pathGenerate {
-		bytes := make([]byte, 32)
-		if _, err := rand.Read(bytes); err != nil {
-			return "", fmt.Errorf("generate token: %w", err)
-		}
-		generated = hex.EncodeToString(bytes)
+		generated = utils.GenerateAlphanumericToken(16)
 		endpoint.Token = generated
 	}
 	if endpoint.Listen == "" {

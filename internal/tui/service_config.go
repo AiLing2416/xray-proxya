@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,6 +50,79 @@ func isConfigurableService(item ManagedServiceItem) bool {
 		return true
 	}
 	return false
+}
+
+var currentPathRelay string
+
+func getSelectedPathRelay(cfg *config.UserConfig) string {
+	if cfg == nil || len(cfg.CustomOutbounds) == 0 {
+		return ""
+	}
+	if currentPathRelay != "" {
+		for _, co := range cfg.CustomOutbounds {
+			if co.Alias == currentPathRelay {
+				return currentPathRelay
+			}
+		}
+	}
+	if cfg.Gateway.RelayAlias != "" {
+		for _, co := range cfg.CustomOutbounds {
+			if co.Alias == cfg.Gateway.RelayAlias {
+				currentPathRelay = co.Alias
+				return currentPathRelay
+			}
+		}
+	}
+	currentPathRelay = cfg.CustomOutbounds[0].Alias
+	return currentPathRelay
+}
+
+func getGatewayRelayPathConfig(cfg *config.UserConfig, relay string) config.PathConfig {
+	if cfg != nil {
+		for _, co := range cfg.CustomOutbounds {
+			if co.Alias == relay {
+				if co.Path != nil {
+					p := *co.Path
+					if p.Listen == "" {
+						p.Listen = pathd.DefaultListenAddress
+					}
+					if p.IdleSeconds <= 0 {
+						p.IdleSeconds = 20
+					}
+					return p
+				}
+				break
+			}
+		}
+	}
+	return config.PathConfig{Listen: pathd.DefaultListenAddress, IdleSeconds: 20}
+}
+
+func setGatewayRelayPathConfig(cfg *config.UserConfig, relay string, p config.PathConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if relay == "" || relay == "(none)" {
+		return fmt.Errorf("no relay selected; add a relay first")
+	}
+	for i := range cfg.CustomOutbounds {
+		if cfg.CustomOutbounds[i].Alias == relay {
+			if p.Token == "" {
+				cfg.CustomOutbounds[i].Path = nil
+				return nil
+			}
+			if p.Listen == "" {
+				p.Listen = pathd.DefaultListenAddress
+			}
+			if p.IdleSeconds <= 0 {
+				p.IdleSeconds = 20
+			}
+			endpoint := p
+			cfg.CustomOutbounds[i].Path = &endpoint
+			return nil
+		}
+	}
+	return fmt.Errorf("relay %q not found", relay)
 }
 
 func getPathdConfig(cfg *config.UserConfig) config.PathConfig {
@@ -122,6 +196,49 @@ func loadServiceProperties(cfg *config.UserConfig, item ManagedServiceItem) []Se
 
 	switch {
 	case item.DisplayName == "Pathd":
+		if cfg != nil && cfg.Role == config.RoleGateway {
+			var relayChoices []string
+			for _, co := range cfg.CustomOutbounds {
+				relayChoices = append(relayChoices, co.Alias)
+			}
+			if len(relayChoices) == 0 {
+				relayChoices = []string{"(none)"}
+			}
+			selectedRelay := getSelectedPathRelay(cfg)
+			if selectedRelay == "" {
+				selectedRelay = "(none)"
+			}
+
+			props = append(props, ServiceProperty{
+				Key:     "Relay",
+				Label:   "Target Relay",
+				Value:   selectedRelay,
+				Type:    PropChoice,
+				Choices: relayChoices,
+			})
+
+			p := getGatewayRelayPathConfig(cfg, selectedRelay)
+			props = append(props, ServiceProperty{
+				Key:   "Token",
+				Label: "Auth Token",
+				Value: p.Token,
+				Type:  PropInput,
+			})
+			props = append(props, ServiceProperty{
+				Key:   "Listen",
+				Label: "Listen Address",
+				Value: p.Listen,
+				Type:  PropInput,
+			})
+			props = append(props, ServiceProperty{
+				Key:   "Idle",
+				Label: "Idle Timeout (s)",
+				Value: strconv.Itoa(p.IdleSeconds),
+				Type:  PropInput,
+			})
+			return props
+		}
+
 		p := getPathdConfig(cfg)
 		props = append(props, ServiceProperty{
 			Key:   "Listen",
@@ -255,6 +372,58 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 
 	switch {
 	case item.DisplayName == "Pathd":
+		if cfg != nil && cfg.Role == config.RoleGateway {
+			selectedRelay := getSelectedPathRelay(cfg)
+			switch prop.Key {
+			case "Relay":
+				if newVal != "" && newVal != "(none)" {
+					currentPathRelay = newVal
+				}
+				return nil
+			case "Token":
+				if selectedRelay == "" || selectedRelay == "(none)" {
+					return fmt.Errorf("no relay available to configure; add a relay in RELAYS tab first")
+				}
+				if newVal == "-" || newVal == "(none)" {
+					return setGatewayRelayPathConfig(cfg, selectedRelay, config.PathConfig{})
+				}
+				if newVal == "" {
+					return fmt.Errorf("token cannot be empty")
+				}
+				p := getGatewayRelayPathConfig(cfg, selectedRelay)
+				p.Token = newVal
+				return setGatewayRelayPathConfig(cfg, selectedRelay, p)
+			case "Listen":
+				if selectedRelay == "" || selectedRelay == "(none)" {
+					return fmt.Errorf("no relay available to configure")
+				}
+				if err := pathd.ValidateListenAddress(newVal); err != nil {
+					return err
+				}
+				p := getGatewayRelayPathConfig(cfg, selectedRelay)
+				if p.Token == "" {
+					return fmt.Errorf("configure Auth Token first")
+				}
+				p.Listen = newVal
+				return setGatewayRelayPathConfig(cfg, selectedRelay, p)
+			case "Idle":
+				if selectedRelay == "" || selectedRelay == "(none)" {
+					return fmt.Errorf("no relay available to configure")
+				}
+				v, err := strconv.Atoi(newVal)
+				if err != nil || v <= 0 {
+					return fmt.Errorf("idle timeout must be positive seconds")
+				}
+				p := getGatewayRelayPathConfig(cfg, selectedRelay)
+				if p.Token == "" {
+					return fmt.Errorf("configure Auth Token first")
+				}
+				p.IdleSeconds = v
+				return setGatewayRelayPathConfig(cfg, selectedRelay, p)
+			}
+			return nil
+		}
+
 		p := getPathdConfig(cfg)
 		switch prop.Key {
 		case "Listen":
@@ -263,6 +432,10 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 			}
 			p.Listen = newVal
 		case "Token":
+			if newVal == "-" || newVal == "(none)" {
+				setPathdConfig(cfg, config.PathConfig{})
+				return nil
+			}
 			if newVal == "" {
 				return fmt.Errorf("token cannot be empty")
 			}
@@ -329,6 +502,42 @@ func serviceHasStagedChanges(active, staging *config.UserConfig, item ManagedSer
 	}
 	switch {
 	case item.DisplayName == "Pathd":
+		if staging.Role == config.RoleGateway {
+			if active == nil {
+				for _, co := range staging.CustomOutbounds {
+					if co.Path != nil && co.Path.Token != "" {
+						return true
+					}
+				}
+				return false
+			}
+			activeByAlias := make(map[string]*config.PathConfig, len(active.CustomOutbounds))
+			for i := range active.CustomOutbounds {
+				activeByAlias[active.CustomOutbounds[i].Alias] = active.CustomOutbounds[i].Path
+			}
+			for _, co := range staging.CustomOutbounds {
+				activePath, had := activeByAlias[co.Alias]
+				if !had && co.Path != nil {
+					return true
+				}
+				if !reflect.DeepEqual(activePath, co.Path) {
+					return true
+				}
+			}
+			if len(active.CustomOutbounds) != len(staging.CustomOutbounds) {
+				stagingByAlias := make(map[string]*config.PathConfig, len(staging.CustomOutbounds))
+				for i := range staging.CustomOutbounds {
+					stagingByAlias[staging.CustomOutbounds[i].Alias] = staging.CustomOutbounds[i].Path
+				}
+				for _, aco := range active.CustomOutbounds {
+					if _, exists := stagingByAlias[aco.Alias]; !exists && aco.Path != nil {
+						return true
+					}
+				}
+			}
+			return false
+		}
+
 		pStaging := getPathdConfig(staging)
 		if active == nil {
 			return pStaging.Token != ""

@@ -714,6 +714,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
 				prop := m.serviceProps[m.servicePropIndex]
 				if prop.Type == PropInput {
+					if prop.Key == "Token" && isAltG(msg) {
+						m.textInput.SetValue(utils.GenerateAlphanumericToken(16))
+						m.serviceValidationError = ""
+						return m, nil
+					}
 					switch s {
 					case "esc":
 						m.servicePropEdit = false
@@ -2346,6 +2351,8 @@ func (m Model) renderFooter() string {
 			prop := m.serviceProps[m.servicePropIndex]
 			if prop.Type == PropChoice {
 				badges = []string{"[↑/↓] Select", "[Enter] Confirm", "[Esc] Cancel"}
+			} else if prop.Key == "Token" {
+				badges = []string{"[Enter] Confirm", "[Alt + G] Generate", "[Esc] Cancel"}
 			} else {
 				badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
 			}
@@ -2589,4 +2596,18 @@ func runeLen(s string) int {
 
 func guestSubURL(host string, port int, token string) string {
 	return sub.FormatSubURL(host, port, token)
+}
+
+func isAltG(msg tea.KeyMsg) bool {
+	s := strings.ToLower(msg.String())
+	if s == "alt+g" || s == "esc+g" {
+		return true
+	}
+	if msg.Alt && len(msg.Runes) > 0 && (msg.Runes[0] == 'g' || msg.Runes[0] == 'G') {
+		return true
+	}
+	if len(msg.Runes) == 2 && msg.Runes[0] == 0x1b && (msg.Runes[1] == 'g' || msg.Runes[1] == 'G') {
+		return true
+	}
+	return false
 }
