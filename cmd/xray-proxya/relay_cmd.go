@@ -45,6 +45,7 @@ var (
 	relaySpeedLink       string
 	relaySpeedLinkDL     string
 	relaySpeedLinkUL     string
+	relaySpeedThreads    int
 )
 
 var outboundCmd = &cobra.Command{
@@ -699,6 +700,10 @@ var speedOutboundCmd = &cobra.Command{
 			direction = relayspeed.DirectionUpload
 		}
 
+		if relaySpeedThreads < 1 || relaySpeedThreads > 16 {
+			return fmt.Errorf("❌ Invalid threads: %d (must be between 1 and 16)", relaySpeedThreads)
+		}
+
 		customDL := relaySpeedLink
 		if relaySpeedLinkDL != "" {
 			customDL = relaySpeedLinkDL
@@ -713,6 +718,7 @@ var speedOutboundCmd = &cobra.Command{
 			Direction:         direction,
 			SizeBytes:         sizeLimit,
 			DurationSeconds:   relaySpeedTime,
+			Threads:           relaySpeedThreads,
 			CustomDownloadURL: customDL,
 			CustomUploadURL:   customUL,
 		}
@@ -1147,6 +1153,7 @@ func init() {
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedBoth, "both", "b", false, "Run both download and upload speed tests")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedSize, "size", "s", "25MB", "Maximum total transfer size (e.g. 10MB, 25MB, 50MB, 100MB)")
 	speedOutboundCmd.Flags().IntVarP(&relaySpeedTime, "time", "t", 0, "Speed test duration limit in seconds (0 = single pass)")
+	speedOutboundCmd.Flags().IntVarP(&relaySpeedThreads, "threads", "P", 1, "Number of concurrent download streams (1-16)")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedLink, "link", "l", "", "Custom speed test URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkDL, "link-download", "", "Custom download URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkUL, "link-upload", "", "Custom upload URL (for custom provider)")
