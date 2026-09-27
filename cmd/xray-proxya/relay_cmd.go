@@ -41,7 +41,7 @@ var (
 	relaySpeedUpload     bool
 	relaySpeedBoth       bool
 	relaySpeedSize       string
-	relaySpeedTime       int
+	relaySpeedTime       string
 	relaySpeedLink       string
 	relaySpeedLinkDL     string
 	relaySpeedLinkUL     string
@@ -713,14 +713,26 @@ var speedOutboundCmd = &cobra.Command{
 			customUL = relaySpeedLinkUL
 		}
 
+		durationSec := 0
+		if relaySpeedTime != "" {
+			var err error
+			durationSec, err = relayspeed.ParseTime(relaySpeedTime)
+			if err != nil {
+				return fmt.Errorf("❌ Invalid time duration: %w", err)
+			}
+		}
+
+		fixedSize := cmd.Flags().Changed("size")
+
 		opts := relayspeed.Options{
 			Provider:          relaySpeedProvider,
 			Direction:         direction,
 			SizeBytes:         sizeLimit,
-			DurationSeconds:   relaySpeedTime,
+			DurationSeconds:   durationSec,
 			Threads:           relaySpeedThreads,
 			CustomDownloadURL: customDL,
 			CustomUploadURL:   customUL,
+			FixedSize:         fixedSize,
 		}
 
 		ctx := context.Background()
@@ -1152,7 +1164,7 @@ func init() {
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedUpload, "upload", "u", false, "Run an upload speed test")
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedBoth, "both", "b", false, "Run both download and upload speed tests")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedSize, "size", "s", "25MB", "Maximum total transfer size (e.g. 10MB, 25MB, 50MB, 100MB)")
-	speedOutboundCmd.Flags().IntVarP(&relaySpeedTime, "time", "t", 0, "Speed test duration limit in seconds (0 = single pass)")
+	speedOutboundCmd.Flags().StringVarP(&relaySpeedTime, "time", "t", "", "Speed test duration limit (e.g. 10s, 15sec, 1m, 1.5m; 0 = single pass)")
 	speedOutboundCmd.Flags().IntVarP(&relaySpeedThreads, "threads", "P", 1, "Number of concurrent download streams (1-16)")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedLink, "link", "l", "", "Custom speed test URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkDL, "link-download", "", "Custom download URL (for custom provider)")

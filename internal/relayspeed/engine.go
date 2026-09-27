@@ -91,6 +91,7 @@ func runBandwidthTest(
 	direction Direction,
 	sizeLimit int64,
 	durationSec int,
+	fixedSize bool,
 	threads int,
 	idleLat time.Duration,
 	alias string,
@@ -176,9 +177,9 @@ func runBandwidthTest(
 
 	var err error
 	if direction == DirectionDownload {
-		err = executeDownload(testCtx, client, provider, sizeLimit, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
+		err = executeDownload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
 	} else {
-		err = executeUpload(testCtx, client, provider, sizeLimit, deadline, &bytesTransferred, &samples, alias, progressCb)
+		err = executeUpload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, &bytesTransferred, &samples, alias, progressCb)
 	}
 
 	close(stopLoadProbe)
@@ -226,6 +227,8 @@ func executeDownload(
 	client *http.Client,
 	provider Provider,
 	sizeLimit int64,
+	durationSec int,
+	fixedSize bool,
 	deadline time.Time,
 	threads int,
 	bytesTransferred *int64,
@@ -282,15 +285,15 @@ func executeDownload(
 
 	var dlErr error
 	if threads <= 1 {
-		dlErr = executeDownloadSingle(dlCtx, cancel, client, provider, sizeLimit, deadline, bytesTransferred)
+		dlErr = executeDownloadSingle(dlCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, bytesTransferred)
 	} else {
-		dlErr = executeDownloadMulti(dlCtx, cancel, client, provider, sizeLimit, deadline, threads, bytesTransferred)
+		dlErr = executeDownloadMulti(dlCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, bytesTransferred)
 	}
 
 	close(stopSampler)
 	samplerWg.Wait()
 
-	if sizeLimit > 0 && *bytesTransferred > sizeLimit {
+	if fixedSize && sizeLimit > 0 && *bytesTransferred > sizeLimit {
 		*bytesTransferred = sizeLimit
 	}
 
@@ -310,20 +313,31 @@ func executeDownloadSingle(
 	client *http.Client,
 	provider Provider,
 	sizeLimit int64,
+	durationSec int,
+	fixedSize bool,
 	deadline time.Time,
 	bytesTransferred *int64,
 ) error {
+	isDurationMode := durationSec > 0 && !fixedSize
+	chunkSize := sizeLimit
+	if isDurationMode {
+		chunkSize = 25 * 1024 * 1024 // 25MB per chunk in duration mode
+		if sizeLimit > chunkSize {
+			chunkSize = sizeLimit
+		}
+	}
+
 	for {
 		if time.Now().After(deadline) {
 			break
 		}
 		cur := atomic.LoadInt64(bytesTransferred)
-		if sizeLimit > 0 && cur >= sizeLimit {
+		if fixedSize && sizeLimit > 0 && cur >= sizeLimit {
 			break
 		}
 
-		reqSize := sizeLimit
-		if sizeLimit > 0 {
+		reqSize := chunkSize
+		if fixedSize && sizeLimit > 0 {
 			rem := sizeLimit - cur
 			if rem <= 0 {
 				break
@@ -359,14 +373,14 @@ func executeDownloadSingle(
 			}
 
 			cur := atomic.LoadInt64(bytesTransferred)
-			if sizeLimit > 0 && cur >= sizeLimit {
+			if fixedSize && sizeLimit > 0 && cur >= sizeLimit {
 				resp.Body.Close()
 				cancel()
 				return nil
 			}
 
 			toRead := len(buf)
-			if sizeLimit > 0 {
+			if fixedSize && sizeLimit > 0 {
 				rem := sizeLimit - cur
 				if rem <= 0 {
 					resp.Body.Close()
@@ -381,7 +395,7 @@ func executeDownloadSingle(
 			n, rErr := resp.Body.Read(buf[:toRead])
 			if n > 0 {
 				atomic.AddInt64(bytesTransferred, int64(n))
-				if sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+				if fixedSize && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
 					resp.Body.Close()
 					cancel()
 					return nil
@@ -401,7 +415,7 @@ func executeDownloadSingle(
 			}
 		}
 
-		if sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+		if !isDurationMode && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
 			break
 		}
 	}
@@ -414,6 +428,8 @@ func executeDownloadMulti(
 	client *http.Client,
 	provider Provider,
 	sizeLimit int64,
+	durationSec int,
+	fixedSize bool,
 	deadline time.Time,
 	threads int,
 	bytesTransferred *int64,
@@ -424,8 +440,15 @@ func executeDownloadMulti(
 		workerErr error
 	)
 
+	isDurationMode := durationSec > 0 && !fixedSize
+
 	chunkReqBytes := int64(defaultMultiStreamChunkSize)
-	if sizeLimit > 0 {
+	if isDurationMode {
+		chunkReqBytes = 25 * 1024 * 1024 // 25MB per chunk in duration mode
+		if sizeLimit > chunkReqBytes {
+			chunkReqBytes = sizeLimit
+		}
+	} else if sizeLimit > 0 {
 		workerChunk := sizeLimit / int64(threads)
 		const minWorkerChunk int64 = 2 * 1024 * 1024
 		if workerChunk < minWorkerChunk {
@@ -453,13 +476,13 @@ func executeDownloadMulti(
 				}
 
 				cur := atomic.LoadInt64(bytesTransferred)
-				if sizeLimit > 0 && cur >= sizeLimit {
+				if fixedSize && sizeLimit > 0 && cur >= sizeLimit {
 					cancel()
 					return
 				}
 
 				reqBytes := chunkReqBytes
-				if sizeLimit > 0 {
+				if fixedSize && sizeLimit > 0 {
 					rem := sizeLimit - cur
 					if rem <= 0 {
 						cancel()
@@ -506,14 +529,14 @@ func executeDownloadMulti(
 					}
 
 					current := atomic.LoadInt64(bytesTransferred)
-					if sizeLimit > 0 && current >= sizeLimit {
+					if fixedSize && sizeLimit > 0 && current >= sizeLimit {
 						resp.Body.Close()
 						cancel()
 						return
 					}
 
 					toRead := len(buf)
-					if sizeLimit > 0 {
+					if fixedSize && sizeLimit > 0 {
 						rem := sizeLimit - current
 						if rem <= 0 {
 							resp.Body.Close()
@@ -528,7 +551,7 @@ func executeDownloadMulti(
 					n, rErr := resp.Body.Read(buf[:toRead])
 					if n > 0 {
 						atomic.AddInt64(bytesTransferred, int64(n))
-						if sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+						if fixedSize && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
 							resp.Body.Close()
 							cancel()
 							return
@@ -548,6 +571,11 @@ func executeDownloadMulti(
 						return
 					}
 				}
+
+				// If not in duration mode and fixed size reached, worker finishes
+				if !isDurationMode && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+					return
+				}
 			}
 		}()
 	}
@@ -565,6 +593,8 @@ func executeUpload(
 	client *http.Client,
 	provider Provider,
 	sizeLimit int64,
+	durationSec int,
+	fixedSize bool,
 	deadline time.Time,
 	bytesTransferred *int64,
 	samples *[]float64,

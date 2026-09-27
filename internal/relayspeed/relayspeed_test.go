@@ -315,7 +315,7 @@ func TestMultiStreamDownload(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
-	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, deadline, threads, &bytesTransferred, &samples, "test-multi", progressCb)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, "test-multi", progressCb)
 	if err != nil {
 		t.Fatalf("executeDownload failed: %v", err)
 	}
@@ -356,7 +356,7 @@ func TestMultiStreamDownloadTimeout(t *testing.T) {
 	defer cancel()
 
 	deadline := time.Now().Add(150 * time.Millisecond)
-	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, deadline, threads, &bytesTransferred, &samples, "test-timeout", nil)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, "test-timeout", nil)
 	// Timeout should terminate gracefully without deadlock
 	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
 		t.Fatalf("unexpected error: %v", err)
@@ -395,7 +395,7 @@ func TestSingleStreamDownload(t *testing.T) {
 	defer cancel()
 
 	deadline := time.Now().Add(5 * time.Second)
-	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, deadline, threads, &bytesTransferred, &samples, "test-single", nil)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, "test-single", nil)
 	if err != nil {
 		t.Fatalf("executeDownload single failed: %v", err)
 	}
@@ -482,5 +482,88 @@ func TestProbeBandwidth(t *testing.T) {
 	}
 	if rtt <= 0 {
 		t.Errorf("ProbeBandwidth rtt = %v, want > 0", rtt)
+	}
+}
+
+func TestParseTime(t *testing.T) {
+	tests := []struct {
+		input   string
+		wantSec int
+		wantErr bool
+	}{
+		{"10", 10, false},
+		{"0", 0, false},
+		{"10s", 10, false},
+		{"15sec", 15, false},
+		{"1m", 60, false},
+		{"1.5m", 90, false},
+		{"60s", 60, false},
+		{"2min", 120, false},
+		{"2minutes", 120, false},
+		{"1h", 3600, false},
+		{"0.5m", 30, false},
+		{"", 0, true},
+		{"-5s", 0, true},
+		{"10x", 0, true},
+		{"abc", 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := ParseTime(tt.input)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParseTime(%q) error = %v, wantErr %v", tt.input, err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.wantSec {
+				t.Errorf("ParseTime(%q) = %d, want %d", tt.input, got, tt.wantSec)
+			}
+		})
+	}
+}
+
+func TestDurationScheduling(t *testing.T) {
+	// Mock server that returns chunks continuously
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		buf := make([]byte, 64*1024)
+		for i := 0; i < 16; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, _ = w.Write(buf)
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	// 200ms continuous duration test with fixedSize = false
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	durationSec := 1 // test with 200ms deadline
+	deadline := time.Now().Add(200 * time.Millisecond)
+	var bytesTransferred int64
+	var samples []float64
+
+	start := time.Now()
+	err = executeDownload(ctx, server.Client(), customProvider, 1024*1024, durationSec, false, deadline, 1, &bytesTransferred, &samples, "test-dur", nil)
+	elapsed := time.Since(start)
+
+	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// In continuous mode, it should pull across chunks until deadline (~200ms)
+	if elapsed < 180*time.Millisecond {
+		t.Errorf("test terminated too early: elapsed = %v, expected >= 180ms", elapsed)
+	}
+	if bytesTransferred <= 0 {
+		t.Errorf("bytesTransferred = %d, want > 0", bytesTransferred)
 	}
 }
