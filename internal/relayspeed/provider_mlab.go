@@ -87,7 +87,7 @@ func (m *MLabProvider) GetPingRequest(ctx context.Context, _ *http.Client) (*htt
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, m)
 	return req, nil
 }
 
@@ -132,7 +132,7 @@ func (m *MLabProvider) locateTarget(ctx context.Context, client *http.Client) er
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, m)
 
 	resp, err := client.Do(req)
 	if err != nil {

@@ -63,7 +63,7 @@ func (c *CustomProvider) GetDownloadRequest(ctx context.Context, _ *http.Client,
 	if sizeBytes > 0 {
 		req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", sizeBytes-1))
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, c)
 	return req, nil
 }
 
@@ -77,7 +77,7 @@ func (c *CustomProvider) GetUploadRequest(ctx context.Context, _ *http.Client, b
 	}
 	req.ContentLength = sizeBytes
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, c)
 	return req, nil
 }
 
@@ -91,6 +91,6 @@ func (c *CustomProvider) GetPingRequest(ctx context.Context, _ *http.Client) (*h
 		return nil, err
 	}
 	req.Header.Set("Range", "bytes=0-0")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, c)
 	return req, nil
 }

@@ -30,7 +30,7 @@ func (c *CloudflareProvider) GetDownloadRequest(ctx context.Context, _ *http.Cli
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, c)
 	return req, nil
 }
 
@@ -41,7 +41,7 @@ func (c *CloudflareProvider) GetUploadRequest(ctx context.Context, _ *http.Clien
 	}
 	req.ContentLength = sizeBytes
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, c)
 	return req, nil
 }
 
@@ -50,6 +50,6 @@ func (c *CloudflareProvider) GetPingRequest(ctx context.Context, _ *http.Client)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, c)
 	return req, nil
 }

@@ -60,7 +60,7 @@ func (f *FastProvider) GetDownloadRequest(ctx context.Context, client *http.Clie
 		return nil, err
 	}
 	req.Header.Set("Range", fmt.Sprintf("bytes=0-%d", sizeBytes-1))
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, f)
 	return req, nil
 }
 
@@ -85,7 +85,7 @@ func (f *FastProvider) GetUploadRequest(ctx context.Context, client *http.Client
 	}
 	req.ContentLength = sizeBytes
 	req.Header.Set("Content-Type", "application/octet-stream")
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, f)
 	return req, nil
 }
 
@@ -94,7 +94,7 @@ func (f *FastProvider) GetPingRequest(ctx context.Context, _ *http.Client) (*htt
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, f)
 	return req, nil
 }
 
@@ -126,7 +126,7 @@ func (f *FastProvider) extractTokenFromWeb(ctx context.Context, client *http.Cli
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, f)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -144,7 +144,7 @@ func (f *FastProvider) extractTokenFromWeb(ctx context.Context, client *http.Cli
 	if err != nil {
 		return "", err
 	}
-	jsReq.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(jsReq, f)
 	jsResp, err := client.Do(jsReq)
 	if err != nil {
 		return "", err
@@ -165,7 +165,7 @@ func (f *FastProvider) fetchTargetURL(ctx context.Context, client *http.Client, 
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+	applyBrowserHeaders(req, f)
 
 	resp, err := client.Do(req)
 	if err != nil {

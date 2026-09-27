@@ -3,6 +3,7 @@ package relayspeed
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -193,5 +194,77 @@ func TestLatencyProber(t *testing.T) {
 	}
 	if dnsTCPQuery[0] != 0x00 || dnsTCPQuery[1] != 0x1c {
 		t.Fatalf("dnsTCPQuery length header = %x %x, want 0x00 0x1c", dnsTCPQuery[0], dnsTCPQuery[1])
+	}
+}
+
+func TestApplyBrowserHeaders(t *testing.T) {
+	providers := []struct {
+		provider     Provider
+		wantOrigin   string
+		wantReferer  string
+	}{
+		{
+			provider:    &CloudflareProvider{},
+			wantOrigin:  "https://speed.cloudflare.com",
+			wantReferer: "https://speed.cloudflare.com/",
+		},
+		{
+			provider:    &FastProvider{},
+			wantOrigin:  "https://fast.com",
+			wantReferer: "https://fast.com/",
+		},
+		{
+			provider:    &OoklaProvider{},
+			wantOrigin:  "https://www.speedtest.net",
+			wantReferer: "https://www.speedtest.net/",
+		},
+		{
+			provider:    &CustomProvider{},
+			wantOrigin:  "",
+			wantReferer: "",
+		},
+	}
+
+	for _, tt := range providers {
+		req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
+		if err != nil {
+			t.Fatalf("NewRequest error: %v", err)
+		}
+
+		applyBrowserHeaders(req, tt.provider)
+
+		if req.Header.Get("User-Agent") != defaultUserAgent {
+			t.Errorf("[%s] UA = %q, want %q", tt.provider.ID(), req.Header.Get("User-Agent"), defaultUserAgent)
+		}
+		if req.Header.Get("Sec-Ch-Ua") != secChUa {
+			t.Errorf("[%s] Sec-Ch-Ua = %q, want %q", tt.provider.ID(), req.Header.Get("Sec-Ch-Ua"), secChUa)
+		}
+		if req.Header.Get("Sec-Ch-Ua-Mobile") != secChUaMobile {
+			t.Errorf("[%s] Sec-Ch-Ua-Mobile = %q, want %q", tt.provider.ID(), req.Header.Get("Sec-Ch-Ua-Mobile"), secChUaMobile)
+		}
+		if req.Header.Get("Sec-Ch-Ua-Platform") != secChUaPlatform {
+			t.Errorf("[%s] Sec-Ch-Ua-Platform = %q, want %q", tt.provider.ID(), req.Header.Get("Sec-Ch-Ua-Platform"), secChUaPlatform)
+		}
+		if req.Header.Get("Sec-Fetch-Dest") != "empty" {
+			t.Errorf("[%s] Sec-Fetch-Dest = %q, want empty", tt.provider.ID(), req.Header.Get("Sec-Fetch-Dest"))
+		}
+		if req.Header.Get("Sec-Fetch-Mode") != "cors" {
+			t.Errorf("[%s] Sec-Fetch-Mode = %q, want cors", tt.provider.ID(), req.Header.Get("Sec-Fetch-Mode"))
+		}
+		if req.Header.Get("Sec-Fetch-Site") != "same-origin" {
+			t.Errorf("[%s] Sec-Fetch-Site = %q, want same-origin", tt.provider.ID(), req.Header.Get("Sec-Fetch-Site"))
+		}
+		if req.Header.Get("Accept") != "*/*" {
+			t.Errorf("[%s] Accept = %q, want */*", tt.provider.ID(), req.Header.Get("Accept"))
+		}
+		if req.Header.Get("Accept-Language") != "en-US,en;q=0.9" {
+			t.Errorf("[%s] Accept-Language = %q, want en-US,en;q=0.9", tt.provider.ID(), req.Header.Get("Accept-Language"))
+		}
+		if req.Header.Get("Origin") != tt.wantOrigin {
+			t.Errorf("[%s] Origin = %q, want %q", tt.provider.ID(), req.Header.Get("Origin"), tt.wantOrigin)
+		}
+		if req.Header.Get("Referer") != tt.wantReferer {
+			t.Errorf("[%s] Referer = %q, want %q", tt.provider.ID(), req.Header.Get("Referer"), tt.wantReferer)
+		}
 	}
 }

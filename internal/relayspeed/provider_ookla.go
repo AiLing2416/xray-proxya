@@ -209,7 +209,5 @@ func (o *OoklaProvider) locateServer(ctx context.Context, client *http.Client) e
 }
 
 func setOoklaHeaders(req *http.Request) {
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-	req.Header.Set("Origin", "https://www.speedtest.net")
-	req.Header.Set("Referer", "https://www.speedtest.net/")
+	applyBrowserHeaders(req, &OoklaProvider{})
 }
