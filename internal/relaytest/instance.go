@@ -192,6 +192,9 @@ func StartTestSession(ctx context.Context, cfg *config.UserConfig, alias string,
 			DisableCompression:    true,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ResponseHeaderTimeout: 15 * time.Second,
+			MaxIdleConns:          100,
+			MaxIdleConnsPerHost:   32,
+			MaxConnsPerHost:       32,
 		}
 		session.HTTPClient = &http.Client{
 			Transport: transport,
