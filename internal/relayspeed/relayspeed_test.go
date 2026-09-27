@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -266,5 +268,142 @@ func TestApplyBrowserHeaders(t *testing.T) {
 		if req.Header.Get("Referer") != tt.wantReferer {
 			t.Errorf("[%s] Referer = %q, want %q", tt.provider.ID(), req.Header.Get("Referer"), tt.wantReferer)
 		}
+	}
+}
+
+func TestMultiStreamDownload(t *testing.T) {
+	// Mock server that returns continuous binary stream
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, err := w.Write(buf)
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	sizeLimit := int64(4 * 1024 * 1024) // 4MB
+	threads := 4
+	var bytesTransferred int64
+	var samples []float64
+	var progressCalls int64
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	progressCb := func(u ProgressUpdate) {
+		atomic.AddInt64(&progressCalls, 1)
+		if u.Phase != "download" {
+			t.Errorf("unexpected phase in progress: %s", u.Phase)
+		}
+		if u.Direction != DirectionDownload {
+			t.Errorf("unexpected direction: %s", u.Direction)
+		}
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, deadline, threads, &bytesTransferred, &samples, "test-multi", progressCb)
+	if err != nil {
+		t.Fatalf("executeDownload failed: %v", err)
+	}
+
+	if bytesTransferred != sizeLimit {
+		t.Errorf("bytesTransferred = %d, want exact %d", bytesTransferred, sizeLimit)
+	}
+
+	if len(samples) == 0 {
+		t.Errorf("expected samples to be populated, got 0")
+	}
+	for i, s := range samples {
+		if s <= 0 {
+			t.Errorf("sample[%d] bps = %f, want > 0", i, s)
+		}
+	}
+}
+
+func TestMultiStreamDownloadTimeout(t *testing.T) {
+	// Mock server that hangs until client cancels
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	sizeLimit := int64(10 * 1024 * 1024)
+	threads := 4
+	var bytesTransferred int64
+	var samples []float64
+
+	// Short timeout of 150ms
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	deadline := time.Now().Add(150 * time.Millisecond)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, deadline, threads, &bytesTransferred, &samples, "test-timeout", nil)
+	// Timeout should terminate gracefully without deadlock
+	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSingleStreamDownload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, err := w.Write(buf)
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	sizeLimit := int64(2 * 1024 * 1024) // 2MB
+	threads := 1
+	var bytesTransferred int64
+	var samples []float64
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	deadline := time.Now().Add(5 * time.Second)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, deadline, threads, &bytesTransferred, &samples, "test-single", nil)
+	if err != nil {
+		t.Fatalf("executeDownload single failed: %v", err)
+	}
+
+	if bytesTransferred != sizeLimit {
+		t.Errorf("bytesTransferred = %d, want exact %d", bytesTransferred, sizeLimit)
+	}
+	if len(samples) == 0 {
+		t.Errorf("expected samples to be populated, got 0")
 	}
 }
