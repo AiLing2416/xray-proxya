@@ -377,6 +377,13 @@ func executeDownloadSingle(
 		buf := make([]byte, defaultChunkSize)
 		streamDone := false
 		for !streamDone {
+			select {
+			case <-ctx.Done():
+				resp.Body.Close()
+				cancel()
+				return nil
+			default:
+			}
 			if time.Now().After(deadline) {
 				resp.Body.Close()
 				cancel()
@@ -533,6 +540,14 @@ func executeDownloadMulti(
 
 				chunkDone := false
 				for !chunkDone {
+					select {
+					case <-ctx.Done():
+						resp.Body.Close()
+						cancel()
+						return
+					default:
+					}
+
 					if time.Now().After(deadline) {
 						resp.Body.Close()
 						cancel()

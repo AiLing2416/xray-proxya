@@ -3,7 +3,9 @@ package relayspeed
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -13,11 +15,19 @@ const (
 	maxAdaptiveBytes      int64   = 100 * 1024 * 1024  // 100MB safe upper bound
 	defaultTargetDuration float64 = 2.5                // 2.5 seconds target steady-state duration
 	probeTimeout                  = 4 * time.Second
+	MaxAutoTransferBytes  int64   = 240 * 1024 * 1024  // 240MB cumulative budget
+)
+
+var (
+	AutoThreadLadder   = []int{1, 2, 4, 6, 8}
+	MinSustainDuration = 3500 * time.Millisecond // 3.5s minimum sustain duration before convergence
+	ConvergenceWindow  = 1500 * time.Millisecond // 1.5s moving window for CV check
+	MaxCV              = 0.06                    // CV <= 6% relative fluctuation
+	MaxMeanDelta       = 0.05                    // Moving avg delta < 5%
+	MaxAutoDuration    = 10 * time.Second        // Global safety upper bound
 )
 
 // ProbeBandwidth sends a lightweight ~1MB request to estimate node bandwidth and round-trip time.
-// It sets a short timeout (4s). If the probe does not complete 1MB within timeout, it estimates
-// bandwidth from the partially received bytes and elapsed time without deadlocking or failing.
 func ProbeBandwidth(ctx context.Context, client *http.Client, provider Provider) (bps float64, rtt time.Duration, err error) {
 	if client == nil || provider == nil {
 		return 0, 0, fmt.Errorf("nil client or provider")
@@ -96,20 +106,159 @@ func CalculateAdaptiveSize(probeBps float64, targetDurationSec float64) int64 {
 	return targetBytes
 }
 
-var AutoThreadLadder = []int{1, 2, 4, 6, 8}
+// SelectInitialConcurrency determines starting concurrency based on probe speed and RTT.
+func SelectInitialConcurrency(probeBps float64, rtt time.Duration) int {
+	const mbps = 1_000_000.0
+	speedMbps := probeBps / mbps
 
-const (
-	MaxAutoTransferBytes      int64   = 240 * 1024 * 1024 // 240MB cumulative limit
-	InitialStepBytes          int64   = 5 * 1024 * 1024   // 5MB initial step (1 stream)
-	MinPerThreadChunkBytes    int64   = 2 * 1024 * 1024   // 2MB min per stream
-	SpeedImprovementThreshold float64 = 0.12              // 12% improvement required to escalate
-)
+	if speedMbps >= 100 {
+		return 6
+	}
+	if speedMbps >= 50 || (speedMbps >= 30 && rtt > 80*time.Millisecond) {
+		return 4
+	}
+	if speedMbps >= 30 || rtt > 100*time.Millisecond {
+		return 3
+	}
+	if speedMbps >= 10 {
+		return 2
+	}
+	if rtt <= 50*time.Millisecond && speedMbps < 5 {
+		return 1
+	}
+	return 2
+}
 
-// RunAdaptiveDownload performs active concurrency & size escalation probing.
-// It steps through 1, 2, 4, 6, 8 threads, dynamically adjusting test chunk size.
-// If a higher thread count achieves higher speed (>12% gain), it continues to escalate.
-// Once speed plateaus or 8 threads / 240MB cumulative transfer is reached, it locks in
-// the converged stable throughput and optimal thread count.
+type timeSample struct {
+	t   time.Time
+	bps float64
+}
+
+// ConvergenceDetector tracks continuous throughput samples and evaluates whether steady-state
+// convergence has been reached using Coefficient of Variation (CV = sigma / mu) and window moving averages.
+type ConvergenceDetector struct {
+	mu             sync.Mutex
+	minDuration    time.Duration
+	windowDuration time.Duration
+	maxCV          float64
+	maxMeanDelta   float64
+	samples        []timeSample
+	startTime      time.Time
+}
+
+func NewConvergenceDetector(minDuration, windowDuration time.Duration, maxCV, maxMeanDelta float64) *ConvergenceDetector {
+	if minDuration <= 0 {
+		minDuration = MinSustainDuration
+	}
+	if windowDuration <= 0 {
+		windowDuration = ConvergenceWindow
+	}
+	if maxCV <= 0 {
+		maxCV = MaxCV
+	}
+	if maxMeanDelta <= 0 {
+		maxMeanDelta = MaxMeanDelta
+	}
+	return &ConvergenceDetector{
+		minDuration:    minDuration,
+		windowDuration: windowDuration,
+		maxCV:          maxCV,
+		maxMeanDelta:   maxMeanDelta,
+	}
+}
+
+func (cd *ConvergenceDetector) Reset() {
+	cd.mu.Lock()
+	defer cd.mu.Unlock()
+	cd.samples = nil
+	cd.startTime = time.Time{}
+}
+
+// AddSample evaluates steady-state convergence upon each throughput sample.
+// Returns converged (bool), cv (float64), stability (float64 percentage 0~100).
+func (cd *ConvergenceDetector) AddSample(t time.Time, bps float64) (converged bool, cv float64, stability float64) {
+	if bps <= 0 || math.IsNaN(bps) || math.IsInf(bps, 0) {
+		return false, 0, 0
+	}
+
+	cd.mu.Lock()
+	defer cd.mu.Unlock()
+
+	if cd.startTime.IsZero() {
+		cd.startTime = t
+	}
+
+	cd.samples = append(cd.samples, timeSample{t: t, bps: bps})
+	elapsed := t.Sub(cd.startTime)
+
+	cutoff := t.Add(-cd.windowDuration)
+	var window []float64
+	for i := len(cd.samples) - 1; i >= 0; i-- {
+		if cd.samples[i].t.Before(cutoff) {
+			break
+		}
+		window = append(window, cd.samples[i].bps)
+	}
+
+	n := len(window)
+	if n < 4 {
+		return false, 0, 0
+	}
+
+	var sum float64
+	for _, v := range window {
+		sum += v
+	}
+	mean := sum / float64(n)
+	if mean <= 0 {
+		return false, 0, 0
+	}
+
+	var varSum float64
+	for _, v := range window {
+		diff := v - mean
+		varSum += diff * diff
+	}
+	stdDev := math.Sqrt(varSum / float64(n))
+	cv = stdDev / mean
+
+	stability = math.Max(0, math.Min(100, (1.0-cv)*100.0))
+
+	if elapsed < cd.minDuration {
+		return false, cv, stability
+	}
+
+	if cv <= cd.maxCV {
+		return true, cv, stability
+	}
+
+	if n >= 6 {
+		mid := n / 2
+		var sum1, sum2 float64
+		for i := 0; i < mid; i++ {
+			sum2 += window[i]
+		}
+		for i := mid; i < n; i++ {
+			sum1 += window[i]
+		}
+		m1 := sum1 / float64(n-mid)
+		m2 := sum2 / float64(mid)
+		if m1 > 0 {
+			delta := math.Abs(m2-m1) / m1
+			if delta < cd.maxMeanDelta {
+				return true, cv, stability
+			}
+		}
+	}
+
+	return false, cv, stability
+}
+
+// RunAdaptiveDownload performs steady-state adaptive download bandwidth testing using a 3-phase model:
+// Phase 1 (Base Probe): Measures baseline speed and RTT (~1s / 1MB).
+// Phase 2 (Concurrency Selection): Intelligently selects initial concurrency.
+// Phase 3 (Sustained Stream & Convergence): Runs sustained multi-stream download (4~6s), evaluating
+// real-time CV variance and moving average stability until convergence or 240MB budget ceiling.
 func RunAdaptiveDownload(
 	ctx context.Context,
 	client *http.Client,
@@ -124,165 +273,136 @@ func RunAdaptiveDownload(
 	}
 
 	startTime := time.Now()
+	var cumulativeBytes int64
+
+	// Phase 1: Base Probe
+	if progressCb != nil {
+		progressCb(ProgressUpdate{
+			Alias:     alias,
+			Phase:     "auto_probe",
+			Direction: DirectionDownload,
+		})
+	}
+
+	probeBps, rtt, probeErr := ProbeBandwidth(ctx, client, provider)
+	if probeErr != nil {
+		if ctx.Err() != nil {
+			return nil, 0, ctx.Err()
+		}
+		probeBps = 10 * 1000 * 1000 // 10 Mbps fallback baseline
+		rtt = 50 * time.Millisecond
+	} else {
+		cumulativeBytes += defaultProbeBytes
+	}
+
+	// Phase 2: Concurrency Selection
+	threads := SelectInitialConcurrency(probeBps, rtt)
+	if progressCb != nil {
+		progressCb(ProgressUpdate{
+			Alias:       alias,
+			Phase:       "auto_ramp",
+			Direction:   DirectionDownload,
+			StepThreads: threads,
+			CurrentBps:  probeBps,
+			BytesDone:   cumulativeBytes,
+			TotalBytes:  MaxAutoTransferBytes,
+		})
+	}
+
+	// Phase 3: Sustained Stream & Convergence Monitoring
+	remBudget := MaxAutoTransferBytes - cumulativeBytes
+	if remBudget <= 0 {
+		remBudget = 10 * 1024 * 1024
+	}
+
+	detector := NewConvergenceDetector(MinSustainDuration, ConvergenceWindow, MaxCV, MaxMeanDelta)
+
+	sustainCtx, cancelSustain := context.WithTimeout(ctx, MaxAutoDuration)
+	defer cancelSustain()
+
+	sustainStart := time.Now()
 	var (
-		cumulativeBytes int64
-		bestMetrics     *SpeedMetrics
-		bestThreads     = 1
-		prevSpeed       = 0.0
+		converged  bool
+		lastUpdate time.Time
+		convMu     sync.Mutex
 	)
 
-	for stepIdx, threads := range AutoThreadLadder {
-		select {
-		case <-ctx.Done():
-			if bestMetrics != nil {
-				goto FINISH
-			}
-			return nil, 0, ctx.Err()
-		default:
+	internalCb := func(u ProgressUpdate) {
+		now := time.Now()
+		isConv, _, stability := detector.AddSample(now, u.CurrentBps)
+
+		phase := "auto_sustaining"
+		if now.Sub(sustainStart) < 1500*time.Millisecond {
+			phase = "auto_ramp"
 		}
 
-		// Calculate step size
-		var stepSize int64
-		if stepIdx == 0 {
-			stepSize = InitialStepBytes // 5MB
-		} else {
-			// Estimate size for ~2.0 seconds based on previous measured speed
-			est := int64(prevSpeed * 2.0 / 8.0)
-			minReq := int64(threads) * MinPerThreadChunkBytes
-			if est < minReq {
-				est = minReq
-			}
-			stepSize = est
+		convMu.Lock()
+		if isConv && !converged {
+			converged = true
+			phase = "auto_converged"
+			cancelSustain()
 		}
-
-		// Enforce cumulative 240MB budget
-		remBudget := MaxAutoTransferBytes - cumulativeBytes
-		minReq := int64(threads) * MinPerThreadChunkBytes
-		if remBudget < minReq && bestMetrics != nil {
-			if progressCb != nil {
-				progressCb(ProgressUpdate{
-					Alias:       alias,
-					Phase:       "auto_step_stable",
-					StepThreads: bestThreads,
-					StepMessage: fmt.Sprintf("Budget ceiling reached (%s / 240MB)", FormatDecimalBytes(cumulativeBytes)),
-				})
-			}
-			break
+		if cumulativeBytes+u.BytesDone >= MaxAutoTransferBytes && !converged {
+			cancelSustain()
 		}
-		if stepSize > remBudget {
-			stepSize = remBudget
-		}
+		convMu.Unlock()
 
 		if progressCb != nil {
-			progressCb(ProgressUpdate{
-				Alias:       alias,
-				Phase:       "auto_step_testing",
-				Direction:   DirectionDownload,
-				StepThreads: threads,
-				TotalBytes:  stepSize,
-				BytesDone:   cumulativeBytes,
-			})
-		}
-
-		// Run download for this step (fixedSize=true so it terminates at stepSize)
-		stepMetrics, err := runBandwidthTest(ctx, client, prober, provider, DirectionDownload, stepSize, 0, true, threads, idleLat, alias, nil)
-		if err != nil {
-			if bestMetrics != nil {
-				break
-			}
-			return nil, 0, fmt.Errorf("adaptive step with %d threads failed: %w", threads, err)
-		}
-
-		cumulativeBytes += stepMetrics.BytesTransferred
-		curSpeed := stepMetrics.AvgSpeedBps
-
-		if stepIdx == 0 {
-			bestMetrics = stepMetrics
-			bestThreads = threads
-			prevSpeed = curSpeed
-			if progressCb != nil {
+			if phase == "auto_converged" || now.Sub(lastUpdate) >= 150*time.Millisecond {
+				lastUpdate = now
 				progressCb(ProgressUpdate{
 					Alias:       alias,
-					Phase:       "auto_step_result",
+					Phase:       phase,
 					Direction:   DirectionDownload,
 					StepThreads: threads,
-					CurrentBps:  curSpeed,
-					TotalBytes:  stepSize,
-					StepGain:    0,
-					StepMessage: "Baseline established, escalating",
+					BytesDone:   cumulativeBytes + u.BytesDone,
+					TotalBytes:  MaxAutoTransferBytes,
+					CurrentBps:  u.CurrentBps,
+					Elapsed:     time.Since(startTime),
+					StepGain:    stability,
 				})
 			}
-			continue
-		}
-
-		gain := (curSpeed - prevSpeed) / prevSpeed
-		if gain >= SpeedImprovementThreshold {
-			// Significant speedup! Concurrency is unlocking bandwidth!
-			bestMetrics = stepMetrics
-			bestThreads = threads
-			prevSpeed = curSpeed
-
-			if progressCb != nil {
-				progressCb(ProgressUpdate{
-					Alias:       alias,
-					Phase:       "auto_step_result",
-					Direction:   DirectionDownload,
-					StepThreads: threads,
-					CurrentBps:  curSpeed,
-					TotalBytes:  stepSize,
-					StepGain:    gain,
-					StepMessage: fmt.Sprintf("↑ %.1f%% gain, escalating", gain*100),
-				})
-			}
-
-			// If already at maximum threads (8) or remaining budget exhausted
-			if stepIdx == len(AutoThreadLadder)-1 || cumulativeBytes >= MaxAutoTransferBytes {
-				break
-			}
-		} else {
-			// Plateau or regression detected! Reached stable rate.
-			if curSpeed > bestMetrics.AvgSpeedBps {
-				bestMetrics = stepMetrics
-				bestThreads = threads
-			}
-			if progressCb != nil {
-				statusMsg := "Plateau detected"
-				if gain < 0 {
-					statusMsg = "Speed peaked"
-				}
-				progressCb(ProgressUpdate{
-					Alias:       alias,
-					Phase:       "auto_step_stable",
-					Direction:   DirectionDownload,
-					StepThreads: threads,
-					CurrentBps:  curSpeed,
-					TotalBytes:  stepSize,
-					StepGain:    gain,
-					StepMessage: fmt.Sprintf("%s (gain: %.1f%%), reached stable rate", statusMsg, gain*100),
-				})
-			}
-			break
 		}
 	}
 
-FINISH:
-	if bestMetrics == nil {
+	metrics, err := runBandwidthTest(
+		sustainCtx, client, prober, provider, DirectionDownload,
+		remBudget, int(MaxAutoDuration.Seconds()), false, threads, idleLat, alias, internalCb,
+	)
+
+	if ctx.Err() != nil && !converged {
+		return nil, 0, ctx.Err()
+	}
+
+	if metrics == nil {
+		if err != nil {
+			return nil, 0, err
+		}
 		return nil, 0, fmt.Errorf("adaptive download produced no metrics")
 	}
 
-	bestMetrics.BytesTransferred = cumulativeBytes
-	bestMetrics.DurationMs = time.Since(startTime).Milliseconds()
+	if metrics.BytesTransferred > remBudget {
+		metrics.BytesTransferred = remBudget
+	}
+	cumulativeBytes += metrics.BytesTransferred
+	if cumulativeBytes > MaxAutoTransferBytes {
+		cumulativeBytes = MaxAutoTransferBytes
+	}
+	metrics.BytesTransferred = cumulativeBytes
+	metrics.DurationMs = time.Since(startTime).Milliseconds()
 
 	if progressCb != nil {
 		progressCb(ProgressUpdate{
 			Alias:       alias,
 			Phase:       "auto_converged",
 			Direction:   DirectionDownload,
-			StepThreads: bestThreads,
-			CurrentBps:  bestMetrics.AvgSpeedBps,
+			StepThreads: threads,
+			CurrentBps:  metrics.AvgSpeedBps,
 			BytesDone:   cumulativeBytes,
+			TotalBytes:  MaxAutoTransferBytes,
+			Elapsed:     time.Since(startTime),
 		})
 	}
 
-	return bestMetrics, bestThreads, nil
+	return metrics, threads, nil
 }
