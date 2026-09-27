@@ -602,3 +602,49 @@ func TestComputeSpeedStats(t *testing.T) {
 		t.Errorf("expected all fallbacks on all zeros, got avg=%f, peak=%f, low20=%f", avgZ, peakZ, low20Z)
 	}
 }
+
+func TestMultiStreamDurationScheduling(t *testing.T) {
+	// Mock server that returns chunks continuously
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		buf := make([]byte, 64*1024)
+		for i := 0; i < 16; i++ {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, _ = w.Write(buf)
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	durationSec := 1
+	deadline := time.Now().Add(200 * time.Millisecond)
+	threads := 4
+	var bytesTransferred int64
+	var samples []float64
+
+	start := time.Now()
+	err = executeDownload(ctx, server.Client(), customProvider, 1024*1024, durationSec, false, deadline, threads, &bytesTransferred, &samples, "test-multi-dur", nil)
+	elapsed := time.Since(start)
+
+	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if elapsed < 180*time.Millisecond {
+		t.Errorf("test terminated too early: elapsed = %v, expected >= 180ms", elapsed)
+	}
+	if bytesTransferred <= 0 {
+		t.Errorf("bytesTransferred = %d, want > 0", bytesTransferred)
+	}
+}
