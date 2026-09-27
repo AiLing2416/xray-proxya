@@ -70,7 +70,7 @@ ReadWritePaths=%s %s
 
 [Install]
 WantedBy=%s
-`, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, assetDir, capabilityLines, wantedBy)
+`, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, workDir, capabilityLines, wantedBy)
 }
 
 // BuildSubServiceContent generates the systemd unit file content for the subscription service.
@@ -106,7 +106,7 @@ ReadWritePaths=%s %s
 
 [Install]
 WantedBy=%s
-`, userLine, binPath, binPath, workDir, assetDir, configDir, assetDir, capabilityLines, wantedBy)
+`, userLine, binPath, binPath, workDir, assetDir, configDir, workDir, capabilityLines, wantedBy)
 }
 
 // BuildPathdServiceContent generates the systemd unit file content for the PathLink ICMP agent.
