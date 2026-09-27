@@ -648,3 +648,56 @@ func TestMultiStreamDurationScheduling(t *testing.T) {
 		t.Errorf("bytesTransferred = %d, want > 0", bytesTransferred)
 	}
 }
+
+func TestRunAdaptiveDownload(t *testing.T) {
+	// Mock server that streams data
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		buf := make([]byte, 32*1024)
+		for {
+			select {
+			case <-r.Context().Done():
+				return
+			default:
+			}
+			_, err := w.Write(buf)
+			if err != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var events []string
+	cb := func(u ProgressUpdate) {
+		events = append(events, u.Phase)
+	}
+
+	metrics, bestThreads, err := RunAdaptiveDownload(ctx, server.Client(), nil, customProvider, 10*time.Millisecond, "test-adaptive", cb)
+	if err != nil {
+		t.Fatalf("RunAdaptiveDownload failed: %v", err)
+	}
+	if metrics == nil {
+		t.Fatalf("expected metrics, got nil")
+	}
+	if metrics.AvgSpeedBps <= 0 {
+		t.Errorf("expected AvgSpeedBps > 0, got %f", metrics.AvgSpeedBps)
+	}
+	if bestThreads < 1 || bestThreads > 8 {
+		t.Errorf("bestThreads = %d, expected between 1 and 8", bestThreads)
+	}
+	if metrics.BytesTransferred > MaxAutoTransferBytes {
+		t.Errorf("BytesTransferred = %d, exceeded MaxAutoTransferBytes %d", metrics.BytesTransferred, MaxAutoTransferBytes)
+	}
+	if len(events) == 0 {
+		t.Errorf("expected progress events, got none")
+	}
+}

@@ -66,48 +66,29 @@ func RunSpeed(
 	runDL := opts.Direction == DirectionDownload || opts.Direction == DirectionBoth || opts.Direction == ""
 	runUL := opts.Direction == DirectionUpload || opts.Direction == DirectionBoth
 
-	// 1.5 Warm-up Probe & Adaptive Size Calculation
-	if opts.Auto && !opts.FixedSize && runDL {
-		if progressCb != nil {
-			progressCb(ProgressUpdate{
-				Alias: alias,
-				Phase: "probe",
-			})
-		}
-		pStart := time.Now()
-		probeBps, _, pErr := ProbeBandwidth(ctx, client, provider)
-		if pErr == nil && probeBps > 0 {
-			targetSec := defaultTargetDuration
-			if opts.DurationSeconds > 0 {
-				targetSec = float64(opts.DurationSeconds)
-			}
-			adaptiveBytes := CalculateAdaptiveSize(probeBps, targetSec)
-			res.AdaptiveSizeBytes = adaptiveBytes
-			res.ProbeDurationMs = time.Since(pStart).Milliseconds()
-			res.ProbeSpeedBps = probeBps
-			opts.SizeBytes = adaptiveBytes
-
-			if progressCb != nil {
-				progressCb(ProgressUpdate{
-					Alias:      alias,
-					Phase:      "adaptive",
-					TotalBytes: adaptiveBytes,
-					CurrentBps: probeBps,
-				})
-			}
-		}
-	}
-
 	// 2. Download Test
 	if runDL {
-		if progressCb != nil {
-			progressCb(ProgressUpdate{
-				Alias:     alias,
-				Phase:     "download",
-				Direction: DirectionDownload,
-			})
+		var dlMetrics *SpeedMetrics
+		var dlErr error
+
+		if opts.Auto && !opts.FixedSize {
+			var bestThreads int
+			dlMetrics, bestThreads, dlErr = RunAdaptiveDownload(ctx, client, prober, provider, idleLat, alias, progressCb)
+			if dlErr == nil && dlMetrics != nil {
+				res.OptimalThreads = bestThreads
+				res.AdaptiveSizeBytes = dlMetrics.BytesTransferred
+			}
+		} else {
+			if progressCb != nil {
+				progressCb(ProgressUpdate{
+					Alias:     alias,
+					Phase:     "download",
+					Direction: DirectionDownload,
+				})
+			}
+			dlMetrics, dlErr = runBandwidthTest(ctx, client, prober, provider, DirectionDownload, opts.SizeBytes, opts.DurationSeconds, opts.FixedSize, opts.Threads, idleLat, alias, progressCb)
 		}
-		dlMetrics, dlErr := runBandwidthTest(ctx, client, prober, provider, DirectionDownload, opts.SizeBytes, opts.DurationSeconds, opts.FixedSize, opts.Threads, idleLat, alias, progressCb)
+
 		if dlErr != nil {
 			if opts.Direction == DirectionDownload {
 				res.Error = fmt.Sprintf("download failed: %v", dlErr)

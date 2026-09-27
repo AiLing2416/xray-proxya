@@ -37,10 +37,15 @@ func RenderSingleCard(r *SpeedResult) string {
 	var durationDL, durationUL time.Duration
 
 	if r.Download != nil {
-		sb.WriteString(fmt.Sprintf("Download  : %s (Peak: %s | Low 20%%: %s)\n",
+		streamsSuffix := ""
+		if r.OptimalThreads > 1 {
+			streamsSuffix = fmt.Sprintf(" | Streams: %d", r.OptimalThreads)
+		}
+		sb.WriteString(fmt.Sprintf("Download  : %s (Peak: %s | Low 20%%: %s%s)\n",
 			FormatBitrate(r.Download.AvgSpeedBps),
 			FormatBitrate(r.Download.PeakSpeedBps),
 			FormatBitrate(r.Download.Low20SpeedBps),
+			streamsSuffix,
 		))
 		idleLat = r.Download.IdleLatencyAvg
 		loadLat = r.Download.LoadLatencyAvg

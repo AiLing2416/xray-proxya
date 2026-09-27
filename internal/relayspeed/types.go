@@ -32,6 +32,7 @@ type SpeedResult struct {
 	TotalDurationMs   int64         `json:"total_duration_ms"`
 	Error             string        `json:"error,omitempty"`
 	AdaptiveSizeBytes int64         `json:"adaptive_size_bytes,omitempty"`
+	OptimalThreads    int           `json:"optimal_threads,omitempty"`
 	ProbeDurationMs   int64         `json:"probe_duration_ms,omitempty"`
 	ProbeSpeedBps     float64       `json:"probe_speed_bps,omitempty"`
 }
@@ -50,12 +51,15 @@ type Options struct {
 
 type ProgressUpdate struct {
 	Alias       string
-	Phase       string // "idle_ping", "download", "upload", "done", "error"
+	Phase       string // "idle_ping", "download", "upload", "done", "error", "auto_step"
 	Direction   Direction
 	BytesDone   int64
 	TotalBytes  int64
 	CurrentBps  float64
 	Elapsed     time.Duration
+	StepThreads int
+	StepGain    float64
+	StepMessage string
 }
 
 type ProgressCallback func(update ProgressUpdate)

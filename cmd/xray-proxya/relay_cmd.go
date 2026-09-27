@@ -756,23 +756,25 @@ var speedOutboundCmd = &cobra.Command{
 
 			var progressCb relayspeed.ProgressCallback
 			if !relaySpeedJSON {
-				printed := false
 				providerName := opts.Provider
 				if providerName == "" {
 					providerName = "cloudflare"
 				}
 				if !opts.Auto {
 					fmt.Printf("🚀 Running speed test for [%s] (Provider: %s)...\n", target, providerName)
-					printed = true
+				} else {
+					fmt.Printf("🚀 Auto-probing bandwidth & concurrency for [%s] (Ladder: 1, 2, 4, 6, 8 streams, max 240MB)...\n", target)
 				}
 				progressCb = func(u relayspeed.ProgressUpdate) {
-					if !printed && u.Phase == "adaptive" {
-						fmt.Printf("🚀 Running speed test for [%s] (Provider: %s, Auto-adaptive size: %s)...\n",
-							target, providerName, relayspeed.FormatDecimalBytes(u.TotalBytes))
-						printed = true
-					} else if !printed && u.Phase == "download" {
-						fmt.Printf("🚀 Running speed test for [%s] (Provider: %s)...\n", target, providerName)
-						printed = true
+					switch u.Phase {
+					case "auto_step_testing":
+						fmt.Printf("  ⚡ Testing %d stream(s) (%s)...", u.StepThreads, relayspeed.FormatDecimalBytes(u.TotalBytes))
+					case "auto_step_result":
+						fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
+					case "auto_step_stable":
+						fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
+					case "auto_converged":
+						fmt.Printf("✅ Converged at %d stream(s): %s\n\n", u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps))
 					}
 				}
 			}
@@ -824,7 +826,7 @@ var speedOutboundCmd = &cobra.Command{
 			}
 			autoNotice := ""
 			if opts.Auto {
-				autoNotice = ", Auto-adaptive mode"
+				autoNotice = ", Auto-concurrency stepping"
 			}
 			fmt.Printf("🚀 Starting sequential speed test queue (%d nodes, Provider: %s%s)...\n\n", len(targets), providerName, autoNotice)
 		}
@@ -832,13 +834,15 @@ var speedOutboundCmd = &cobra.Command{
 		var progressCb relayspeed.ProgressCallback
 		if !relaySpeedJSON && opts.Auto {
 			progressCb = func(u relayspeed.ProgressUpdate) {
-				if u.Phase == "adaptive" {
-					providerName := opts.Provider
-					if providerName == "" {
-						providerName = "cloudflare"
-					}
-					fmt.Printf("🚀 Running speed test for [%s] (Provider: %s, Auto-adaptive size: %s)...\n",
-						u.Alias, providerName, relayspeed.FormatDecimalBytes(u.TotalBytes))
+				switch u.Phase {
+				case "auto_step_testing":
+					fmt.Printf("  [%s] ⚡ Testing %d stream(s) (%s)...", u.Alias, u.StepThreads, relayspeed.FormatDecimalBytes(u.TotalBytes))
+				case "auto_step_result":
+					fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
+				case "auto_step_stable":
+					fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
+				case "auto_converged":
+					fmt.Printf("  [%s] ✅ Converged at %d stream(s): %s\n\n", u.Alias, u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps))
 				}
 			}
 		}
