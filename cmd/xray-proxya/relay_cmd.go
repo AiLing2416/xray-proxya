@@ -775,6 +775,7 @@ var speedOutboundCmd = &cobra.Command{
 				out, _ := relayspeed.RenderJSON(res)
 				fmt.Println(out)
 			} else {
+				fmt.Println()
 				fmt.Print(relayspeed.RenderSingleCard(res))
 			}
 			return nil
@@ -806,6 +807,14 @@ var speedOutboundCmd = &cobra.Command{
 			}
 		}
 
+		if !relaySpeedJSON {
+			providerName := opts.Provider
+			if providerName == "" {
+				providerName = "cloudflare"
+			}
+			fmt.Printf("Starting speed test queue (%d nodes, Provider: %s)...\n\n", len(targets), providerName)
+		}
+
 		renderer := relayspeed.NewProgressRenderer(os.Stdout, isTTY, relaySpeedJSON)
 		defer renderer.Stop()
 
@@ -834,6 +843,7 @@ var speedOutboundCmd = &cobra.Command{
 			out, _ := relayspeed.RenderJSON(results)
 			fmt.Println(out)
 		} else {
+			fmt.Println()
 			fmt.Print(relayspeed.RenderTable(results))
 		}
 		return nil
