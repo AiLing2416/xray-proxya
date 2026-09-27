@@ -378,7 +378,6 @@ func RunAdaptiveBandwidthTest(
 	sustainCtx, cancelSustain := context.WithTimeout(ctx, MaxAutoDuration)
 	defer cancelSustain()
 
-	sustainStart := time.Now()
 	var (
 		converged  bool
 		lastUpdate time.Time
@@ -390,9 +389,6 @@ func RunAdaptiveBandwidthTest(
 		isConv, _, stability := detector.AddSample(now, u.CurrentBps)
 
 		phase := "auto_sustaining"
-		if now.Sub(sustainStart) < 1500*time.Millisecond {
-			phase = "auto_ramp"
-		}
 
 		convMu.Lock()
 		if isConv && !converged {

@@ -333,7 +333,7 @@ func executeDownloadSingle(
 	chunkSize := sizeLimit
 	if isDurationMode {
 		chunkSize = 25 * 1024 * 1024 // 25MB per chunk in duration mode
-		if sizeLimit > chunkSize {
+		if sizeLimit > 0 && sizeLimit < chunkSize {
 			chunkSize = sizeLimit
 		}
 	}
@@ -462,8 +462,8 @@ func executeDownloadMulti(
 
 	chunkReqBytes := int64(defaultMultiStreamChunkSize)
 	if isDurationMode {
-		chunkReqBytes = 25 * 1024 * 1024 // 25MB per chunk in duration mode
-		if sizeLimit > chunkReqBytes {
+		chunkReqBytes = 10 * 1024 * 1024 // 10MB per chunk in duration mode
+		if sizeLimit > 0 && sizeLimit < chunkReqBytes {
 			chunkReqBytes = sizeLimit
 		}
 	} else if sizeLimit > 0 {
@@ -731,7 +731,7 @@ func executeUploadSingle(
 	chunkSize := sizeLimit
 	if isDurationMode {
 		chunkSize = 10 * 1024 * 1024 // 10MB per chunk in duration mode
-		if sizeLimit > chunkSize {
+		if sizeLimit > 0 && sizeLimit < chunkSize {
 			chunkSize = sizeLimit
 		}
 	}
@@ -813,10 +813,9 @@ func executeUploadMulti(
 
 	isDurationMode := durationSec > 0 && !fixedSize
 
-	chunkReqBytes := int64(defaultMultiStreamChunkSize)
+	chunkReqBytes := int64(5 * 1024 * 1024) // 5MB per chunk in duration mode
 	if isDurationMode {
-		chunkReqBytes = 10 * 1024 * 1024
-		if sizeLimit > chunkReqBytes {
+		if sizeLimit > 0 && sizeLimit < chunkReqBytes {
 			chunkReqBytes = sizeLimit
 		}
 	} else if sizeLimit > 0 {
