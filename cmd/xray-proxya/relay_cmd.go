@@ -46,6 +46,7 @@ var (
 	relaySpeedLinkDL     string
 	relaySpeedLinkUL     string
 	relaySpeedThreads    int
+	relaySpeedAuto       bool
 )
 
 var outboundCmd = &cobra.Command{
@@ -723,6 +724,7 @@ var speedOutboundCmd = &cobra.Command{
 		}
 
 		fixedSize := cmd.Flags().Changed("size")
+		autoMode := relaySpeedAuto && !fixedSize
 
 		opts := relayspeed.Options{
 			Provider:          relaySpeedProvider,
@@ -732,6 +734,7 @@ var speedOutboundCmd = &cobra.Command{
 			Threads:           relaySpeedThreads,
 			CustomDownloadURL: customDL,
 			CustomUploadURL:   customUL,
+			Auto:              autoMode,
 			FixedSize:         fixedSize,
 		}
 
@@ -751,15 +754,30 @@ var speedOutboundCmd = &cobra.Command{
 				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
+			var progressCb relayspeed.ProgressCallback
 			if !relaySpeedJSON {
+				printed := false
 				providerName := opts.Provider
 				if providerName == "" {
 					providerName = "cloudflare"
 				}
-				fmt.Printf("🚀 Running speed test for [%s] (Provider: %s)...\n", target, providerName)
+				if !opts.Auto {
+					fmt.Printf("🚀 Running speed test for [%s] (Provider: %s)...\n", target, providerName)
+					printed = true
+				}
+				progressCb = func(u relayspeed.ProgressUpdate) {
+					if !printed && u.Phase == "adaptive" {
+						fmt.Printf("🚀 Running speed test for [%s] (Provider: %s, Auto-adaptive size: %s)...\n",
+							target, providerName, relayspeed.FormatDecimalBytes(u.TotalBytes))
+						printed = true
+					} else if !printed && u.Phase == "download" {
+						fmt.Printf("🚀 Running speed test for [%s] (Provider: %s)...\n", target, providerName)
+						printed = true
+					}
+				}
 			}
 
-			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, nil)
+			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, progressCb)
 			if err != nil {
 				return fmt.Errorf("❌ Error: %w", err)
 			}
@@ -804,10 +822,28 @@ var speedOutboundCmd = &cobra.Command{
 			if providerName == "" {
 				providerName = "cloudflare"
 			}
-			fmt.Printf("🚀 Starting sequential speed test queue (%d nodes, Provider: %s)...\n\n", len(targets), providerName)
+			autoNotice := ""
+			if opts.Auto {
+				autoNotice = ", Auto-adaptive mode"
+			}
+			fmt.Printf("🚀 Starting sequential speed test queue (%d nodes, Provider: %s%s)...\n\n", len(targets), providerName, autoNotice)
 		}
 
-		results, err := relayspeed.RunSpeedQueue(ctx, cfg, targets, opts, nil)
+		var progressCb relayspeed.ProgressCallback
+		if !relaySpeedJSON && opts.Auto {
+			progressCb = func(u relayspeed.ProgressUpdate) {
+				if u.Phase == "adaptive" {
+					providerName := opts.Provider
+					if providerName == "" {
+						providerName = "cloudflare"
+					}
+					fmt.Printf("🚀 Running speed test for [%s] (Provider: %s, Auto-adaptive size: %s)...\n",
+						u.Alias, providerName, relayspeed.FormatDecimalBytes(u.TotalBytes))
+				}
+			}
+		}
+
+		results, err := relayspeed.RunSpeedQueue(ctx, cfg, targets, opts, progressCb)
 		if err != nil {
 			return fmt.Errorf("❌ Error: %w", err)
 		}
@@ -1163,6 +1199,7 @@ func init() {
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedDownload, "download", "d", false, "Run a download speed test")
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedUpload, "upload", "u", false, "Run an upload speed test")
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedBoth, "both", "b", false, "Run both download and upload speed tests")
+	speedOutboundCmd.Flags().BoolVarP(&relaySpeedAuto, "auto", "a", false, "Automatically detect node bandwidth and dynamically adjust test size")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedSize, "size", "s", "25MB", "Maximum total transfer size (e.g. 10MB, 25MB, 50MB, 100MB)")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedTime, "time", "t", "", "Speed test duration limit (e.g. 10s, 15sec, 1m, 1.5m; 0 = single pass)")
 	speedOutboundCmd.Flags().IntVarP(&relaySpeedThreads, "threads", "P", 1, "Number of concurrent download streams (1-16)")
