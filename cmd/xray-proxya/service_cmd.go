@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"xray-proxya/internal/service"
 	"xray-proxya/internal/xray"
 
@@ -97,7 +99,14 @@ func systemctlWrapper(action string) *cobra.Command {
 			}
 			if action == "status" {
 				arguments := []string{"--no-pager", "status", unit}
-				return xray.RunSystemd(arguments...)
+				if err := xray.RunSystemd(arguments...); err != nil {
+					var exitErr *exec.ExitError
+					if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+						return nil
+					}
+					return err
+				}
+				return nil
 			}
 			return service.DefaultManager.ExecuteAction(action, unit, now)
 		},
