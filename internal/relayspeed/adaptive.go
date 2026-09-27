@@ -281,7 +281,9 @@ func (cd *ConvergenceDetector) AddSample(t time.Time, bps float64) (converged bo
 		return true, cv, stability
 	}
 
-	if n >= 6 {
+	// Secondary check: moving average change between consecutive halves < maxMeanDelta,
+	// applicable when CV is within a reasonable plateau envelope (CV <= 2.0 * maxCV).
+	if n >= 6 && cv <= cd.maxCV*2.0 {
 		mid := n / 2
 		var sum1, sum2 float64
 		for i := 0; i < mid; i++ {

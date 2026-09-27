@@ -3,6 +3,7 @@ package relayspeed
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -673,6 +674,15 @@ func TestRunAdaptiveDownload(t *testing.T) {
 		t.Fatalf("failed to create custom provider: %v", err)
 	}
 
+	oldMin := MinSustainDuration
+	oldWin := ConvergenceWindow
+	MinSustainDuration = 200 * time.Millisecond
+	ConvergenceWindow = 100 * time.Millisecond
+	defer func() {
+		MinSustainDuration = oldMin
+		ConvergenceWindow = oldWin
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -687,6 +697,177 @@ func TestRunAdaptiveDownload(t *testing.T) {
 	}
 	if metrics == nil {
 		t.Fatalf("expected metrics, got nil")
+	}
+	if metrics.AvgSpeedBps <= 0 {
+		t.Errorf("expected AvgSpeedBps > 0, got %f", metrics.AvgSpeedBps)
+	}
+	if bestThreads < 1 || bestThreads > 8 {
+		t.Errorf("bestThreads = %d, expected between 1 and 8", bestThreads)
+	}
+	if metrics.BytesTransferred > MaxAutoTransferBytes {
+		t.Errorf("BytesTransferred = %d, exceeded MaxAutoTransferBytes %d", metrics.BytesTransferred, MaxAutoTransferBytes)
+	}
+	if len(events) == 0 {
+		t.Errorf("expected progress events, got none")
+	}
+}
+
+func TestConvergenceDetector(t *testing.T) {
+	t.Run("stable stream converges after minDuration", func(t *testing.T) {
+		detector := NewConvergenceDetector(3500*time.Millisecond, 1500*time.Millisecond, 0.06, 0.05)
+		baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		// Feed stable 100 Mbps samples with tiny +/- 1% jitter every 100ms for 5 seconds
+		var convergedAt time.Duration
+		for i := 0; i <= 50; i++ {
+			ts := baseTime.Add(time.Duration(i*100) * time.Millisecond)
+			noise := float64(i%3-1) * 0.01 * 100_000_000.0
+			speed := 100_000_000.0 + noise
+
+			conv, cv, stability := detector.AddSample(ts, speed)
+			if conv && convergedAt == 0 {
+				convergedAt = time.Duration(i*100) * time.Millisecond
+				if cv > 0.06 {
+					t.Errorf("expected CV <= 0.06 at convergence, got %f", cv)
+				}
+				if stability < 94.0 {
+					t.Errorf("expected stability >= 94%%, got %f", stability)
+				}
+			}
+		}
+
+		if convergedAt == 0 {
+			t.Fatalf("expected stable stream to converge, but it never converged")
+		}
+		if convergedAt < 3500*time.Millisecond {
+			t.Errorf("converged too early at %v, expected >= 3500ms", convergedAt)
+		}
+	})
+
+	t.Run("jittery stream does not converge", func(t *testing.T) {
+		detector := NewConvergenceDetector(3500*time.Millisecond, 1500*time.Millisecond, 0.06, 0.05)
+		baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		// High fluctuation between 30 Mbps and 120 Mbps (CV > 40%)
+		for i := 0; i <= 50; i++ {
+			ts := baseTime.Add(time.Duration(i*100) * time.Millisecond)
+			var speed float64
+			if i%2 == 0 {
+				speed = 30_000_000.0
+			} else {
+				speed = 120_000_000.0
+			}
+
+			conv, cv, _ := detector.AddSample(ts, speed)
+			if conv {
+				t.Fatalf("high-jitter stream unexpectedly converged at sample %d (CV=%f)", i, cv)
+			}
+		}
+	})
+
+	t.Run("stable stream under minDuration does not converge", func(t *testing.T) {
+		detector := NewConvergenceDetector(3500*time.Millisecond, 1500*time.Millisecond, 0.06, 0.05)
+		baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		// Stable stream for only 2 seconds (20 samples)
+		for i := 0; i <= 20; i++ {
+			ts := baseTime.Add(time.Duration(i*100) * time.Millisecond)
+			conv, _, _ := detector.AddSample(ts, 100_000_000.0)
+			if conv {
+				t.Fatalf("converged at %v, before minDuration (3500ms)", time.Duration(i*100)*time.Millisecond)
+			}
+		}
+	})
+
+	t.Run("consecutive moving average delta convergence", func(t *testing.T) {
+		detector := NewConvergenceDetector(2000*time.Millisecond, 1500*time.Millisecond, 0.01, 0.05)
+		baseTime := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		// Samples where CV is ~0.03 (above maxCV 0.01), but moving average delta is < 1% (< maxMeanDelta 0.05)
+		var didConv bool
+		for i := 0; i <= 30; i++ {
+			ts := baseTime.Add(time.Duration(i*100) * time.Millisecond)
+			speed := 50_000_000.0 + float64(i%2)*1_500_000.0
+			conv, _, _ := detector.AddSample(ts, speed)
+			if conv {
+				didConv = true
+				break
+			}
+		}
+		if !didConv {
+			t.Errorf("expected convergence via moving average delta condition")
+		}
+	})
+}
+
+func TestSelectInitialConcurrency(t *testing.T) {
+	tests := []struct {
+		name     string
+		probeBps float64
+		rtt      time.Duration
+		want     int
+	}{
+		{"gigabit_fast", 150_000_000, 20 * time.Millisecond, 6},
+		{"fast_50mbps", 55_000_000, 30 * time.Millisecond, 4},
+		{"medium_high_rtt", 35_000_000, 120 * time.Millisecond, 4},
+		{"medium_low_rtt", 35_000_000, 30 * time.Millisecond, 3},
+		{"standard_15mbps", 15_000_000, 40 * time.Millisecond, 2},
+		{"low_speed_low_rtt", 3_000_000, 30 * time.Millisecond, 1},
+		{"low_speed_high_rtt", 3_000_000, 80 * time.Millisecond, 2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SelectInitialConcurrency(tt.probeBps, tt.rtt)
+			if got != tt.want {
+				t.Errorf("SelectInitialConcurrency(%f, %v) = %d, want %d", tt.probeBps, tt.rtt, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunAdaptiveBandwidthTestUpload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			io.Copy(io.Discard, r.Body)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, server.URL)
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	oldMin := MinSustainDuration
+	oldWin := ConvergenceWindow
+	MinSustainDuration = 200 * time.Millisecond
+	ConvergenceWindow = 100 * time.Millisecond
+	defer func() {
+		MinSustainDuration = oldMin
+		ConvergenceWindow = oldWin
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var events []string
+	cb := func(u ProgressUpdate) {
+		events = append(events, u.Phase)
+	}
+
+	metrics, bestThreads, err := RunAdaptiveBandwidthTest(ctx, server.Client(), nil, customProvider, DirectionUpload, 10*time.Millisecond, "test-upload-adaptive", cb)
+	if err != nil {
+		t.Fatalf("RunAdaptiveBandwidthTest upload failed: %v", err)
+	}
+	if metrics == nil {
+		t.Fatalf("expected metrics, got nil")
+	}
+	if metrics.Direction != DirectionUpload {
+		t.Errorf("expected direction %q, got %q", DirectionUpload, metrics.Direction)
 	}
 	if metrics.AvgSpeedBps <= 0 {
 		t.Errorf("expected AvgSpeedBps > 0, got %f", metrics.AvgSpeedBps)
