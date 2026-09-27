@@ -567,3 +567,38 @@ func TestDurationScheduling(t *testing.T) {
 		t.Errorf("bytesTransferred = %d, want > 0", bytesTransferred)
 	}
 }
+
+func TestComputeSpeedStats(t *testing.T) {
+	// Scenario 1: Contains TCP slow-start ramp up and zeros/glitches
+	// [0, 5e6, 15e6, 30e6, 100e6, 105e6, 95e6, 100e6, 100e6, 0]
+	// Zeros are stripped: [5e6, 15e6, 30e6, 100e6, 105e6, 95e6, 100e6, 100e6] (len 8)
+	// Warm-up trimming removes first 3: [100e6, 105e6, 95e6, 100e6, 100e6] (len 5)
+	// Peak: 105e6
+	// Avg: 100e6
+	// Low 20%: len 5 * 0.2 = 1 element -> 95e6 (no 0, and not the slow-start 5e6!)
+	samples := []float64{0, 5e6, 15e6, 30e6, 100e6, 105e6, 95e6, 100e6, 100e6, 0}
+	avg, peak, low20 := computeSpeedStats(samples, 50e6)
+
+	if avg != 100e6 {
+		t.Errorf("avg = %f, want 100e6", avg)
+	}
+	if peak != 105e6 {
+		t.Errorf("peak = %f, want 105e6", peak)
+	}
+	if low20 != 95e6 {
+		t.Errorf("low20 = %f, want 95e6", low20)
+	}
+
+	// Scenario 2: Empty samples falls back to fallback value
+	fallback := 42e6
+	avgFb, peakFb, low20Fb := computeSpeedStats(nil, fallback)
+	if avgFb != fallback || peakFb != fallback || low20Fb != fallback {
+		t.Errorf("expected all fallbacks, got avg=%f, peak=%f, low20=%f", avgFb, peakFb, low20Fb)
+	}
+
+	// Scenario 3: All zero samples falls back to fallback value
+	avgZ, peakZ, low20Z := computeSpeedStats([]float64{0, 0, 0}, fallback)
+	if avgZ != fallback || peakZ != fallback || low20Z != fallback {
+		t.Errorf("expected all fallbacks on all zeros, got avg=%f, peak=%f, low20=%f", avgZ, peakZ, low20Z)
+	}
+}

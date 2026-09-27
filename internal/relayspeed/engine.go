@@ -201,7 +201,7 @@ func runBandwidthTest(
 		metrics.AvgSpeedBps = float64(bytesTransferred*8) / totalDuration.Seconds()
 	}
 
-	metrics.PeakSpeedBps, metrics.Low20SpeedBps = computeSpeedStats(samples, metrics.AvgSpeedBps)
+	metrics.AvgSpeedBps, metrics.PeakSpeedBps, metrics.Low20SpeedBps = computeSpeedStats(samples, metrics.AvgSpeedBps)
 
 	// Summarize load latencies
 	loadMu.Lock()
@@ -263,21 +263,32 @@ func executeDownload(
 				elapsed := now.Sub(lastSampleTime)
 				if elapsed > 0 {
 					chunkBytes := current - lastBytes
-					bps := float64(chunkBytes*8) / elapsed.Seconds()
-					*samples = append(*samples, bps)
+					if chunkBytes > 0 {
+						bps := float64(chunkBytes*8) / elapsed.Seconds()
+						*samples = append(*samples, bps)
 
-					if progressCb != nil {
+						if progressCb != nil {
+							progressCb(ProgressUpdate{
+								Alias:      alias,
+								Phase:      "download",
+								Direction:  DirectionDownload,
+								BytesDone:  current,
+								TotalBytes: sizeLimit,
+								CurrentBps: bps,
+							})
+						}
+						lastSampleTime = now
+						lastBytes = current
+					} else if progressCb != nil {
 						progressCb(ProgressUpdate{
 							Alias:      alias,
 							Phase:      "download",
 							Direction:  DirectionDownload,
 							BytesDone:  current,
 							TotalBytes: sizeLimit,
-							CurrentBps: bps,
+							CurrentBps: 0,
 						})
 					}
-					lastSampleTime = now
-					lastBytes = current
 				}
 			}
 		}
@@ -634,21 +645,32 @@ func executeUpload(
 				elapsed := now.Sub(lastSampleTime)
 				if elapsed > 0 {
 					chunkBytes := current - lastBytes
-					bps := float64(chunkBytes*8) / elapsed.Seconds()
-					*samples = append(*samples, bps)
+					if chunkBytes > 0 {
+						bps := float64(chunkBytes*8) / elapsed.Seconds()
+						*samples = append(*samples, bps)
 
-					if progressCb != nil {
+						if progressCb != nil {
+							progressCb(ProgressUpdate{
+								Alias:      alias,
+								Phase:      "upload",
+								Direction:  DirectionUpload,
+								BytesDone:  current,
+								TotalBytes: sizeLimit,
+								CurrentBps: bps,
+							})
+						}
+						lastSampleTime = now
+						lastBytes = current
+					} else if progressCb != nil {
 						progressCb(ProgressUpdate{
 							Alias:      alias,
 							Phase:      "upload",
 							Direction:  DirectionUpload,
 							BytesDone:  current,
 							TotalBytes: sizeLimit,
-							CurrentBps: bps,
+							CurrentBps: 0,
 						})
 					}
-					lastSampleTime = now
-					lastBytes = current
 				}
 			}
 		}
@@ -671,20 +693,44 @@ func executeUpload(
 	return nil
 }
 
-func computeSpeedStats(samples []float64, fallback float64) (peak float64, low20 float64) {
-	if len(samples) == 0 {
-		return fallback, fallback
+func computeSpeedStats(samples []float64, fallback float64) (avg float64, peak float64, low20 float64) {
+	var valid []float64
+	for _, s := range samples {
+		if s > 0 && !math.IsNaN(s) && !math.IsInf(s, 0) {
+			valid = append(valid, s)
+		}
 	}
 
-	peak = samples[0]
-	for _, s := range samples {
+	if len(valid) == 0 {
+		return fallback, fallback, fallback
+	}
+
+	// Warm-up trimming:
+	// The first ~500ms (or first 2-3 samples) correspond to TCP slow-start ramp-up.
+	// Trim them from the statistical pool if we have enough samples.
+	steady := valid
+	if len(valid) >= 6 {
+		// Discard first 3 samples (approx 300ms-500ms warm-up)
+		steady = valid[3:]
+	} else if len(valid) >= 4 {
+		// Discard first 2 samples
+		steady = valid[2:]
+	} else if len(valid) >= 3 {
+		steady = valid[1:]
+	}
+
+	var sum float64
+	peak = steady[0]
+	for _, s := range steady {
+		sum += s
 		if s > peak {
 			peak = s
 		}
 	}
+	avg = sum / float64(len(steady))
 
-	sorted := make([]float64, len(samples))
-	copy(sorted, samples)
+	sorted := make([]float64, len(steady))
+	copy(sorted, steady)
 	sort.Float64s(sorted)
 
 	low20Count := int(math.Ceil(float64(len(sorted)) * 0.2))
@@ -698,7 +744,7 @@ func computeSpeedStats(samples []float64, fallback float64) (peak float64, low20
 	}
 	low20 = sumLow / float64(low20Count)
 
-	return peak, low20
+	return avg, peak, low20
 }
 
 func computeWorst5Percentile(latencies []time.Duration) time.Duration {
