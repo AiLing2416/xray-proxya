@@ -1,6 +1,7 @@
 package service
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
@@ -200,4 +201,26 @@ ActiveState=inactive`,
 		})
 	}
 }
+
+func TestValidateServiceStartGatewayRejectsNonRoot(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	if os.Geteuid() != 0 {
+		if err := ValidateServiceStart(MainUnit); err == nil {
+			t.Fatal("expected ValidateServiceStart to reject gateway role for non-root")
+		}
+		manager := NewManager()
+		if err := manager.ExecuteAction("start", MainUnit, false); err == nil {
+			t.Fatal("expected ExecuteAction to reject gateway role start for non-root")
+		}
+	}
+}
+
 

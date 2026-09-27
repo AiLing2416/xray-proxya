@@ -141,6 +141,12 @@ func (m *Manager) ExecuteAction(action, unitInput string, now bool) error {
 		return err
 	}
 
+	if action == "start" || action == "restart" || (action == "enable" && now) {
+		if err := ValidateServiceStart(unit); err != nil {
+			return err
+		}
+	}
+
 	// Main service lifecycle operations
 	if unit == MainUnit {
 		if action == "restart" {
@@ -170,13 +176,6 @@ func (m *Manager) ExecuteAction(action, unitInput string, now bool) error {
 			}
 		}
 		return nil
-	}
-
-	// Auxiliary service lifecycle operations
-	if action == "start" || action == "restart" || (action == "enable" && now) {
-		if err := ValidateServiceStart(unit); err != nil {
-			return err
-		}
 	}
 
 	return runSystemctlAction(action, unit, now)
