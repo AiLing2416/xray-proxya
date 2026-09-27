@@ -153,3 +153,51 @@ func TestMainUnitCapabilities(t *testing.T) {
 		t.Fatalf("server with dynamic-v6 capabilities missing CAP_NET_ADMIN: %s", caps)
 	}
 }
+
+func TestParseUnitShowState(t *testing.T) {
+	tests := []struct {
+		name          string
+		output        string
+		wantState     string
+		wantInstalled bool
+	}{
+		{
+			name: "not found first",
+			output: `LoadState=not-found
+ActiveState=inactive`,
+			wantState:     "Not Installed",
+			wantInstalled: false,
+		},
+		{
+			name: "active first, not found second",
+			output: `ActiveState=inactive
+LoadState=not-found`,
+			wantState:     "Not Installed",
+			wantInstalled: false,
+		},
+		{
+			name: "failed service",
+			output: `LoadState=loaded
+ActiveState=failed`,
+			wantState:     "Failed",
+			wantInstalled: true,
+		},
+		{
+			name: "stopped service",
+			output: `LoadState=loaded
+ActiveState=inactive`,
+			wantState:     "Stopped",
+			wantInstalled: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotState, gotInstalled := parseUnitShowState(tt.output)
+			if gotState != tt.wantState || gotInstalled != tt.wantInstalled {
+				t.Fatalf("parseUnitShowState() = (%q, %t), want (%q, %t)", gotState, gotInstalled, tt.wantState, tt.wantInstalled)
+			}
+		})
+	}
+}
+

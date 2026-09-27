@@ -46,16 +46,12 @@ func GetUnitStatus(unit string) Status {
 		}
 	} else {
 		// Not active: check detailed load/active state
-		showArgs := append(xray.SystemdScopeArgs(), "show", "-p", "ActiveState,LoadState", "--value", unit)
+		showArgs := append(xray.SystemdScopeArgs(), "show", "-p", "ActiveState", "-p", "LoadState", unit)
 		if out, err := exec.Command("systemctl", showArgs...).Output(); err == nil {
-			lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-			if len(lines) >= 2 && lines[1] == "not-found" {
-				st.State = "Not Installed"
+			state, installed := parseUnitShowState(string(out))
+			st.State = state
+			if !installed {
 				st.Installed = false
-			} else if len(lines) >= 1 && lines[0] == "failed" {
-				st.State = "Failed"
-			} else {
-				st.State = "Stopped"
 			}
 		}
 	}
@@ -68,6 +64,27 @@ func GetUnitStatus(unit string) Status {
 
 	return st
 }
+
+func parseUnitShowState(output string) (state string, installed bool) {
+	activeState := ""
+	loadState := ""
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ActiveState=") {
+			activeState = strings.TrimPrefix(line, "ActiveState=")
+		} else if strings.HasPrefix(line, "LoadState=") {
+			loadState = strings.TrimPrefix(line, "LoadState=")
+		}
+	}
+	if loadState == "not-found" {
+		return "Not Installed", false
+	}
+	if activeState == "failed" {
+		return "Failed", true
+	}
+	return "Stopped", true
+}
+
 
 // IsUnitActive reports whether the given unit is currently active.
 func IsUnitActive(unit string) bool {
