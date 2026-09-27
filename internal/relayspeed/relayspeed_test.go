@@ -878,3 +878,157 @@ func TestRunAdaptiveBandwidthTestUpload(t *testing.T) {
 		t.Errorf("expected progress events, got none")
 	}
 }
+
+func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
+	r := &ProgressRenderer{
+		activeNode: "hk-01",
+	}
+
+	// 1. idle_ping
+	r.lastUpdate = ProgressUpdate{Phase: "idle_ping", Elapsed: 38200 * time.Microsecond}
+	line := r.formatCurrentLine("⠋")
+	if !strings.Contains(line, "⠋ [hk-01] Measuring idle latency... 38.2 ms") {
+		t.Errorf("unexpected idle_ping line: %s", line)
+	}
+
+	// 2. auto_probe
+	r.lastUpdate = ProgressUpdate{Phase: "auto_probe", Direction: DirectionDownload}
+	line = r.formatCurrentLine("⠋")
+	if !strings.Contains(line, "⠋ [hk-01] Probing download baseline...") {
+		t.Errorf("unexpected auto_probe line: %s", line)
+	}
+
+	// 3. auto_ramp
+	r.lastUpdate = ProgressUpdate{Phase: "auto_ramp", StepThreads: 4}
+	line = r.formatCurrentLine("⠙")
+	if !strings.Contains(line, "⠙ [hk-01] Ramping concurrency to 4 stream(s)...") {
+		t.Errorf("unexpected auto_ramp line: %s", line)
+	}
+
+	// 4. auto_sustaining
+	r.lastUpdate = ProgressUpdate{
+		Phase:       "auto_sustaining",
+		Direction:   DirectionDownload,
+		StepThreads: 4,
+		BytesDone:   58200000,
+		TotalBytes:  240000000,
+		CurrentBps:  142500000,
+		StepGain:    96,
+	}
+	line = r.formatCurrentLine("⠴")
+	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): 58.20 MB / 240.00 MB | 142.50 Mbps (stability: 96%)") {
+		t.Errorf("unexpected auto_sustaining line: %s", line)
+	}
+
+	// 5. download standard (single stream)
+	r.lastUpdate = ProgressUpdate{
+		Phase:       "download",
+		Direction:   DirectionDownload,
+		StepThreads: 1,
+		BytesDone:   16300000,
+		TotalBytes:  25000000,
+		CurrentBps:  86400000,
+	}
+	line = r.formatCurrentLine("⠸")
+	if !strings.Contains(line, "⠸ [hk-01] Download: [████████████░░░░░░]  65%  16.30 MB / 25.00 MB | 86.40 Mbps") {
+		t.Errorf("unexpected standard download line: %s", line)
+	}
+	if !strings.Contains(line, "ETA:") {
+		t.Errorf("expected ETA in download line: %s", line)
+	}
+
+	// 6. upload auto sustaining
+	r.lastUpdate = ProgressUpdate{
+		Phase:       "auto_sustaining",
+		Direction:   DirectionUpload,
+		StepThreads: 2,
+		BytesDone:   18500000,
+		TotalBytes:  240000000,
+		CurrentBps:  32100000,
+		StepGain:    94,
+	}
+	line = r.formatCurrentLine("⠸")
+	if !strings.Contains(line, "⠸ [hk-01] Upload (2 streams): 18.50 MB / 240.00 MB | 32.10 Mbps (stability: 94%)") {
+		t.Errorf("unexpected upload line: %s", line)
+	}
+}
+
+func TestProgressRenderer_NonTTY_Fallback(t *testing.T) {
+	var buf strings.Builder
+	r := NewProgressRenderer(&buf, false, false)
+	defer r.Stop()
+
+	r.StartNode("JP-TK")
+	out1 := buf.String()
+	if !strings.Contains(out1, "[JP-TK] Starting speed test...\n") {
+		t.Errorf("expected non-TTY start line, got: %q", out1)
+	}
+	if strings.Contains(out1, "\r") || strings.Contains(out1, "\033") {
+		t.Errorf("non-TTY output must not contain ANSI control characters: %q", out1)
+	}
+
+	// Update must be completely silent in non-TTY mode
+	lenBefore := buf.Len()
+	r.Update(ProgressUpdate{
+		Phase:      "download",
+		BytesDone:  1024,
+		TotalBytes: 2048,
+		CurrentBps: 1000000,
+	})
+	if buf.Len() != lenBefore {
+		t.Errorf("non-TTY mode should be completely silent during updates")
+	}
+
+	res := sampleSpeedResult()
+	r.CompleteNode(res)
+	out2 := buf.String()
+	if !strings.Contains(out2, "[JP-TK] Done: ↓ 85.42 Mbps | ↑ 32.15 Mbps | Ping 42ms\n") {
+		t.Errorf("expected non-TTY done summary, got: %q", out2)
+	}
+	if strings.Contains(out2, "\r") || strings.Contains(out2, "\033") {
+		t.Errorf("non-TTY complete output must not contain ANSI control characters: %q", out2)
+	}
+}
+
+func TestProgressRenderer_Disabled(t *testing.T) {
+	var buf strings.Builder
+	r := NewProgressRenderer(&buf, true, true)
+	defer r.Stop()
+
+	r.StartNode("hk-01")
+	r.Update(ProgressUpdate{Phase: "download", CurrentBps: 1000000})
+	r.CompleteNode(sampleSpeedResult())
+
+	if buf.Len() != 0 {
+		t.Errorf("disabled renderer must produce 0 output, got %q", buf.String())
+	}
+}
+
+func TestFormatBitrateColored(t *testing.T) {
+	// Color disabled
+	sNoColor := FormatBitrateColored(150_000_000, false)
+	if strings.Contains(sNoColor, "\033") {
+		t.Errorf("color disabled should not contain escape codes: %s", sNoColor)
+	}
+	if sNoColor != "150.00 Mbps" {
+		t.Errorf("expected 150.00 Mbps, got %s", sNoColor)
+	}
+
+	// High speed >100 Mbps
+	sHigh := FormatBitrateColored(150_000_000, true)
+	if !strings.HasPrefix(sHigh, "\033[1;36m") || !strings.HasSuffix(sHigh, "\033[0m") {
+		t.Errorf("expected cyan bold prefix for >100Mbps: %s", sHigh)
+	}
+
+	// Normal speed 20~100 Mbps
+	sNormal := FormatBitrateColored(50_000_000, true)
+	if !strings.HasPrefix(sNormal, "\033[32m") || !strings.HasSuffix(sNormal, "\033[0m") {
+		t.Errorf("expected green prefix for 50Mbps: %s", sNormal)
+	}
+
+	// Slow speed <20 Mbps
+	sSlow := FormatBitrateColored(10_000_000, true)
+	if !strings.HasPrefix(sSlow, "\033[33m") || !strings.HasSuffix(sSlow, "\033[0m") {
+		t.Errorf("expected yellow prefix for 10Mbps: %s", sSlow)
+	}
+}
