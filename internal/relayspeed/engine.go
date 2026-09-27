@@ -425,8 +425,13 @@ func executeDownloadMulti(
 	)
 
 	chunkReqBytes := int64(defaultMultiStreamChunkSize)
-	if sizeLimit > 0 && sizeLimit < chunkReqBytes {
-		chunkReqBytes = sizeLimit
+	if sizeLimit > 0 {
+		workerChunk := sizeLimit / int64(threads)
+		const minWorkerChunk int64 = 2 * 1024 * 1024
+		if workerChunk < minWorkerChunk {
+			workerChunk = minWorkerChunk
+		}
+		chunkReqBytes = workerChunk
 	}
 
 	for w := 0; w < threads; w++ {

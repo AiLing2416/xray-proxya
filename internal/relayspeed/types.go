@@ -25,12 +25,15 @@ type SpeedMetrics struct {
 }
 
 type SpeedResult struct {
-	Alias           string        `json:"alias"`
-	Provider        string        `json:"provider"`
-	Download        *SpeedMetrics `json:"download,omitempty"`
-	Upload          *SpeedMetrics `json:"upload,omitempty"`
-	TotalDurationMs int64         `json:"total_duration_ms"`
-	Error           string        `json:"error,omitempty"`
+	Alias             string        `json:"alias"`
+	Provider          string        `json:"provider"`
+	Download          *SpeedMetrics `json:"download,omitempty"`
+	Upload            *SpeedMetrics `json:"upload,omitempty"`
+	TotalDurationMs   int64         `json:"total_duration_ms"`
+	Error             string        `json:"error,omitempty"`
+	AdaptiveSizeBytes int64         `json:"adaptive_size_bytes,omitempty"`
+	ProbeDurationMs   int64         `json:"probe_duration_ms,omitempty"`
+	ProbeSpeedBps     float64       `json:"probe_speed_bps,omitempty"`
 }
 
 type Options struct {
@@ -41,6 +44,8 @@ type Options struct {
 	Threads           int
 	CustomDownloadURL string
 	CustomUploadURL   string
+	Auto              bool
+	FixedSize         bool
 }
 
 type ProgressUpdate struct {

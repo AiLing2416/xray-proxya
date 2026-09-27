@@ -407,3 +407,80 @@ func TestSingleStreamDownload(t *testing.T) {
 		t.Errorf("expected samples to be populated, got 0")
 	}
 }
+
+func TestCalculateAdaptiveSize(t *testing.T) {
+	tests := []struct {
+		name       string
+		probeBps   float64
+		targetSec  float64
+		wantBytes  int64
+	}{
+		{
+			name:      "low speed 1Mbps clamped to min 2MB",
+			probeBps:  1_000_000, // 1 Mbps -> ~312.5 KB
+			targetSec: 2.5,
+			wantBytes: 2 * 1024 * 1024,
+		},
+		{
+			name:      "medium speed 50Mbps",
+			probeBps:  50_000_000, // 50 Mbps * 2.5s / 8 = 15,625,000 bytes (~15.6MB)
+			targetSec: 2.5,
+			wantBytes: 15_625_000,
+		},
+		{
+			name:      "high speed 1Gbps clamped to max 100MB",
+			probeBps:  1_000_000_000, // 1 Gbps * 2.5s / 8 = 312,500,000 bytes -> 100MB
+			targetSec: 2.5,
+			wantBytes: 100 * 1024 * 1024,
+		},
+		{
+			name:      "custom duration 5s",
+			probeBps:  20_000_000, // 20 Mbps * 5s / 8 = 12,500,000 bytes
+			targetSec: 5.0,
+			wantBytes: 12_500_000,
+		},
+		{
+			name:      "default duration fallback when zero",
+			probeBps:  50_000_000,
+			targetSec: 0,
+			wantBytes: 15_625_000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := CalculateAdaptiveSize(tt.probeBps, tt.targetSec)
+			if got != tt.wantBytes {
+				t.Errorf("CalculateAdaptiveSize(%f, %f) = %d, want %d", tt.probeBps, tt.targetSec, got, tt.wantBytes)
+			}
+		})
+	}
+}
+
+func TestProbeBandwidth(t *testing.T) {
+	// 1. Mock server that returns 1MB
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		data := make([]byte, 64*1024)
+		for i := 0; i < 16; i++ { // 16 * 64KB = 1MB
+			_, _ = w.Write(data)
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	bps, rtt, err := ProbeBandwidth(context.Background(), server.Client(), customProvider)
+	if err != nil {
+		t.Fatalf("ProbeBandwidth failed: %v", err)
+	}
+	if bps <= 0 {
+		t.Errorf("ProbeBandwidth bps = %f, want > 0", bps)
+	}
+	if rtt <= 0 {
+		t.Errorf("ProbeBandwidth rtt = %v, want > 0", rtt)
+	}
+}
