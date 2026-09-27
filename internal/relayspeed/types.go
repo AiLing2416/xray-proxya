@@ -31,10 +31,12 @@ type SpeedResult struct {
 	Upload            *SpeedMetrics `json:"upload,omitempty"`
 	TotalDurationMs   int64         `json:"total_duration_ms"`
 	Error             string        `json:"error,omitempty"`
-	AdaptiveSizeBytes int64         `json:"adaptive_size_bytes,omitempty"`
-	OptimalThreads    int           `json:"optimal_threads,omitempty"`
-	ProbeDurationMs   int64         `json:"probe_duration_ms,omitempty"`
-	ProbeSpeedBps     float64       `json:"probe_speed_bps,omitempty"`
+	AdaptiveSizeBytes       int64         `json:"adaptive_size_bytes,omitempty"`
+	OptimalThreads          int           `json:"optimal_threads,omitempty"`
+	UploadAdaptiveSizeBytes int64         `json:"upload_adaptive_size_bytes,omitempty"`
+	UploadOptimalThreads    int           `json:"upload_optimal_threads,omitempty"`
+	ProbeDurationMs         int64         `json:"probe_duration_ms,omitempty"`
+	ProbeSpeedBps           float64       `json:"probe_speed_bps,omitempty"`
 }
 
 type Options struct {

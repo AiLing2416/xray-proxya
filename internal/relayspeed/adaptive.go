@@ -3,6 +3,7 @@ package relayspeed
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"sync"
@@ -27,12 +28,60 @@ var (
 	MaxAutoDuration    = 10 * time.Second        // Global safety upper bound
 )
 
-// ProbeBandwidth sends a lightweight ~1MB request to estimate node bandwidth and round-trip time.
+// ProbeBandwidth sends a lightweight ~1MB request to estimate download bandwidth and round-trip time.
 func ProbeBandwidth(ctx context.Context, client *http.Client, provider Provider) (bps float64, rtt time.Duration, err error) {
+	return ProbeBandwidthDir(ctx, client, provider, DirectionDownload)
+}
+
+// ProbeBandwidthDir sends a lightweight ~1MB request in the specified direction (download or upload)
+// to estimate baseline bandwidth and round-trip time.
+func ProbeBandwidthDir(ctx context.Context, client *http.Client, provider Provider, dir Direction) (bps float64, rtt time.Duration, err error) {
 	if client == nil || provider == nil {
 		return 0, 0, fmt.Errorf("nil client or provider")
 	}
 
+	if dir == DirectionUpload {
+		if !provider.SupportsUpload() {
+			return 0, 0, fmt.Errorf("provider %s does not support upload", provider.DisplayName())
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
+		defer cancel()
+
+		var totalBytes int64
+		zeroSrc := io.LimitReader(zeroReader{}, defaultProbeBytes)
+		cr := &countingReader{reader: zeroSrc, count: &totalBytes}
+
+		req, err := provider.GetUploadRequest(probeCtx, client, cr, defaultProbeBytes)
+		if err != nil {
+			return 0, 0, fmt.Errorf("create upload probe request: %w", err)
+		}
+
+		start := time.Now()
+		resp, err := client.Do(req)
+		if err != nil {
+			return 0, 0, fmt.Errorf("upload probe request: %w", err)
+		}
+		defer resp.Body.Close()
+
+		ttfb := time.Since(start)
+		if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
+			return 0, ttfb, fmt.Errorf("upload probe HTTP %d", resp.StatusCode)
+		}
+
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		elapsed := time.Since(start)
+		if elapsed <= 0 {
+			elapsed = time.Millisecond
+		}
+		sent := totalBytes
+		if sent == 0 {
+			sent = defaultProbeBytes
+		}
+		bps = float64(sent*8) / elapsed.Seconds()
+		return bps, ttfb, nil
+	}
+
+	// Default: DirectionDownload
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
 
@@ -254,22 +303,29 @@ func (cd *ConvergenceDetector) AddSample(t time.Time, bps float64) (converged bo
 	return false, cv, stability
 }
 
-// RunAdaptiveDownload performs steady-state adaptive download bandwidth testing using a 3-phase model:
-// Phase 1 (Base Probe): Measures baseline speed and RTT (~1s / 1MB).
+// RunAdaptiveBandwidthTest executes a 3-phase adaptive test for either DirectionDownload or DirectionUpload:
+// Phase 1 (Base Probe): Lightweight probe (~1s / 1MB) for initial baseline speed and RTT.
 // Phase 2 (Concurrency Selection): Intelligently selects initial concurrency.
-// Phase 3 (Sustained Stream & Convergence): Runs sustained multi-stream download (4~6s), evaluating
-// real-time CV variance and moving average stability until convergence or 240MB budget ceiling.
-func RunAdaptiveDownload(
+// Phase 3 (Sustained Stream & Convergence): Runs sustained multi-stream transfer (4~6s), evaluating
+// real-time CV variance and moving average stability until convergence or budget ceiling.
+func RunAdaptiveBandwidthTest(
 	ctx context.Context,
 	client *http.Client,
 	prober *LatencyProber,
 	provider Provider,
+	dir Direction,
 	idleLat time.Duration,
 	alias string,
 	progressCb ProgressCallback,
 ) (*SpeedMetrics, int, error) {
 	if client == nil || provider == nil {
 		return nil, 0, fmt.Errorf("nil client or provider")
+	}
+	if dir == DirectionUpload && !provider.SupportsUpload() {
+		return nil, 0, fmt.Errorf("provider %s does not support upload testing", provider.DisplayName())
+	}
+	if dir == "" {
+		dir = DirectionDownload
 	}
 
 	startTime := time.Now()
@@ -280,11 +336,11 @@ func RunAdaptiveDownload(
 		progressCb(ProgressUpdate{
 			Alias:     alias,
 			Phase:     "auto_probe",
-			Direction: DirectionDownload,
+			Direction: dir,
 		})
 	}
 
-	probeBps, rtt, probeErr := ProbeBandwidth(ctx, client, provider)
+	probeBps, rtt, probeErr := ProbeBandwidthDir(ctx, client, provider, dir)
 	if probeErr != nil {
 		if ctx.Err() != nil {
 			return nil, 0, ctx.Err()
@@ -301,7 +357,7 @@ func RunAdaptiveDownload(
 		progressCb(ProgressUpdate{
 			Alias:       alias,
 			Phase:       "auto_ramp",
-			Direction:   DirectionDownload,
+			Direction:   dir,
 			StepThreads: threads,
 			CurrentBps:  probeBps,
 			BytesDone:   cumulativeBytes,
@@ -342,7 +398,8 @@ func RunAdaptiveDownload(
 			phase = "auto_converged"
 			cancelSustain()
 		}
-		if cumulativeBytes+u.BytesDone >= MaxAutoTransferBytes && !converged {
+		if cumulativeBytes+u.BytesDone >= remBudget && !converged {
+			converged = true
 			cancelSustain()
 		}
 		convMu.Unlock()
@@ -353,7 +410,7 @@ func RunAdaptiveDownload(
 				progressCb(ProgressUpdate{
 					Alias:       alias,
 					Phase:       phase,
-					Direction:   DirectionDownload,
+					Direction:   dir,
 					StepThreads: threads,
 					BytesDone:   cumulativeBytes + u.BytesDone,
 					TotalBytes:  MaxAutoTransferBytes,
@@ -366,7 +423,7 @@ func RunAdaptiveDownload(
 	}
 
 	metrics, err := runBandwidthTest(
-		sustainCtx, client, prober, provider, DirectionDownload,
+		sustainCtx, client, prober, provider, dir,
 		remBudget, int(MaxAutoDuration.Seconds()), false, threads, idleLat, alias, internalCb,
 	)
 
@@ -378,7 +435,7 @@ func RunAdaptiveDownload(
 		if err != nil {
 			return nil, 0, err
 		}
-		return nil, 0, fmt.Errorf("adaptive download produced no metrics")
+		return nil, 0, fmt.Errorf("adaptive %s test produced no metrics", dir)
 	}
 
 	if metrics.BytesTransferred > remBudget {
@@ -395,7 +452,7 @@ func RunAdaptiveDownload(
 		progressCb(ProgressUpdate{
 			Alias:       alias,
 			Phase:       "auto_converged",
-			Direction:   DirectionDownload,
+			Direction:   dir,
 			StepThreads: threads,
 			CurrentBps:  metrics.AvgSpeedBps,
 			BytesDone:   cumulativeBytes,
@@ -405,4 +462,17 @@ func RunAdaptiveDownload(
 	}
 
 	return metrics, threads, nil
+}
+
+// RunAdaptiveDownload is a backwards-compatible wrapper around RunAdaptiveBandwidthTest.
+func RunAdaptiveDownload(
+	ctx context.Context,
+	client *http.Client,
+	prober *LatencyProber,
+	provider Provider,
+	idleLat time.Duration,
+	alias string,
+	progressCb ProgressCallback,
+) (*SpeedMetrics, int, error) {
+	return RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionDownload, idleLat, alias, progressCb)
 }

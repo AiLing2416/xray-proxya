@@ -73,7 +73,7 @@ func RunSpeed(
 
 		if opts.Auto && !opts.FixedSize {
 			var bestThreads int
-			dlMetrics, bestThreads, dlErr = RunAdaptiveDownload(ctx, client, prober, provider, idleLat, alias, progressCb)
+			dlMetrics, bestThreads, dlErr = RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionDownload, idleLat, alias, progressCb)
 			if dlErr == nil && dlMetrics != nil {
 				res.OptimalThreads = bestThreads
 				res.AdaptiveSizeBytes = dlMetrics.BytesTransferred
@@ -111,14 +111,33 @@ func RunSpeed(
 				return res, nil
 			}
 		} else {
-			if progressCb != nil {
-				progressCb(ProgressUpdate{
-					Alias:     alias,
-					Phase:     "upload",
-					Direction: DirectionUpload,
-				})
+			var ulMetrics *SpeedMetrics
+			var ulErr error
+
+			if opts.Auto && !opts.FixedSize {
+				var bestThreads int
+				ulMetrics, bestThreads, ulErr = RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionUpload, idleLat, alias, progressCb)
+				if ulErr == nil && ulMetrics != nil {
+					res.UploadOptimalThreads = bestThreads
+					res.UploadAdaptiveSizeBytes = ulMetrics.BytesTransferred
+					if res.OptimalThreads == 0 {
+						res.OptimalThreads = bestThreads
+					}
+					if res.AdaptiveSizeBytes == 0 {
+						res.AdaptiveSizeBytes = ulMetrics.BytesTransferred
+					}
+				}
+			} else {
+				if progressCb != nil {
+					progressCb(ProgressUpdate{
+						Alias:     alias,
+						Phase:     "upload",
+						Direction: DirectionUpload,
+					})
+				}
+				ulMetrics, ulErr = runBandwidthTest(ctx, client, prober, provider, DirectionUpload, opts.SizeBytes, opts.DurationSeconds, opts.FixedSize, opts.Threads, idleLat, alias, progressCb)
 			}
-			ulMetrics, ulErr := runBandwidthTest(ctx, client, prober, provider, DirectionUpload, opts.SizeBytes, opts.DurationSeconds, opts.FixedSize, 1, idleLat, alias, progressCb)
+
 			if ulErr != nil {
 				if res.Error != "" {
 					res.Error += fmt.Sprintf("; upload failed: %v", ulErr)

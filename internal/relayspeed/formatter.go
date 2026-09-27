@@ -55,10 +55,15 @@ func RenderSingleCard(r *SpeedResult) string {
 	}
 
 	if r.Upload != nil {
-		sb.WriteString(fmt.Sprintf("Upload    : %s (Peak: %s | Low 20%%: %s)\n",
+		streamsSuffix := ""
+		if r.UploadOptimalThreads > 1 {
+			streamsSuffix = fmt.Sprintf(" | Streams: %d", r.UploadOptimalThreads)
+		}
+		sb.WriteString(fmt.Sprintf("Upload    : %s (Peak: %s | Low 20%%: %s%s)\n",
 			FormatBitrate(r.Upload.AvgSpeedBps),
 			FormatBitrate(r.Upload.PeakSpeedBps),
 			FormatBitrate(r.Upload.Low20SpeedBps),
+			streamsSuffix,
 		))
 		if idleLat == 0 {
 			idleLat = r.Upload.IdleLatencyAvg

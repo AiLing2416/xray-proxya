@@ -179,7 +179,7 @@ func runBandwidthTest(
 	if direction == DirectionDownload {
 		err = executeDownload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
 	} else {
-		err = executeUpload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, &bytesTransferred, &samples, alias, progressCb)
+		err = executeUpload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
 	}
 
 	close(stopLoadProbe)
@@ -622,6 +622,7 @@ func executeUpload(
 	durationSec int,
 	fixedSize bool,
 	deadline time.Time,
+	threads int,
 	bytesTransferred *int64,
 	samples *[]float64,
 	alias string,
@@ -630,30 +631,30 @@ func executeUpload(
 	if !provider.SupportsUpload() {
 		return fmt.Errorf("provider %s does not support upload testing", provider.DisplayName())
 	}
-
-	zeroSrc := io.LimitReader(zeroReader{}, sizeLimit)
-	cr := &countingReader{reader: zeroSrc, count: bytesTransferred}
-
-	req, err := provider.GetUploadRequest(ctx, client, cr, sizeLimit)
-	if err != nil {
-		return fmt.Errorf("prepare upload request: %w", err)
+	if threads <= 0 {
+		threads = 1
 	}
 
-	// Sampler ticker during upload
-	ticker := time.NewTicker(sampleInterval)
-	stopSampler := make(chan struct{})
-	defer ticker.Stop()
+	ulCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
+	startTime := time.Now()
+	stopSampler := make(chan struct{})
 	var samplerWg sync.WaitGroup
 	samplerWg.Add(1)
 
 	go func() {
 		defer samplerWg.Done()
+		ticker := time.NewTicker(sampleInterval)
+		defer ticker.Stop()
+
 		lastSampleTime := time.Now()
 		lastBytes := int64(0)
 		for {
 			select {
 			case <-stopSampler:
+				return
+			case <-ulCtx.Done():
 				return
 			case now := <-ticker.C:
 				current := atomic.LoadInt64(bytesTransferred)
@@ -691,20 +692,221 @@ func executeUpload(
 		}
 	}()
 
-	resp, err := client.Do(req)
+	var ulErr error
+	if threads <= 1 {
+		ulErr = executeUploadSingle(ulCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, bytesTransferred)
+	} else {
+		ulErr = executeUploadMulti(ulCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, bytesTransferred)
+	}
+
 	close(stopSampler)
 	samplerWg.Wait()
 
-	if err != nil {
-		return fmt.Errorf("execute upload: %w", err)
-	}
-	defer resp.Body.Close()
-
-	io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
-	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
-		return fmt.Errorf("upload HTTP %d", resp.StatusCode)
+	if fixedSize && sizeLimit > 0 && *bytesTransferred > sizeLimit {
+		*bytesTransferred = sizeLimit
 	}
 
+	if len(*samples) == 0 && *bytesTransferred > 0 {
+		elapsedSec := time.Since(startTime).Seconds()
+		if elapsedSec > 0 {
+			*samples = append(*samples, float64(*bytesTransferred*8)/elapsedSec)
+		}
+	}
+
+	return ulErr
+}
+
+func executeUploadSingle(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	client *http.Client,
+	provider Provider,
+	sizeLimit int64,
+	durationSec int,
+	fixedSize bool,
+	deadline time.Time,
+	bytesTransferred *int64,
+) error {
+	isDurationMode := durationSec > 0 && !fixedSize
+	chunkSize := sizeLimit
+	if isDurationMode {
+		chunkSize = 10 * 1024 * 1024 // 10MB per chunk in duration mode
+		if sizeLimit > chunkSize {
+			chunkSize = sizeLimit
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		if time.Now().After(deadline) {
+			break
+		}
+		cur := atomic.LoadInt64(bytesTransferred)
+		if fixedSize && sizeLimit > 0 && cur >= sizeLimit {
+			break
+		}
+
+		reqSize := chunkSize
+		if fixedSize && sizeLimit > 0 {
+			rem := sizeLimit - cur
+			if rem <= 0 {
+				break
+			}
+			reqSize = rem
+		}
+
+		zeroSrc := io.LimitReader(zeroReader{}, reqSize)
+		cr := &countingReader{reader: zeroSrc, count: bytesTransferred}
+
+		req, err := provider.GetUploadRequest(ctx, client, cr, reqSize)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("prepare upload request: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("execute upload: %w", err)
+		}
+
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+		resp.Body.Close()
+
+		if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
+			return fmt.Errorf("upload HTTP %d", resp.StatusCode)
+		}
+
+		if !isDurationMode && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+			break
+		}
+	}
+	return nil
+}
+
+func executeUploadMulti(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	client *http.Client,
+	provider Provider,
+	sizeLimit int64,
+	durationSec int,
+	fixedSize bool,
+	deadline time.Time,
+	threads int,
+	bytesTransferred *int64,
+) error {
+	var (
+		wg        sync.WaitGroup
+		errOnce   sync.Once
+		workerErr error
+	)
+
+	isDurationMode := durationSec > 0 && !fixedSize
+
+	chunkReqBytes := int64(defaultMultiStreamChunkSize)
+	if isDurationMode {
+		chunkReqBytes = 10 * 1024 * 1024
+		if sizeLimit > chunkReqBytes {
+			chunkReqBytes = sizeLimit
+		}
+	} else if sizeLimit > 0 {
+		workerChunk := sizeLimit / int64(threads)
+		const minWorkerChunk int64 = 2 * 1024 * 1024
+		if workerChunk < minWorkerChunk {
+			workerChunk = minWorkerChunk
+		}
+		chunkReqBytes = workerChunk
+	}
+
+	for w := 0; w < threads; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				if time.Now().After(deadline) {
+					cancel()
+					return
+				}
+
+				cur := atomic.LoadInt64(bytesTransferred)
+				if fixedSize && sizeLimit > 0 && cur >= sizeLimit {
+					cancel()
+					return
+				}
+
+				reqBytes := chunkReqBytes
+				if fixedSize && sizeLimit > 0 {
+					rem := sizeLimit - cur
+					if rem <= 0 {
+						cancel()
+						return
+					}
+					if rem < reqBytes {
+						reqBytes = rem
+					}
+				}
+
+				zeroSrc := io.LimitReader(zeroReader{}, reqBytes)
+				cr := &countingReader{reader: zeroSrc, count: bytesTransferred}
+
+				req, err := provider.GetUploadRequest(ctx, client, cr, reqBytes)
+				if err != nil {
+					if ctx.Err() == nil {
+						errOnce.Do(func() { workerErr = fmt.Errorf("prepare upload chunk: %w", err) })
+						cancel()
+					}
+					return
+				}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					if ctx.Err() == nil {
+						errOnce.Do(func() { workerErr = fmt.Errorf("execute upload chunk: %w", err) })
+						cancel()
+					}
+					return
+				}
+
+				io.Copy(io.Discard, io.LimitReader(resp.Body, 1024))
+				resp.Body.Close()
+
+				if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
+					if ctx.Err() == nil {
+						errOnce.Do(func() { workerErr = fmt.Errorf("upload HTTP %d", resp.StatusCode) })
+						cancel()
+					}
+					return
+				}
+
+				if !isDurationMode && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+					return
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if workerErr != nil && atomic.LoadInt64(bytesTransferred) == 0 {
+		return workerErr
+	}
 	return nil
 }
 
