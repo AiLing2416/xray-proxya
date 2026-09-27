@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"xray-proxya/internal/service"
@@ -120,13 +121,31 @@ func systemctlWrapper(action string) *cobra.Command {
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Write managed systemd unit files without enabling or starting them",
-	RunE:  func(cmd *cobra.Command, args []string) error { return service.Install(nil) },
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := service.Install(nil); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "✅ Managed systemd unit files installed.")
+		if os.Geteuid() != 0 {
+			user := currentLingerUser()
+			if enabled, err := checkLingerStatus(user); err == nil && !enabled {
+				fmt.Fprintf(cmd.OutOrStdout(), "💡 Notice: User session lingering is disabled for %q.\n   Run 'xray-proxya doctor linger enable' to keep user services running after logout.\n", user)
+			}
+		}
+		return nil
+	},
 }
 
 var serviceUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Remove stopped managed systemd unit files without disabling them",
-	RunE:  func(cmd *cobra.Command, args []string) error { return service.Uninstall() },
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := service.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "✅ Managed systemd unit files uninstalled.")
+		return nil
+	},
 }
 
 func init() {
