@@ -61,7 +61,7 @@ func RunSpeed(
 			Phase: "idle_ping",
 		})
 	}
-	idleLat := measureIdleLatency(ctx, prober, defaultIdlePingRuns)
+	idleLat := measureIdleLatencyWithProgress(ctx, prober, defaultIdlePingRuns, alias, progressCb)
 
 	runDL := opts.Direction == DirectionDownload || opts.Direction == DirectionBoth || opts.Direction == ""
 	runUL := opts.Direction == DirectionUpload || opts.Direction == DirectionBoth

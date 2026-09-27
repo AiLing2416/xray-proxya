@@ -44,6 +44,10 @@ func (cr *countingReader) Read(p []byte) (n int, err error) {
 }
 
 func measureIdleLatency(ctx context.Context, prober *LatencyProber, count int) time.Duration {
+	return measureIdleLatencyWithProgress(ctx, prober, count, "", nil)
+}
+
+func measureIdleLatencyWithProgress(ctx context.Context, prober *LatencyProber, count int, alias string, progressCb ProgressCallback) time.Duration {
 	if count <= 0 {
 		count = defaultIdlePingRuns
 	}
@@ -68,6 +72,13 @@ func measureIdleLatency(ctx context.Context, prober *LatencyProber, count int) t
 		lat, err := prober.Probe(ctx, 2*time.Second)
 		if err == nil && lat > 0 {
 			latencies = append(latencies, lat)
+			if progressCb != nil {
+				progressCb(ProgressUpdate{
+					Alias:   alias,
+					Phase:   "idle_ping",
+					Elapsed: lat,
+				})
+			}
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
@@ -80,7 +91,15 @@ func measureIdleLatency(ctx context.Context, prober *LatencyProber, count int) t
 	for _, l := range latencies {
 		sum += l
 	}
-	return sum / time.Duration(len(latencies))
+	avg := sum / time.Duration(len(latencies))
+	if progressCb != nil {
+		progressCb(ProgressUpdate{
+			Alias:   alias,
+			Phase:   "idle_ping",
+			Elapsed: avg,
+		})
+	}
+	return avg
 }
 
 func runBandwidthTest(
@@ -269,24 +288,28 @@ func executeDownload(
 
 						if progressCb != nil {
 							progressCb(ProgressUpdate{
-								Alias:      alias,
-								Phase:      "download",
-								Direction:  DirectionDownload,
-								BytesDone:  current,
-								TotalBytes: sizeLimit,
-								CurrentBps: bps,
+								Alias:       alias,
+								Phase:       "download",
+								Direction:   DirectionDownload,
+								BytesDone:   current,
+								TotalBytes:  sizeLimit,
+								CurrentBps:  bps,
+								Elapsed:     time.Since(startTime),
+								StepThreads: threads,
 							})
 						}
 						lastSampleTime = now
 						lastBytes = current
 					} else if progressCb != nil {
 						progressCb(ProgressUpdate{
-							Alias:      alias,
-							Phase:      "download",
-							Direction:  DirectionDownload,
-							BytesDone:  current,
-							TotalBytes: sizeLimit,
-							CurrentBps: 0,
+							Alias:       alias,
+							Phase:       "download",
+							Direction:   DirectionDownload,
+							BytesDone:   current,
+							TotalBytes:  sizeLimit,
+							CurrentBps:  0,
+							Elapsed:     time.Since(startTime),
+							StepThreads: threads,
 						})
 					}
 				}
@@ -667,24 +690,28 @@ func executeUpload(
 
 						if progressCb != nil {
 							progressCb(ProgressUpdate{
-								Alias:      alias,
-								Phase:      "upload",
-								Direction:  DirectionUpload,
-								BytesDone:  current,
-								TotalBytes: sizeLimit,
-								CurrentBps: bps,
+								Alias:       alias,
+								Phase:       "upload",
+								Direction:   DirectionUpload,
+								BytesDone:   current,
+								TotalBytes:  sizeLimit,
+								CurrentBps:  bps,
+								Elapsed:     time.Since(startTime),
+								StepThreads: threads,
 							})
 						}
 						lastSampleTime = now
 						lastBytes = current
 					} else if progressCb != nil {
 						progressCb(ProgressUpdate{
-							Alias:      alias,
-							Phase:      "upload",
-							Direction:  DirectionUpload,
-							BytesDone:  current,
-							TotalBytes: sizeLimit,
-							CurrentBps: 0,
+							Alias:       alias,
+							Phase:       "upload",
+							Direction:   DirectionUpload,
+							BytesDone:   current,
+							TotalBytes:  sizeLimit,
+							CurrentBps:  0,
+							Elapsed:     time.Since(startTime),
+							StepThreads: threads,
 						})
 					}
 				}

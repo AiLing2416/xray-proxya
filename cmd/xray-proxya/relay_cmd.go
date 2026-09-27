@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -740,6 +741,8 @@ var speedOutboundCmd = &cobra.Command{
 
 		ctx := context.Background()
 
+		isTTY := relayspeed.IsTerminal(os.Stdout.Fd())
+
 		// Single node test
 		if len(args) == 1 {
 			target := args[0]
@@ -754,47 +757,19 @@ var speedOutboundCmd = &cobra.Command{
 				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
-			var progressCb relayspeed.ProgressCallback
-			if !relaySpeedJSON {
-				providerName := opts.Provider
-				if providerName == "" {
-					providerName = "cloudflare"
-				}
-				if !opts.Auto {
-					fmt.Printf("Running speed test for [%s] (Provider: %s)...\n", target, providerName)
-				} else {
-					fmt.Printf("Running auto-adaptive speed test for [%s] (Provider: %s, max 240MB)...\n", target, providerName)
-				}
-				var lastPrint time.Time
-				progressCb = func(u relayspeed.ProgressUpdate) {
-					dirStr := string(u.Direction)
-					if dirStr == "" {
-						dirStr = "download"
-					}
-					now := time.Now()
-					switch u.Phase {
-					case "auto_probe":
-						fmt.Printf("  [%s] Probing initial baseline...\n", dirStr)
-					case "auto_ramp":
-						fmt.Printf("  [%s] Ramping concurrency to %d stream(s)...\n", dirStr, u.StepThreads)
-					case "auto_sustaining":
-						if now.Sub(lastPrint) >= 300*time.Millisecond {
-							lastPrint = now
-							fmt.Printf("\r  [%s] Sustaining (%d streams): %s transferred | %s (stability: %.0f%%)\033[K",
-								dirStr, u.StepThreads, relayspeed.FormatDecimalBytes(u.BytesDone),
-								relayspeed.FormatBitrate(u.CurrentBps), u.StepGain)
-						}
-					case "auto_converged":
-						fmt.Printf("\r  [%s] Converged at %d stream(s): %s (transferred %s)\n\n",
-							dirStr, u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps), relayspeed.FormatDecimalBytes(u.BytesDone))
-					}
-				}
-			}
+			renderer := relayspeed.NewProgressRenderer(os.Stdout, isTTY, relaySpeedJSON)
+			renderer.StartNode(target)
 
-			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, progressCb)
+			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, renderer.ProgressCallback())
 			if err != nil {
-				return fmt.Errorf("❌ Error: %w", err)
+				res = &relayspeed.SpeedResult{
+					Alias:    target,
+					Provider: opts.Provider,
+					Error:    err.Error(),
+				}
 			}
+			renderer.CompleteNode(res)
+			renderer.Stop()
 
 			if relaySpeedJSON {
 				out, _ := relayspeed.RenderJSON(res)
@@ -831,49 +806,28 @@ var speedOutboundCmd = &cobra.Command{
 			}
 		}
 
-		if !relaySpeedJSON {
-			providerName := opts.Provider
-			if providerName == "" {
-				providerName = "cloudflare"
-			}
-			autoNotice := ""
-			if opts.Auto {
-				autoNotice = ", Auto-adaptive"
-			}
-			fmt.Printf("Starting sequential speed test queue (%d nodes, Provider: %s%s)...\n\n", len(targets), providerName, autoNotice)
-		}
+		renderer := relayspeed.NewProgressRenderer(os.Stdout, isTTY, relaySpeedJSON)
+		defer renderer.Stop()
 
-		var progressCb relayspeed.ProgressCallback
-		if !relaySpeedJSON && opts.Auto {
-			var lastPrint time.Time
-			progressCb = func(u relayspeed.ProgressUpdate) {
-				dirStr := string(u.Direction)
-				if dirStr == "" {
-					dirStr = "download"
-				}
-				now := time.Now()
-				switch u.Phase {
-				case "auto_probe":
-					fmt.Printf("  [%s] Probing %s initial baseline...\n", u.Alias, dirStr)
-				case "auto_ramp":
-					fmt.Printf("  [%s] Ramping %s concurrency to %d stream(s)...\n", u.Alias, dirStr, u.StepThreads)
-				case "auto_sustaining":
-					if now.Sub(lastPrint) >= 300*time.Millisecond {
-						lastPrint = now
-						fmt.Printf("\r  [%s] Sustaining %s (%d streams): %s transferred | %s (stability: %.0f%%)\033[K",
-							u.Alias, dirStr, u.StepThreads, relayspeed.FormatDecimalBytes(u.BytesDone),
-							relayspeed.FormatBitrate(u.CurrentBps), u.StepGain)
-					}
-				case "auto_converged":
-					fmt.Printf("\r  [%s] Converged %s at %d stream(s): %s (transferred %s)\n\n",
-						u.Alias, dirStr, u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps), relayspeed.FormatDecimalBytes(u.BytesDone))
+		var results []*relayspeed.SpeedResult
+		for _, target := range targets {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			renderer.StartNode(target)
+			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, renderer.ProgressCallback())
+			if err != nil {
+				res = &relayspeed.SpeedResult{
+					Alias:    target,
+					Provider: opts.Provider,
+					Error:    err.Error(),
 				}
 			}
-		}
-
-		results, err := relayspeed.RunSpeedQueue(ctx, cfg, targets, opts, progressCb)
-		if err != nil {
-			return fmt.Errorf("❌ Error: %w", err)
+			renderer.CompleteNode(res)
+			results = append(results, res)
 		}
 
 		if relaySpeedJSON {
