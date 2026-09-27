@@ -214,8 +214,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	fmt.Println("🚀 First-time automatic apply...")
 	config.CommitStaging()
 
-	fmt.Println("✨ Initialization complete. Service is ready but NOT started.")
-	fmt.Println("🚀 Use 'service start' to run manually when ready.")
+	fmt.Println("✨ Initialization complete. Configuration is ready.")
+	fmt.Println("🚀 Run 'xray-proxya service install' to install systemd units, then 'xray-proxya service start' to run.")
 	return nil
 }
 
