@@ -3,10 +3,52 @@ package relayspeed
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 	"xray-proxya/pkg/units"
 )
+
+func isColorSupported() bool {
+	return IsTerminal(os.Stdout.Fd()) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+}
+
+// FormatBitrateColored formats a bitrate with ANSI color coding based on speed tiers when color is enabled:
+// >100 Mbps: Bold Cyan/Green
+// 20~100 Mbps: Green
+// <20 Mbps: Yellow
+func FormatBitrateColored(bps float64, colorEnabled bool) string {
+	raw := FormatBitrate(bps)
+	if !colorEnabled || bps <= 0 {
+		return raw
+	}
+	mbps := bps / 1_000_000.0
+	var colorCode string
+	switch {
+	case mbps >= 100.0:
+		colorCode = "\033[1;36m" // Bold Cyan (High speed >100 Mbps)
+	case mbps >= 20.0:
+		colorCode = "\033[32m"   // Green (Normal 20~100 Mbps)
+	default:
+		colorCode = "\033[33m"   // Yellow (Slow <20 Mbps)
+	}
+	return colorCode + raw + "\033[0m"
+}
+
+func formatTableBitrate(bps float64, width int, colorEnabled bool) string {
+	raw := FormatBitrate(bps)
+	if !colorEnabled || bps <= 0 {
+		if len(raw) < width {
+			return raw + strings.Repeat(" ", width-len(raw))
+		}
+		return raw
+	}
+	colored := FormatBitrateColored(bps, true)
+	if len(raw) < width {
+		return colored + strings.Repeat(" ", width-len(raw))
+	}
+	return colored
+}
 
 // RenderTerminal renders speed test results in terminal format (card view for single node, table for multi-node).
 func RenderTerminal(results []*SpeedResult) string {
@@ -21,6 +63,11 @@ func RenderTerminal(results []*SpeedResult) string {
 
 // RenderSingleCard formats a single node result as a compact card.
 func RenderSingleCard(r *SpeedResult) string {
+	return RenderSingleCardStyled(r, isColorSupported())
+}
+
+// RenderSingleCardStyled formats a single node result with explicit color styling control.
+func RenderSingleCardStyled(r *SpeedResult, colorEnabled bool) string {
 	if r == nil {
 		return ""
 	}
@@ -42,7 +89,7 @@ func RenderSingleCard(r *SpeedResult) string {
 			streamsSuffix = fmt.Sprintf(" | Streams: %d", r.OptimalThreads)
 		}
 		sb.WriteString(fmt.Sprintf("Download  : %s (Peak: %s | Low 20%%: %s%s)\n",
-			FormatBitrate(r.Download.AvgSpeedBps),
+			FormatBitrateColored(r.Download.AvgSpeedBps, colorEnabled),
 			FormatBitrate(r.Download.PeakSpeedBps),
 			FormatBitrate(r.Download.Low20SpeedBps),
 			streamsSuffix,
@@ -60,7 +107,7 @@ func RenderSingleCard(r *SpeedResult) string {
 			streamsSuffix = fmt.Sprintf(" | Streams: %d", r.UploadOptimalThreads)
 		}
 		sb.WriteString(fmt.Sprintf("Upload    : %s (Peak: %s | Low 20%%: %s%s)\n",
-			FormatBitrate(r.Upload.AvgSpeedBps),
+			FormatBitrateColored(r.Upload.AvgSpeedBps, colorEnabled),
 			FormatBitrate(r.Upload.PeakSpeedBps),
 			FormatBitrate(r.Upload.Low20SpeedBps),
 			streamsSuffix,
@@ -100,11 +147,20 @@ func RenderSingleCard(r *SpeedResult) string {
 		))
 	}
 
-	// Latency line: Idle: Xms | Under Load: Yms | Loss: Z%
+	// Latency line: Idle: 32ms | Load: 46ms (+14ms) | Loss: 0.0%
 	idleStr := FormatDurationMetric(idleLat)
 	loadStr := FormatDurationMetric(loadLat)
-	sb.WriteString(fmt.Sprintf("Latency   : Idle: %s | Under Load: %s | Loss: %.1f%%\n",
-		idleStr, loadStr, lossRate*100,
+	diffStr := ""
+	if loadLat > 0 && idleLat > 0 {
+		diff := loadLat - idleLat
+		if diff >= 0 {
+			diffStr = fmt.Sprintf(" (+%s)", FormatDurationMetric(diff))
+		} else {
+			diffStr = fmt.Sprintf(" (-%s)", FormatDurationMetric(-diff))
+		}
+	}
+	sb.WriteString(fmt.Sprintf("Latency   : Idle: %s | Load: %s%s | Loss: %.1f%%\n",
+		idleStr, loadStr, diffStr, lossRate*100,
 	))
 
 	if r.Error != "" {
@@ -116,6 +172,11 @@ func RenderSingleCard(r *SpeedResult) string {
 
 // RenderTable formats multiple node results into a summary table.
 func RenderTable(results []*SpeedResult) string {
+	return RenderTableStyled(results, isColorSupported())
+}
+
+// RenderTableStyled formats multiple node results with explicit color control.
+func RenderTableStyled(results []*SpeedResult, colorEnabled bool) string {
 	if len(results) == 0 {
 		return ""
 	}
@@ -129,20 +190,24 @@ func RenderTable(results []*SpeedResult) string {
 	sb.WriteString(sep)
 
 	for _, r := range results {
-		dlStr := "N/A"
-		ulStr := "N/A"
+		dlStr := fmt.Sprintf("%-13s", "N/A")
+		ulStr := fmt.Sprintf("%-13s", "N/A")
 		idleStr := "N/A"
 		loadStr := "N/A"
 		lossStr := "0.0%"
 
 		if r.Error != "" && r.Download == nil && r.Upload == nil {
+			failStr := "FAIL: " + truncate(r.Error, 50)
+			if colorEnabled {
+				failStr = "\033[31mFAIL:\033[0m " + truncate(r.Error, 50)
+			}
 			sb.WriteString(fmt.Sprintf("%-10s | %-12s | %-60s\n",
-				truncate(r.Alias, 10), truncate(r.Provider, 12), "FAIL: "+truncate(r.Error, 50)))
+				truncate(r.Alias, 10), truncate(r.Provider, 12), failStr))
 			continue
 		}
 
 		if r.Download != nil {
-			dlStr = FormatBitrate(r.Download.AvgSpeedBps)
+			dlStr = formatTableBitrate(r.Download.AvgSpeedBps, 13, colorEnabled)
 			if r.Download.IdleLatencyAvg > 0 {
 				idleStr = FormatDurationMetric(r.Download.IdleLatencyAvg)
 			}
@@ -153,7 +218,7 @@ func RenderTable(results []*SpeedResult) string {
 		}
 
 		if r.Upload != nil {
-			ulStr = FormatBitrate(r.Upload.AvgSpeedBps)
+			ulStr = formatTableBitrate(r.Upload.AvgSpeedBps, 13, colorEnabled)
 			if idleStr == "N/A" && r.Upload.IdleLatencyAvg > 0 {
 				idleStr = FormatDurationMetric(r.Upload.IdleLatencyAvg)
 			}
@@ -163,7 +228,7 @@ func RenderTable(results []*SpeedResult) string {
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("%-10s | %-12s | %-13s | %-13s | %-10s | %-10s | %-6s\n",
+		sb.WriteString(fmt.Sprintf("%-10s | %-12s | %s | %s | %-10s | %-10s | %-6s\n",
 			truncate(r.Alias, 10),
 			truncate(r.Provider, 12),
 			dlStr,

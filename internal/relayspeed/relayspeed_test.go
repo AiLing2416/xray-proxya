@@ -58,12 +58,8 @@ func TestRenderSingleCard(t *testing.T) {
 	if !strings.Contains(out, "Data      : ↓ 25.00 MB / ↑ 10.00 MB (Time: 4.8s)") {
 		t.Fatalf("missing data line: %s", out)
 	}
-	if !strings.Contains(out, "Latency   : Idle: 42ms | Under Load: 58ms | Loss: 0.0%") {
+	if !strings.Contains(out, "Latency   : Idle: 42ms | Load: 58ms (+16ms) | Loss: 0.0%") {
 		t.Fatalf("missing latency line: %s", out)
-	}
-	// Verify NO delta (+16ms) in Under Load
-	if strings.Contains(out, "(+") {
-		t.Fatalf("Under Load should not contain latency delta: %s", out)
 	}
 }
 
