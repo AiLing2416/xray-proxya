@@ -34,10 +34,11 @@ type SpeedResult struct {
 }
 
 type Options struct {
-	Provider         string
-	Direction        Direction
-	SizeBytes        int64
-	DurationSeconds  int
+	Provider          string
+	Direction         Direction
+	SizeBytes         int64
+	DurationSeconds   int
+	Threads           int
 	CustomDownloadURL string
 	CustomUploadURL   string
 }

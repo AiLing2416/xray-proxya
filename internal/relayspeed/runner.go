@@ -75,7 +75,7 @@ func RunSpeed(
 				Direction: DirectionDownload,
 			})
 		}
-		dlMetrics, dlErr := runBandwidthTest(ctx, client, prober, provider, DirectionDownload, opts.SizeBytes, opts.DurationSeconds, idleLat, alias, progressCb)
+		dlMetrics, dlErr := runBandwidthTest(ctx, client, prober, provider, DirectionDownload, opts.SizeBytes, opts.DurationSeconds, opts.Threads, idleLat, alias, progressCb)
 		if dlErr != nil {
 			if opts.Direction == DirectionDownload {
 				res.Error = fmt.Sprintf("download failed: %v", dlErr)
@@ -105,7 +105,7 @@ func RunSpeed(
 					Direction: DirectionUpload,
 				})
 			}
-			ulMetrics, ulErr := runBandwidthTest(ctx, client, prober, provider, DirectionUpload, opts.SizeBytes, opts.DurationSeconds, idleLat, alias, progressCb)
+			ulMetrics, ulErr := runBandwidthTest(ctx, client, prober, provider, DirectionUpload, opts.SizeBytes, opts.DurationSeconds, 1, idleLat, alias, progressCb)
 			if ulErr != nil {
 				if res.Error != "" {
 					res.Error += fmt.Sprintf("; upload failed: %v", ulErr)

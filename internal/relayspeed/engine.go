@@ -13,11 +13,12 @@ import (
 )
 
 const (
-	defaultChunkSize      = 32 * 1024 // 32KB
-	sampleInterval        = 100 * time.Millisecond
-	latencySampleInterval = 100 * time.Millisecond // 10Hz high-frequency sampling
-	defaultIdlePingRuns   = 3
-	defaultSpeedTimeout   = 60 * time.Second
+	defaultChunkSize            = 32 * 1024 // 32KB
+	defaultMultiStreamChunkSize = 10 * 1024 * 1024 // 10MB
+	sampleInterval              = 100 * time.Millisecond
+	latencySampleInterval       = 100 * time.Millisecond // 10Hz high-frequency sampling
+	defaultIdlePingRuns         = 3
+	defaultSpeedTimeout         = 60 * time.Second
 )
 
 type zeroReader struct{}
@@ -90,12 +91,16 @@ func runBandwidthTest(
 	direction Direction,
 	sizeLimit int64,
 	durationSec int,
+	threads int,
 	idleLat time.Duration,
 	alias string,
 	progressCb ProgressCallback,
 ) (*SpeedMetrics, error) {
 	if sizeLimit <= 0 {
 		sizeLimit = 25 * 1024 * 1024 // 25MB default
+	}
+	if threads <= 0 {
+		threads = 1
 	}
 
 	timeout := defaultSpeedTimeout
@@ -171,7 +176,7 @@ func runBandwidthTest(
 
 	var err error
 	if direction == DirectionDownload {
-		err = executeDownload(testCtx, client, provider, sizeLimit, deadline, &bytesTransferred, &samples, alias, progressCb)
+		err = executeDownload(testCtx, client, provider, sizeLimit, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
 	} else {
 		err = executeUpload(testCtx, client, provider, sizeLimit, deadline, &bytesTransferred, &samples, alias, progressCb)
 	}
@@ -222,77 +227,331 @@ func executeDownload(
 	provider Provider,
 	sizeLimit int64,
 	deadline time.Time,
+	threads int,
 	bytesTransferred *int64,
 	samples *[]float64,
 	alias string,
 	progressCb ProgressCallback,
 ) error {
-	req, err := provider.GetDownloadRequest(ctx, client, sizeLimit)
-	if err != nil {
-		return fmt.Errorf("prepare download request: %w", err)
+	dlCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	startTime := time.Now()
+	stopSampler := make(chan struct{})
+	var samplerWg sync.WaitGroup
+	samplerWg.Add(1)
+
+	go func() {
+		defer samplerWg.Done()
+		ticker := time.NewTicker(sampleInterval)
+		defer ticker.Stop()
+
+		lastSampleTime := time.Now()
+		lastBytes := int64(0)
+
+		for {
+			select {
+			case <-stopSampler:
+				return
+			case <-dlCtx.Done():
+				return
+			case now := <-ticker.C:
+				current := atomic.LoadInt64(bytesTransferred)
+				elapsed := now.Sub(lastSampleTime)
+				if elapsed > 0 {
+					chunkBytes := current - lastBytes
+					bps := float64(chunkBytes*8) / elapsed.Seconds()
+					*samples = append(*samples, bps)
+
+					if progressCb != nil {
+						progressCb(ProgressUpdate{
+							Alias:      alias,
+							Phase:      "download",
+							Direction:  DirectionDownload,
+							BytesDone:  current,
+							TotalBytes: sizeLimit,
+							CurrentBps: bps,
+						})
+					}
+					lastSampleTime = now
+					lastBytes = current
+				}
+			}
+		}
+	}()
+
+	var dlErr error
+	if threads <= 1 {
+		dlErr = executeDownloadSingle(dlCtx, cancel, client, provider, sizeLimit, deadline, bytesTransferred)
+	} else {
+		dlErr = executeDownloadMulti(dlCtx, cancel, client, provider, sizeLimit, deadline, threads, bytesTransferred)
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("execute download: %w", err)
-	}
-	defer resp.Body.Close()
+	close(stopSampler)
+	samplerWg.Wait()
 
-	if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
-		return fmt.Errorf("download HTTP %d", resp.StatusCode)
+	if sizeLimit > 0 && *bytesTransferred > sizeLimit {
+		*bytesTransferred = sizeLimit
 	}
 
-	buf := make([]byte, defaultChunkSize)
-	lastSampleTime := time.Now()
-	lastSampleBytes := int64(0)
+	if len(*samples) == 0 && *bytesTransferred > 0 {
+		elapsedSec := time.Since(startTime).Seconds()
+		if elapsedSec > 0 {
+			*samples = append(*samples, float64(*bytesTransferred*8)/elapsedSec)
+		}
+	}
 
+	return dlErr
+}
+
+func executeDownloadSingle(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	client *http.Client,
+	provider Provider,
+	sizeLimit int64,
+	deadline time.Time,
+	bytesTransferred *int64,
+) error {
 	for {
 		if time.Now().After(deadline) {
 			break
 		}
-		if sizeLimit > 0 && *bytesTransferred >= sizeLimit {
+		cur := atomic.LoadInt64(bytesTransferred)
+		if sizeLimit > 0 && cur >= sizeLimit {
 			break
 		}
 
-		toRead := len(buf)
-		if sizeLimit > 0 && int64(toRead) > (sizeLimit-*bytesTransferred) {
-			toRead = int(sizeLimit - *bytesTransferred)
-		}
-
-		n, rErr := resp.Body.Read(buf[:toRead])
-		if n > 0 {
-			*bytesTransferred += int64(n)
-
-			now := time.Now()
-			elapsed := now.Sub(lastSampleTime)
-			if elapsed >= sampleInterval {
-				chunkBytes := *bytesTransferred - lastSampleBytes
-				bps := float64(chunkBytes*8) / elapsed.Seconds()
-				*samples = append(*samples, bps)
-
-				if progressCb != nil {
-					progressCb(ProgressUpdate{
-						Alias:      alias,
-						Phase:      "download",
-						Direction:  DirectionDownload,
-						BytesDone:  *bytesTransferred,
-						TotalBytes: sizeLimit,
-						CurrentBps: bps,
-					})
-				}
-				lastSampleTime = now
-				lastSampleBytes = *bytesTransferred
-			}
-		}
-
-		if rErr != nil {
-			if rErr == io.EOF {
+		reqSize := sizeLimit
+		if sizeLimit > 0 {
+			rem := sizeLimit - cur
+			if rem <= 0 {
 				break
 			}
-			return rErr
+			reqSize = rem
+		}
+
+		req, err := provider.GetDownloadRequest(ctx, client, reqSize)
+		if err != nil {
+			return fmt.Errorf("prepare download request: %w", err)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("execute download: %w", err)
+		}
+
+		if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
+			resp.Body.Close()
+			return fmt.Errorf("download HTTP %d", resp.StatusCode)
+		}
+
+		buf := make([]byte, defaultChunkSize)
+		streamDone := false
+		for !streamDone {
+			if time.Now().After(deadline) {
+				resp.Body.Close()
+				cancel()
+				return nil
+			}
+
+			cur := atomic.LoadInt64(bytesTransferred)
+			if sizeLimit > 0 && cur >= sizeLimit {
+				resp.Body.Close()
+				cancel()
+				return nil
+			}
+
+			toRead := len(buf)
+			if sizeLimit > 0 {
+				rem := sizeLimit - cur
+				if rem <= 0 {
+					resp.Body.Close()
+					cancel()
+					return nil
+				}
+				if int64(toRead) > rem {
+					toRead = int(rem)
+				}
+			}
+
+			n, rErr := resp.Body.Read(buf[:toRead])
+			if n > 0 {
+				atomic.AddInt64(bytesTransferred, int64(n))
+				if sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+					resp.Body.Close()
+					cancel()
+					return nil
+				}
+			}
+
+			if rErr != nil {
+				resp.Body.Close()
+				if rErr == io.EOF {
+					streamDone = true
+					break
+				}
+				if ctx.Err() != nil {
+					return nil
+				}
+				return rErr
+			}
+		}
+
+		if sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+			break
 		}
 	}
+	return nil
+}
 
+func executeDownloadMulti(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	client *http.Client,
+	provider Provider,
+	sizeLimit int64,
+	deadline time.Time,
+	threads int,
+	bytesTransferred *int64,
+) error {
+	var (
+		wg        sync.WaitGroup
+		errOnce   sync.Once
+		workerErr error
+	)
+
+	chunkReqBytes := int64(defaultMultiStreamChunkSize)
+	if sizeLimit > 0 && sizeLimit < chunkReqBytes {
+		chunkReqBytes = sizeLimit
+	}
+
+	for w := 0; w < threads; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			buf := make([]byte, defaultChunkSize)
+
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
+				if time.Now().After(deadline) {
+					cancel()
+					return
+				}
+
+				cur := atomic.LoadInt64(bytesTransferred)
+				if sizeLimit > 0 && cur >= sizeLimit {
+					cancel()
+					return
+				}
+
+				reqBytes := chunkReqBytes
+				if sizeLimit > 0 {
+					rem := sizeLimit - cur
+					if rem <= 0 {
+						cancel()
+						return
+					}
+					if rem < reqBytes {
+						reqBytes = rem
+					}
+				}
+
+				req, err := provider.GetDownloadRequest(ctx, client, reqBytes)
+				if err != nil {
+					if ctx.Err() == nil {
+						errOnce.Do(func() { workerErr = fmt.Errorf("prepare download chunk: %w", err) })
+						cancel()
+					}
+					return
+				}
+
+				resp, err := client.Do(req)
+				if err != nil {
+					if ctx.Err() == nil {
+						errOnce.Do(func() { workerErr = fmt.Errorf("execute download chunk: %w", err) })
+						cancel()
+					}
+					return
+				}
+
+				if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
+					resp.Body.Close()
+					if ctx.Err() == nil {
+						errOnce.Do(func() { workerErr = fmt.Errorf("download HTTP %d", resp.StatusCode) })
+						cancel()
+					}
+					return
+				}
+
+				chunkDone := false
+				for !chunkDone {
+					if time.Now().After(deadline) {
+						resp.Body.Close()
+						cancel()
+						return
+					}
+
+					current := atomic.LoadInt64(bytesTransferred)
+					if sizeLimit > 0 && current >= sizeLimit {
+						resp.Body.Close()
+						cancel()
+						return
+					}
+
+					toRead := len(buf)
+					if sizeLimit > 0 {
+						rem := sizeLimit - current
+						if rem <= 0 {
+							resp.Body.Close()
+							cancel()
+							return
+						}
+						if int64(toRead) > rem {
+							toRead = int(rem)
+						}
+					}
+
+					n, rErr := resp.Body.Read(buf[:toRead])
+					if n > 0 {
+						atomic.AddInt64(bytesTransferred, int64(n))
+						if sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
+							resp.Body.Close()
+							cancel()
+							return
+						}
+					}
+
+					if rErr != nil {
+						resp.Body.Close()
+						if rErr == io.EOF {
+							chunkDone = true
+							break
+						}
+						if ctx.Err() == nil {
+							errOnce.Do(func() { workerErr = fmt.Errorf("read chunk: %w", rErr) })
+							cancel()
+						}
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if workerErr != nil && atomic.LoadInt64(bytesTransferred) == 0 {
+		return workerErr
+	}
 	return nil
 }
 
@@ -324,7 +583,11 @@ func executeUpload(
 	stopSampler := make(chan struct{})
 	defer ticker.Stop()
 
+	var samplerWg sync.WaitGroup
+	samplerWg.Add(1)
+
 	go func() {
+		defer samplerWg.Done()
 		lastSampleTime := time.Now()
 		lastBytes := int64(0)
 		for {
@@ -358,6 +621,7 @@ func executeUpload(
 
 	resp, err := client.Do(req)
 	close(stopSampler)
+	samplerWg.Wait()
 
 	if err != nil {
 		return fmt.Errorf("execute upload: %w", err)
