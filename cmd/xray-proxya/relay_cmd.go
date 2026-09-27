@@ -761,20 +761,32 @@ var speedOutboundCmd = &cobra.Command{
 					providerName = "cloudflare"
 				}
 				if !opts.Auto {
-					fmt.Printf("🚀 Running speed test for [%s] (Provider: %s)...\n", target, providerName)
+					fmt.Printf("Running speed test for [%s] (Provider: %s)...\n", target, providerName)
 				} else {
-					fmt.Printf("🚀 Auto-probing bandwidth & concurrency for [%s] (Ladder: 1, 2, 4, 6, 8 streams, max 240MB)...\n", target)
+					fmt.Printf("Running auto-adaptive speed test for [%s] (Provider: %s, max 240MB)...\n", target, providerName)
 				}
+				var lastPrint time.Time
 				progressCb = func(u relayspeed.ProgressUpdate) {
+					dirStr := string(u.Direction)
+					if dirStr == "" {
+						dirStr = "download"
+					}
+					now := time.Now()
 					switch u.Phase {
-					case "auto_step_testing":
-						fmt.Printf("  ⚡ Testing %d stream(s) (%s)...", u.StepThreads, relayspeed.FormatDecimalBytes(u.TotalBytes))
-					case "auto_step_result":
-						fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
-					case "auto_step_stable":
-						fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
+					case "auto_probe":
+						fmt.Printf("  [%s] Probing initial baseline...\n", dirStr)
+					case "auto_ramp":
+						fmt.Printf("  [%s] Ramping concurrency to %d stream(s)...\n", dirStr, u.StepThreads)
+					case "auto_sustaining":
+						if now.Sub(lastPrint) >= 300*time.Millisecond {
+							lastPrint = now
+							fmt.Printf("\r  [%s] Sustaining (%d streams): %s transferred | %s (stability: %.0f%%)\033[K",
+								dirStr, u.StepThreads, relayspeed.FormatDecimalBytes(u.BytesDone),
+								relayspeed.FormatBitrate(u.CurrentBps), u.StepGain)
+						}
 					case "auto_converged":
-						fmt.Printf("✅ Converged at %d stream(s): %s\n\n", u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps))
+						fmt.Printf("\r  [%s] Converged at %d stream(s): %s (transferred %s)\n\n",
+							dirStr, u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps), relayspeed.FormatDecimalBytes(u.BytesDone))
 					}
 				}
 			}
@@ -826,23 +838,35 @@ var speedOutboundCmd = &cobra.Command{
 			}
 			autoNotice := ""
 			if opts.Auto {
-				autoNotice = ", Auto-concurrency stepping"
+				autoNotice = ", Auto-adaptive"
 			}
-			fmt.Printf("🚀 Starting sequential speed test queue (%d nodes, Provider: %s%s)...\n\n", len(targets), providerName, autoNotice)
+			fmt.Printf("Starting sequential speed test queue (%d nodes, Provider: %s%s)...\n\n", len(targets), providerName, autoNotice)
 		}
 
 		var progressCb relayspeed.ProgressCallback
 		if !relaySpeedJSON && opts.Auto {
+			var lastPrint time.Time
 			progressCb = func(u relayspeed.ProgressUpdate) {
+				dirStr := string(u.Direction)
+				if dirStr == "" {
+					dirStr = "download"
+				}
+				now := time.Now()
 				switch u.Phase {
-				case "auto_step_testing":
-					fmt.Printf("  [%s] ⚡ Testing %d stream(s) (%s)...", u.Alias, u.StepThreads, relayspeed.FormatDecimalBytes(u.TotalBytes))
-				case "auto_step_result":
-					fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
-				case "auto_step_stable":
-					fmt.Printf(" %s (%s)\n", relayspeed.FormatBitrate(u.CurrentBps), u.StepMessage)
+				case "auto_probe":
+					fmt.Printf("  [%s] Probing %s initial baseline...\n", u.Alias, dirStr)
+				case "auto_ramp":
+					fmt.Printf("  [%s] Ramping %s concurrency to %d stream(s)...\n", u.Alias, dirStr, u.StepThreads)
+				case "auto_sustaining":
+					if now.Sub(lastPrint) >= 300*time.Millisecond {
+						lastPrint = now
+						fmt.Printf("\r  [%s] Sustaining %s (%d streams): %s transferred | %s (stability: %.0f%%)\033[K",
+							u.Alias, dirStr, u.StepThreads, relayspeed.FormatDecimalBytes(u.BytesDone),
+							relayspeed.FormatBitrate(u.CurrentBps), u.StepGain)
+					}
 				case "auto_converged":
-					fmt.Printf("  [%s] ✅ Converged at %d stream(s): %s\n\n", u.Alias, u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps))
+					fmt.Printf("\r  [%s] Converged %s at %d stream(s): %s (transferred %s)\n\n",
+						u.Alias, dirStr, u.StepThreads, relayspeed.FormatBitrate(u.CurrentBps), relayspeed.FormatDecimalBytes(u.BytesDone))
 				}
 			}
 		}
