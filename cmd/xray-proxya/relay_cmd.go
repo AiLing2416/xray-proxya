@@ -728,12 +728,17 @@ var speedOutboundCmd = &cobra.Command{
 		fixedSize := cmd.Flags().Changed("size")
 		autoMode := relaySpeedAuto && !fixedSize
 
+		threads := relaySpeedThreads
+		if !cmd.Flags().Changed("threads") && (relaySpeedProvider == "fast" || relaySpeedProvider == "netflix") {
+			threads = 8
+		}
+
 		opts := relayspeed.Options{
 			Provider:          relaySpeedProvider,
 			Direction:         direction,
 			SizeBytes:         sizeLimit,
 			DurationSeconds:   durationSec,
-			Threads:           relaySpeedThreads,
+			Threads:           threads,
 			CustomDownloadURL: customDL,
 			CustomUploadURL:   customUL,
 			Auto:              autoMode,

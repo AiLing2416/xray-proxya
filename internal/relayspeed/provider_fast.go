@@ -40,7 +40,7 @@ func (f *FastProvider) SupportsUpload() bool {
 }
 
 func (f *FastProvider) MaxUploadChunkSize() int64 {
-	return 4 * 1024 * 1024 // 4MB safe cap for Netflix Open Connect CDN
+	return 8 * 1024 * 1024 // 8MB optimal balanced chunk size for Netflix Open Connect CDN
 }
 
 func (f *FastProvider) GetDownloadRequest(ctx context.Context, client *http.Client, sizeBytes int64) (*http.Request, error) {
@@ -76,8 +76,8 @@ func (f *FastProvider) GetUploadRequest(ctx context.Context, client *http.Client
 		return nil, fmt.Errorf("fast.com get upload target: %w", err)
 	}
 
-	if sizeBytes > 4*1024*1024 {
-		sizeBytes = 4 * 1024 * 1024
+	if sizeBytes > 8*1024*1024 {
+		sizeBytes = 8 * 1024 * 1024
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, body)
@@ -104,6 +104,9 @@ func (f *FastProvider) getTargetURL(ctx context.Context, client *http.Client) (s
 	if len(f.cachedTargets) > 0 && time.Since(f.targetsUpdated) < 10*time.Minute {
 		targets := f.cachedTargets
 		f.mu.Unlock()
+		if wIdx := GetWorkerIndex(ctx); wIdx >= 0 {
+			return targets[wIdx%len(targets)], nil
+		}
 		idx := atomic.AddUint32(&f.targetIndex, 1) - 1
 		return targets[int(idx)%len(targets)], nil
 	}
@@ -124,6 +127,9 @@ func (f *FastProvider) getTargetURL(ctx context.Context, client *http.Client) (s
 	f.targetsUpdated = time.Now()
 	f.mu.Unlock()
 
+	if wIdx := GetWorkerIndex(ctx); wIdx >= 0 {
+		return targets[wIdx%len(targets)], nil
+	}
 	idx := atomic.AddUint32(&f.targetIndex, 1) - 1
 	return targets[int(idx)%len(targets)], nil
 }

@@ -363,6 +363,18 @@ func RunAdaptiveBandwidthTest(
 	threads := targetThreads
 	if threads <= 1 {
 		threads = SelectInitialConcurrency(probeBps, rtt)
+		if provider != nil && (provider.ID() == "fast" || provider.ID() == "netflix") {
+			// Fast.com OCA limits single-stream throughput (~25Mbps).
+			// Ramp up concurrency to 6~8 streams to match official web behavior.
+			speedMbps := probeBps / 1_000_000.0
+			if speedMbps >= 15 {
+				threads = 8
+			} else if speedMbps >= 5 {
+				threads = 6
+			} else if threads < 4 {
+				threads = 4
+			}
+		}
 	}
 	if progressCb != nil {
 		progressCb(ProgressUpdate{

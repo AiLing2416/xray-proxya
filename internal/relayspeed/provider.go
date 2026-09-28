@@ -25,6 +25,24 @@ type UploadChunkLimitProvider interface {
 	MaxUploadChunkSize() int64
 }
 
+type workerIndexKey struct{}
+
+// WithWorkerIndex attaches a deterministic worker index to context.
+func WithWorkerIndex(ctx context.Context, idx int) context.Context {
+	return context.WithValue(ctx, workerIndexKey{}, idx)
+}
+
+// GetWorkerIndex extracts worker index from context, or -1 if not set.
+func GetWorkerIndex(ctx context.Context) int {
+	if ctx == nil {
+		return -1
+	}
+	if val, ok := ctx.Value(workerIndexKey{}).(int); ok {
+		return val
+	}
+	return -1
+}
+
 // GetProvider returns a provider by its identifier.
 func GetProvider(id string, customDL, customUL string) (Provider, error) {
 	id = strings.ToLower(strings.TrimSpace(id))

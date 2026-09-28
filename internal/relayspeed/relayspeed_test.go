@@ -1044,8 +1044,8 @@ func TestFastProviderTargetsCachingAndChunkLimit(t *testing.T) {
 	if !ok {
 		t.Fatalf("FastProvider should implement UploadChunkLimitProvider")
 	}
-	if limitProv.MaxUploadChunkSize() != 4*1024*1024 {
-		t.Errorf("MaxUploadChunkSize = %d, want 4MB", limitProv.MaxUploadChunkSize())
+	if limitProv.MaxUploadChunkSize() != 8*1024*1024 {
+		t.Errorf("MaxUploadChunkSize = %d, want 8MB", limitProv.MaxUploadChunkSize())
 	}
 
 	// 2. Check chunk clamp on upload request
@@ -1053,31 +1053,36 @@ func TestFastProviderTargetsCachingAndChunkLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUploadRequest error: %v", err)
 	}
-	if req1.ContentLength != 4*1024*1024 {
-		t.Errorf("expected ContentLength 4MB (clamped), got %d", req1.ContentLength)
+	if req1.ContentLength != 8*1024*1024 {
+		t.Errorf("expected ContentLength 8MB (clamped), got %d", req1.ContentLength)
 	}
 	if req1.URL.String() != "https://cdn1.netflix.test/up" {
 		t.Errorf("expected first target cdn1, got %s", req1.URL.String())
 	}
 
-	// 3. Check round-robin across cached targets
-	req2, err := fp.GetUploadRequest(context.Background(), http.DefaultClient, strings.NewReader(""), 2*1024*1024)
-	if err != nil {
-		t.Fatalf("GetUploadRequest 2 error: %v", err)
-	}
-	if req2.ContentLength != 2*1024*1024 {
-		t.Errorf("expected ContentLength 2MB, got %d", req2.ContentLength)
-	}
-	if req2.URL.String() != "https://cdn2.netflix.test/up" {
-		t.Errorf("expected second target cdn2, got %s", req2.URL.String())
+	// 3. Check worker affinity via WithWorkerIndex
+	ctxW0 := WithWorkerIndex(context.Background(), 0)
+	ctxW1 := WithWorkerIndex(context.Background(), 1)
+
+	// Worker 0 should consistently get cdn1 across multiple requests
+	for i := 0; i < 3; i++ {
+		reqW0, err := fp.GetUploadRequest(ctxW0, http.DefaultClient, strings.NewReader(""), 2*1024*1024)
+		if err != nil {
+			t.Fatalf("Worker 0 GetUploadRequest error: %v", err)
+		}
+		if reqW0.URL.String() != "https://cdn1.netflix.test/up" {
+			t.Errorf("Worker 0 expected cdn1, got %s", reqW0.URL.String())
+		}
 	}
 
-	// 4. Wrap around to cdn1
-	req3, err := fp.GetDownloadRequest(context.Background(), http.DefaultClient, 1024)
-	if err != nil {
-		t.Fatalf("GetDownloadRequest error: %v", err)
-	}
-	if req3.URL.String() != "https://cdn1.netflix.test/up" {
-		t.Errorf("expected wrap around to cdn1, got %s", req3.URL.String())
+	// Worker 1 should consistently get cdn2
+	for i := 0; i < 3; i++ {
+		reqW1, err := fp.GetUploadRequest(ctxW1, http.DefaultClient, strings.NewReader(""), 2*1024*1024)
+		if err != nil {
+			t.Fatalf("Worker 1 GetUploadRequest error: %v", err)
+		}
+		if reqW1.URL.String() != "https://cdn2.netflix.test/up" {
+			t.Errorf("Worker 1 expected cdn2, got %s", reqW1.URL.String())
+		}
 	}
 }

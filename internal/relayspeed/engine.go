@@ -499,9 +499,11 @@ func executeDownloadMulti(
 	}
 
 	for w := 0; w < threads; w++ {
+		wIdx := w
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			workerCtx := WithWorkerIndex(ctx, wIdx)
 			buf := make([]byte, defaultChunkSize)
 
 			for {
@@ -534,7 +536,7 @@ func executeDownloadMulti(
 					}
 				}
 
-				req, err := provider.GetDownloadRequest(ctx, client, reqBytes)
+				req, err := provider.GetDownloadRequest(workerCtx, client, reqBytes)
 				if err != nil {
 					if ctx.Err() == nil {
 						errOnce.Do(func() { workerErr = fmt.Errorf("prepare download chunk: %w", err) })
@@ -869,9 +871,11 @@ func executeUploadMulti(
 	}
 
 	for w := 0; w < threads; w++ {
+		wIdx := w
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			workerCtx := WithWorkerIndex(ctx, wIdx)
 
 			for {
 				select {
@@ -906,7 +910,7 @@ func executeUploadMulti(
 				zeroSrc := io.LimitReader(zeroReader{}, reqBytes)
 				cr := &countingReader{reader: zeroSrc, count: bytesTransferred}
 
-				req, err := provider.GetUploadRequest(ctx, client, cr, reqBytes)
+				req, err := provider.GetUploadRequest(workerCtx, client, cr, reqBytes)
 				if err != nil {
 					if ctx.Err() == nil {
 						errOnce.Do(func() { workerErr = fmt.Errorf("prepare upload chunk: %w", err) })
