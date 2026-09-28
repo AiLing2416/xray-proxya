@@ -10,6 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/net/websocket"
 )
 
 func sampleSpeedResult() *SpeedResult {
@@ -1184,4 +1186,96 @@ func TestOoklaProviderTargetsCachingAndChunkLimit(t *testing.T) {
 		t.Errorf("expected resolved redirect URL %s/final/upload.php, got %s", redirectServer.URL, redirectTarget.UploadURL)
 	}
 }
+
+func TestMLabProviderWebSocketStreaming(t *testing.T) {
+	mp := &MLabProvider{}
+
+	// 1. Verify interface implementations
+	streamUp, ok := any(mp).(StreamUploadProvider)
+	if !ok {
+		t.Fatalf("MLabProvider must implement StreamUploadProvider")
+	}
+
+	streamDl, ok := any(mp).(StreamDownloadProvider)
+	if !ok {
+		t.Fatalf("MLabProvider must implement StreamDownloadProvider")
+	}
+
+	// 2. Setup mock WebSocket server
+	wsHandler := websocket.Server{
+		Handshake: func(config *websocket.Config, req *http.Request) error {
+			config.Protocol = []string{mlabWSProtocol}
+			return nil
+		},
+		Handler: func(ws *websocket.Conn) {
+			path := ws.Request().URL.Path
+			if strings.Contains(path, "upload") {
+				// Upload handler: read client binary messages and discard
+				buf := make([]byte, 16384)
+				for {
+					_, err := ws.Read(buf)
+					if err != nil {
+						return
+					}
+				}
+			} else {
+				// Download handler: emit dummy binary messages
+				data := make([]byte, 8192)
+				for i := 0; i < 8; i++ { // emit 64KB total
+					if _, err := ws.Write(data); err != nil {
+						return
+					}
+				}
+			}
+		},
+	}
+
+	mockServer := httptest.NewServer(wsHandler)
+	defer mockServer.Close()
+
+	wsURL := "ws://" + mockServer.Listener.Addr().String()
+
+	mp.cachedULURL = wsURL + "/ndt/v7/upload"
+	mp.cachedDLURL = wsURL + "/ndt/v7/download"
+	mp.targetTime = time.Now()
+
+	// 3. Test ExecuteUploadStream with fixed 32KB
+	var uploaded int64
+	uploadErr := streamUp.ExecuteUploadStream(
+		context.Background(),
+		mockServer.Client(),
+		32*1024,
+		0,
+		true,
+		time.Now().Add(5*time.Second),
+		1,
+		&uploaded,
+	)
+	if uploadErr != nil {
+		t.Fatalf("ExecuteUploadStream failed: %v", uploadErr)
+	}
+	if uploaded < 32*1024 {
+		t.Errorf("uploaded = %d, want >= 32768", uploaded)
+	}
+
+	// 4. Test ExecuteDownloadStream with fixed 32KB
+	var downloaded int64
+	dlErr := streamDl.ExecuteDownloadStream(
+		context.Background(),
+		mockServer.Client(),
+		32*1024,
+		0,
+		true,
+		time.Now().Add(5*time.Second),
+		1,
+		&downloaded,
+	)
+	if dlErr != nil {
+		t.Fatalf("ExecuteDownloadStream failed: %v", dlErr)
+	}
+	if downloaded < 32*1024 {
+		t.Errorf("downloaded = %d, want >= 32768", downloaded)
+	}
+}
+
 

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 // Provider abstracts different speed test backends.
@@ -23,6 +24,18 @@ type Provider interface {
 // If not implemented or returns <= 0, the engine uses default chunk sizes.
 type UploadChunkLimitProvider interface {
 	MaxUploadChunkSize() int64
+}
+
+// StreamUploadProvider allows providers using streaming protocols (such as WebSocket in M-Lab NDT7)
+// to manage the upload loop directly.
+type StreamUploadProvider interface {
+	ExecuteUploadStream(ctx context.Context, client *http.Client, sizeLimit int64, durationSec int, fixedSize bool, deadline time.Time, threads int, bytesTransferred *int64) error
+}
+
+// StreamDownloadProvider allows providers using streaming protocols (such as WebSocket in M-Lab NDT7)
+// to manage the download loop directly.
+type StreamDownloadProvider interface {
+	ExecuteDownloadStream(ctx context.Context, client *http.Client, sizeLimit int64, durationSec int, fixedSize bool, deadline time.Time, threads int, bytesTransferred *int64) error
 }
 
 type workerIndexKey struct{}

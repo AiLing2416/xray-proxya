@@ -318,7 +318,9 @@ func executeDownload(
 	}()
 
 	var dlErr error
-	if threads <= 1 {
+	if sp, ok := provider.(StreamDownloadProvider); ok {
+		dlErr = sp.ExecuteDownloadStream(dlCtx, client, sizeLimit, durationSec, fixedSize, deadline, threads, bytesTransferred)
+	} else if threads <= 1 {
 		dlErr = executeDownloadSingle(dlCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, bytesTransferred)
 	} else {
 		dlErr = executeDownloadMulti(dlCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, bytesTransferred)
@@ -722,7 +724,9 @@ func executeUpload(
 	}()
 
 	var ulErr error
-	if threads <= 1 {
+	if sp, ok := provider.(StreamUploadProvider); ok {
+		ulErr = sp.ExecuteUploadStream(ulCtx, client, sizeLimit, durationSec, fixedSize, deadline, threads, bytesTransferred)
+	} else if threads <= 1 {
 		ulErr = executeUploadSingle(ulCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, bytesTransferred)
 	} else {
 		ulErr = executeUploadMulti(ulCtx, cancel, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, bytesTransferred)

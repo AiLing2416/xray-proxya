@@ -47,6 +47,21 @@ func ProbeBandwidthDir(ctx context.Context, client *http.Client, provider Provid
 		probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 		defer cancel()
 
+		if sup, ok := provider.(StreamUploadProvider); ok {
+			var totalBytes int64
+			start := time.Now()
+			err := sup.ExecuteUploadStream(probeCtx, client, defaultProbeBytes, 0, true, time.Now().Add(probeTimeout), 1, &totalBytes)
+			elapsed := time.Since(start)
+			if err != nil && totalBytes == 0 {
+				return 0, 0, fmt.Errorf("upload stream probe: %w", err)
+			}
+			if elapsed <= 0 {
+				elapsed = time.Millisecond
+			}
+			bps = float64(totalBytes*8) / elapsed.Seconds()
+			return bps, elapsed, nil
+		}
+
 		var totalBytes int64
 		zeroSrc := io.LimitReader(zeroReader{}, defaultProbeBytes)
 		cr := &countingReader{reader: zeroSrc, count: &totalBytes}
@@ -84,6 +99,21 @@ func ProbeBandwidthDir(ctx context.Context, client *http.Client, provider Provid
 	// Default: DirectionDownload
 	probeCtx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
+
+	if sdp, ok := provider.(StreamDownloadProvider); ok {
+		var totalBytes int64
+		start := time.Now()
+		err := sdp.ExecuteDownloadStream(probeCtx, client, defaultProbeBytes, 0, true, time.Now().Add(probeTimeout), 1, &totalBytes)
+		elapsed := time.Since(start)
+		if err != nil && totalBytes == 0 {
+			return 0, 0, fmt.Errorf("download stream probe: %w", err)
+		}
+		if elapsed <= 0 {
+			elapsed = time.Millisecond
+		}
+		bps = float64(totalBytes*8) / elapsed.Seconds()
+		return bps, elapsed, nil
+	}
 
 	req, err := provider.GetDownloadRequest(probeCtx, client, defaultProbeBytes)
 	if err != nil {
