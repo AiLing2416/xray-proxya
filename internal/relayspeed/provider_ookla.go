@@ -100,13 +100,6 @@ func (o *OoklaProvider) GetDownloadRequest(ctx context.Context, client *http.Cli
 	}
 
 	baseURL := target.BaseURL
-	if wIdx := GetWorkerIndex(ctx); wIdx >= 0 {
-		o.mu.Lock()
-		if len(o.targets) > 0 {
-			baseURL = o.targets[wIdx%len(o.targets)].BaseURL
-		}
-		o.mu.Unlock()
-	}
 
 	// Choose appropriate Ookla JPG payload
 	imgName := "random4000x4000.jpg" // ~31MB payload
@@ -139,21 +132,12 @@ func (o *OoklaProvider) GetUploadRequest(ctx context.Context, client *http.Clien
 		return nil, fmt.Errorf("ookla get upload server: %w", err)
 	}
 
-	uploadURL := target.UploadURL
-	if wIdx := GetWorkerIndex(ctx); wIdx >= 0 {
-		o.mu.Lock()
-		if len(o.targets) > 0 {
-			uploadURL = o.targets[wIdx%len(o.targets)].UploadURL
-		}
-		o.mu.Unlock()
-	}
-
 	uploadSize := sizeBytes
 	if uploadSize > ooklaMaxChunkSize {
 		uploadSize = ooklaMaxChunkSize
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, body)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target.UploadURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -228,6 +212,9 @@ func (o *OoklaProvider) locateServers(ctx context.Context, client *http.Client) 
 		}
 	}
 
+	// Follow any 301/302/307 redirects to cache final direct POST target and prevent body drops
+	o.resolveTargetUploadURL(ctx, client, primary)
+
 	o.mu.Lock()
 	o.targets = targets
 	o.primary = primary
@@ -235,6 +222,39 @@ func (o *OoklaProvider) locateServers(ctx context.Context, client *http.Client) 
 	o.mu.Unlock()
 
 	return nil
+}
+
+func (o *OoklaProvider) resolveTargetUploadURL(ctx context.Context, client *http.Client, target *ooklaTarget) {
+	if target == nil || target.UploadURL == "" {
+		return
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodHead, target.UploadURL, nil)
+	if err != nil {
+		return
+	}
+	setOoklaHeaders(req)
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.Request != nil && resp.Request.URL != nil {
+		resolved := resp.Request.URL.String()
+		if resolved != "" && resolved != target.UploadURL {
+			target.UploadURL = resolved
+			u, err := url.Parse(resolved)
+			if err == nil {
+				u.Path = path.Dir(u.Path) + "/"
+				target.BaseURL = u.String()
+				target.LatencyURL = target.BaseURL + "latency.txt"
+			}
+		}
+	}
 }
 
 func (o *OoklaProvider) fetchJSONServers(ctx context.Context, client *http.Client) ([]*ooklaTarget, error) {

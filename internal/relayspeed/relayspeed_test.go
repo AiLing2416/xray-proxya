@@ -1133,11 +1133,11 @@ func TestOoklaProviderTargetsCachingAndChunkLimit(t *testing.T) {
 		t.Errorf("expected Content-Type application/octet-stream, got %s", req1.Header.Get("Content-Type"))
 	}
 
-	// 3. Check worker affinity via WithWorkerIndex
+	// 3. Check worker consistency on primary target
 	ctxW0 := WithWorkerIndex(context.Background(), 0)
 	ctxW1 := WithWorkerIndex(context.Background(), 1)
 
-	// Worker 0 should get lax1
+	// All workers should consistently target primary server (lax1)
 	reqW0, err := op.GetUploadRequest(ctxW0, http.DefaultClient, strings.NewReader(""), 1024*1024)
 	if err != nil {
 		t.Fatalf("Worker 0 GetUploadRequest error: %v", err)
@@ -1146,13 +1146,12 @@ func TestOoklaProviderTargetsCachingAndChunkLimit(t *testing.T) {
 		t.Errorf("Worker 0 expected lax1, got %s", reqW0.URL.String())
 	}
 
-	// Worker 1 should get lax2
 	reqW1, err := op.GetUploadRequest(ctxW1, http.DefaultClient, strings.NewReader(""), 1024*1024)
 	if err != nil {
 		t.Fatalf("Worker 1 GetUploadRequest error: %v", err)
 	}
-	if reqW1.URL.String() != "https://lax2.ooklaserver.net:8080/speedtest/upload.php" {
-		t.Errorf("Worker 1 expected lax2, got %s", reqW1.URL.String())
+	if reqW1.URL.String() != "https://lax1.ooklaserver.net:8080/speedtest/upload.php" {
+		t.Errorf("Worker 1 expected lax1, got %s", reqW1.URL.String())
 	}
 
 	// 4. Test parseOoklaTarget HTTPS upgrade
@@ -1165,6 +1164,24 @@ func TestOoklaProviderTargetsCachingAndChunkLimit(t *testing.T) {
 	}
 	if parsedHTTP.LatencyURL != "https://server.test:8080/speedtest/latency.txt" {
 		t.Errorf("expected latency URL latency.txt, got %s", parsedHTTP.LatencyURL)
+	}
+
+	// 5. Test resolveTargetUploadURL with 307 redirect
+	redirectServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/redirect" {
+			http.Redirect(w, r, "/final/upload.php", http.StatusTemporaryRedirect)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer redirectServer.Close()
+
+	redirectTarget := &ooklaTarget{
+		UploadURL: redirectServer.URL + "/redirect",
+	}
+	op.resolveTargetUploadURL(context.Background(), redirectServer.Client(), redirectTarget)
+	if redirectTarget.UploadURL != redirectServer.URL+"/final/upload.php" {
+		t.Errorf("expected resolved redirect URL %s/final/upload.php, got %s", redirectServer.URL, redirectTarget.UploadURL)
 	}
 }
 

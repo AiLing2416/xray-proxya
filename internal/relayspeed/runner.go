@@ -151,6 +151,7 @@ func RunSpeed(
 	}
 
 	res.TotalDurationMs = time.Since(start).Milliseconds()
+	res.Provider = provider.DisplayName()
 	if progressCb != nil {
 		progressCb(ProgressUpdate{
 			Alias: alias,
