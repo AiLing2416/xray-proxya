@@ -1032,3 +1032,52 @@ func TestFormatBitrateColored(t *testing.T) {
 		t.Errorf("expected yellow prefix for 10Mbps: %s", sSlow)
 	}
 }
+
+func TestFastProviderTargetsCachingAndChunkLimit(t *testing.T) {
+	fp := &FastProvider{
+		cachedTargets:  []string{"https://cdn1.netflix.test/up", "https://cdn2.netflix.test/up"},
+		targetsUpdated: time.Now(),
+	}
+
+	// 1. Check UploadChunkLimitProvider implementation
+	limitProv, ok := any(fp).(UploadChunkLimitProvider)
+	if !ok {
+		t.Fatalf("FastProvider should implement UploadChunkLimitProvider")
+	}
+	if limitProv.MaxUploadChunkSize() != 4*1024*1024 {
+		t.Errorf("MaxUploadChunkSize = %d, want 4MB", limitProv.MaxUploadChunkSize())
+	}
+
+	// 2. Check chunk clamp on upload request
+	req1, err := fp.GetUploadRequest(context.Background(), http.DefaultClient, strings.NewReader(""), 10*1024*1024)
+	if err != nil {
+		t.Fatalf("GetUploadRequest error: %v", err)
+	}
+	if req1.ContentLength != 4*1024*1024 {
+		t.Errorf("expected ContentLength 4MB (clamped), got %d", req1.ContentLength)
+	}
+	if req1.URL.String() != "https://cdn1.netflix.test/up" {
+		t.Errorf("expected first target cdn1, got %s", req1.URL.String())
+	}
+
+	// 3. Check round-robin across cached targets
+	req2, err := fp.GetUploadRequest(context.Background(), http.DefaultClient, strings.NewReader(""), 2*1024*1024)
+	if err != nil {
+		t.Fatalf("GetUploadRequest 2 error: %v", err)
+	}
+	if req2.ContentLength != 2*1024*1024 {
+		t.Errorf("expected ContentLength 2MB, got %d", req2.ContentLength)
+	}
+	if req2.URL.String() != "https://cdn2.netflix.test/up" {
+		t.Errorf("expected second target cdn2, got %s", req2.URL.String())
+	}
+
+	// 4. Wrap around to cdn1
+	req3, err := fp.GetDownloadRequest(context.Background(), http.DefaultClient, 1024)
+	if err != nil {
+		t.Fatalf("GetDownloadRequest error: %v", err)
+	}
+	if req3.URL.String() != "https://cdn1.netflix.test/up" {
+		t.Errorf("expected wrap around to cdn1, got %s", req3.URL.String())
+	}
+}

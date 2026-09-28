@@ -18,6 +18,13 @@ type Provider interface {
 	GetPingRequest(ctx context.Context, client *http.Client) (*http.Request, error)
 }
 
+// UploadChunkLimitProvider is an optional interface that providers can implement
+// to indicate the maximum allowed payload size for a single upload HTTP request.
+// If not implemented or returns <= 0, the engine uses default chunk sizes.
+type UploadChunkLimitProvider interface {
+	MaxUploadChunkSize() int64
+}
+
 // GetProvider returns a provider by its identifier.
 func GetProvider(id string, customDL, customUL string) (Provider, error) {
 	id = strings.ToLower(strings.TrimSpace(id))

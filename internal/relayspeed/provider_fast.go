@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"regexp"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,9 +19,12 @@ var (
 )
 
 type FastProvider struct {
-	mu           sync.Mutex
-	cachedToken  string
-	tokenUpdated time.Time
+	mu             sync.Mutex
+	cachedToken    string
+	tokenUpdated   time.Time
+	cachedTargets  []string
+	targetsUpdated time.Time
+	targetIndex    uint32
 }
 
 func (f *FastProvider) ID() string {
@@ -35,20 +39,18 @@ func (f *FastProvider) SupportsUpload() bool {
 	return true
 }
 
+func (f *FastProvider) MaxUploadChunkSize() int64 {
+	return 4 * 1024 * 1024 // 4MB safe cap for Netflix Open Connect CDN
+}
+
 func (f *FastProvider) GetDownloadRequest(ctx context.Context, client *http.Client, sizeBytes int64) (*http.Request, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
 
-	token := f.getToken(ctx, client)
-	targetURL, err := f.fetchTargetURL(ctx, client, token)
+	targetURL, err := f.getTargetURL(ctx, client)
 	if err != nil {
-		// If failed, invalidate token and try dynamic extraction
-		token = f.refreshToken(ctx, client)
-		targetURL, err = f.fetchTargetURL(ctx, client, token)
-		if err != nil {
-			return nil, fmt.Errorf("fast.com get speed target: %w", err)
-		}
+		return nil, fmt.Errorf("fast.com get speed target: %w", err)
 	}
 
 	if sizeBytes <= 0 {
@@ -69,14 +71,13 @@ func (f *FastProvider) GetUploadRequest(ctx context.Context, client *http.Client
 		client = http.DefaultClient
 	}
 
-	token := f.getToken(ctx, client)
-	targetURL, err := f.fetchTargetURL(ctx, client, token)
+	targetURL, err := f.getTargetURL(ctx, client)
 	if err != nil {
-		token = f.refreshToken(ctx, client)
-		targetURL, err = f.fetchTargetURL(ctx, client, token)
-		if err != nil {
-			return nil, fmt.Errorf("fast.com get upload target: %w", err)
-		}
+		return nil, fmt.Errorf("fast.com get upload target: %w", err)
+	}
+
+	if sizeBytes > 4*1024*1024 {
+		sizeBytes = 4 * 1024 * 1024
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, body)
@@ -96,6 +97,35 @@ func (f *FastProvider) GetPingRequest(ctx context.Context, _ *http.Client) (*htt
 	}
 	applyBrowserHeaders(req, f)
 	return req, nil
+}
+
+func (f *FastProvider) getTargetURL(ctx context.Context, client *http.Client) (string, error) {
+	f.mu.Lock()
+	if len(f.cachedTargets) > 0 && time.Since(f.targetsUpdated) < 10*time.Minute {
+		targets := f.cachedTargets
+		f.mu.Unlock()
+		idx := atomic.AddUint32(&f.targetIndex, 1) - 1
+		return targets[int(idx)%len(targets)], nil
+	}
+	f.mu.Unlock()
+
+	token := f.getToken(ctx, client)
+	targets, err := f.fetchTargets(ctx, client, token)
+	if err != nil {
+		token = f.refreshToken(ctx, client)
+		targets, err = f.fetchTargets(ctx, client, token)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	f.mu.Lock()
+	f.cachedTargets = targets
+	f.targetsUpdated = time.Now()
+	f.mu.Unlock()
+
+	idx := atomic.AddUint32(&f.targetIndex, 1) - 1
+	return targets[int(idx)%len(targets)], nil
 }
 
 func (f *FastProvider) getToken(ctx context.Context, client *http.Client) string {
@@ -159,22 +189,22 @@ func (f *FastProvider) extractTokenFromWeb(ctx context.Context, client *http.Cli
 	return "", fmt.Errorf("token not found in fast.com js")
 }
 
-func (f *FastProvider) fetchTargetURL(ctx context.Context, client *http.Client, token string) (string, error) {
-	apiURL := fmt.Sprintf("https://api.fast.com/netflix/speedtest/v2?https=true&token=%s&urlCount=3", token)
+func (f *FastProvider) fetchTargets(ctx context.Context, client *http.Client, token string) ([]string, error) {
+	apiURL := fmt.Sprintf("https://api.fast.com/netflix/speedtest/v2?https=true&token=%s&urlCount=5", token)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	applyBrowserHeaders(req, f)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("fast.com API status %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fast.com API status %d", resp.StatusCode)
 	}
 
 	var res struct {
@@ -184,11 +214,17 @@ func (f *FastProvider) fetchTargetURL(ctx context.Context, client *http.Client, 
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return "", err
+		return nil, err
 	}
-	if len(res.Targets) == 0 || res.Targets[0].URL == "" {
-		return "", fmt.Errorf("no speed targets returned by fast.com")
+	var urls []string
+	for _, t := range res.Targets {
+		if t.URL != "" {
+			urls = append(urls, t.URL)
+		}
+	}
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no speed targets returned by fast.com")
 	}
 
-	return res.Targets[0].URL, nil
+	return urls, nil
 }

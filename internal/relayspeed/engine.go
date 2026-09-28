@@ -761,6 +761,13 @@ func executeUploadSingle(
 		if sizeLimit > 0 && sizeLimit < chunkSize {
 			chunkSize = sizeLimit
 		}
+	} else if chunkSize <= 0 || chunkSize > 25*1024*1024 {
+		chunkSize = 25 * 1024 * 1024 // 25MB max chunk
+	}
+	if limitProv, ok := provider.(UploadChunkLimitProvider); ok {
+		if maxChunk := limitProv.MaxUploadChunkSize(); maxChunk > 0 && chunkSize > maxChunk {
+			chunkSize = maxChunk
+		}
 	}
 
 	for {
@@ -784,7 +791,9 @@ func executeUploadSingle(
 			if rem <= 0 {
 				break
 			}
-			reqSize = rem
+			if rem < reqSize {
+				reqSize = rem
+			}
 		}
 
 		zeroSrc := io.LimitReader(zeroReader{}, reqSize)
@@ -852,6 +861,11 @@ func executeUploadMulti(
 			workerChunk = minWorkerChunk
 		}
 		chunkReqBytes = workerChunk
+	}
+	if limitProv, ok := provider.(UploadChunkLimitProvider); ok {
+		if maxChunk := limitProv.MaxUploadChunkSize(); maxChunk > 0 && chunkReqBytes > maxChunk {
+			chunkReqBytes = maxChunk
+		}
 	}
 
 	for w := 0; w < threads; w++ {
