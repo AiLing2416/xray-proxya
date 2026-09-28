@@ -236,41 +236,40 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		if u.Direction == DirectionUpload {
 			dirLabel = "Upload"
 		}
-		streams := u.StepThreads
-		if streams <= 0 {
-			streams = 1
+		label := dirLabel + ":"
+		if u.StepThreads > 1 {
+			label = fmt.Sprintf("%s (%d streams):", dirLabel, u.StepThreads)
 		}
-		streamLabel := fmt.Sprintf("%d stream", streams)
-		if streams > 1 {
-			streamLabel += "s"
+		totalBytes := u.TotalBytes
+		if totalBytes <= 0 {
+			totalBytes = MaxAutoTransferBytes
 		}
+		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
-		totalStr := FormatDecimalBytes(u.TotalBytes)
-		if u.TotalBytes <= 0 {
-			totalStr = "240MB"
-		}
+		totalStr := FormatDecimalBytes(totalBytes)
 		bpsStr := FormatBitrate(u.CurrentBps)
-		return fmt.Sprintf("%s [%s] %s (%s): %s / %s | %s (stability: %.0f%%)",
-			frame, alias, dirLabel, streamLabel, doneStr, totalStr, bpsStr, u.StepGain)
+		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (stability: %.0f%%)",
+			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr, u.StepGain)
 
 	case "auto_converged":
 		dirLabel := "Download"
 		if u.Direction == DirectionUpload {
 			dirLabel = "Upload"
 		}
-		streams := u.StepThreads
-		if streams <= 0 {
-			streams = 1
+		label := dirLabel + ":"
+		if u.StepThreads > 1 {
+			label = fmt.Sprintf("%s (%d streams):", dirLabel, u.StepThreads)
 		}
-		streamLabel := fmt.Sprintf("%d stream", streams)
-		if streams > 1 {
-			streamLabel += "s"
+		totalBytes := u.TotalBytes
+		if totalBytes <= 0 {
+			totalBytes = MaxAutoTransferBytes
 		}
+		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
-		totalStr := FormatDecimalBytes(u.TotalBytes)
+		totalStr := FormatDecimalBytes(totalBytes)
 		bpsStr := FormatBitrate(u.CurrentBps)
-		return fmt.Sprintf("%s [%s] %s (%s): %s / %s | %s (converged)",
-			frame, alias, dirLabel, streamLabel, doneStr, totalStr, bpsStr)
+		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (converged)",
+			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr)
 
 	case "download", "upload":
 		dirLabel := "Download"
@@ -283,24 +282,7 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 			label = fmt.Sprintf("%s (%d streams):", dirLabel, u.StepThreads)
 		}
 
-		pct := 0.0
-		if u.TotalBytes > 0 {
-			pct = float64(u.BytesDone) / float64(u.TotalBytes)
-		}
-		if pct > 1.0 {
-			pct = 1.0
-		} else if pct < 0 {
-			pct = 0
-		}
-
-		barWidth := 18
-		filled := int(math.Round(pct * float64(barWidth)))
-		if filled > barWidth {
-			filled = barWidth
-		}
-		bar := strings.Repeat("█", filled) + strings.Repeat("░", barWidth-filled)
-
-		pctInt := int(pct * 100)
+		bar, pctInt := renderProgressBar(u.BytesDone, u.TotalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
 		totalStr := FormatDecimalBytes(u.TotalBytes)
 		bpsStr := FormatBitrate(u.CurrentBps)
@@ -351,3 +333,24 @@ func formatDoneSummary(res *SpeedResult) string {
 	}
 	return "Done: " + strings.Join(parts, " | ")
 }
+
+func renderProgressBar(bytesDone, totalBytes int64, width int) (bar string, pctInt int) {
+	pct := 0.0
+	if totalBytes > 0 {
+		pct = float64(bytesDone) / float64(totalBytes)
+	}
+	if pct > 1.0 {
+		pct = 1.0
+	} else if pct < 0 {
+		pct = 0
+	}
+
+	filled := int(math.Round(pct * float64(width)))
+	if filled > width {
+		filled = width
+	}
+	bar = strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
+	pctInt = int(pct * 100)
+	return bar, pctInt
+}
+

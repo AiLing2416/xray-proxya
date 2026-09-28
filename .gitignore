@@ -33,6 +33,7 @@ build-fly.sh
 
 # Private probe scripts & outputs
 sni_probe.py
+cf-speedtest.py
 sni_*.json
 sni_*.csv
 pass.txt

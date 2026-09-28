@@ -916,7 +916,7 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 		StepGain:    96,
 	}
 	line = r.formatCurrentLine("⠴")
-	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): 58.20 MB / 240.00 MB | 142.50 Mbps (stability: 96%)") {
+	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): [████░░░░░░░░░░░░░░]  24%  58.20 MB / 240.00 MB | 142.50 Mbps (stability: 96%)") {
 		t.Errorf("unexpected auto_sustaining line: %s", line)
 	}
 
@@ -948,7 +948,7 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 		StepGain:    94,
 	}
 	line = r.formatCurrentLine("⠸")
-	if !strings.Contains(line, "⠸ [hk-01] Upload (2 streams): 18.50 MB / 240.00 MB | 32.10 Mbps (stability: 94%)") {
+	if !strings.Contains(line, "⠸ [hk-01] Upload (2 streams): [█░░░░░░░░░░░░░░░░░]   7%  18.50 MB / 240.00 MB | 32.10 Mbps (stability: 94%)") {
 		t.Errorf("unexpected upload line: %s", line)
 	}
 }
