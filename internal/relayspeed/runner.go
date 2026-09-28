@@ -73,7 +73,7 @@ func RunSpeed(
 
 		if opts.Auto && !opts.FixedSize {
 			var bestThreads int
-			dlMetrics, bestThreads, dlErr = RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionDownload, idleLat, alias, progressCb)
+			dlMetrics, bestThreads, dlErr = RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionDownload, opts.Threads, idleLat, alias, progressCb)
 			if dlErr == nil && dlMetrics != nil {
 				res.OptimalThreads = bestThreads
 				res.AdaptiveSizeBytes = dlMetrics.BytesTransferred
@@ -116,7 +116,7 @@ func RunSpeed(
 
 			if opts.Auto && !opts.FixedSize {
 				var bestThreads int
-				ulMetrics, bestThreads, ulErr = RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionUpload, idleLat, alias, progressCb)
+				ulMetrics, bestThreads, ulErr = RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionUpload, opts.Threads, idleLat, alias, progressCb)
 				if ulErr == nil && ulMetrics != nil {
 					res.UploadOptimalThreads = bestThreads
 					res.UploadAdaptiveSizeBytes = ulMetrics.BytesTransferred

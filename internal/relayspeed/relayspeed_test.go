@@ -806,7 +806,7 @@ func TestSelectInitialConcurrency(t *testing.T) {
 		{"gigabit_fast", 150_000_000, 20 * time.Millisecond, 6},
 		{"fast_50mbps", 55_000_000, 30 * time.Millisecond, 4},
 		{"medium_high_rtt", 35_000_000, 120 * time.Millisecond, 4},
-		{"medium_low_rtt", 35_000_000, 30 * time.Millisecond, 3},
+		{"medium_low_rtt", 35_000_000, 30 * time.Millisecond, 4},
 		{"standard_15mbps", 15_000_000, 40 * time.Millisecond, 2},
 		{"low_speed_low_rtt", 3_000_000, 30 * time.Millisecond, 1},
 		{"low_speed_high_rtt", 3_000_000, 80 * time.Millisecond, 2},
@@ -855,7 +855,7 @@ func TestRunAdaptiveBandwidthTestUpload(t *testing.T) {
 		events = append(events, u.Phase)
 	}
 
-	metrics, bestThreads, err := RunAdaptiveBandwidthTest(ctx, server.Client(), nil, customProvider, DirectionUpload, 10*time.Millisecond, "test-upload-adaptive", cb)
+	metrics, bestThreads, err := RunAdaptiveBandwidthTest(ctx, server.Client(), nil, customProvider, DirectionUpload, 1, 10*time.Millisecond, "test-upload-adaptive", cb)
 	if err != nil {
 		t.Fatalf("RunAdaptiveBandwidthTest upload failed: %v", err)
 	}

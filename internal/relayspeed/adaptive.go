@@ -163,13 +163,18 @@ func SelectInitialConcurrency(probeBps float64, rtt time.Duration) int {
 	if speedMbps >= 100 {
 		return 6
 	}
-	if speedMbps >= 50 || (speedMbps >= 30 && rtt > 80*time.Millisecond) {
+	if speedMbps >= 50 || (speedMbps >= 25 && rtt >= 70*time.Millisecond) {
 		return 4
 	}
-	if speedMbps >= 30 || rtt > 100*time.Millisecond {
-		return 3
+	// For high-latency links (RTT >= 80ms) with decent throughput (>= 5 Mbps),
+	// 1MB probe is throttled by TCP slow start, so at least 4 streams are needed to saturate BDP.
+	if rtt >= 80*time.Millisecond && speedMbps >= 5 {
+		return 4
 	}
-	if speedMbps >= 10 {
+	if speedMbps >= 30 {
+		return 4
+	}
+	if speedMbps >= 10 || rtt >= 40*time.Millisecond {
 		return 2
 	}
 	if rtt <= 50*time.Millisecond && speedMbps < 5 {
@@ -316,6 +321,7 @@ func RunAdaptiveBandwidthTest(
 	prober *LatencyProber,
 	provider Provider,
 	dir Direction,
+	targetThreads int,
 	idleLat time.Duration,
 	alias string,
 	progressCb ProgressCallback,
@@ -354,7 +360,10 @@ func RunAdaptiveBandwidthTest(
 	}
 
 	// Phase 2: Concurrency Selection
-	threads := SelectInitialConcurrency(probeBps, rtt)
+	threads := targetThreads
+	if threads <= 1 {
+		threads = SelectInitialConcurrency(probeBps, rtt)
+	}
 	if progressCb != nil {
 		progressCb(ProgressUpdate{
 			Alias:       alias,
@@ -472,5 +481,5 @@ func RunAdaptiveDownload(
 	alias string,
 	progressCb ProgressCallback,
 ) (*SpeedMetrics, int, error) {
-	return RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionDownload, idleLat, alias, progressCb)
+	return RunAdaptiveBandwidthTest(ctx, client, prober, provider, DirectionDownload, 1, idleLat, alias, progressCb)
 }
