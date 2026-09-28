@@ -729,8 +729,12 @@ var speedOutboundCmd = &cobra.Command{
 		autoMode := relaySpeedAuto && !fixedSize
 
 		threads := relaySpeedThreads
-		if !cmd.Flags().Changed("threads") && (relaySpeedProvider == "fast" || relaySpeedProvider == "netflix") {
-			threads = 8
+		if !cmd.Flags().Changed("threads") {
+			if relaySpeedProvider == "fast" || relaySpeedProvider == "netflix" {
+				threads = 8
+			} else if relaySpeedProvider == "ookla" || relaySpeedProvider == "speedtest" {
+				threads = 4
+			}
 		}
 
 		opts := relayspeed.Options{

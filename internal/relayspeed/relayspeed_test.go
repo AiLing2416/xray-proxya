@@ -1086,3 +1086,85 @@ func TestFastProviderTargetsCachingAndChunkLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestOoklaProviderTargetsCachingAndChunkLimit(t *testing.T) {
+	op := &OoklaProvider{
+		targets: []*ooklaTarget{
+			{
+				BaseURL:    "https://lax1.ooklaserver.net:8080/speedtest/",
+				UploadURL:  "https://lax1.ooklaserver.net:8080/speedtest/upload.php",
+				LatencyURL: "https://lax1.ooklaserver.net:8080/speedtest/latency.txt",
+				Sponsor:    "Frontier",
+				Name:       "Los Angeles, CA",
+			},
+			{
+				BaseURL:    "https://lax2.ooklaserver.net:8080/speedtest/",
+				UploadURL:  "https://lax2.ooklaserver.net:8080/speedtest/upload.php",
+				LatencyURL: "https://lax2.ooklaserver.net:8080/speedtest/latency.txt",
+				Sponsor:    "Uniti",
+				Name:       "Los Angeles, CA",
+			},
+		},
+		targetTime: time.Now(),
+	}
+	op.primary = op.targets[0]
+
+	// 1. Check UploadChunkLimitProvider implementation
+	limitProv, ok := any(op).(UploadChunkLimitProvider)
+	if !ok {
+		t.Fatalf("OoklaProvider should implement UploadChunkLimitProvider")
+	}
+	if limitProv.MaxUploadChunkSize() != 2*1024*1024 {
+		t.Errorf("MaxUploadChunkSize = %d, want 2MB", limitProv.MaxUploadChunkSize())
+	}
+
+	// 2. Check chunk clamp on upload request
+	req1, err := op.GetUploadRequest(context.Background(), http.DefaultClient, strings.NewReader(""), 10*1024*1024)
+	if err != nil {
+		t.Fatalf("GetUploadRequest error: %v", err)
+	}
+	if req1.ContentLength != 2*1024*1024 {
+		t.Errorf("expected ContentLength 2MB (clamped), got %d", req1.ContentLength)
+	}
+	if req1.URL.String() != "https://lax1.ooklaserver.net:8080/speedtest/upload.php" {
+		t.Errorf("expected first target lax1, got %s", req1.URL.String())
+	}
+	if req1.Header.Get("Content-Type") != "application/octet-stream" {
+		t.Errorf("expected Content-Type application/octet-stream, got %s", req1.Header.Get("Content-Type"))
+	}
+
+	// 3. Check worker affinity via WithWorkerIndex
+	ctxW0 := WithWorkerIndex(context.Background(), 0)
+	ctxW1 := WithWorkerIndex(context.Background(), 1)
+
+	// Worker 0 should get lax1
+	reqW0, err := op.GetUploadRequest(ctxW0, http.DefaultClient, strings.NewReader(""), 1024*1024)
+	if err != nil {
+		t.Fatalf("Worker 0 GetUploadRequest error: %v", err)
+	}
+	if reqW0.URL.String() != "https://lax1.ooklaserver.net:8080/speedtest/upload.php" {
+		t.Errorf("Worker 0 expected lax1, got %s", reqW0.URL.String())
+	}
+
+	// Worker 1 should get lax2
+	reqW1, err := op.GetUploadRequest(ctxW1, http.DefaultClient, strings.NewReader(""), 1024*1024)
+	if err != nil {
+		t.Fatalf("Worker 1 GetUploadRequest error: %v", err)
+	}
+	if reqW1.URL.String() != "https://lax2.ooklaserver.net:8080/speedtest/upload.php" {
+		t.Errorf("Worker 1 expected lax2, got %s", reqW1.URL.String())
+	}
+
+	// 4. Test parseOoklaTarget HTTPS upgrade
+	parsedHTTP := parseOoklaTarget("http://server.test:8080/speedtest/upload.php", "Test", "Sponsor", "US", "US", 10, true)
+	if !strings.HasPrefix(parsedHTTP.UploadURL, "https://") {
+		t.Errorf("expected https upgrade, got %s", parsedHTTP.UploadURL)
+	}
+	if parsedHTTP.BaseURL != "https://server.test:8080/speedtest/" {
+		t.Errorf("expected base URL with trailing slash, got %s", parsedHTTP.BaseURL)
+	}
+	if parsedHTTP.LatencyURL != "https://server.test:8080/speedtest/latency.txt" {
+		t.Errorf("expected latency URL latency.txt, got %s", parsedHTTP.LatencyURL)
+	}
+}
+
