@@ -953,6 +953,27 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 	if !strings.Contains(line, "⠸ [hk-01] Upload (2 streams): [█░░░░░░░░░░░░░░░░░]   7%  18.50 MB / 240.00 MB | 32.10 Mbps (stability: 94%)") {
 		t.Errorf("unexpected upload line: %s", line)
 	}
+
+	// 7. pause between chunks: CurrentBps is 0 but active transfer should not drop to 0.00 Mbps or (ETA: --)
+	r.lastUpdate = ProgressUpdate{
+		Phase:       "upload",
+		Direction:   DirectionUpload,
+		StepThreads: 1,
+		BytesDone:   10 * 1024 * 1024,
+		TotalBytes:  20 * 1024 * 1024,
+		CurrentBps:  0,
+		Elapsed:     2 * time.Second,
+	}
+	line = r.formatCurrentLine("⠋")
+	if strings.Contains(line, "0.00 Mbps") {
+		t.Errorf("line should not display 0.00 Mbps during brief chunk pause: %s", line)
+	}
+	if strings.Contains(line, "ETA: --") {
+		t.Errorf("line should not display ETA: -- during active transfer pause: %s", line)
+	}
+	if !strings.Contains(line, "ETA:") {
+		t.Errorf("expected valid ETA during active transfer pause: %s", line)
+	}
 }
 
 func TestProgressRenderer_NonTTY_Fallback(t *testing.T) {

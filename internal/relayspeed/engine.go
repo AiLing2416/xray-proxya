@@ -270,6 +270,7 @@ func executeDownload(
 
 		lastSampleTime := time.Now()
 		lastBytes := int64(0)
+		smoothedBps := 0.0
 
 		for {
 			select {
@@ -280,38 +281,43 @@ func executeDownload(
 			case now := <-ticker.C:
 				current := atomic.LoadInt64(bytesTransferred)
 				elapsed := now.Sub(lastSampleTime)
-				if elapsed > 0 {
-					chunkBytes := current - lastBytes
-					if chunkBytes > 0 {
-						bps := float64(chunkBytes*8) / elapsed.Seconds()
-						*samples = append(*samples, bps)
+				if elapsed <= 0 {
+					continue
+				}
+				chunkBytes := current - lastBytes
+				lastSampleTime = now
 
-						if progressCb != nil {
-							progressCb(ProgressUpdate{
-								Alias:       alias,
-								Phase:       "download",
-								Direction:   DirectionDownload,
-								BytesDone:   current,
-								TotalBytes:  sizeLimit,
-								CurrentBps:  bps,
-								Elapsed:     time.Since(startTime),
-								StepThreads: threads,
-							})
-						}
-						lastSampleTime = now
-						lastBytes = current
-					} else if progressCb != nil {
-						progressCb(ProgressUpdate{
-							Alias:       alias,
-							Phase:       "download",
-							Direction:   DirectionDownload,
-							BytesDone:   current,
-							TotalBytes:  sizeLimit,
-							CurrentBps:  0,
-							Elapsed:     time.Since(startTime),
-							StepThreads: threads,
-						})
+				if chunkBytes > 0 {
+					lastBytes = current
+					instantBps := float64(chunkBytes*8) / elapsed.Seconds()
+					*samples = append(*samples, instantBps)
+
+					if smoothedBps == 0 {
+						smoothedBps = instantBps
+					} else {
+						smoothedBps = 0.7*instantBps + 0.3*smoothedBps
 					}
+				} else if current > 0 {
+					// In-between chunks or waiting for response: smooth decay instead of abrupt zero
+					smoothedBps *= 0.8
+					if smoothedBps < 1000 {
+						smoothedBps = 0
+					}
+				} else {
+					smoothedBps = 0
+				}
+
+				if progressCb != nil {
+					progressCb(ProgressUpdate{
+						Alias:       alias,
+						Phase:       "download",
+						Direction:   DirectionDownload,
+						BytesDone:   current,
+						TotalBytes:  sizeLimit,
+						CurrentBps:  smoothedBps,
+						Elapsed:     time.Since(startTime),
+						StepThreads: threads,
+					})
 				}
 			}
 		}
@@ -677,6 +683,8 @@ func executeUpload(
 
 		lastSampleTime := time.Now()
 		lastBytes := int64(0)
+		smoothedBps := 0.0
+
 		for {
 			select {
 			case <-stopSampler:
@@ -686,38 +694,43 @@ func executeUpload(
 			case now := <-ticker.C:
 				current := atomic.LoadInt64(bytesTransferred)
 				elapsed := now.Sub(lastSampleTime)
-				if elapsed > 0 {
-					chunkBytes := current - lastBytes
-					if chunkBytes > 0 {
-						bps := float64(chunkBytes*8) / elapsed.Seconds()
-						*samples = append(*samples, bps)
+				if elapsed <= 0 {
+					continue
+				}
+				chunkBytes := current - lastBytes
+				lastSampleTime = now
 
-						if progressCb != nil {
-							progressCb(ProgressUpdate{
-								Alias:       alias,
-								Phase:       "upload",
-								Direction:   DirectionUpload,
-								BytesDone:   current,
-								TotalBytes:  sizeLimit,
-								CurrentBps:  bps,
-								Elapsed:     time.Since(startTime),
-								StepThreads: threads,
-							})
-						}
-						lastSampleTime = now
-						lastBytes = current
-					} else if progressCb != nil {
-						progressCb(ProgressUpdate{
-							Alias:       alias,
-							Phase:       "upload",
-							Direction:   DirectionUpload,
-							BytesDone:   current,
-							TotalBytes:  sizeLimit,
-							CurrentBps:  0,
-							Elapsed:     time.Since(startTime),
-							StepThreads: threads,
-						})
+				if chunkBytes > 0 {
+					lastBytes = current
+					instantBps := float64(chunkBytes*8) / elapsed.Seconds()
+					*samples = append(*samples, instantBps)
+
+					if smoothedBps == 0 {
+						smoothedBps = instantBps
+					} else {
+						smoothedBps = 0.7*instantBps + 0.3*smoothedBps
 					}
+				} else if current > 0 {
+					// In-between chunks or waiting for response: smooth decay instead of abrupt zero
+					smoothedBps *= 0.8
+					if smoothedBps < 1000 {
+						smoothedBps = 0
+					}
+				} else {
+					smoothedBps = 0
+				}
+
+				if progressCb != nil {
+					progressCb(ProgressUpdate{
+						Alias:       alias,
+						Phase:       "upload",
+						Direction:   DirectionUpload,
+						BytesDone:   current,
+						TotalBytes:  sizeLimit,
+						CurrentBps:  smoothedBps,
+						Elapsed:     time.Since(startTime),
+						StepThreads: threads,
+					})
 				}
 			}
 		}

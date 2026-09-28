@@ -247,7 +247,11 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
 		totalStr := FormatDecimalBytes(totalBytes)
-		bpsStr := FormatBitrate(u.CurrentBps)
+		displayBps := u.CurrentBps
+		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
+			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
+		}
+		bpsStr := FormatBitrate(displayBps)
 		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (stability: %.0f%%)",
 			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr, u.StepGain)
 
@@ -267,7 +271,11 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
 		totalStr := FormatDecimalBytes(totalBytes)
-		bpsStr := FormatBitrate(u.CurrentBps)
+		displayBps := u.CurrentBps
+		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
+			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
+		}
+		bpsStr := FormatBitrate(displayBps)
 		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (converged)",
 			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr)
 
@@ -285,12 +293,29 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		bar, pctInt := renderProgressBar(u.BytesDone, u.TotalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
 		totalStr := FormatDecimalBytes(u.TotalBytes)
-		bpsStr := FormatBitrate(u.CurrentBps)
+
+		displayBps := u.CurrentBps
+		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
+			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
+		}
+		bpsStr := FormatBitrate(displayBps)
+
+		var effectiveBps float64
+		if u.Elapsed.Seconds() > 0.3 && u.BytesDone > 0 {
+			overallBps := float64(u.BytesDone*8) / u.Elapsed.Seconds()
+			if u.CurrentBps > 0 {
+				effectiveBps = 0.7*u.CurrentBps + 0.3*overallBps
+			} else {
+				effectiveBps = overallBps
+			}
+		} else if u.CurrentBps > 0 {
+			effectiveBps = u.CurrentBps
+		}
 
 		etaStr := ""
-		if u.CurrentBps > 0 && u.TotalBytes > u.BytesDone {
+		if effectiveBps >= 1000 && u.TotalBytes > u.BytesDone {
 			remBits := float64((u.TotalBytes - u.BytesDone) * 8)
-			etaSec := remBits / u.CurrentBps
+			etaSec := remBits / effectiveBps
 			etaStr = fmt.Sprintf(" (ETA: %.1fs)", etaSec)
 		} else if u.TotalBytes > 0 && u.BytesDone < u.TotalBytes {
 			etaStr = " (ETA: --)"
