@@ -159,14 +159,31 @@ func ValidateRuntime(cfg *config.UserConfig) error {
 		return fmt.Errorf("nil config provided")
 	}
 
-	testSocksPort, err := utils.GetFreePort()
-	if err != nil {
-		return fmt.Errorf("failed to allocate test-socks port: %w", err)
+	needed := 2 // test-socks, api
+	for _, m := range cfg.Presets {
+		if m.Enabled {
+			needed++
+		}
 	}
-	apiPort, err := utils.GetFreePort()
-	if err != nil {
-		return fmt.Errorf("failed to allocate api port: %w", err)
+	for _, co := range cfg.CustomOutbounds {
+		if co.InternalProxyPort > 0 {
+			needed++
+			if co.InternalHttpPort > 0 {
+				needed++
+			}
+		}
 	}
+
+	freePorts, err := utils.GetFreePorts(needed)
+	if err != nil {
+		return fmt.Errorf("failed to allocate free ports: %w", err)
+	}
+
+	pIdx := 0
+	testSocksPort := freePorts[pIdx]
+	pIdx++
+	apiPort := freePorts[pIdx]
+	pIdx++
 
 	overrides := map[string]int{
 		"test-socks":           testSocksPort,
@@ -176,27 +193,18 @@ func ValidateRuntime(cfg *config.UserConfig) error {
 
 	for _, m := range cfg.Presets {
 		if m.Enabled {
-			p, err := utils.GetFreePort()
-			if err != nil {
-				return fmt.Errorf("failed to allocate preset port: %w", err)
-			}
-			overrides[string(m.Mode)] = p
+			overrides[string(m.Mode)] = freePorts[pIdx]
+			pIdx++
 		}
 	}
 
 	for _, co := range cfg.CustomOutbounds {
 		if co.InternalProxyPort > 0 {
-			p, err := utils.GetFreePort()
-			if err != nil {
-				return fmt.Errorf("failed to allocate outbound socks port: %w", err)
-			}
-			overrides["outbound-"+co.Alias] = p
+			overrides["outbound-"+co.Alias] = freePorts[pIdx]
+			pIdx++
 			if co.InternalHttpPort > 0 {
-				hp, err := utils.GetFreePort()
-				if err != nil {
-					return fmt.Errorf("failed to allocate outbound http port: %w", err)
-				}
-				overrides["outbound-http-"+co.Alias] = hp
+				overrides["outbound-http-"+co.Alias] = freePorts[pIdx]
+				pIdx++
 			}
 		}
 	}

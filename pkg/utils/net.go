@@ -63,17 +63,41 @@ func ListenAddressesOverlap(addr1, addr2 string) bool {
 	return false
 }
 
+// GetFreePorts allocates 'count' distinct, collision-free TCP ports by keeping all listeners
+// open simultaneously until the full batch has been assigned.
+func GetFreePorts(count int) ([]int, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	addr, err := net.ResolveTCPAddr("tcp", "127.0.0.1:0")
+	if err != nil {
+		return nil, err
+	}
+	listeners := make([]*net.TCPListener, 0, count)
+	defer func() {
+		for _, l := range listeners {
+			_ = l.Close()
+		}
+	}()
+
+	ports := make([]int, count)
+	for i := 0; i < count; i++ {
+		l, err := net.ListenTCP("tcp", addr)
+		if err != nil {
+			return nil, err
+		}
+		listeners = append(listeners, l)
+		ports[i] = l.Addr().(*net.TCPAddr).Port
+	}
+	return ports, nil
+}
+
 func GetFreePort() (int, error) {
-	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
+	ports, err := GetFreePorts(1)
 	if err != nil {
 		return 0, err
 	}
-	l, err := net.ListenTCP("tcp", addr)
-	if err != nil {
-		return 0, err
-	}
-	defer l.Close()
-	return l.Addr().(*net.TCPAddr).Port, nil
+	return ports[0], nil
 }
 
 // WaitForTCPPort waits for a TCP port/address to accept connections within timeout or context cancellation.

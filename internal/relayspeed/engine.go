@@ -15,10 +15,11 @@ import (
 const (
 	defaultChunkSize            = 32 * 1024 // 32KB
 	defaultMultiStreamChunkSize = 10 * 1024 * 1024 // 10MB
-	sampleInterval              = 100 * time.Millisecond
-	latencySampleInterval       = 100 * time.Millisecond // 10Hz high-frequency sampling
+	sampleInterval              = 25 * time.Millisecond // 40Hz high-frequency throughput sampling
+	latencySampleInterval       = 100 * time.Millisecond // 10Hz latency probing
 	defaultIdlePingRuns         = 3
 	defaultSpeedTimeout         = 60 * time.Second
+	maxSpeedSamples             = 2000
 )
 
 type zeroReader struct{}
@@ -289,34 +290,38 @@ func executeDownload(
 				}
 				chunkBytes := current - lastBytes
 				lastSampleTime = now
+				lastBytes = current
 
+				instantBps := 0.0
 				if chunkBytes > 0 {
-					lastBytes = current
-					instantBps := float64(chunkBytes*8) / elapsed.Seconds()
+					instantBps = float64(chunkBytes*8) / elapsed.Seconds()
+				}
+
+				if instantBps > 0 {
 					if samples != nil {
 						*samples = append(*samples, instantBps)
 					}
-					if speedSamples != nil && len(*speedSamples) < 500 {
-						*speedSamples = append(*speedSamples, SpeedSample{
-							ElapsedMs: time.Since(startTime).Milliseconds(),
-							BytesDone: current,
-							Bps:       instantBps,
-						})
-					}
-
 					if smoothedBps == 0 {
 						smoothedBps = instantBps
 					} else {
-						smoothedBps = 0.7*instantBps + 0.3*smoothedBps
+						smoothedBps = 0.3*instantBps + 0.7*smoothedBps
 					}
 				} else if current > 0 {
 					// In-between chunks or waiting for response: smooth decay instead of abrupt zero
-					smoothedBps *= 0.8
+					smoothedBps *= 0.95
 					if smoothedBps < 1000 {
 						smoothedBps = 0
 					}
 				} else {
 					smoothedBps = 0
+				}
+
+				if current > 0 && speedSamples != nil && len(*speedSamples) < maxSpeedSamples {
+					*speedSamples = append(*speedSamples, SpeedSample{
+						ElapsedMs: time.Since(startTime).Milliseconds(),
+						BytesDone: current,
+						Bps:       instantBps,
+					})
 				}
 
 				if progressCb != nil {
@@ -722,34 +727,38 @@ func executeUpload(
 				}
 				chunkBytes := current - lastBytes
 				lastSampleTime = now
+				lastBytes = current
 
+				instantBps := 0.0
 				if chunkBytes > 0 {
-					lastBytes = current
-					instantBps := float64(chunkBytes*8) / elapsed.Seconds()
+					instantBps = float64(chunkBytes*8) / elapsed.Seconds()
+				}
+
+				if instantBps > 0 {
 					if samples != nil {
 						*samples = append(*samples, instantBps)
 					}
-					if speedSamples != nil && len(*speedSamples) < 500 {
-						*speedSamples = append(*speedSamples, SpeedSample{
-							ElapsedMs: time.Since(startTime).Milliseconds(),
-							BytesDone: current,
-							Bps:       instantBps,
-						})
-					}
-
 					if smoothedBps == 0 {
 						smoothedBps = instantBps
 					} else {
-						smoothedBps = 0.7*instantBps + 0.3*smoothedBps
+						smoothedBps = 0.3*instantBps + 0.7*smoothedBps
 					}
 				} else if current > 0 {
 					// In-between chunks or waiting for response: smooth decay instead of abrupt zero
-					smoothedBps *= 0.8
+					smoothedBps *= 0.95
 					if smoothedBps < 1000 {
 						smoothedBps = 0
 					}
 				} else {
 					smoothedBps = 0
+				}
+
+				if current > 0 && speedSamples != nil && len(*speedSamples) < maxSpeedSamples {
+					*speedSamples = append(*speedSamples, SpeedSample{
+						ElapsedMs: time.Since(startTime).Milliseconds(),
+						BytesDone: current,
+						Bps:       instantBps,
+					})
 				}
 
 				if progressCb != nil {

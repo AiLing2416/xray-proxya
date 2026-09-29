@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1508,6 +1509,66 @@ func TestCalculateChartDimensions(t *testing.T) {
 		t.Errorf("expected positive dimensions from auto query, got %dx%d", colsAuto, hAuto)
 	}
 }
+
+func TestResampleSamplesToColumns_GranularInterpolation(t *testing.T) {
+	// 5 sparse samples across 2 seconds, projected to 40 columns
+	samples := []SpeedSample{
+		{ElapsedMs: 0, Bps: 0},
+		{ElapsedMs: 500, Bps: 50_000_000},
+		{ElapsedMs: 1000, Bps: 100_000_000},
+		{ElapsedMs: 1500, Bps: 60_000_000},
+		{ElapsedMs: 2000, Bps: 20_000_000},
+	}
+
+	cols := resampleSamplesToColumns(samples, 40)
+	if len(cols) != 40 {
+		t.Fatalf("expected 40 cols, got %d", len(cols))
+	}
+
+	// Verify that adjacent columns do not have long identical flat plateaus (e.g. 5 identical in a row)
+	identicalRun := 1
+	maxIdentical := 1
+	for i := 1; i < len(cols); i++ {
+		if math.Abs(cols[i]-cols[i-1]) < 1e-3 {
+			identicalRun++
+			if identicalRun > maxIdentical {
+				maxIdentical = identicalRun
+			}
+		} else {
+			identicalRun = 1
+		}
+	}
+	if maxIdentical > 2 {
+		t.Errorf("expected smooth interpolation without plateaus, got max %d consecutive identical columns", maxIdentical)
+	}
+}
+
+func TestResampleSamplesToColumns_ZeroSpeedDropPreserved(t *testing.T) {
+	// A stream that drops to 0 during mid-transfer (e.g. at 1.0s to 1.5s stall)
+	samples := []SpeedSample{
+		{ElapsedMs: 0, Bps: 0},
+		{ElapsedMs: 500, Bps: 100_000_000},
+		{ElapsedMs: 1000, Bps: 0},
+		{ElapsedMs: 1200, Bps: 0},
+		{ElapsedMs: 1500, Bps: 0},
+		{ElapsedMs: 1800, Bps: 80_000_000},
+		{ElapsedMs: 2000, Bps: 90_000_000},
+	}
+
+	cols := resampleSamplesToColumns(samples, 50)
+	// Column around index 25~30 corresponds to 1.0s~1.5s and should have 0 speed
+	zeroFound := false
+	for i := 22; i <= 35; i++ {
+		if cols[i] == 0 {
+			zeroFound = true
+			break
+		}
+	}
+	if !zeroFound {
+		t.Errorf("expected zero speed drop to be preserved in columns 22~35, got: %v", cols[22:36])
+	}
+}
+
 
 
 

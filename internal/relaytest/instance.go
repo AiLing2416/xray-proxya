@@ -118,42 +118,48 @@ func StartTestSession(ctx context.Context, cfg *config.UserConfig, alias string,
 		overrides[k] = v
 	}
 
-	var testSocksPort, dnsPort int
-	var err error
-
-	if sc.enableSOCKS {
-		testSocksPort, err = utils.GetFreePort()
-		if err != nil {
-			return nil, fmt.Errorf("failed to allocate socks port: %w", err)
-		}
-		overrides["test-socks"] = testSocksPort
-	}
-
-	if sc.enableDNS {
-		dnsPort, err = utils.GetFreePort()
-		if err != nil {
-			return nil, fmt.Errorf("failed to allocate dns port: %w", err)
-		}
-		overrides["dns-in"] = dnsPort
-	}
-
-	apiPort, err := utils.GetFreePort()
-	if err != nil {
-		return nil, fmt.Errorf("failed to allocate api port: %w", err)
-	}
-	overrides["api"] = apiPort
-
 	testCfg := *cfg
 	testCfg.Role = config.RoleServer
 	testCfg.Gateway = config.GatewayConfig{}
 
+	needed := 1 // api
+	if sc.enableSOCKS {
+		needed++
+	}
+	if sc.enableDNS {
+		needed++
+	}
 	for _, m := range testCfg.Presets {
 		if m.Enabled {
-			p, err := utils.GetFreePort()
-			if err != nil {
-				return nil, fmt.Errorf("failed to allocate preset port: %w", err)
-			}
-			overrides[string(m.Mode)] = p
+			needed++
+		}
+	}
+
+	freePorts, err := utils.GetFreePorts(needed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to allocate free ports: %w", err)
+	}
+
+	var testSocksPort, dnsPort int
+	pIdx := 0
+	if sc.enableSOCKS {
+		testSocksPort = freePorts[pIdx]
+		overrides["test-socks"] = testSocksPort
+		pIdx++
+	}
+	if sc.enableDNS {
+		dnsPort = freePorts[pIdx]
+		overrides["dns-in"] = dnsPort
+		pIdx++
+	}
+	apiPort := freePorts[pIdx]
+	overrides["api"] = apiPort
+	pIdx++
+
+	for _, m := range testCfg.Presets {
+		if m.Enabled {
+			overrides[string(m.Mode)] = freePorts[pIdx]
+			pIdx++
 		}
 	}
 

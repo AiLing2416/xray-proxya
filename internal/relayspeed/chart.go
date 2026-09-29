@@ -73,18 +73,28 @@ func RenderSparkline(samples []SpeedSample, width int) string {
 		return strings.Repeat("-", width)
 	}
 
-	// Filter out non-positive samples
-	var valid []float64
+	var clean []SpeedSample
 	for _, s := range samples {
-		if s.Bps > 0 && !math.IsNaN(s.Bps) && !math.IsInf(s.Bps, 0) {
-			valid = append(valid, s.Bps)
+		if !math.IsNaN(s.Bps) && !math.IsInf(s.Bps, 0) && s.Bps >= 0 {
+			clean = append(clean, s)
 		}
 	}
-	if len(valid) == 0 {
+	if len(clean) == 0 {
 		return strings.Repeat(" ", width)
 	}
 
-	bucketValues := resampleValues(valid, width)
+	allZero := true
+	for _, s := range clean {
+		if s.Bps > 0 {
+			allZero = false
+			break
+		}
+	}
+	if allZero {
+		return strings.Repeat(" ", width)
+	}
+
+	bucketValues := resampleSamplesToColumns(clean, width)
 
 	// Determine min and max across buckets
 	minBps := bucketValues[0]
@@ -128,21 +138,39 @@ func RenderSparkline(samples []SpeedSample, width int) string {
 	return sb.String()
 }
 
-// resampleValues projects a slice of float64 into exactly 'width' buckets by averaging chunks.
+// resampleValues projects a slice of float64 into exactly 'width' buckets.
+// When n > width, it bucket-averages chunks.
+// When n <= width, it smoothly linearly interpolates between data points to prevent blocky plateaus.
 func resampleValues(values []float64, width int) []float64 {
 	buckets := make([]float64, width)
 	n := len(values)
-	if n == 0 {
+	if n == 0 || width <= 0 {
+		return buckets
+	}
+	if n == 1 {
+		for i := range buckets {
+			buckets[i] = values[0]
+		}
 		return buckets
 	}
 
 	if n <= width {
 		for i := 0; i < width; i++ {
-			idx := int(float64(i) * float64(n) / float64(width))
-			if idx >= n {
-				idx = n - 1
+			pos := float64(i) * float64(n-1) / float64(width-1)
+			idxLow := int(math.Floor(pos))
+			idxHigh := int(math.Ceil(pos))
+			if idxLow >= n {
+				idxLow = n - 1
 			}
-			buckets[i] = values[idx]
+			if idxHigh >= n {
+				idxHigh = n - 1
+			}
+			if idxLow == idxHigh {
+				buckets[i] = values[idxLow]
+			} else {
+				frac := pos - float64(idxLow)
+				buckets[i] = values[idxLow] + frac*(values[idxHigh]-values[idxLow])
+			}
 		}
 		return buckets
 	}
@@ -172,6 +200,102 @@ func resampleValues(values []float64, width int) []float64 {
 	return buckets
 }
 
+// resampleSamplesToColumns projects a time-series of SpeedSamples into exactly 'width' columns
+// across the test duration using time-window bucketing and linear interpolation.
+func resampleSamplesToColumns(samples []SpeedSample, width int) []float64 {
+	cols := make([]float64, width)
+	n := len(samples)
+	if n == 0 || width <= 0 {
+		return cols
+	}
+	if n == 1 {
+		for i := range cols {
+			cols[i] = samples[0].Bps
+		}
+		return cols
+	}
+
+	t0 := int64(0)
+	tEnd := samples[n-1].ElapsedMs
+	if tEnd <= 0 {
+		tEnd = samples[0].ElapsedMs
+	}
+
+	// If timestamps are valid and increasing, use time-domain bucketing and interpolation
+	if tEnd > t0 {
+		duration := float64(tEnd - t0)
+		for i := 0; i < width; i++ {
+			tStart := float64(t0) + float64(i)*duration/float64(width)
+			tStop := float64(t0) + float64(i+1)*duration/float64(width)
+			tCenter := (tStart + tStop) / 2.0
+
+			var sum float64
+			var count int
+			for _, s := range samples {
+				t := float64(s.ElapsedMs)
+				if i == width-1 {
+					if t >= tStart && t <= tStop {
+						sum += s.Bps
+						count++
+					}
+				} else {
+					if t >= tStart && t < tStop {
+						sum += s.Bps
+						count++
+					}
+				}
+			}
+
+			if count > 0 {
+				cols[i] = sum / float64(count)
+			} else {
+				// Linear interpolation between the two nearest samples surrounding tCenter
+				var prev, next *SpeedSample
+				for idx := range samples {
+					t := float64(samples[idx].ElapsedMs)
+					if t <= tCenter {
+						prev = &samples[idx]
+					}
+					if t >= tCenter && next == nil {
+						next = &samples[idx]
+					}
+				}
+				if prev != nil && next != nil && next.ElapsedMs > prev.ElapsedMs {
+					ratio := (tCenter - float64(prev.ElapsedMs)) / float64(next.ElapsedMs-prev.ElapsedMs)
+					cols[i] = prev.Bps + ratio*(next.Bps-prev.Bps)
+				} else if prev != nil {
+					cols[i] = prev.Bps
+				} else if next != nil {
+					cols[i] = next.Bps
+				} else {
+					cols[i] = samples[0].Bps
+				}
+			}
+		}
+		return cols
+	}
+
+	// Fallback when ElapsedMs are not populated or identical: index-based linear interpolation
+	for i := 0; i < width; i++ {
+		pos := float64(i) * float64(n-1) / float64(width-1)
+		idxLow := int(math.Floor(pos))
+		idxHigh := int(math.Ceil(pos))
+		if idxLow >= n {
+			idxLow = n - 1
+		}
+		if idxHigh >= n {
+			idxHigh = n - 1
+		}
+		if idxLow == idxHigh {
+			cols[i] = samples[idxLow].Bps
+		} else {
+			frac := pos - float64(idxLow)
+			cols[i] = samples[idxLow].Bps + frac*(samples[idxHigh].Bps-samples[idxLow].Bps)
+		}
+	}
+	return cols
+}
+
 // RenderWaveform generates a multi-line 2D ASCII/Unicode waveform chart of bandwidth over time.
 // If width or height is <= 0, it dynamically sizes the chart to fill the user's terminal window.
 func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width int, height int, colorEnabled bool) string {
@@ -190,17 +314,17 @@ func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width i
 		}
 	}
 
-	var validBps []float64
+	var clean []SpeedSample
 	for _, s := range samples {
-		if s.Bps > 0 && !math.IsNaN(s.Bps) && !math.IsInf(s.Bps, 0) {
-			validBps = append(validBps, s.Bps)
+		if !math.IsNaN(s.Bps) && !math.IsInf(s.Bps, 0) && s.Bps >= 0 {
+			clean = append(clean, s)
 		}
 	}
-	if len(validBps) == 0 {
+	if len(clean) == 0 {
 		return ""
 	}
 
-	cols := resampleValues(validBps, width)
+	cols := resampleSamplesToColumns(clean, width)
 
 	peakBps := cols[0]
 	for _, v := range cols {
