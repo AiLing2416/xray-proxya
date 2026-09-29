@@ -754,7 +754,7 @@ var speedOutboundCmd = &cobra.Command{
 
 		realTTY := relayspeed.IsTerminal(os.Stdout.Fd())
 		progressTTY := realTTY && !relaySpeedNoProgress
-		disabled := relaySpeedJSON
+		disabled := relaySpeedJSON || relaySpeedNoProgress
 
 		// Single node test
 		if len(args) == 1 {
@@ -788,7 +788,9 @@ var speedOutboundCmd = &cobra.Command{
 				out, _ := relayspeed.RenderJSON(res)
 				fmt.Println(out)
 			} else {
-				fmt.Println()
+				if !relaySpeedNoProgress {
+					fmt.Println()
+				}
 				fmt.Print(relayspeed.RenderSingleCardWithChart(res, relaySpeedChart, realTTY))
 			}
 			return nil
@@ -856,7 +858,9 @@ var speedOutboundCmd = &cobra.Command{
 			out, _ := relayspeed.RenderJSON(results)
 			fmt.Println(out)
 		} else {
-			fmt.Println()
+			if !relaySpeedNoProgress {
+				fmt.Println()
+			}
 			fmt.Print(relayspeed.RenderTableWithChart(results, relaySpeedChart, realTTY))
 		}
 		return nil

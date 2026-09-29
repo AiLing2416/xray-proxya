@@ -151,7 +151,75 @@ func TestRelayDetailAndLinkGatewayAndServer(t *testing.T) {
 	}
 	srvDetail := serverModel.getSelectedDetailContent()
 	if !strings.Contains(srvDetail, "Link:     "+srvLink) {
-		t.Fatalf("expected server relay detail to contain link, got:\n%s", srvDetail)
+		t.Fatalf("expected server relay detail to contain link, got:\n%s", serverDetail(srvDetail))
+	}
+}
+
+func serverDetail(s string) string {
+	return s
+}
+
+func TestRelaySpeedInfoBarHeightAndCommandArgs(t *testing.T) {
+	// 1. Small info bar (largeInfo == false) on standard 80x24 terminal
+	mSmall := Model{
+		width:     80,
+		height:    24,
+		largeInfo: false,
+	}
+	if mSmall.isLargeInfo() {
+		t.Errorf("expected isLargeInfo to be false for small info bar")
+	}
+	if h := mSmall.detailPaneHeight(); h != 4 {
+		t.Errorf("expected detailPaneHeight = 4 for 24-high terminal with small info bar, got %d", h)
+	}
+
+	smallArgs := buildRelaySpeedArgs("hk-01", mSmall.isLargeInfo())
+	expectedSmall := []string{"relay", "speed", "hk-01", "--auto", "--no-progress"}
+	if len(smallArgs) != len(expectedSmall) {
+		t.Fatalf("expected %v, got %v", expectedSmall, smallArgs)
+	}
+	for i := range smallArgs {
+		if smallArgs[i] != expectedSmall[i] {
+			t.Errorf("smallArgs[%d] = %q, want %q", i, smallArgs[i], expectedSmall[i])
+		}
+	}
+
+	// 2. Large info bar (largeInfo == true) on standard 80x24 terminal
+	mLarge := Model{
+		width:     80,
+		height:    24,
+		largeInfo: true,
+	}
+	if !mLarge.isLargeInfo() {
+		t.Errorf("expected isLargeInfo to be true for large info bar on 24-high terminal")
+	}
+	if h := mLarge.detailPaneHeight(); h != 9 {
+		t.Errorf("expected detailPaneHeight = 9 for 24-high terminal with large info bar, got %d", h)
+	}
+
+	largeArgs := buildRelaySpeedArgs("hk-01", mLarge.isLargeInfo())
+	expectedLarge := []string{"relay", "speed", "hk-01", "--auto", "--no-progress", "--chart"}
+	if len(largeArgs) != len(expectedLarge) {
+		t.Fatalf("expected %v, got %v", expectedLarge, largeArgs)
+	}
+	for i := range largeArgs {
+		if largeArgs[i] != expectedLarge[i] {
+			t.Errorf("largeArgs[%d] = %q, want %q", i, largeArgs[i], expectedLarge[i])
+		}
+	}
+
+	// 3. Tiny terminal: even if largeInfo is set, detail pane cannot fit chart
+	mTiny := Model{
+		width:     80,
+		height:    12,
+		largeInfo: true,
+	}
+	if mTiny.isLargeInfo() {
+		t.Errorf("expected isLargeInfo to be false on tiny terminal where detailPaneHeight < 8")
+	}
+	tinyArgs := buildRelaySpeedArgs("hk-01", mTiny.isLargeInfo())
+	if strings.Contains(strings.Join(tinyArgs, " "), "--chart") {
+		t.Errorf("expected no --chart on tiny terminal, got %v", tinyArgs)
 	}
 }
 

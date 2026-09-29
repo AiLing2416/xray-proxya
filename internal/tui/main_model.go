@@ -355,13 +355,28 @@ func fetchRelayInfo(alias string) tea.Cmd {
 	}
 }
 
-func fetchRelaySpeed(alias string) tea.Cmd {
+func buildRelaySpeedArgs(alias string, isLarge bool) []string {
+	args := []string{"relay", "speed", alias, "--auto", "--no-progress"}
+	if isLarge {
+		args = append(args, "--chart")
+	}
+	return args
+}
+
+func fetchRelaySpeed(alias string, isLarge bool, termWidth, termHeight int) tea.Cmd {
 	return func() tea.Msg {
 		exe, err := os.Executable()
 		if err != nil {
 			return relaySpeedMsg{alias: alias, err: err}
 		}
-		cmd := exec.Command(exe, "relay", "speed", alias)
+		args := buildRelaySpeedArgs(alias, isLarge)
+		cmd := exec.Command(exe, args...)
+		if termWidth > 0 && termHeight > 0 {
+			cmd.Env = append(os.Environ(),
+				fmt.Sprintf("COLUMNS=%d", termWidth),
+				fmt.Sprintf("LINES=%d", termHeight),
+			)
+		}
 		out, err := cmd.CombinedOutput()
 		return relaySpeedMsg{alias: alias, body: strings.TrimSpace(string(out)), err: err}
 	}
@@ -1180,7 +1195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.relayLoading = alias
 					m.relayViewMode[alias] = "speed"
 					m.setOverride(fmt.Sprintf("Running speed test on relay '%s'...\nPlease wait...", alias))
-					return m, fetchRelaySpeed(alias)
+					return m, fetchRelaySpeed(alias, m.isLargeInfo(), m.width, m.height)
 				}
 
 			case "p", "P":
@@ -1847,6 +1862,27 @@ func (m Model) getLargeInfoLineCount() int {
 	return max(5, int(float64(m.height)*0.40))
 }
 
+func (m Model) detailPaneHeight() int {
+	footerLines := 1
+	detailHeight := m.height / 5
+	if m.largeInfo {
+		detailHeight = int(float64(m.height) * 0.40)
+	}
+	if detailHeight < 4 {
+		detailHeight = 4
+	}
+
+	mainHeight := m.height - detailHeight - footerLines
+	if mainHeight < 5 {
+		detailHeight = max(2, m.height-5-footerLines)
+	}
+	return detailHeight
+}
+
+func (m Model) isLargeInfo() bool {
+	return m.largeInfo && m.detailPaneHeight() >= 8
+}
+
 func (m Model) View() string {
 	if m.staging == nil && m.active == nil {
 		return "Error: No configuration found."
@@ -1857,18 +1893,11 @@ func (m Model) View() string {
 	footerLines := len(strings.Split(footerText, "\n"))
 	footerHeight := footerLines
 
-	detailHeight := m.height / 5
-	if m.largeInfo {
-		detailHeight = int(float64(m.height) * 0.40)
-	}
-	if detailHeight < 4 {
-		detailHeight = 4
-	}
+	detailHeight := m.detailPaneHeight()
 
 	mainHeight := m.height - detailHeight - footerHeight
 	if mainHeight < 5 {
 		mainHeight = 5
-		detailHeight = max(2, m.height-mainHeight-footerHeight)
 	}
 
 	// 2. Render Main Area

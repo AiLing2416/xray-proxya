@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/sys/unix"
@@ -21,13 +22,39 @@ var sparklineBlocks = []rune{
 }
 
 // GetTerminalSize returns the current terminal width and height in columns and rows.
-// Falls back to (100, 30) when running in non-TTY or when ioctl fails.
+// Falls back to (80, 24) when running in non-TTY or when ioctl fails.
 func GetTerminalSize() (width int, height int) {
 	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
 	if err == nil && ws.Col > 0 && ws.Row > 0 {
 		return int(ws.Col), int(ws.Row)
 	}
-	return 100, 30
+	ws, err = unix.IoctlGetWinsize(int(os.Stderr.Fd()), unix.TIOCGWINSZ)
+	if err == nil && ws.Col > 0 && ws.Row > 0 {
+		return int(ws.Col), int(ws.Row)
+	}
+	ws, err = unix.IoctlGetWinsize(int(os.Stdin.Fd()), unix.TIOCGWINSZ)
+	if err == nil && ws.Col > 0 && ws.Row > 0 {
+		return int(ws.Col), int(ws.Row)
+	}
+	if f, err := os.Open("/dev/tty"); err == nil {
+		ws, err = unix.IoctlGetWinsize(int(f.Fd()), unix.TIOCGWINSZ)
+		_ = f.Close()
+		if err == nil && ws.Col > 0 && ws.Row > 0 {
+			return int(ws.Col), int(ws.Row)
+		}
+	}
+	if colsStr := os.Getenv("COLUMNS"); colsStr != "" {
+		if c, err := strconv.Atoi(colsStr); err == nil && c > 0 {
+			lines := 24
+			if lStr := os.Getenv("LINES"); lStr != "" {
+				if l, err := strconv.Atoi(lStr); err == nil && l > 0 {
+					lines = l
+				}
+			}
+			return c, lines
+		}
+	}
+	return 80, 24
 }
 
 // CalculateChartDimensions computes the optimal width (columns) and height for the 2D waveform
