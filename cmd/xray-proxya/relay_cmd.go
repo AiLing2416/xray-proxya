@@ -1212,7 +1212,7 @@ func init() {
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkDL, "link-download", "", "Custom download URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkUL, "link-upload", "", "Custom upload URL (for custom provider)")
 	speedOutboundCmd.Flags().BoolVar(&relaySpeedNoProgress, "no-progress", false, "Disable live progress bar and terminal animations")
-	speedOutboundCmd.Flags().BoolVar(&relaySpeedChart, "chart", false, "Display ASCII/Unicode bandwidth waveforms and trend sparklines")
+	speedOutboundCmd.Flags().BoolVarP(&relaySpeedChart, "chart", "c", false, "Display ASCII/Unicode bandwidth waveforms and trend sparklines")
 	_ = speedOutboundCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return relayspeed.SupportedProviders(), cobra.ShellCompDirectiveNoFileComp
 	})

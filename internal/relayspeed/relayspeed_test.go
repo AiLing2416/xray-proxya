@@ -975,6 +975,37 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 	if !strings.Contains(line, "ETA:") {
 		t.Errorf("expected valid ETA during active transfer pause: %s", line)
 	}
+
+	// 8. duration/time-based test (TotalDuration > 0)
+	r.lastUpdate = ProgressUpdate{
+		Phase:         "download",
+		Direction:     DirectionDownload,
+		StepThreads:   2,
+		BytesDone:     16300000,
+		TotalDuration: 10 * time.Second,
+		Elapsed:       6500 * time.Millisecond,
+		CurrentBps:    86400000,
+	}
+	line = r.formatCurrentLine("⠸")
+	if !strings.Contains(line, "⠸ [hk-01] Download (2 streams): [████████████░░░░░░]  65%  6.5s / 10s (16.30 MB) | 86.40 Mbps (left: 3.5s)") {
+		t.Errorf("unexpected time-based download line: %s", line)
+	}
+
+	// 9. auto_sustaining with TotalDuration > 0
+	r.lastUpdate = ProgressUpdate{
+		Phase:         "auto_sustaining",
+		Direction:     DirectionDownload,
+		StepThreads:   4,
+		BytesDone:     58200000,
+		TotalDuration: 10 * time.Second,
+		Elapsed:       6000 * time.Millisecond,
+		CurrentBps:    142500000,
+		StepGain:      96,
+	}
+	line = r.formatCurrentLine("⠴")
+	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): [███████████░░░░░░░]  60%  6.0s / 10s (58.20 MB) | 142.50 Mbps (stability: 96%)") {
+		t.Errorf("unexpected time-based auto_sustaining line: %s", line)
+	}
 }
 
 func TestProgressRenderer_NonTTY_Fallback(t *testing.T) {
@@ -1478,8 +1509,8 @@ func TestRenderTableWithChart(t *testing.T) {
 func TestCalculateChartDimensions(t *testing.T) {
 	// Standard 80x24 terminal
 	cols80, h24 := CalculateChartDimensions(80, 24)
-	if cols80 != 64 { // 80 - 16 = 64
-		t.Errorf("expected 64 cols for 80-wide terminal, got %d", cols80)
+	if cols80 != 57 { // 80 - 23 = 57 (prefix 14 + suffix 7 + safety margin 2)
+		t.Errorf("expected 57 cols for 80-wide terminal, got %d", cols80)
 	}
 	if h24 != 10 { // 24 - 14 = 10
 		t.Errorf("expected 10 rows for 24-high terminal, got %d", h24)
@@ -1487,8 +1518,8 @@ func TestCalculateChartDimensions(t *testing.T) {
 
 	// Wide 140x40 terminal
 	cols140, h40 := CalculateChartDimensions(140, 40)
-	if cols140 != 124 { // 140 - 16 = 124
-		t.Errorf("expected 124 cols for 140-wide terminal, got %d", cols140)
+	if cols140 != 117 { // 140 - 23 = 117
+		t.Errorf("expected 117 cols for 140-wide terminal, got %d", cols140)
 	}
 	if h40 != 14 { // Clamped to max 14
 		t.Errorf("expected 14 rows for 40-high terminal, got %d", h40)

@@ -255,6 +255,11 @@ func executeDownload(
 	var samplerWg sync.WaitGroup
 	samplerWg.Add(1)
 
+	var targetDuration time.Duration
+	if durationSec > 0 && !fixedSize {
+		targetDuration = time.Duration(durationSec) * time.Second
+	}
+
 	go func() {
 		defer samplerWg.Done()
 		ticker := time.NewTicker(sampleInterval)
@@ -330,14 +335,15 @@ func executeDownload(
 
 				if progressCb != nil {
 					progressCb(ProgressUpdate{
-						Alias:       alias,
-						Phase:       "download",
-						Direction:   DirectionDownload,
-						BytesDone:   current,
-						TotalBytes:  sizeLimit,
-						CurrentBps:  smoothedBps,
-						Elapsed:     time.Since(startTime),
-						StepThreads: threads,
+						Alias:         alias,
+						Phase:         "download",
+						Direction:     DirectionDownload,
+						BytesDone:     current,
+						TotalBytes:    sizeLimit,
+						TotalDuration: targetDuration,
+						CurrentBps:    smoothedBps,
+						Elapsed:       time.Since(startTime),
+						StepThreads:   threads,
 					})
 				}
 			}
@@ -708,6 +714,11 @@ func executeUpload(
 	var samplerWg sync.WaitGroup
 	samplerWg.Add(1)
 
+	var targetDuration time.Duration
+	if durationSec > 0 && !fixedSize {
+		targetDuration = time.Duration(durationSec) * time.Second
+	}
+
 	go func() {
 		defer samplerWg.Done()
 		ticker := time.NewTicker(sampleInterval)
@@ -783,14 +794,15 @@ func executeUpload(
 
 				if progressCb != nil {
 					progressCb(ProgressUpdate{
-						Alias:       alias,
-						Phase:       "upload",
-						Direction:   DirectionUpload,
-						BytesDone:   current,
-						TotalBytes:  sizeLimit,
-						CurrentBps:  smoothedBps,
-						Elapsed:     time.Since(startTime),
-						StepThreads: threads,
+						Alias:         alias,
+						Phase:         "upload",
+						Direction:     DirectionUpload,
+						BytesDone:     current,
+						TotalBytes:    sizeLimit,
+						TotalDuration: targetDuration,
+						CurrentBps:    smoothedBps,
+						Elapsed:       time.Since(startTime),
+						StepThreads:   threads,
 					})
 				}
 			}

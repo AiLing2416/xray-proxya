@@ -65,10 +65,11 @@ type ProgressUpdate struct {
 	BytesDone   int64
 	TotalBytes  int64
 	CurrentBps  float64
-	Elapsed     time.Duration
-	StepThreads int
-	StepGain    float64
-	StepMessage string
+	Elapsed       time.Duration
+	TotalDuration time.Duration
+	StepThreads   int
+	StepGain      float64
+	StepMessage   string
 }
 
 type ProgressCallback func(update ProgressUpdate)

@@ -44,9 +44,10 @@ func CalculateChartDimensions(termWidth, termHeight int) (cols int, height int) 
 	}
 
 	labelW := 11      // Y-axis speed label width e.g. " 143.91 Mbps"
-	sepW := 3        // " | " separator
+	sepW := 3         // " | " separator
+	suffixW := 7      // " (Avg)" suffix reserved width so the average speed row never wraps
 	safetyMargin := 2 // Margin to prevent auto-line-wrap on wide terminals
-	prefixW := labelW + sepW + safetyMargin
+	prefixW := labelW + sepW + suffixW + safetyMargin
 
 	cols = termWidth - prefixW
 	if cols < 20 {
@@ -407,10 +408,13 @@ func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width i
 		sb.WriteString(lineStr)
 
 		if r == avgRow {
-			if colorEnabled {
-				sb.WriteString(" \033[2m(Avg)\033[0m")
-			} else {
-				sb.WriteString(" (Avg)")
+			termW, _ := GetTerminalSize()
+			if termW <= 0 || yAxisWidth+3+width+6 <= termW {
+				if colorEnabled {
+					sb.WriteString(" \033[2m(Avg)\033[0m")
+				} else {
+					sb.WriteString(" (Avg)")
+				}
 			}
 		}
 		sb.WriteString("\n")

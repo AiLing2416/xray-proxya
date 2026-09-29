@@ -240,6 +240,28 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		if u.StepThreads > 1 {
 			label = fmt.Sprintf("%s (%d streams):", dirLabel, u.StepThreads)
 		}
+		displayBps := u.CurrentBps
+		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
+			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
+		}
+		bpsStr := FormatBitrate(displayBps)
+
+		if u.TotalDuration > 0 {
+			bar, pctInt := renderProgressBar(u.Elapsed.Milliseconds(), u.TotalDuration.Milliseconds(), 18)
+			totSecStr := fmt.Sprintf("%.0fs", u.TotalDuration.Seconds())
+			if u.TotalDuration%time.Second != 0 {
+				totSecStr = fmt.Sprintf("%.1fs", u.TotalDuration.Seconds())
+			}
+			elapsedSec := u.Elapsed.Seconds()
+			if elapsedSec > u.TotalDuration.Seconds() {
+				elapsedSec = u.TotalDuration.Seconds()
+			}
+			timeStr := fmt.Sprintf("%.1fs / %s", elapsedSec, totSecStr)
+			doneStr := FormatDecimalBytes(u.BytesDone)
+			return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s (%s) | %s (stability: %.0f%%)",
+				frame, alias, label, bar, pctInt, timeStr, doneStr, bpsStr, u.StepGain)
+		}
+
 		totalBytes := u.TotalBytes
 		if totalBytes <= 0 {
 			totalBytes = MaxAutoTransferBytes
@@ -247,11 +269,6 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
 		totalStr := FormatDecimalBytes(totalBytes)
-		displayBps := u.CurrentBps
-		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
-			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
-		}
-		bpsStr := FormatBitrate(displayBps)
 		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (stability: %.0f%%)",
 			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr, u.StepGain)
 
@@ -264,6 +281,28 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		if u.StepThreads > 1 {
 			label = fmt.Sprintf("%s (%d streams):", dirLabel, u.StepThreads)
 		}
+		displayBps := u.CurrentBps
+		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
+			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
+		}
+		bpsStr := FormatBitrate(displayBps)
+
+		if u.TotalDuration > 0 {
+			bar, pctInt := renderProgressBar(u.Elapsed.Milliseconds(), u.TotalDuration.Milliseconds(), 18)
+			totSecStr := fmt.Sprintf("%.0fs", u.TotalDuration.Seconds())
+			if u.TotalDuration%time.Second != 0 {
+				totSecStr = fmt.Sprintf("%.1fs", u.TotalDuration.Seconds())
+			}
+			elapsedSec := u.Elapsed.Seconds()
+			if elapsedSec > u.TotalDuration.Seconds() {
+				elapsedSec = u.TotalDuration.Seconds()
+			}
+			timeStr := fmt.Sprintf("%.1fs / %s", elapsedSec, totSecStr)
+			doneStr := FormatDecimalBytes(u.BytesDone)
+			return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s (%s) | %s (converged)",
+				frame, alias, label, bar, pctInt, timeStr, doneStr, bpsStr)
+		}
+
 		totalBytes := u.TotalBytes
 		if totalBytes <= 0 {
 			totalBytes = MaxAutoTransferBytes
@@ -271,11 +310,6 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
 		totalStr := FormatDecimalBytes(totalBytes)
-		displayBps := u.CurrentBps
-		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
-			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
-		}
-		bpsStr := FormatBitrate(displayBps)
 		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (converged)",
 			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr)
 
@@ -290,15 +324,38 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 			label = fmt.Sprintf("%s (%d streams):", dirLabel, u.StepThreads)
 		}
 
-		bar, pctInt := renderProgressBar(u.BytesDone, u.TotalBytes, 18)
-		doneStr := FormatDecimalBytes(u.BytesDone)
-		totalStr := FormatDecimalBytes(u.TotalBytes)
-
 		displayBps := u.CurrentBps
 		if displayBps <= 0 && u.BytesDone > 0 && u.Elapsed.Seconds() > 0.3 {
 			displayBps = float64(u.BytesDone*8) / u.Elapsed.Seconds()
 		}
 		bpsStr := FormatBitrate(displayBps)
+
+		if u.TotalDuration > 0 {
+			bar, pctInt := renderProgressBar(u.Elapsed.Milliseconds(), u.TotalDuration.Milliseconds(), 18)
+			totSecStr := fmt.Sprintf("%.0fs", u.TotalDuration.Seconds())
+			if u.TotalDuration%time.Second != 0 {
+				totSecStr = fmt.Sprintf("%.1fs", u.TotalDuration.Seconds())
+			}
+			elapsedSec := u.Elapsed.Seconds()
+			if elapsedSec > u.TotalDuration.Seconds() {
+				elapsedSec = u.TotalDuration.Seconds()
+			}
+			timeStr := fmt.Sprintf("%.1fs / %s", elapsedSec, totSecStr)
+			doneStr := FormatDecimalBytes(u.BytesDone)
+
+			leftSec := u.TotalDuration.Seconds() - u.Elapsed.Seconds()
+			if leftSec < 0 {
+				leftSec = 0
+			}
+			leftStr := fmt.Sprintf(" (left: %.1fs)", leftSec)
+
+			return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s (%s) | %s%s",
+				frame, alias, label, bar, pctInt, timeStr, doneStr, bpsStr, leftStr)
+		}
+
+		bar, pctInt := renderProgressBar(u.BytesDone, u.TotalBytes, 18)
+		doneStr := FormatDecimalBytes(u.BytesDone)
+		totalStr := FormatDecimalBytes(u.TotalBytes)
 
 		var effectiveBps float64
 		if u.Elapsed.Seconds() > 0.3 && u.BytesDone > 0 {

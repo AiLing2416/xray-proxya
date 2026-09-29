@@ -80,10 +80,17 @@ func RunSpeed(
 			}
 		} else {
 			if progressCb != nil {
+				var targetDur time.Duration
+				if opts.DurationSeconds > 0 && !opts.FixedSize {
+					targetDur = time.Duration(opts.DurationSeconds) * time.Second
+				}
 				progressCb(ProgressUpdate{
-					Alias:     alias,
-					Phase:     "download",
-					Direction: DirectionDownload,
+					Alias:         alias,
+					Phase:         "download",
+					Direction:     DirectionDownload,
+					TotalDuration: targetDur,
+					TotalBytes:    opts.SizeBytes,
+					StepThreads:   opts.Threads,
 				})
 			}
 			dlMetrics, dlErr = runBandwidthTest(ctx, client, prober, provider, DirectionDownload, opts.SizeBytes, opts.DurationSeconds, opts.FixedSize, opts.Threads, idleLat, alias, progressCb)
@@ -129,10 +136,17 @@ func RunSpeed(
 				}
 			} else {
 				if progressCb != nil {
+					var targetDur time.Duration
+					if opts.DurationSeconds > 0 && !opts.FixedSize {
+						targetDur = time.Duration(opts.DurationSeconds) * time.Second
+					}
 					progressCb(ProgressUpdate{
-						Alias:     alias,
-						Phase:     "upload",
-						Direction: DirectionUpload,
+						Alias:         alias,
+						Phase:         "upload",
+						Direction:     DirectionUpload,
+						TotalDuration: targetDur,
+						TotalBytes:    opts.SizeBytes,
+						StepThreads:   opts.Threads,
 					})
 				}
 				ulMetrics, ulErr = runBandwidthTest(ctx, client, prober, provider, DirectionUpload, opts.SizeBytes, opts.DurationSeconds, opts.FixedSize, opts.Threads, idleLat, alias, progressCb)
