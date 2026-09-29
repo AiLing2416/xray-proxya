@@ -20,9 +20,9 @@ import (
 const (
 	mlabLocateURL          = "https://locate.measurementlab.net/v2/nearest/ndt/ndt7"
 	mlabWSProtocol         = "net.measurementlab.ndt.v7"
-	mlabInitialMessageSize = 8192         // 8KB initial frame
-	mlabMaxMessageSize     = 1024 * 1024  // 1MB max frame
-	mlabScalingFraction    = 16           // scale message size when bulkMessageSize <= totalSent / 16
+	mlabInitialMessageSize = 8192        // 8KB initial frame
+	mlabMaxMessageSize     = 32 * 1024  // 32KB max frame: matches Google Fiber official NDT7 client
+	mlabScalingFraction    = 16          // scale message size when bulkMessageSize <= totalSent / 16
 	mlabCacheTTL           = 10 * time.Minute
 )
 

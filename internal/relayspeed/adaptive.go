@@ -62,11 +62,10 @@ func ProbeBandwidthDir(ctx context.Context, client *http.Client, provider Provid
 			return bps, elapsed, nil
 		}
 
-		var totalBytes int64
+		var sent int64
 		zeroSrc := io.LimitReader(zeroReader{}, defaultProbeBytes)
-		cr := &countingReader{reader: zeroSrc, count: &totalBytes}
 
-		req, err := provider.GetUploadRequest(probeCtx, client, cr, defaultProbeBytes)
+		req, err := provider.GetUploadRequest(probeCtx, client, zeroSrc, defaultProbeBytes)
 		if err != nil {
 			return 0, 0, fmt.Errorf("create upload probe request: %w", err)
 		}
@@ -88,10 +87,7 @@ func ProbeBandwidthDir(ctx context.Context, client *http.Client, provider Provid
 		if elapsed <= 0 {
 			elapsed = time.Millisecond
 		}
-		sent := totalBytes
-		if sent == 0 {
-			sent = defaultProbeBytes
-		}
+		sent = defaultProbeBytes
 		bps = float64(sent*8) / elapsed.Seconds()
 		return bps, ttfb, nil
 	}
@@ -496,6 +492,9 @@ func RunAdaptiveBandwidthTest(
 	}
 	metrics.BytesTransferred = cumulativeBytes
 	metrics.DurationMs = time.Since(startTime).Milliseconds()
+	if metrics.DurationMs > 0 && cumulativeBytes > 0 {
+		metrics.AvgSpeedBps = float64(cumulativeBytes*8) / (float64(metrics.DurationMs) / 1000.0)
+	}
 
 	if progressCb != nil {
 		progressCb(ProgressUpdate{

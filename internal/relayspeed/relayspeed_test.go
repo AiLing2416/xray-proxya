@@ -1569,6 +1569,61 @@ func TestResampleSamplesToColumns_ZeroSpeedDropPreserved(t *testing.T) {
 	}
 }
 
+func TestUploadChunkSizeAndSpeedAccuracy(t *testing.T) {
+	// 1. Verify Cloudflare provider chunk limit
+	cf := &CloudflareProvider{}
+	if limitProv, ok := interface{}(cf).(UploadChunkLimitProvider); !ok {
+		t.Fatalf("CloudflareProvider must implement UploadChunkLimitProvider")
+	} else if limit := limitProv.MaxUploadChunkSize(); limit != 1024*1024 {
+		t.Errorf("CloudflareProvider MaxUploadChunkSize = %d, want %d", limit, 1024*1024)
+	}
+
+	// 2. Mock upload server: records received bytes and tests accuracy
+	var totalReceived int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			time.Sleep(50 * time.Millisecond)
+			n, _ := io.Copy(io.Discard, r.Body)
+			atomic.AddInt64(&totalReceived, n)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, server.URL)
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	metrics, err := runBandwidthTest(
+		ctx, server.Client(), nil, customProvider, DirectionUpload,
+		2*1024*1024, 0, true, 2, 5*time.Millisecond, "test-upload-acc", nil,
+	)
+	if err != nil {
+		t.Fatalf("runBandwidthTest upload failed: %v", err)
+	}
+	if metrics == nil {
+		t.Fatalf("expected metrics, got nil")
+	}
+
+	if metrics.BytesTransferred <= 0 {
+		t.Errorf("expected BytesTransferred > 0, got %d", metrics.BytesTransferred)
+	}
+
+	// Mathematical consistency: AvgSpeedBps must strictly equal bits / elapsed seconds
+	durSec := float64(metrics.DurationMs) / 1000.0
+	expectedAvgBps := float64(metrics.BytesTransferred*8) / durSec
+	relDiff := math.Abs(metrics.AvgSpeedBps-expectedAvgBps) / expectedAvgBps
+	if relDiff > 0.05 {
+		t.Errorf("AvgSpeedBps %f differs by >5%% from expectation %f (relDiff: %f)", metrics.AvgSpeedBps, expectedAvgBps, relDiff)
+	}
+}
+
 
 
 

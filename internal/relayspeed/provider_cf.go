@@ -21,6 +21,10 @@ func (c *CloudflareProvider) SupportsUpload() bool {
 	return true
 }
 
+func (c *CloudflareProvider) MaxUploadChunkSize() int64 {
+	return 1024 * 1024 // 1MB chunk: avoids socket buffer dumping while preventing Cloudflare WAF HTTP 429
+}
+
 func (c *CloudflareProvider) GetDownloadRequest(ctx context.Context, _ *http.Client, sizeBytes int64) (*http.Request, error) {
 	if sizeBytes <= 0 {
 		sizeBytes = 25 * 1024 * 1024 // 25MB default

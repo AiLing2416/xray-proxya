@@ -31,18 +31,6 @@ func (z zeroReader) Read(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
-type countingReader struct {
-	reader io.Reader
-	count  *int64
-}
-
-func (cr *countingReader) Read(p []byte) (n int, err error) {
-	n, err = cr.reader.Read(p)
-	if n > 0 {
-		atomic.AddInt64(cr.count, int64(n))
-	}
-	return n, err
-}
 
 func measureIdleLatency(ctx context.Context, prober *LatencyProber, count int) time.Duration {
 	return measureIdleLatencyWithProgress(ctx, prober, count, "", nil)
@@ -223,7 +211,7 @@ func runBandwidthTest(
 		metrics.AvgSpeedBps = float64(bytesTransferred*8) / totalDuration.Seconds()
 	}
 
-	metrics.AvgSpeedBps, metrics.PeakSpeedBps, metrics.Low20SpeedBps = computeSpeedStats(samples, metrics.AvgSpeedBps)
+	_, metrics.PeakSpeedBps, metrics.Low20SpeedBps = computeSpeedStats(samples, metrics.AvgSpeedBps)
 
 	// Summarize load latencies
 	loadMu.Lock()
@@ -272,8 +260,13 @@ func executeDownload(
 		ticker := time.NewTicker(sampleInterval)
 		defer ticker.Stop()
 
-		lastSampleTime := time.Now()
-		lastBytes := int64(0)
+		type historyPoint struct {
+			t     time.Time
+			bytes int64
+		}
+		const windowDuration = 400 * time.Millisecond
+		history := make([]historyPoint, 0, 32)
+		history = append(history, historyPoint{t: startTime, bytes: 0})
 		smoothedBps := 0.0
 
 		for {
@@ -284,30 +277,41 @@ func executeDownload(
 				return
 			case now := <-ticker.C:
 				current := atomic.LoadInt64(bytesTransferred)
-				elapsed := now.Sub(lastSampleTime)
-				if elapsed <= 0 {
-					continue
-				}
-				chunkBytes := current - lastBytes
-				lastSampleTime = now
-				lastBytes = current
+				history = append(history, historyPoint{t: now, bytes: current})
 
-				instantBps := 0.0
-				if chunkBytes > 0 {
-					instantBps = float64(chunkBytes*8) / elapsed.Seconds()
+				// Prune entries older than windowDuration, keeping the newest entry that is older than cutoff
+				cutoff := now.Add(-windowDuration)
+				pruneIdx := 0
+				for i := 0; i < len(history)-1; i++ {
+					if history[i+1].t.Before(cutoff) {
+						pruneIdx = i + 1
+					} else {
+						break
+					}
+				}
+				if pruneIdx > 0 {
+					history = history[pruneIdx:]
 				}
 
-				if instantBps > 0 {
+				oldest := history[0]
+				dt := now.Sub(oldest.t).Seconds()
+				db := current - oldest.bytes
+
+				rollingBps := 0.0
+				if dt > 0.02 && db > 0 {
+					rollingBps = float64(db*8) / dt
+				}
+
+				if rollingBps > 0 {
 					if samples != nil {
-						*samples = append(*samples, instantBps)
+						*samples = append(*samples, rollingBps)
 					}
 					if smoothedBps == 0 {
-						smoothedBps = instantBps
+						smoothedBps = rollingBps
 					} else {
-						smoothedBps = 0.3*instantBps + 0.7*smoothedBps
+						smoothedBps = 0.2*rollingBps + 0.8*smoothedBps
 					}
 				} else if current > 0 {
-					// In-between chunks or waiting for response: smooth decay instead of abrupt zero
 					smoothedBps *= 0.95
 					if smoothedBps < 1000 {
 						smoothedBps = 0
@@ -320,7 +324,7 @@ func executeDownload(
 					*speedSamples = append(*speedSamples, SpeedSample{
 						ElapsedMs: time.Since(startTime).Milliseconds(),
 						BytesDone: current,
-						Bps:       instantBps,
+						Bps:       rollingBps,
 					})
 				}
 
@@ -709,8 +713,13 @@ func executeUpload(
 		ticker := time.NewTicker(sampleInterval)
 		defer ticker.Stop()
 
-		lastSampleTime := time.Now()
-		lastBytes := int64(0)
+		type historyPoint struct {
+			t     time.Time
+			bytes int64
+		}
+		const windowDuration = 400 * time.Millisecond
+		history := make([]historyPoint, 0, 32)
+		history = append(history, historyPoint{t: startTime, bytes: 0})
 		smoothedBps := 0.0
 
 		for {
@@ -721,30 +730,41 @@ func executeUpload(
 				return
 			case now := <-ticker.C:
 				current := atomic.LoadInt64(bytesTransferred)
-				elapsed := now.Sub(lastSampleTime)
-				if elapsed <= 0 {
-					continue
-				}
-				chunkBytes := current - lastBytes
-				lastSampleTime = now
-				lastBytes = current
+				history = append(history, historyPoint{t: now, bytes: current})
 
-				instantBps := 0.0
-				if chunkBytes > 0 {
-					instantBps = float64(chunkBytes*8) / elapsed.Seconds()
+				// Prune entries older than windowDuration, keeping the newest entry that is older than cutoff
+				cutoff := now.Add(-windowDuration)
+				pruneIdx := 0
+				for i := 0; i < len(history)-1; i++ {
+					if history[i+1].t.Before(cutoff) {
+						pruneIdx = i + 1
+					} else {
+						break
+					}
+				}
+				if pruneIdx > 0 {
+					history = history[pruneIdx:]
 				}
 
-				if instantBps > 0 {
+				oldest := history[0]
+				dt := now.Sub(oldest.t).Seconds()
+				db := current - oldest.bytes
+
+				rollingBps := 0.0
+				if dt > 0.02 && db > 0 {
+					rollingBps = float64(db*8) / dt
+				}
+
+				if rollingBps > 0 {
 					if samples != nil {
-						*samples = append(*samples, instantBps)
+						*samples = append(*samples, rollingBps)
 					}
 					if smoothedBps == 0 {
-						smoothedBps = instantBps
+						smoothedBps = rollingBps
 					} else {
-						smoothedBps = 0.3*instantBps + 0.7*smoothedBps
+						smoothedBps = 0.2*rollingBps + 0.8*smoothedBps
 					}
 				} else if current > 0 {
-					// In-between chunks or waiting for response: smooth decay instead of abrupt zero
 					smoothedBps *= 0.95
 					if smoothedBps < 1000 {
 						smoothedBps = 0
@@ -757,7 +777,7 @@ func executeUpload(
 					*speedSamples = append(*speedSamples, SpeedSample{
 						ElapsedMs: time.Since(startTime).Milliseconds(),
 						BytesDone: current,
-						Bps:       instantBps,
+						Bps:       rollingBps,
 					})
 				}
 
@@ -867,9 +887,8 @@ func executeUploadSingle(
 		}
 
 		zeroSrc := io.LimitReader(zeroReader{}, reqSize)
-		cr := &countingReader{reader: zeroSrc, count: bytesTransferred}
 
-		req, err := provider.GetUploadRequest(ctx, client, cr, reqSize)
+		req, err := provider.GetUploadRequest(ctx, client, zeroSrc, reqSize)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -891,6 +910,8 @@ func executeUploadSingle(
 		if (resp.StatusCode < 200 || resp.StatusCode >= 300) && resp.StatusCode != http.StatusSwitchingProtocols {
 			return fmt.Errorf("upload HTTP %d", resp.StatusCode)
 		}
+
+		atomic.AddInt64(bytesTransferred, reqSize)
 
 		if !isDurationMode && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
 			break
@@ -976,9 +997,8 @@ func executeUploadMulti(
 				}
 
 				zeroSrc := io.LimitReader(zeroReader{}, reqBytes)
-				cr := &countingReader{reader: zeroSrc, count: bytesTransferred}
 
-				req, err := provider.GetUploadRequest(workerCtx, client, cr, reqBytes)
+				req, err := provider.GetUploadRequest(workerCtx, client, zeroSrc, reqBytes)
 				if err != nil {
 					if ctx.Err() == nil {
 						errOnce.Do(func() { workerErr = fmt.Errorf("prepare upload chunk: %w", err) })
@@ -1006,6 +1026,8 @@ func executeUploadMulti(
 					}
 					return
 				}
+
+				atomic.AddInt64(bytesTransferred, reqBytes)
 
 				if !isDurationMode && sizeLimit > 0 && atomic.LoadInt64(bytesTransferred) >= sizeLimit {
 					return
