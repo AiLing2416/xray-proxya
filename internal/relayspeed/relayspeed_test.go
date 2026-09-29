@@ -314,7 +314,7 @@ func TestMultiStreamDownload(t *testing.T) {
 	}
 
 	deadline := time.Now().Add(5 * time.Second)
-	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, "test-multi", progressCb)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, nil, "test-multi", progressCb)
 	if err != nil {
 		t.Fatalf("executeDownload failed: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestMultiStreamDownloadTimeout(t *testing.T) {
 	defer cancel()
 
 	deadline := time.Now().Add(150 * time.Millisecond)
-	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, "test-timeout", nil)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, nil, "test-timeout", nil)
 	// Timeout should terminate gracefully without deadlock
 	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
 		t.Fatalf("unexpected error: %v", err)
@@ -394,7 +394,7 @@ func TestSingleStreamDownload(t *testing.T) {
 	defer cancel()
 
 	deadline := time.Now().Add(5 * time.Second)
-	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, "test-single", nil)
+	err = executeDownload(ctx, server.Client(), customProvider, sizeLimit, 0, true, deadline, threads, &bytesTransferred, &samples, nil, "test-single", nil)
 	if err != nil {
 		t.Fatalf("executeDownload single failed: %v", err)
 	}
@@ -551,7 +551,7 @@ func TestDurationScheduling(t *testing.T) {
 	var samples []float64
 
 	start := time.Now()
-	err = executeDownload(ctx, server.Client(), customProvider, 1024*1024, durationSec, false, deadline, 1, &bytesTransferred, &samples, "test-dur", nil)
+	err = executeDownload(ctx, server.Client(), customProvider, 1024*1024, durationSec, false, deadline, 1, &bytesTransferred, &samples, nil, "test-dur", nil)
 	elapsed := time.Since(start)
 
 	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
@@ -633,7 +633,7 @@ func TestMultiStreamDurationScheduling(t *testing.T) {
 	var samples []float64
 
 	start := time.Now()
-	err = executeDownload(ctx, server.Client(), customProvider, 1024*1024, durationSec, false, deadline, threads, &bytesTransferred, &samples, "test-multi-dur", nil)
+	err = executeDownload(ctx, server.Client(), customProvider, 1024*1024, durationSec, false, deadline, threads, &bytesTransferred, &samples, nil, "test-multi-dur", nil)
 	elapsed := time.Since(start)
 
 	if err != nil && err != context.DeadlineExceeded && err != context.Canceled {
@@ -1298,5 +1298,63 @@ func TestMLabProviderWebSocketStreaming(t *testing.T) {
 		t.Errorf("downloaded = %d, want >= 32768", downloaded)
 	}
 }
+
+func TestSpeedSampleCollection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		data := make([]byte, 64*1024)
+		for i := 0; i < 32; i++ { // 2MB
+			_, _ = w.Write(data)
+			time.Sleep(10 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	customProvider, err := NewCustomProvider(server.URL, "")
+	if err != nil {
+		t.Fatalf("failed to create custom provider: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	metrics, err := runBandwidthTest(
+		ctx, server.Client(), nil, customProvider, DirectionDownload,
+		2*1024*1024, 0, true, 2, 0, "test-samples", nil,
+	)
+	if err != nil {
+		t.Fatalf("runBandwidthTest failed: %v", err)
+	}
+
+	if len(metrics.Samples) == 0 {
+		t.Fatalf("expected metrics.Samples to be populated, got 0")
+	}
+
+	for i, s := range metrics.Samples {
+		if s.ElapsedMs < 0 {
+			t.Errorf("sample[%d].ElapsedMs = %d, want >= 0", i, s.ElapsedMs)
+		}
+		if s.BytesDone <= 0 {
+			t.Errorf("sample[%d].BytesDone = %d, want > 0", i, s.BytesDone)
+		}
+		if s.Bps <= 0 {
+			t.Errorf("sample[%d].Bps = %f, want > 0", i, s.Bps)
+		}
+	}
+
+	// Verify JSON serialization includes samples
+	res := &SpeedResult{
+		Alias:    "test-samples",
+		Download: metrics,
+	}
+	jsonBytes, err := RenderJSON(res)
+	if err != nil {
+		t.Fatalf("RenderJSON failed: %v", err)
+	}
+	if !strings.Contains(string(jsonBytes), `"samples"`) {
+		t.Errorf("expected JSON to contain 'samples' field, got: %s", string(jsonBytes))
+	}
+}
+
 
 

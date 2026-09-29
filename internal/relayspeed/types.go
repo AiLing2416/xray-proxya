@@ -10,6 +10,12 @@ const (
 	DirectionBoth     Direction = "both"
 )
 
+type SpeedSample struct {
+	ElapsedMs int64   `json:"elapsed_ms"`
+	BytesDone int64   `json:"bytes_done"`
+	Bps       float64 `json:"bps"`
+}
+
 type SpeedMetrics struct {
 	Direction           Direction     `json:"direction"`
 	AvgSpeedBps         float64       `json:"avg_speed_bps"`
@@ -22,6 +28,7 @@ type SpeedMetrics struct {
 	LoadLatencyWorst5   time.Duration `json:"load_latency_worst5_ms"`
 	LoadLatencyLossRate float64       `json:"load_latency_loss_rate"`
 	LoadLatencySamples  int           `json:"load_latency_samples"`
+	Samples             []SpeedSample `json:"samples,omitempty"`
 }
 
 type SpeedResult struct {

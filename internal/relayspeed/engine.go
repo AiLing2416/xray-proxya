@@ -186,6 +186,7 @@ func runBandwidthTest(
 	var (
 		bytesTransferred int64
 		samples          []float64
+		speedSamples     []SpeedSample
 		startTime        = time.Now()
 		deadline         = startTime.Add(timeout)
 	)
@@ -196,9 +197,9 @@ func runBandwidthTest(
 
 	var err error
 	if direction == DirectionDownload {
-		err = executeDownload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
+		err = executeDownload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, &speedSamples, alias, progressCb)
 	} else {
-		err = executeUpload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, alias, progressCb)
+		err = executeUpload(testCtx, client, provider, sizeLimit, durationSec, fixedSize, deadline, threads, &bytesTransferred, &samples, &speedSamples, alias, progressCb)
 	}
 
 	close(stopLoadProbe)
@@ -214,6 +215,7 @@ func runBandwidthTest(
 		BytesTransferred: bytesTransferred,
 		DurationMs:       totalDuration.Milliseconds(),
 		IdleLatencyAvg:   idleLat,
+		Samples:          speedSamples,
 	}
 
 	if totalDuration > 0 && bytesTransferred > 0 {
@@ -252,6 +254,7 @@ func executeDownload(
 	threads int,
 	bytesTransferred *int64,
 	samples *[]float64,
+	speedSamples *[]SpeedSample,
 	alias string,
 	progressCb ProgressCallback,
 ) error {
@@ -290,7 +293,16 @@ func executeDownload(
 				if chunkBytes > 0 {
 					lastBytes = current
 					instantBps := float64(chunkBytes*8) / elapsed.Seconds()
-					*samples = append(*samples, instantBps)
+					if samples != nil {
+						*samples = append(*samples, instantBps)
+					}
+					if speedSamples != nil && len(*speedSamples) < 500 {
+						*speedSamples = append(*speedSamples, SpeedSample{
+							ElapsedMs: time.Since(startTime).Milliseconds(),
+							BytesDone: current,
+							Bps:       instantBps,
+						})
+					}
 
 					if smoothedBps == 0 {
 						smoothedBps = instantBps
@@ -339,10 +351,20 @@ func executeDownload(
 		*bytesTransferred = sizeLimit
 	}
 
-	if len(*samples) == 0 && *bytesTransferred > 0 {
+	if (samples == nil || len(*samples) == 0) && *bytesTransferred > 0 {
 		elapsedSec := time.Since(startTime).Seconds()
 		if elapsedSec > 0 {
-			*samples = append(*samples, float64(*bytesTransferred*8)/elapsedSec)
+			rate := float64(*bytesTransferred*8) / elapsedSec
+			if samples != nil {
+				*samples = append(*samples, rate)
+			}
+			if speedSamples != nil && len(*speedSamples) == 0 {
+				*speedSamples = append(*speedSamples, SpeedSample{
+					ElapsedMs: time.Since(startTime).Milliseconds(),
+					BytesDone: *bytesTransferred,
+					Bps:       rate,
+				})
+			}
 		}
 	}
 
@@ -658,6 +680,7 @@ func executeUpload(
 	threads int,
 	bytesTransferred *int64,
 	samples *[]float64,
+	speedSamples *[]SpeedSample,
 	alias string,
 	progressCb ProgressCallback,
 ) error {
@@ -703,7 +726,16 @@ func executeUpload(
 				if chunkBytes > 0 {
 					lastBytes = current
 					instantBps := float64(chunkBytes*8) / elapsed.Seconds()
-					*samples = append(*samples, instantBps)
+					if samples != nil {
+						*samples = append(*samples, instantBps)
+					}
+					if speedSamples != nil && len(*speedSamples) < 500 {
+						*speedSamples = append(*speedSamples, SpeedSample{
+							ElapsedMs: time.Since(startTime).Milliseconds(),
+							BytesDone: current,
+							Bps:       instantBps,
+						})
+					}
 
 					if smoothedBps == 0 {
 						smoothedBps = instantBps
@@ -752,10 +784,20 @@ func executeUpload(
 		*bytesTransferred = sizeLimit
 	}
 
-	if len(*samples) == 0 && *bytesTransferred > 0 {
+	if (samples == nil || len(*samples) == 0) && *bytesTransferred > 0 {
 		elapsedSec := time.Since(startTime).Seconds()
 		if elapsedSec > 0 {
-			*samples = append(*samples, float64(*bytesTransferred*8)/elapsedSec)
+			rate := float64(*bytesTransferred*8) / elapsedSec
+			if samples != nil {
+				*samples = append(*samples, rate)
+			}
+			if speedSamples != nil && len(*speedSamples) == 0 {
+				*speedSamples = append(*speedSamples, SpeedSample{
+					ElapsedMs: time.Since(startTime).Milliseconds(),
+					BytesDone: *bytesTransferred,
+					Bps:       rate,
+				})
+			}
 		}
 	}
 
