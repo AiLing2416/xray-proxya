@@ -49,6 +49,7 @@ var (
 	relaySpeedThreads    int
 	relaySpeedAuto       bool
 	relaySpeedNoProgress bool
+	relaySpeedChart      bool
 )
 
 var outboundCmd = &cobra.Command{
@@ -751,10 +752,8 @@ var speedOutboundCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		isTTY := relayspeed.IsTerminal(os.Stdout.Fd())
-		if relaySpeedNoProgress {
-			isTTY = false
-		}
+		realTTY := relayspeed.IsTerminal(os.Stdout.Fd())
+		progressTTY := realTTY && !relaySpeedNoProgress
 		disabled := relaySpeedJSON
 
 		// Single node test
@@ -771,7 +770,7 @@ var speedOutboundCmd = &cobra.Command{
 				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
-			renderer := relayspeed.NewProgressRenderer(os.Stdout, isTTY, disabled)
+			renderer := relayspeed.NewProgressRenderer(os.Stdout, progressTTY, disabled)
 			renderer.StartNode(target)
 
 			res, err := relayspeed.RunSpeed(ctx, cfg, target, opts, renderer.ProgressCallback())
@@ -790,7 +789,7 @@ var speedOutboundCmd = &cobra.Command{
 				fmt.Println(out)
 			} else {
 				fmt.Println()
-				fmt.Print(relayspeed.RenderSingleCard(res))
+				fmt.Print(relayspeed.RenderSingleCardWithChart(res, relaySpeedChart, realTTY))
 			}
 			return nil
 		}
@@ -829,7 +828,7 @@ var speedOutboundCmd = &cobra.Command{
 			fmt.Printf("Starting speed test queue (%d nodes, Provider: %s)...\n\n", len(targets), providerName)
 		}
 
-		renderer := relayspeed.NewProgressRenderer(os.Stdout, isTTY, disabled)
+		renderer := relayspeed.NewProgressRenderer(os.Stdout, progressTTY, disabled)
 		defer renderer.Stop()
 
 		var results []*relayspeed.SpeedResult
@@ -858,7 +857,7 @@ var speedOutboundCmd = &cobra.Command{
 			fmt.Println(out)
 		} else {
 			fmt.Println()
-			fmt.Print(relayspeed.RenderTable(results))
+			fmt.Print(relayspeed.RenderTableWithChart(results, relaySpeedChart, realTTY))
 		}
 		return nil
 	},
@@ -1213,6 +1212,7 @@ func init() {
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkDL, "link-download", "", "Custom download URL (for custom provider)")
 	speedOutboundCmd.Flags().StringVar(&relaySpeedLinkUL, "link-upload", "", "Custom upload URL (for custom provider)")
 	speedOutboundCmd.Flags().BoolVar(&relaySpeedNoProgress, "no-progress", false, "Disable live progress bar and terminal animations")
+	speedOutboundCmd.Flags().BoolVar(&relaySpeedChart, "chart", false, "Display ASCII/Unicode bandwidth waveforms and trend sparklines")
 	_ = speedOutboundCmd.RegisterFlagCompletionFunc("provider", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return relayspeed.SupportedProviders(), cobra.ShellCompDirectiveNoFileComp
 	})
