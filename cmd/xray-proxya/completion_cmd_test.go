@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -108,8 +110,11 @@ func TestInstallAndUninstallBashCompletionPreservesUserProfile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read generated completion: %v", err)
 	}
-	if !strings.Contains(string(script), "doctor") || !strings.Contains(string(script), "completion") {
-		t.Fatal("generated bash completion does not include doctor completion commands")
+	if !strings.Contains(string(script), "__start_xray-proxya") || !strings.Contains(string(script), "__complete") {
+		t.Fatal("generated bash completion does not include expected dynamic completion handlers")
+	}
+	if !strings.Contains(string(script), "words[@]:0:$cword+1") {
+		t.Fatal("generated bash completion missing cursor truncation logic for middle-of-command completion")
 	}
 	profile, err := os.ReadFile(layout.profile)
 	if err != nil {
@@ -362,6 +367,146 @@ func TestRelaySpeedProviderFlagCompletion(t *testing.T) {
 		if !strings.Contains(output, exp) {
 			t.Errorf("__complete output with -p missing provider %q: %s", exp, output)
 		}
+	}
+}
+
+func TestBashCompletionMiddleOfCommandLine(t *testing.T) {
+	// Verify that the generated bash completion script is V2 and includes
+	// cursor truncation logic (${words[@]:0:$cword+1}) which allows completion
+	// in the middle of a command line.
+	var buf bytes.Buffer
+	if err := rootCmd.GenBashCompletionV2(&buf, true); err != nil {
+		t.Fatalf("GenBashCompletionV2: %v", err)
+	}
+	script := buf.String()
+	if !strings.Contains(script, `words=("${words[@]:0:$cword+1}")`) {
+		t.Error("Bash completion V2 script does not contain cursor truncation logic (${words[@]:0:$cword+1})")
+	}
+
+	executeComplete := func(args []string) string {
+		out := new(bytes.Buffer)
+		rootCmd.SetOut(out)
+		rootCmd.SetErr(out)
+		rootCmd.SetArgs(append([]string{"__complete"}, args...))
+		defer func() {
+			rootCmd.SetOut(nil)
+			rootCmd.SetErr(nil)
+			rootCmd.SetArgs(nil)
+		}()
+		_ = rootCmd.Execute()
+		return out.String()
+	}
+
+	// 1. Subcommand completion in the middle: cursor on "rel" before trailing "test"
+	out := executeComplete([]string{"rel"})
+	if !strings.Contains(out, "relay") {
+		t.Errorf("expected 'relay' completion for 'rel', got:\n%s", out)
+	}
+
+	// 2. Subcommand completion in the middle: cursor on empty space after "relay" before trailing "test"
+	out = executeComplete([]string{"relay", ""})
+	for _, sub := range []string{"test", "speed", "remove", "add", "list"} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("expected subcommand %q in relay completions, got:\n%s", sub, out)
+		}
+	}
+
+	// 3. Flag name completion in the middle: cursor on "--ro" before trailing "--some-flag"
+	out = executeComplete([]string{"init", "--ro"})
+	if !strings.Contains(out, "--role") {
+		t.Errorf("expected '--role' in init flag completions, got:\n%s", out)
+	}
+
+	// 4. Flag value completion in the middle: cursor on "" after "--role" before trailing "--some-flag"
+	out = executeComplete([]string{"init", "--role", ""})
+	if !strings.Contains(out, "server") || !strings.Contains(out, "gateway") {
+		t.Errorf("expected 'server' and 'gateway' in --role completions, got:\n%s", out)
+	}
+}
+
+func TestBashCompletionInRealSubshell(t *testing.T) {
+	bashPath, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not found")
+	}
+
+	tempDir := t.TempDir()
+	binPath := filepath.Join(tempDir, "xray-proxya")
+	buildCmd := exec.Command("go", "build", "-o", binPath, ".")
+	if out, err := buildCmd.CombinedOutput(); err != nil {
+		t.Fatalf("build test binary failed: %v\nOutput: %s", err, string(out))
+	}
+
+	scriptFile := filepath.Join(tempDir, "xray-proxya.bash")
+	if err := rootCmd.GenBashCompletionFileV2(scriptFile, true); err != nil {
+		t.Fatalf("GenBashCompletionFileV2: %v", err)
+	}
+
+	testCases := []struct {
+		name      string
+		compLine  string
+		compPoint int
+		compWords []string
+		compCword int
+		wantComps []string
+	}{
+		{
+			name:      "subcommand prefix in middle",
+			compLine:  "xray-proxya rel test",
+			compPoint: 14,
+			compWords: []string{"xray-proxya", "rel", "test"},
+			compCword: 1,
+			wantComps: []string{"relay"},
+		},
+		{
+			name:      "subcommand empty position in middle",
+			compLine:  "xray-proxya relay  test",
+			compPoint: 17,
+			compWords: []string{"xray-proxya", "relay", `""`, "test"},
+			compCword: 2,
+			wantComps: []string{"test", "speed", "remove", "add"},
+		},
+		{
+			name:      "flag value in middle",
+			compLine:  "xray-proxya init --role s --some-flag",
+			compPoint: 24,
+			compWords: []string{"xray-proxya", "init", "--role", "s", "--some-flag"},
+			compCword: 3,
+			wantComps: []string{"server"},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			bashScript := fmt.Sprintf(`
+export PATH=%q:"$PATH"
+source /usr/share/bash-completion/bash_completion 2>/dev/null || true
+compopt() { return 0; }
+source %q
+
+COMP_LINE=%q
+COMP_POINT=%d
+COMP_WORDS=(%s)
+COMP_CWORD=%d
+COMPREPLY=()
+__start_xray-proxya
+for comp in "${COMPREPLY[@]}"; do
+    echo "$comp"
+done
+`, tempDir, scriptFile, tc.compLine, tc.compPoint, strings.Join(tc.compWords, " "), tc.compCword)
+
+			cmd := exec.Command(bashPath, "-c", bashScript)
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("bash execution failed: %v\nOutput: %s", err, string(out))
+			}
+			outStr := string(out)
+			for _, want := range tc.wantComps {
+				if !strings.Contains(outStr, want) {
+					t.Errorf("completion output missing %q:\n%s", want, outStr)
+				}
+			}
+		})
 	}
 }
 

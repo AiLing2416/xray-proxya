@@ -151,7 +151,7 @@ func generateCompletion(layout completionLayout) error {
 	var err error
 	switch layout.shell {
 	case "bash":
-		err = rootCmd.GenBashCompletionFile(layout.file)
+		err = rootCmd.GenBashCompletionFileV2(layout.file, true)
 	case "zsh":
 		err = rootCmd.GenZshCompletionFile(layout.file)
 	case "fish":
@@ -276,7 +276,7 @@ Examples:
 		out := cmd.OutOrStdout()
 		switch args[0] {
 		case "bash":
-			return rootCmd.GenBashCompletion(out)
+			return rootCmd.GenBashCompletionV2(out, true)
 		case "zsh":
 			return rootCmd.GenZshCompletion(out)
 		case "fish":
