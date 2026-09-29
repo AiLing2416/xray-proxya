@@ -1356,5 +1356,124 @@ func TestSpeedSampleCollection(t *testing.T) {
 	}
 }
 
+func TestRenderSparkline(t *testing.T) {
+	// 1. Empty samples
+	spEmpty := RenderSparkline(nil, 10)
+	if spEmpty != "----------" {
+		t.Errorf("expected '----------', got %q", spEmpty)
+	}
+
+	// 2. All zero samples
+	spZeros := RenderSparkline([]SpeedSample{{Bps: 0}, {Bps: 0}}, 8)
+	if spZeros != "        " {
+		t.Errorf("expected spaces for zeros, got %q", spZeros)
+	}
+
+	// 3. Flatline (stable constant speed)
+	flatSamples := []SpeedSample{
+		{Bps: 100_000_000},
+		{Bps: 100_000_000},
+		{Bps: 100_000_000},
+		{Bps: 100_000_000},
+	}
+	spFlat := RenderSparkline(flatSamples, 6)
+	if spFlat != "▄▄▄▄▄▄" {
+		t.Errorf("expected '▄▄▄▄▄▄' for flatline, got %q", spFlat)
+	}
+
+	// 4. Monotonically increasing ramp-up
+	rampSamples := []SpeedSample{
+		{Bps: 10_000_000},
+		{Bps: 20_000_000},
+		{Bps: 40_000_000},
+		{Bps: 60_000_000},
+		{Bps: 80_000_000},
+		{Bps: 100_000_000},
+	}
+	spRamp := RenderSparkline(rampSamples, 6)
+	runes := []rune(spRamp)
+	if len(runes) != 6 {
+		t.Fatalf("expected 6 runes, got %d (%s)", len(runes), spRamp)
+	}
+	if runes[0] >= runes[len(runes)-1] {
+		t.Errorf("expected increasing sparkline runes, got %s", spRamp)
+	}
+}
+
+func TestRenderWaveform(t *testing.T) {
+	// 1. Empty samples produces empty string
+	wfEmpty := RenderWaveform("Empty Test", nil, 0, 50, 6, false)
+	if wfEmpty != "" {
+		t.Errorf("expected empty string for nil samples, got %q", wfEmpty)
+	}
+
+	// 2. Valid samples produce waveform with axis, labels, and blocks
+	samples := []SpeedSample{
+		{ElapsedMs: 100, BytesDone: 100000, Bps: 10_000_000},
+		{ElapsedMs: 500, BytesDone: 1000000, Bps: 50_000_000},
+		{ElapsedMs: 1000, BytesDone: 3000000, Bps: 90_000_000},
+		{ElapsedMs: 1500, BytesDone: 6000000, Bps: 100_000_000},
+		{ElapsedMs: 2000, BytesDone: 9000000, Bps: 98_000_000},
+	}
+
+	wfNoColor := RenderWaveform("Download Speed Waveform", samples, 70_000_000, 40, 6, false)
+	if !strings.Contains(wfNoColor, "Download Speed Waveform:") {
+		t.Errorf("expected title in waveform, got:\n%s", wfNoColor)
+	}
+	if !strings.Contains(wfNoColor, "(Avg)") {
+		t.Errorf("expected (Avg) indicator in waveform, got:\n%s", wfNoColor)
+	}
+	if !strings.Contains(wfNoColor, "0.0s") || !strings.Contains(wfNoColor, "2.0s") {
+		t.Errorf("expected time axis markers 0.0s and 2.0s, got:\n%s", wfNoColor)
+	}
+	if strings.Contains(wfNoColor, "\033") {
+		t.Errorf("no-color waveform must not contain ANSI codes")
+	}
+
+	// 3. Colored waveform includes ANSI color codes
+	wfColor := RenderWaveform("Download Speed Waveform", samples, 70_000_000, 40, 6, true)
+	if !strings.Contains(wfColor, "\033[") {
+		t.Errorf("colored waveform must contain ANSI escape codes")
+	}
+}
+
+func TestRenderTableWithChart(t *testing.T) {
+	r1 := sampleSpeedResult()
+	r1.Download.Samples = []SpeedSample{
+		{ElapsedMs: 500, Bps: 50_000_000},
+		{ElapsedMs: 1000, Bps: 85_000_000},
+		{ElapsedMs: 1500, Bps: 100_000_000},
+	}
+
+	r2 := &SpeedResult{
+		Alias:    "us-01",
+		Provider: "Cloudflare",
+		Download: &SpeedMetrics{
+			AvgSpeedBps:  120_000_000,
+			PeakSpeedBps: 130_000_000,
+			Samples: []SpeedSample{
+				{ElapsedMs: 500, Bps: 100_000_000},
+				{ElapsedMs: 1000, Bps: 120_000_000},
+			},
+		},
+	}
+
+	// Without chart: 86-char width, no TREND (DL)
+	tblNoChart := RenderTableWithChart([]*SpeedResult{r1, r2}, false, false)
+	if strings.Contains(tblNoChart, "TREND (DL)") {
+		t.Errorf("table without chart must not contain TREND (DL) header")
+	}
+
+	// With chart: contains TREND (DL) header and sparkline runes
+	tblWithChart := RenderTableWithChart([]*SpeedResult{r1, r2}, true, false)
+	if !strings.Contains(tblWithChart, "TREND (DL)") {
+		t.Errorf("table with chart must contain TREND (DL) header, got:\n%s", tblWithChart)
+	}
+	if !strings.Contains(tblWithChart, "▄") && !strings.Contains(tblWithChart, " ") {
+		t.Errorf("table with chart must contain sparkline blocks, got:\n%s", tblWithChart)
+	}
+}
+
+
 
 

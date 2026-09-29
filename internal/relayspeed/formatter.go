@@ -52,13 +52,18 @@ func formatTableBitrate(bps float64, width int, colorEnabled bool) string {
 
 // RenderTerminal renders speed test results in terminal format (card view for single node, table for multi-node).
 func RenderTerminal(results []*SpeedResult) string {
+	return RenderTerminalWithChart(results, false, isColorSupported())
+}
+
+// RenderTerminalWithChart formats speed test results with optional chart display.
+func RenderTerminalWithChart(results []*SpeedResult, showChart bool, colorEnabled bool) string {
 	if len(results) == 0 {
 		return ""
 	}
 	if len(results) == 1 {
-		return RenderSingleCard(results[0])
+		return RenderSingleCardWithChart(results[0], showChart, colorEnabled)
 	}
-	return RenderTable(results)
+	return RenderTableWithChart(results, showChart, colorEnabled)
 }
 
 // RenderSingleCard formats a single node result as a compact card.
@@ -68,6 +73,11 @@ func RenderSingleCard(r *SpeedResult) string {
 
 // RenderSingleCardStyled formats a single node result with explicit color styling control.
 func RenderSingleCardStyled(r *SpeedResult, colorEnabled bool) string {
+	return RenderSingleCardWithChart(r, false, colorEnabled)
+}
+
+// RenderSingleCardWithChart formats a single node result with optional 2D waveform chart.
+func RenderSingleCardWithChart(r *SpeedResult, showChart bool, colorEnabled bool) string {
 	if r == nil {
 		return ""
 	}
@@ -167,6 +177,21 @@ func RenderSingleCardStyled(r *SpeedResult, colorEnabled bool) string {
 		sb.WriteString(fmt.Sprintf("Warning   : %s\n", r.Error))
 	}
 
+	if showChart && r != nil {
+		if r.Download != nil && len(r.Download.Samples) > 0 {
+			wf := RenderWaveform("Download Speed Waveform", r.Download.Samples, r.Download.AvgSpeedBps, 50, 6, colorEnabled)
+			if wf != "" {
+				sb.WriteString("\n" + wf)
+			}
+		}
+		if r.Upload != nil && len(r.Upload.Samples) > 0 {
+			wf := RenderWaveform("Upload Speed Waveform", r.Upload.Samples, r.Upload.AvgSpeedBps, 50, 6, colorEnabled)
+			if wf != "" {
+				sb.WriteString("\n" + wf)
+			}
+		}
+	}
+
 	return sb.String()
 }
 
@@ -175,16 +200,32 @@ func RenderTable(results []*SpeedResult) string {
 	return RenderTableStyled(results, isColorSupported())
 }
 
+// RenderTableWithChart formats multiple node results with optional sparkline column.
+func RenderTableWithChart(results []*SpeedResult, showChart bool, colorEnabled bool) string {
+	return renderTableInternal(results, colorEnabled, showChart)
+}
+
 // RenderTableStyled formats multiple node results with explicit color control.
 func RenderTableStyled(results []*SpeedResult, colorEnabled bool) string {
+	return renderTableInternal(results, colorEnabled, false)
+}
+
+func renderTableInternal(results []*SpeedResult, colorEnabled bool, showChart bool) string {
 	if len(results) == 0 {
 		return ""
 	}
 
 	var sb strings.Builder
-	header := fmt.Sprintf("%-10s | %-12s | %-13s | %-13s | %-10s | %-10s | %-6s\n",
-		"ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS")
-	sep := strings.Repeat("-", 86) + "\n"
+	var header, sep string
+	if showChart {
+		header = fmt.Sprintf("%-10s | %-12s | %-13s | %-13s | %-10s | %-10s | %-6s | %-12s\n",
+			"ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS", "TREND (DL)")
+		sep = strings.Repeat("-", 101) + "\n"
+	} else {
+		header = fmt.Sprintf("%-10s | %-12s | %-13s | %-13s | %-10s | %-10s | %-6s\n",
+			"ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS")
+		sep = strings.Repeat("-", 86) + "\n"
+	}
 
 	sb.WriteString(header)
 	sb.WriteString(sep)
@@ -201,8 +242,12 @@ func RenderTableStyled(results []*SpeedResult, colorEnabled bool) string {
 			if colorEnabled {
 				failStr = "\033[31mFAIL:\033[0m " + truncate(r.Error, 50)
 			}
-			sb.WriteString(fmt.Sprintf("%-10s | %-12s | %-60s\n",
-				truncate(r.Alias, 10), truncate(r.Provider, 12), failStr))
+			failWidth := 60
+			if showChart {
+				failWidth = 75
+			}
+			sb.WriteString(fmt.Sprintf("%-10s | %-12s | %-*s\n",
+				truncate(r.Alias, 10), truncate(r.Provider, 12), failWidth, failStr))
 			continue
 		}
 
@@ -228,7 +273,16 @@ func RenderTableStyled(results []*SpeedResult, colorEnabled bool) string {
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("%-10s | %-12s | %s | %s | %-10s | %-10s | %-6s\n",
+		trendCol := ""
+		if showChart {
+			if r.Download != nil && len(r.Download.Samples) > 0 {
+				trendCol = " | " + RenderSparkline(r.Download.Samples, 12)
+			} else {
+				trendCol = " | " + fmt.Sprintf("%-12s", "N/A")
+			}
+		}
+
+		sb.WriteString(fmt.Sprintf("%-10s | %-12s | %s | %s | %-10s | %-10s | %-6s%s\n",
 			truncate(r.Alias, 10),
 			truncate(r.Provider, 12),
 			dlStr,
@@ -236,6 +290,7 @@ func RenderTableStyled(results []*SpeedResult, colorEnabled bool) string {
 			idleStr,
 			loadStr,
 			lossStr,
+			trendCol,
 		))
 	}
 
