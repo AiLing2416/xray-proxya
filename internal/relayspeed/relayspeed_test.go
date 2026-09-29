@@ -1474,6 +1474,42 @@ func TestRenderTableWithChart(t *testing.T) {
 	}
 }
 
+func TestCalculateChartDimensions(t *testing.T) {
+	// Standard 80x24 terminal
+	cols80, h24 := CalculateChartDimensions(80, 24)
+	if cols80 != 64 { // 80 - 16 = 64
+		t.Errorf("expected 64 cols for 80-wide terminal, got %d", cols80)
+	}
+	if h24 != 10 { // 24 - 14 = 10
+		t.Errorf("expected 10 rows for 24-high terminal, got %d", h24)
+	}
+
+	// Wide 140x40 terminal
+	cols140, h40 := CalculateChartDimensions(140, 40)
+	if cols140 != 124 { // 140 - 16 = 124
+		t.Errorf("expected 124 cols for 140-wide terminal, got %d", cols140)
+	}
+	if h40 != 14 { // Clamped to max 14
+		t.Errorf("expected 14 rows for 40-high terminal, got %d", h40)
+	}
+
+	// Very narrow 25-col terminal (clamped to min 20)
+	colsNarrow, hSmall := CalculateChartDimensions(25, 10)
+	if colsNarrow != 20 {
+		t.Errorf("expected min 20 cols for narrow terminal, got %d", colsNarrow)
+	}
+	if hSmall != 6 { // Clamped to min 6
+		t.Errorf("expected min 6 rows for small terminal, got %d", hSmall)
+	}
+
+	// Auto fallback when <= 0
+	colsAuto, hAuto := CalculateChartDimensions(0, 0)
+	if colsAuto < 20 || hAuto < 6 {
+		t.Errorf("expected positive dimensions from auto query, got %dx%d", colsAuto, hAuto)
+	}
+}
+
+
 
 
 

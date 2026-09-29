@@ -3,7 +3,10 @@ package relayspeed
 import (
 	"fmt"
 	"math"
+	"os"
 	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
 var sparklineBlocks = []rune{
@@ -15,6 +18,50 @@ var sparklineBlocks = []rune{
 	'▆', // U+2586 Lower three quarters block
 	'▇', // U+2587 Lower seven eighths block
 	'█', // U+2588 Full block
+}
+
+// GetTerminalSize returns the current terminal width and height in columns and rows.
+// Falls back to (100, 30) when running in non-TTY or when ioctl fails.
+func GetTerminalSize() (width int, height int) {
+	ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ)
+	if err == nil && ws.Col > 0 && ws.Row > 0 {
+		return int(ws.Col), int(ws.Row)
+	}
+	return 100, 30
+}
+
+// CalculateChartDimensions computes the optimal width (columns) and height for the 2D waveform
+// based on terminal dimensions, mirroring the responsive terminal filling of cf-speedtest.py.
+func CalculateChartDimensions(termWidth, termHeight int) (cols int, height int) {
+	if termWidth <= 0 || termHeight <= 0 {
+		w, h := GetTerminalSize()
+		if termWidth <= 0 {
+			termWidth = w
+		}
+		if termHeight <= 0 {
+			termHeight = h
+		}
+	}
+
+	labelW := 11      // Y-axis speed label width e.g. " 143.91 Mbps"
+	sepW := 3        // " | " separator
+	safetyMargin := 2 // Margin to prevent auto-line-wrap on wide terminals
+	prefixW := labelW + sepW + safetyMargin
+
+	cols = termWidth - prefixW
+	if cols < 20 {
+		cols = 20
+	}
+
+	// Responsive height: scales smoothly with terminal height, bounded between 6 and 14 rows
+	height = termHeight - 14
+	if height < 6 {
+		height = 6
+	} else if height > 14 {
+		height = 14
+	}
+
+	return cols, height
 }
 
 // RenderSparkline compresses a sequence of samples into a single-line sparkline of fixed character width.
@@ -84,27 +131,28 @@ func RenderSparkline(samples []SpeedSample, width int) string {
 // resampleValues projects a slice of float64 into exactly 'width' buckets by averaging chunks.
 func resampleValues(values []float64, width int) []float64 {
 	buckets := make([]float64, width)
-	if len(values) == 0 {
+	n := len(values)
+	if n == 0 {
 		return buckets
 	}
 
-	if len(values) <= width {
+	if n <= width {
 		for i := 0; i < width; i++ {
-			idx := int(float64(i) * float64(len(values)) / float64(width))
-			if idx >= len(values) {
-				idx = len(values) - 1
+			idx := int(float64(i) * float64(n) / float64(width))
+			if idx >= n {
+				idx = n - 1
 			}
 			buckets[i] = values[idx]
 		}
 		return buckets
 	}
 
-	chunkSize := float64(len(values)) / float64(width)
+	chunkSize := float64(n) / float64(width)
 	for i := 0; i < width; i++ {
 		start := int(float64(i) * chunkSize)
 		end := int(float64(i+1) * chunkSize)
-		if end > len(values) {
-			end = len(values)
+		if end > n {
+			end = n
 		}
 		if start >= end {
 			start = end - 1
@@ -125,15 +173,21 @@ func resampleValues(values []float64, width int) []float64 {
 }
 
 // RenderWaveform generates a multi-line 2D ASCII/Unicode waveform chart of bandwidth over time.
+// If width or height is <= 0, it dynamically sizes the chart to fill the user's terminal window.
 func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width int, height int, colorEnabled bool) string {
 	if len(samples) == 0 {
 		return ""
 	}
-	if width <= 0 {
-		width = 50
-	}
-	if height <= 0 {
-		height = 6
+
+	// Auto-detect responsive terminal dimensions if not explicitly provided
+	if width <= 0 || height <= 0 {
+		autoW, autoH := CalculateChartDimensions(0, 0)
+		if width <= 0 {
+			width = autoW
+		}
+		if height <= 0 {
+			height = autoH
+		}
 	}
 
 	var validBps []float64
@@ -159,7 +213,16 @@ func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width i
 	}
 
 	yMax := peakBps * 1.05
-	rowHeight := yMax / float64(height)
+	colUnits := make([]int, width)
+	for i, v := range cols {
+		frac := v / yMax
+		if frac < 0 {
+			frac = 0
+		} else if frac > 1 {
+			frac = 1
+		}
+		colUnits[i] = int(math.Round(frac * float64(height*8)))
+	}
 
 	yAxisWidth := 11
 	var sb strings.Builder
@@ -171,13 +234,13 @@ func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width i
 	// Calculate which row is closest to avgBps
 	avgRow := -1
 	if avgBps > 0 && avgBps <= yMax {
-		avgRow = int(avgBps / rowHeight)
+		avgRow = int(avgBps / (yMax / float64(height)))
 		if avgRow >= height {
 			avgRow = height - 1
 		}
 	}
 
-	// Render from top row down to bottom row
+	// Pre-generate row lines from top to bottom
 	for r := height - 1; r >= 0; r-- {
 		// Y-axis label
 		var yLabel string
@@ -186,38 +249,35 @@ func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width i
 			yLabel = fmt.Sprintf("%*s | ", yAxisWidth, FormatBitrate(peakBps))
 		case r == avgRow:
 			yLabel = fmt.Sprintf("%*s | ", yAxisWidth, FormatBitrate(avgBps))
+		case height >= 8 && r == height/2 && math.Abs(float64(avgRow-height/2)) >= 2:
+			yLabel = fmt.Sprintf("%*s | ", yAxisWidth, FormatBitrate(yMax*0.5))
 		default:
 			yLabel = fmt.Sprintf("%*s | ", yAxisWidth, "")
 		}
 		sb.WriteString(yLabel)
 
-		// Render columns in this row
-		rowLower := float64(r) * rowHeight
-		rowUpper := float64(r+1) * rowHeight
-
+		// Render columns in row r
 		var rowChars strings.Builder
 		for c := 0; c < width; c++ {
-			val := cols[c]
-			switch {
-			case val >= rowUpper:
+			units := colUnits[c]
+			fullRows := units / 8
+			remainder := units % 8
+
+			if r < fullRows {
 				rowChars.WriteRune('█')
-			case val <= rowLower:
-				rowChars.WriteRune(' ')
-			default:
-				frac := (val - rowLower) / rowHeight
-				level := int(math.Round(frac * 7.0))
-				if level < 0 {
-					level = 0
-				} else if level > 7 {
-					level = 7
+			} else if r == fullRows {
+				if remainder > 0 {
+					rowChars.WriteRune(sparklineBlocks[remainder-1])
+				} else {
+					rowChars.WriteRune(' ')
 				}
-				rowChars.WriteRune(sparklineBlocks[level])
+			} else {
+				rowChars.WriteRune(' ')
 			}
 		}
 
 		lineStr := rowChars.String()
 		if colorEnabled {
-			// Apply colored highlight to non-space characters
 			lineStr = colorizeWaveformLine(lineStr, r, avgRow)
 		}
 		sb.WriteString(lineStr)
@@ -235,51 +295,54 @@ func RenderWaveform(title string, samples []SpeedSample, avgBps float64, width i
 	// Baseline axis
 	sb.WriteString(fmt.Sprintf("%*s +%s\n", yAxisWidth, FormatBitrate(0), strings.Repeat("-", width)))
 
-	// X-axis time labels
-	startSec := "0.0s"
-	endSec := "0.0s"
+	// X-axis time labels distributed across the full width
 	totalElapsedMs := samples[len(samples)-1].ElapsedMs
-	if totalElapsedMs > 0 {
-		endSec = fmt.Sprintf("%.1fs", float64(totalElapsedMs)/1000.0)
+	totalSec := float64(totalElapsedMs) / 1000.0
+	if totalSec <= 0 {
+		totalSec = 1.0
 	}
 
-	midSec := ""
-	if totalElapsedMs > 1000 {
-		midSec = fmt.Sprintf("%.1fs", float64(totalElapsedMs)/2000.0)
+	tickLine := make([]rune, width)
+	for i := range tickLine {
+		tickLine[i] = ' '
 	}
 
-	// Format bottom time line with padding
+	timeFractions := []float64{0.0, 0.25, 0.5, 0.75, 1.0}
+	if width < 40 {
+		timeFractions = []float64{0.0, 0.5, 1.0}
+	}
+
+	for _, frac := range timeFractions {
+		timeVal := totalSec * frac
+		var label string
+		if totalSec >= 10 {
+			label = fmt.Sprintf("%.0fs", timeVal)
+		} else {
+			label = fmt.Sprintf("%.1fs", timeVal)
+		}
+
+		pos := int(math.Round(frac * float64(width-1)))
+		if pos+len(label) > width {
+			pos = width - len(label)
+		}
+		if pos < 0 {
+			pos = 0
+		}
+
+		for j, ch := range label {
+			if pos+j < width {
+				tickLine[pos+j] = ch
+			}
+		}
+	}
+
 	prefix := strings.Repeat(" ", yAxisWidth+3)
-	if midSec != "" && width >= 30 {
-		leftGap := (width / 2) - len(startSec) - len(midSec)/2
-		if leftGap < 1 {
-			leftGap = 1
-		}
-		rightGap := width - len(startSec) - leftGap - len(midSec) - len(endSec)
-		if rightGap < 1 {
-			rightGap = 1
-		}
-		sb.WriteString(fmt.Sprintf("%s%s%s%s%s%s\n",
-			prefix,
-			startSec,
-			strings.Repeat(" ", leftGap),
-			midSec,
-			strings.Repeat(" ", rightGap),
-			endSec,
-		))
-	} else {
-		gap := width - len(startSec) - len(endSec)
-		if gap < 1 {
-			gap = 1
-		}
-		sb.WriteString(fmt.Sprintf("%s%s%s%s\n", prefix, startSec, strings.Repeat(" ", gap), endSec))
-	}
+	sb.WriteString(fmt.Sprintf("%s%s\n", prefix, string(tickLine)))
 
 	return sb.String()
 }
 
 func colorizeWaveformLine(line string, row int, avgRow int) string {
-	// Colorize blocks while keeping spaces uncolored
 	var sb strings.Builder
 	inColor := false
 	currentColor := ""

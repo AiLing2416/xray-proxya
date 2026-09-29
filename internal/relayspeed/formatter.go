@@ -178,14 +178,15 @@ func RenderSingleCardWithChart(r *SpeedResult, showChart bool, colorEnabled bool
 	}
 
 	if showChart && r != nil {
+		chartW, chartH := CalculateChartDimensions(0, 0)
 		if r.Download != nil && len(r.Download.Samples) > 0 {
-			wf := RenderWaveform("Download Speed Waveform", r.Download.Samples, r.Download.AvgSpeedBps, 50, 6, colorEnabled)
+			wf := RenderWaveform("Download Speed Waveform", r.Download.Samples, r.Download.AvgSpeedBps, chartW, chartH, colorEnabled)
 			if wf != "" {
 				sb.WriteString("\n" + wf)
 			}
 		}
 		if r.Upload != nil && len(r.Upload.Samples) > 0 {
-			wf := RenderWaveform("Upload Speed Waveform", r.Upload.Samples, r.Upload.AvgSpeedBps, 50, 6, colorEnabled)
+			wf := RenderWaveform("Upload Speed Waveform", r.Upload.Samples, r.Upload.AvgSpeedBps, chartW, chartH, colorEnabled)
 			if wf != "" {
 				sb.WriteString("\n" + wf)
 			}
