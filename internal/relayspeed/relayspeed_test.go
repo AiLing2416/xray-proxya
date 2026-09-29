@@ -1452,8 +1452,11 @@ func TestRenderWaveform(t *testing.T) {
 	if !strings.Contains(wfNoColor, "Download Speed Waveform:") {
 		t.Errorf("expected title in waveform, got:\n%s", wfNoColor)
 	}
-	if !strings.Contains(wfNoColor, "(Avg)") {
-		t.Errorf("expected (Avg) indicator in waveform, got:\n%s", wfNoColor)
+	if !strings.Contains(wfNoColor, "70.00 Mbps") {
+		t.Errorf("expected average speed label on Y-axis in waveform, got:\n%s", wfNoColor)
+	}
+	if strings.Contains(wfNoColor, "(Avg)") {
+		t.Errorf("expected (Avg) suffix to be removed from waveform, got:\n%s", wfNoColor)
 	}
 	if !strings.Contains(wfNoColor, "0.0s") || !strings.Contains(wfNoColor, "2.0s") {
 		t.Errorf("expected time axis markers 0.0s and 2.0s, got:\n%s", wfNoColor)
@@ -1509,8 +1512,8 @@ func TestRenderTableWithChart(t *testing.T) {
 func TestCalculateChartDimensions(t *testing.T) {
 	// Standard 80x24 terminal
 	cols80, h24 := CalculateChartDimensions(80, 24)
-	if cols80 != 57 { // 80 - 23 = 57 (prefix 14 + suffix 7 + safety margin 2)
-		t.Errorf("expected 57 cols for 80-wide terminal, got %d", cols80)
+	if cols80 != 64 { // 80 - 16 = 64 (label 11 + sep 3 + margin 2)
+		t.Errorf("expected 64 cols for 80-wide terminal, got %d", cols80)
 	}
 	if h24 != 10 { // 24 - 14 = 10
 		t.Errorf("expected 10 rows for 24-high terminal, got %d", h24)
@@ -1518,8 +1521,8 @@ func TestCalculateChartDimensions(t *testing.T) {
 
 	// Wide 140x40 terminal
 	cols140, h40 := CalculateChartDimensions(140, 40)
-	if cols140 != 117 { // 140 - 23 = 117
-		t.Errorf("expected 117 cols for 140-wide terminal, got %d", cols140)
+	if cols140 != 124 { // 140 - 16 = 124
+		t.Errorf("expected 124 cols for 140-wide terminal, got %d", cols140)
 	}
 	if h40 != 14 { // Clamped to max 14
 		t.Errorf("expected 14 rows for 40-high terminal, got %d", h40)
