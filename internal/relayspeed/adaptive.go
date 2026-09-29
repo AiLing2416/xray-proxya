@@ -410,7 +410,6 @@ func RunAdaptiveBandwidthTest(
 			StepThreads: threads,
 			CurrentBps:  probeBps,
 			BytesDone:   cumulativeBytes,
-			TotalBytes:  MaxAutoTransferBytes,
 		})
 	}
 
@@ -453,16 +452,14 @@ func RunAdaptiveBandwidthTest(
 			if phase == "auto_converged" || now.Sub(lastUpdate) >= 150*time.Millisecond {
 				lastUpdate = now
 				progressCb(ProgressUpdate{
-					Alias:         alias,
-					Phase:         phase,
-					Direction:     dir,
-					StepThreads:   threads,
-					BytesDone:     cumulativeBytes + u.BytesDone,
-					TotalBytes:    MaxAutoTransferBytes,
-					TotalDuration: MaxAutoDuration,
-					CurrentBps:    u.CurrentBps,
-					Elapsed:       time.Since(startTime),
-					StepGain:      stability,
+					Alias:       alias,
+					Phase:       phase,
+					Direction:   dir,
+					StepThreads: threads,
+					BytesDone:   cumulativeBytes + u.BytesDone,
+					CurrentBps:  u.CurrentBps,
+					Elapsed:     time.Since(startTime),
+					StepGain:    stability,
 				})
 			}
 		}
@@ -499,15 +496,13 @@ func RunAdaptiveBandwidthTest(
 
 	if progressCb != nil {
 		progressCb(ProgressUpdate{
-			Alias:         alias,
-			Phase:         "auto_converged",
-			Direction:     dir,
-			StepThreads:   threads,
-			CurrentBps:    metrics.AvgSpeedBps,
-			BytesDone:     cumulativeBytes,
-			TotalBytes:    MaxAutoTransferBytes,
-			TotalDuration: MaxAutoDuration,
-			Elapsed:       time.Since(startTime),
+			Alias:       alias,
+			Phase:       "auto_converged",
+			Direction:   dir,
+			StepThreads: threads,
+			CurrentBps:  metrics.AvgSpeedBps,
+			BytesDone:   cumulativeBytes,
+			Elapsed:     time.Since(startTime),
 		})
 	}
 

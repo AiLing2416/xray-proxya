@@ -914,12 +914,11 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 		Direction:   DirectionDownload,
 		StepThreads: 4,
 		BytesDone:   58200000,
-		TotalBytes:  240000000,
 		CurrentBps:  142500000,
 		StepGain:    96,
 	}
 	line = r.formatCurrentLine("⠴")
-	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): [████░░░░░░░░░░░░░░]  24%  58.20 MB / 240.00 MB | 142.50 Mbps (stability: 96%)") {
+	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): 58.20 MB | 142.50 Mbps (stability: 96%)") {
 		t.Errorf("unexpected auto_sustaining line: %s", line)
 	}
 
@@ -946,12 +945,11 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 		Direction:   DirectionUpload,
 		StepThreads: 2,
 		BytesDone:   18500000,
-		TotalBytes:  240000000,
 		CurrentBps:  32100000,
 		StepGain:    94,
 	}
 	line = r.formatCurrentLine("⠸")
-	if !strings.Contains(line, "⠸ [hk-01] Upload (2 streams): [█░░░░░░░░░░░░░░░░░]   7%  18.50 MB / 240.00 MB | 32.10 Mbps (stability: 94%)") {
+	if !strings.Contains(line, "⠸ [hk-01] Upload (2 streams): 18.50 MB | 32.10 Mbps (stability: 94%)") {
 		t.Errorf("unexpected upload line: %s", line)
 	}
 
@@ -991,20 +989,33 @@ func TestProgressRenderer_FormatCurrentLine(t *testing.T) {
 		t.Errorf("unexpected time-based download line: %s", line)
 	}
 
-	// 9. auto_sustaining with TotalDuration > 0
+	// 9. auto_sustaining with elapsed
 	r.lastUpdate = ProgressUpdate{
-		Phase:         "auto_sustaining",
-		Direction:     DirectionDownload,
-		StepThreads:   4,
-		BytesDone:     58200000,
-		TotalDuration: 10 * time.Second,
-		Elapsed:       6000 * time.Millisecond,
-		CurrentBps:    142500000,
-		StepGain:      96,
+		Phase:       "auto_sustaining",
+		Direction:   DirectionDownload,
+		StepThreads: 4,
+		BytesDone:   58200000,
+		Elapsed:     6000 * time.Millisecond,
+		CurrentBps:  142500000,
+		StepGain:    96,
 	}
 	line = r.formatCurrentLine("⠴")
-	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): [███████████░░░░░░░]  60%  6.0s / 10s (58.20 MB) | 142.50 Mbps (stability: 96%)") {
+	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): 6.0s (58.20 MB) | 142.50 Mbps (stability: 96%)") {
 		t.Errorf("unexpected time-based auto_sustaining line: %s", line)
+	}
+
+	// 10. auto_converged with elapsed
+	r.lastUpdate = ProgressUpdate{
+		Phase:       "auto_converged",
+		Direction:   DirectionDownload,
+		StepThreads: 4,
+		BytesDone:   65400000,
+		Elapsed:     3600 * time.Millisecond,
+		CurrentBps:  145000000,
+	}
+	line = r.formatCurrentLine("⠴")
+	if !strings.Contains(line, "⠴ [hk-01] Download (4 streams): 3.6s (65.40 MB) | 145.00 Mbps (converged)") {
+		t.Errorf("unexpected auto_converged line: %s", line)
 	}
 }
 

@@ -246,31 +246,15 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		}
 		bpsStr := FormatBitrate(displayBps)
 
-		if u.TotalDuration > 0 {
-			bar, pctInt := renderProgressBar(u.Elapsed.Milliseconds(), u.TotalDuration.Milliseconds(), 18)
-			totSecStr := fmt.Sprintf("%.0fs", u.TotalDuration.Seconds())
-			if u.TotalDuration%time.Second != 0 {
-				totSecStr = fmt.Sprintf("%.1fs", u.TotalDuration.Seconds())
-			}
-			elapsedSec := u.Elapsed.Seconds()
-			if elapsedSec > u.TotalDuration.Seconds() {
-				elapsedSec = u.TotalDuration.Seconds()
-			}
-			timeStr := fmt.Sprintf("%.1fs / %s", elapsedSec, totSecStr)
-			doneStr := FormatDecimalBytes(u.BytesDone)
-			return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s (%s) | %s (stability: %.0f%%)",
-				frame, alias, label, bar, pctInt, timeStr, doneStr, bpsStr, u.StepGain)
-		}
-
-		totalBytes := u.TotalBytes
-		if totalBytes <= 0 {
-			totalBytes = MaxAutoTransferBytes
-		}
-		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
-		totalStr := FormatDecimalBytes(totalBytes)
-		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (stability: %.0f%%)",
-			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr, u.StepGain)
+		var progressText string
+		if u.Elapsed > 0 {
+			progressText = fmt.Sprintf("%.1fs (%s)", u.Elapsed.Seconds(), doneStr)
+		} else {
+			progressText = doneStr
+		}
+		return fmt.Sprintf("%s [%s] %s %s | %s (stability: %.0f%%)",
+			frame, alias, label, progressText, bpsStr, u.StepGain)
 
 	case "auto_converged":
 		dirLabel := "Download"
@@ -287,31 +271,15 @@ func (r *ProgressRenderer) formatCurrentLine(frame string) string {
 		}
 		bpsStr := FormatBitrate(displayBps)
 
-		if u.TotalDuration > 0 {
-			bar, pctInt := renderProgressBar(u.Elapsed.Milliseconds(), u.TotalDuration.Milliseconds(), 18)
-			totSecStr := fmt.Sprintf("%.0fs", u.TotalDuration.Seconds())
-			if u.TotalDuration%time.Second != 0 {
-				totSecStr = fmt.Sprintf("%.1fs", u.TotalDuration.Seconds())
-			}
-			elapsedSec := u.Elapsed.Seconds()
-			if elapsedSec > u.TotalDuration.Seconds() {
-				elapsedSec = u.TotalDuration.Seconds()
-			}
-			timeStr := fmt.Sprintf("%.1fs / %s", elapsedSec, totSecStr)
-			doneStr := FormatDecimalBytes(u.BytesDone)
-			return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s (%s) | %s (converged)",
-				frame, alias, label, bar, pctInt, timeStr, doneStr, bpsStr)
-		}
-
-		totalBytes := u.TotalBytes
-		if totalBytes <= 0 {
-			totalBytes = MaxAutoTransferBytes
-		}
-		bar, pctInt := renderProgressBar(u.BytesDone, totalBytes, 18)
 		doneStr := FormatDecimalBytes(u.BytesDone)
-		totalStr := FormatDecimalBytes(totalBytes)
-		return fmt.Sprintf("%s [%s] %s [%s] %3d%%  %s / %s | %s (converged)",
-			frame, alias, label, bar, pctInt, doneStr, totalStr, bpsStr)
+		var progressText string
+		if u.Elapsed > 0 {
+			progressText = fmt.Sprintf("%.1fs (%s)", u.Elapsed.Seconds(), doneStr)
+		} else {
+			progressText = doneStr
+		}
+		return fmt.Sprintf("%s [%s] %s %s | %s (converged)",
+			frame, alias, label, progressText, bpsStr)
 
 	case "download", "upload":
 		dirLabel := "Download"
