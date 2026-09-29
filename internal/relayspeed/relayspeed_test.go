@@ -1068,8 +1068,8 @@ func TestFastProviderTargetsCachingAndChunkLimit(t *testing.T) {
 	if !ok {
 		t.Fatalf("FastProvider should implement UploadChunkLimitProvider")
 	}
-	if limitProv.MaxUploadChunkSize() != 8*1024*1024 {
-		t.Errorf("MaxUploadChunkSize = %d, want 8MB", limitProv.MaxUploadChunkSize())
+	if limitProv.MaxUploadChunkSize() != 1024*1024 {
+		t.Errorf("MaxUploadChunkSize = %d, want 1MB", limitProv.MaxUploadChunkSize())
 	}
 
 	// 2. Check chunk clamp on upload request
@@ -1077,8 +1077,8 @@ func TestFastProviderTargetsCachingAndChunkLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetUploadRequest error: %v", err)
 	}
-	if req1.ContentLength != 8*1024*1024 {
-		t.Errorf("expected ContentLength 8MB (clamped), got %d", req1.ContentLength)
+	if req1.ContentLength != 1024*1024 {
+		t.Errorf("expected ContentLength 1MB (clamped), got %d", req1.ContentLength)
 	}
 	if req1.URL.String() != "https://cdn1.netflix.test/up" {
 		t.Errorf("expected first target cdn1, got %s", req1.URL.String())

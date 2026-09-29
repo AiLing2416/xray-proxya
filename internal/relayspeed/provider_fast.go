@@ -40,7 +40,7 @@ func (f *FastProvider) SupportsUpload() bool {
 }
 
 func (f *FastProvider) MaxUploadChunkSize() int64 {
-	return 8 * 1024 * 1024 // 8MB optimal balanced chunk size for Netflix Open Connect CDN
+	return 1024 * 1024 // 1MB chunk: delivers high-frequency request completions and continuous waveform across concurrent streams
 }
 
 func (f *FastProvider) GetDownloadRequest(ctx context.Context, client *http.Client, sizeBytes int64) (*http.Request, error) {
@@ -76,8 +76,8 @@ func (f *FastProvider) GetUploadRequest(ctx context.Context, client *http.Client
 		return nil, fmt.Errorf("fast.com get upload target: %w", err)
 	}
 
-	if sizeBytes > 8*1024*1024 {
-		sizeBytes = 8 * 1024 * 1024
+	if sizeBytes <= 0 || sizeBytes > 1024*1024 {
+		sizeBytes = 1024 * 1024
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, body)
