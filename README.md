@@ -210,3 +210,4 @@ xray-proxya path mtu 1.1.1.1
 - `tune`: Apply and rollback temporary kernel tuning profiles for gateway, relay, and server roles.
 - `path`: Configure PathLink and run relay-carried ICMP ping, trace, and MTU probes from a root Gateway shell.
 - `service`: Install and control the managed systemd units (`xray-proxya`, `xray-proxya-pathd`, `xray-proxya-sub@<instance>`).
+- `purge`: Safely delete and purge specified components (`config`, `cert`, `core`, `service`, `bin`, `data`, `cache`, `all`) with preview (`--dry-run`) and interactive confirmation.
