@@ -643,4 +643,63 @@ func TestGuestsCmd_ListAndInfoShowsEndpoint(t *testing.T) {
 	}
 }
 
+func TestGuestsAddCaseNormalizationAndCommands(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_HOME", tmpDir)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		UUID: "test-uuid",
+		Guests: []config.GuestConfig{},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging: %v", err)
+	}
+
+	// 1. Add mixed-case guest "Alice" -> should be normalized to "alice"
+	if err := runGuestsAdd(guestsAddCmd, []string{"Alice"}); err != nil {
+		t.Fatalf("runGuestsAdd(Alice) unexpected error: %v", err)
+	}
+	stgCfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging: %v", err)
+	}
+	if len(stgCfg.Guests) != 1 || stgCfg.Guests[0].Alias != "alice" {
+		t.Fatalf("expected guest alias 'alice', got %+v", stgCfg.Guests)
+	}
+
+	// 2. Duplicate check: attempt to add "ALICE" again -> should fail with already exists
+	if err := runGuestsAdd(guestsAddCmd, []string{"ALICE"}); err == nil {
+		t.Fatalf("expected error when adding duplicate alias 'ALICE', got nil")
+	}
+
+	// 3. Pause using mixed-case "ALICE" -> should succeed via case-insensitive findGuest
+	if err := runGuestsPause(guestsPauseCmd, []string{"ALICE"}); err != nil {
+		t.Fatalf("runGuestsPause(ALICE) unexpected error: %v", err)
+	}
+	stgCfg, _ = config.LoadConfigEx(true)
+	if stgCfg.Guests[0].Enabled {
+		t.Fatalf("expected guest 'alice' to be paused")
+	}
+
+	// 4. Resume using "Alice" -> should succeed
+	if err := runGuestsResume(guestsResumeCmd, []string{"Alice"}); err != nil {
+		t.Fatalf("runGuestsResume(Alice) unexpected error: %v", err)
+	}
+	stgCfg, _ = config.LoadConfigEx(true)
+	if !stgCfg.Guests[0].Enabled {
+		t.Fatalf("expected guest 'alice' to be resumed")
+	}
+
+	// 5. Remove using "ALICE" -> should succeed
+	if err := runGuestsRemove(guestsRemoveCmd, []string{"ALICE"}); err != nil {
+		t.Fatalf("runGuestsRemove(ALICE) unexpected error: %v", err)
+	}
+	stgCfg, _ = config.LoadConfigEx(true)
+	if len(stgCfg.Guests) != 0 {
+		t.Fatalf("expected guest 'alice' to be removed, got: %+v", stgCfg.Guests)
+	}
+}
+
+
 

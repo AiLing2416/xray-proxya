@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"xray-proxya/internal/config"
+)
 
 func TestSummarizeStatsSeparatesDirectRelayAndGuests(t *testing.T) {
 	allStats := map[string]int64{
@@ -58,3 +62,41 @@ func TestSummarizeStatsSeparatesDirectRelayAndGuests(t *testing.T) {
 		t.Fatalf("api inbound should be excluded")
 	}
 }
+
+func TestPrintGuestStatsMatchesSanitizedKeys(t *testing.T) {
+	guests := []config.GuestConfig{
+		{Alias: "Alice", Enabled: true, LimitBytes: 10 * 1024 * 1024 * 1024},
+		{Alias: "user_test", Enabled: true, LimitBytes: -1},
+	}
+	// Xray gRPC stats will have sanitized keys (lowercase, dashes for underscores)
+	guestStats := map[string]int64{
+		"alice":     500 * 1024 * 1024,
+		"user-test": 300 * 1024 * 1024,
+	}
+
+	out := captureStdout(t, func() {
+		printGuestStatsWithDetails(guestStats, guests)
+	})
+
+	// Check that Alice matched 500.00 MiB and has Quota info, and is NOT split into two lines
+	if !strings.Contains(out, "Alice") || !strings.Contains(out, "500.00 MiB") || !strings.Contains(out, "[ON]") {
+		t.Errorf("expected Alice with 500.00 MiB [ON], got:\n%s", out)
+	}
+	// Check user_test matched 300.00 MiB
+	if !strings.Contains(out, "user_test") || !strings.Contains(out, "300.00 MiB") {
+		t.Errorf("expected user_test with 300.00 MiB, got:\n%s", out)
+	}
+
+	// Verify there is no duplicate line for "alice" or "user-test" printed as unknown
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	itemCount := 0
+	for _, l := range lines {
+		if strings.Contains(l, " - ") {
+			itemCount++
+		}
+	}
+	if itemCount != 2 {
+		t.Errorf("expected exactly 2 guest lines, got %d:\n%s", itemCount, out)
+	}
+}
+

@@ -244,7 +244,7 @@ func TestShowCmd_GuestAndRelayAtomicHeaders(t *testing.T) {
 			},
 		},
 		Guests: []config.GuestConfig{
-			{Alias: "Tom", UUID: "uuid-tom", Enabled: true},
+			{Alias: "tom", UUID: "uuid-tom", Enabled: true},
 		},
 		CustomOutbounds: []config.CustomOutbound{
 			{Alias: "exti-1", Enabled: true, UserUUID: "uuid-relay", Config: map[string]interface{}{"protocol": "freedom"}},
@@ -278,8 +278,8 @@ func TestShowCmd_GuestAndRelayAtomicHeaders(t *testing.T) {
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
 	guestOut := buf.String()
-	if !strings.Contains(guestOut, "Sharing Links for Guest Tom, Using IP 87.229.95.124") {
-		t.Errorf("expected Guest Tom header, got: %s", guestOut)
+	if !strings.Contains(guestOut, "Sharing Links for Guest tom, Using IP 87.229.95.124") {
+		t.Errorf("expected Guest tom header, got: %s", guestOut)
 	}
 
 	// Test Relay

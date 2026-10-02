@@ -227,32 +227,33 @@ func printGuestStatsWithDetails(guestStats map[string]int64, guests []config.Gue
 	fmt.Println("\n   👥 Guest Usage:")
 	guestMap := make(map[string]config.GuestConfig)
 	for _, g := range guests {
-		guestMap[g.Alias] = g
+		guestMap[config.SanitizeGuestAlias(g.Alias)] = g
 	}
 
 	seen := make(map[string]bool)
-	var allAliases []string
-	for alias := range guestStats {
-		if !seen[alias] {
-			seen[alias] = true
-			allAliases = append(allAliases, alias)
+	var allKeys []string
+	for key := range guestStats {
+		if !seen[key] {
+			seen[key] = true
+			allKeys = append(allKeys, key)
 		}
 	}
 	for _, g := range guests {
-		if !seen[g.Alias] {
-			seen[g.Alias] = true
-			allAliases = append(allAliases, g.Alias)
+		key := config.SanitizeGuestAlias(g.Alias)
+		if !seen[key] {
+			seen[key] = true
+			allKeys = append(allKeys, key)
 		}
 	}
-	sort.Strings(allAliases)
+	sort.Strings(allKeys)
 
-	for _, alias := range allAliases {
-		trafficBytes := guestStats[alias]
-		if g, ok := guestMap[alias]; ok {
+	for _, key := range allKeys {
+		trafficBytes := guestStats[key]
+		if g, ok := guestMap[key]; ok {
 			v := quota.BuildGuestView(g, time.Now())
-			fmt.Printf("      - %-15s: %s (Quota: %s) [%s]\n", alias, utils.FormatBytes(trafficBytes), v.QuotaFormatted, v.StateLabel)
+			fmt.Printf("      - %-15s: %s (Quota: %s) [%s]\n", g.Alias, utils.FormatBytes(trafficBytes), v.QuotaFormatted, v.StateLabel)
 		} else {
-			fmt.Printf("      - %-15s: %s\n", alias, utils.FormatBytes(trafficBytes))
+			fmt.Printf("      - %-15s: %s\n", key, utils.FormatBytes(trafficBytes))
 		}
 	}
 }
@@ -337,7 +338,7 @@ func outputStatusJSON(cfg *config.UserConfig, isRoot bool) error {
 		guestTrafficMap := make(map[string]GuestTrafficJSON)
 		now := time.Now()
 		for _, g := range cfg.Guests {
-			used := summary.GuestStats[g.Alias]
+			used := summary.GuestStats[config.SanitizeGuestAlias(g.Alias)]
 			view := quota.BuildGuestView(g, now)
 			guestTrafficMap[g.Alias] = GuestTrafficJSON{
 				UsedBytes:  used,

@@ -494,7 +494,7 @@ func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR b
 	if guestFilter != "" {
 		var target *config.GuestConfig
 		for _, g := range cfg.Guests {
-			if g.Alias == guestFilter {
+			if strings.EqualFold(g.Alias, guestFilter) {
 				target = &g
 				break
 			}
@@ -714,7 +714,7 @@ var subShowCmd = &cobra.Command{
 		if subShowGuest != "" {
 			var target *config.GuestConfig
 			for _, g := range cfg.Guests {
-				if g.Alias == subShowGuest {
+				if strings.EqualFold(g.Alias, subShowGuest) {
 					target = &g
 					break
 				}

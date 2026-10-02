@@ -435,6 +435,50 @@ func ClampResetDay(resetDay int, year int, month time.Month, location *time.Loca
 	return resetDay
 }
 
+// SanitizeGuestAlias normalizes a guest alias to lowercase alphanumeric and hyphens.
+// This matches the transformation applied when generating Xray configuration tags and emails.
+func SanitizeGuestAlias(alias string) string {
+	var b strings.Builder
+	for _, r := range alias {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r + ('a' - 'A'))
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '-', r == '_', r == '.':
+			b.WriteRune('-')
+		default:
+			b.WriteRune('-')
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" {
+		return "default"
+	}
+	return out
+}
+
+// CleanGuestAlias validates and cleans a guest alias input:
+// - Trims leading/trailing whitespace
+// - Normalizes to lowercase
+// - Enforces length between 3 and 20 characters
+// - Enforces allowed character set: lowercase alphanumeric, underscore, and hyphen.
+func CleanGuestAlias(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if len(trimmed) < 3 || len(trimmed) > 20 {
+		return "", fmt.Errorf("guest alias must be between 3 and 20 characters")
+	}
+	alias := strings.ToLower(trimmed)
+	for _, r := range alias {
+		if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
+			return "", fmt.Errorf("invalid guest alias %q: only alphanumeric, underscore, and hyphen allowed", raw)
+		}
+	}
+	return alias, nil
+}
+
 type GatewayConfig struct {
 	LocalEnabled    bool     `json:"local_enabled"`
 	LANEnabled      bool     `json:"lan_enabled"`
@@ -939,6 +983,11 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 
 	for i := range cfg.Guests {
 		guest := &cfg.Guests[i]
+		cleanAlias := strings.ToLower(strings.TrimSpace(guest.Alias))
+		if cleanAlias != "" && cleanAlias != guest.Alias {
+			changes = append(changes, fmt.Sprintf("normalized guest alias %q to lowercase %q", guest.Alias, cleanAlias))
+			guest.Alias = cleanAlias
+		}
 		if guest.UUID == "" {
 			guest.UUID = randomHexString(32)
 			changes = append(changes, "generated missing UUID for guest "+guest.Alias)

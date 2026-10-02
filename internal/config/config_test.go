@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -471,6 +472,70 @@ func TestBackfillDefaultsEndpointsAndGateURL(t *testing.T) {
 	}
 	if ep2.Type != EndpointTypeAuto || ep2.Family != "v4" {
 		t.Errorf("ep2 = %+v, want auto(v4)", ep2)
+	}
+}
+
+func TestGuestAliasCleaningAndSanitization(t *testing.T) {
+	cases := []struct {
+		input       string
+		wantClean   string
+		wantSan     string
+		expectError bool
+	}{
+		{"  Alice  ", "alice", "alice", false},
+		{"Bob-01", "bob-01", "bob-01", false},
+		{"Guest_User", "guest_user", "guest-user", false},
+		{"x", "", "x", true},
+		{"toolongguestnameovertwenty", "", "toolongguestnameovertwenty", true},
+		{"invalid@guest", "", "invalid-guest", true},
+	}
+
+	for _, tc := range cases {
+		clean, err := CleanGuestAlias(tc.input)
+		if tc.expectError {
+			if err == nil {
+				t.Errorf("CleanGuestAlias(%q) expected error, got nil", tc.input)
+			}
+		} else {
+			if err != nil {
+				t.Errorf("CleanGuestAlias(%q) unexpected error: %v", tc.input, err)
+			}
+			if clean != tc.wantClean {
+				t.Errorf("CleanGuestAlias(%q) = %q, want %q", tc.input, clean, tc.wantClean)
+			}
+		}
+
+		san := SanitizeGuestAlias(tc.input)
+		if san != tc.wantSan {
+			t.Errorf("SanitizeGuestAlias(%q) = %q, want %q", tc.input, san, tc.wantSan)
+		}
+	}
+}
+
+func TestBackfillDefaultsNormalizesGuestAlias(t *testing.T) {
+	cfg := &UserConfig{
+		Guests: []GuestConfig{
+			{Alias: "Alice_Upper", Enabled: true},
+			{Alias: "bob-already-clean", Enabled: true},
+		},
+	}
+	changes := cfg.BackfillDefaults()
+	if cfg.Guests[0].Alias != "alice_upper" {
+		t.Errorf("Guest 0 alias = %q, want %q", cfg.Guests[0].Alias, "alice_upper")
+	}
+	if cfg.Guests[1].Alias != "bob-already-clean" {
+		t.Errorf("Guest 1 alias = %q, want %q", cfg.Guests[1].Alias, "bob-already-clean")
+	}
+
+	foundNormalizedChange := false
+	for _, c := range changes {
+		if strings.Contains(c, "normalized guest alias") {
+			foundNormalizedChange = true
+			break
+		}
+	}
+	if !foundNormalizedChange {
+		t.Errorf("expected changes to record normalized guest alias")
 	}
 }
 

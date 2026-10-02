@@ -230,7 +230,7 @@ func generateSubscriptionLinksWithTargets(cfg *config.UserConfig, targetType str
 	case "guest":
 		var targetGuest *config.GuestConfig
 		for _, g := range cfg.Guests {
-			if g.Alias == targetAlias {
+			if strings.EqualFold(g.Alias, targetAlias) {
 				targetGuest = &g
 				break
 			}

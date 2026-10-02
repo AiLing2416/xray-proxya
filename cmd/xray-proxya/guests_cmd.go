@@ -67,8 +67,9 @@ func findGuest(cfg *config.UserConfig, alias string) (int, *config.GuestConfig) 
 	if cfg == nil {
 		return -1, nil
 	}
+	target := strings.ToLower(strings.TrimSpace(alias))
 	for i := range cfg.Guests {
-		if cfg.Guests[i].Alias == alias {
+		if strings.ToLower(cfg.Guests[i].Alias) == target {
 			return i, &cfg.Guests[i]
 		}
 	}
@@ -154,15 +155,13 @@ var guestsListCmd = &cobra.Command{
 }
 
 func runGuestsAdd(cmd *cobra.Command, args []string) error {
-	alias := args[0]
-	// Validate alias: alphanumeric and underscore only, 3-20 chars
-	if len(alias) < 3 || len(alias) > 20 {
-		return fmt.Errorf("❌ Guest alias must be between 3 and 20 characters.")
-	}
-	for _, r := range alias {
-		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-') {
-			return fmt.Errorf("❌ Invalid guest alias: %s (Only alphanumeric, underscore, and hyphen allowed)", alias)
+	rawAlias := args[0]
+	alias, err := config.CleanGuestAlias(rawAlias)
+	if err != nil {
+		if len(strings.TrimSpace(rawAlias)) < 3 || len(strings.TrimSpace(rawAlias)) > 20 {
+			return fmt.Errorf("❌ Guest alias must be between 3 and 20 characters.")
 		}
+		return fmt.Errorf("❌ Invalid guest alias: %s (Only alphanumeric, underscore, and hyphen allowed)", rawAlias)
 	}
 
 	cfg, err := config.LoadConfigEx(true)
@@ -170,7 +169,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Failed to load staging config: %v", err)
 	}
 	for _, g := range cfg.Guests {
-		if g.Alias == alias {
+		if strings.EqualFold(g.Alias, alias) || config.SanitizeGuestAlias(g.Alias) == config.SanitizeGuestAlias(alias) {
 			return fmt.Errorf("❌ Guest '%s' already exists.", alias)
 		}
 	}
@@ -238,7 +237,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 		if cmd != nil && cmd.Flags().Changed("relay") {
 			targetRelay = strings.TrimSpace(cmd.Flag("relay").Value.String())
 		}
-		if targetRelay == "direct" {
+		if strings.EqualFold(targetRelay, "direct") {
 			newG.OutboundLink = ""
 			newG.OutboundConf = nil
 		} else {
@@ -340,28 +339,30 @@ var guestsAddCmd = &cobra.Command{
 }
 
 func runGuestsRemove(cmd *cobra.Command, args []string) error {
-	alias := args[0]
+	rawAlias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
 		return fmt.Errorf("❌ Failed to load staging config: %v", err)
 	}
 	var newGuests []config.GuestConfig
 	found := false
+	var removedAlias string
 	for _, g := range cfg.Guests {
-		if g.Alias == alias {
+		if strings.EqualFold(g.Alias, rawAlias) {
 			found = true
+			removedAlias = g.Alias
 			continue
 		}
 		newGuests = append(newGuests, g)
 	}
 	if !found {
-		return fmt.Errorf("❌ Guest '%s' not found.", alias)
+		return fmt.Errorf("❌ Guest '%s' not found.", rawAlias)
 	}
 	cfg.Guests = newGuests
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("❌ Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest '%s' removed from STAGING.\n", alias)
+	fmt.Printf("✅ Guest '%s' removed from STAGING.\n", removedAlias)
 	fmt.Println("🚀 Run 'apply' to commit changes.")
 	return nil
 }
@@ -472,7 +473,7 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 		if targetRelay == "" {
 			targetRelay = strings.TrimSpace(outboundStr)
 		}
-		if targetRelay == "direct" {
+		if strings.EqualFold(targetRelay, "direct") {
 			cfg.Guests[idx].OutboundLink = ""
 			cfg.Guests[idx].OutboundConf = nil
 			fmt.Printf("✅ Relay for '%s' set to direct.\n", alias)

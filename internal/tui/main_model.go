@@ -1606,9 +1606,22 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 
 	case inputAddGuest:
 		if val != "" {
+			cleanVal, err := config.CleanGuestAlias(val)
+			if err != nil {
+				m.inputMode = inputNone
+				m.overrideMsg = ""
+				return m, m.setNotice(fmt.Sprintf("invalid guest alias %q: %v", val, err))
+			}
+			for _, g := range m.staging.Guests {
+				if strings.EqualFold(g.Alias, cleanVal) || config.SanitizeGuestAlias(g.Alias) == config.SanitizeGuestAlias(cleanVal) {
+					m.inputMode = inputNone
+					m.overrideMsg = ""
+					return m, m.setNotice(fmt.Sprintf("guest %q already exists", cleanVal))
+				}
+			}
 			g := config.GuestConfig{
 				UUID:       uuid.New().String(),
-				Alias:      val,
+				Alias:      cleanVal,
 				Enabled:    true,
 				QuotaGB:    -1,
 				LimitBytes: -1,
@@ -1621,7 +1634,7 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 			m.staging.SaveEx(true)
 			m.inputMode = inputNone
 			m.overrideMsg = ""
-			return m, m.setNotice(fmt.Sprintf("added guest %s", val))
+			return m, m.setNotice(fmt.Sprintf("added guest %s", cleanVal))
 		}
 		m.inputMode = inputNone
 

@@ -280,26 +280,7 @@ func shouldResetGuest(guest *config.GuestConfig, now time.Time, monthKey string)
 }
 
 func sanitizeGuestAlias(alias string) string {
-	var b strings.Builder
-	for _, r := range alias {
-		switch {
-		case r >= 'a' && r <= 'z':
-			b.WriteRune(r)
-		case r >= 'A' && r <= 'Z':
-			b.WriteRune(r + ('a' - 'A'))
-		case r >= '0' && r <= '9':
-			b.WriteRune(r)
-		case r == '-', r == '_', r == '.':
-			b.WriteRune('-')
-		default:
-			b.WriteRune('-')
-		}
-	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return "default"
-	}
-	return out
+	return config.SanitizeGuestAlias(alias)
 }
 
 func statePath() string {

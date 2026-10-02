@@ -244,7 +244,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 			if showGuest != "" {
 				var target *config.GuestConfig
 				for _, g := range cfg.Guests {
-					if g.Alias == showGuest {
+					if strings.EqualFold(g.Alias, showGuest) {
 						target = &g
 						break
 					}
