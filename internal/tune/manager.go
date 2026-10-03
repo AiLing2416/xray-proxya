@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+var (
+	readSysctlFn  = ReadSysctl
+	writeSysctlFn = WriteSysctl
+)
+
 type DiffEntry struct {
 	Key       string
 	Current   string
@@ -20,7 +25,7 @@ type DiffEntry struct {
 func DiffProfile(profile Profile) []DiffEntry {
 	out := make([]DiffEntry, 0, len(profile.Settings))
 	for _, setting := range profile.Settings {
-		current, err := ReadSysctl(setting.Key)
+		current, err := readSysctlFn(setting.Key)
 		switch {
 		case err == nil:
 			status := "change"
@@ -55,16 +60,33 @@ func DiffProfile(profile Profile) []DiffEntry {
 }
 
 func ApplyProfile(profile Profile) (*RuntimeState, error) {
+	existingOldValues := make(map[string]string)
+	var preservedEntries []RuntimeEntry
+	if existingState, err := LoadRuntimeState(); err == nil && existingState != nil {
+		profileKeys := make(map[string]bool, len(profile.Settings))
+		for _, s := range profile.Settings {
+			profileKeys[s.Key] = true
+		}
+		for _, entry := range existingState.Entries {
+			if entry.OldValue != "" {
+				existingOldValues[entry.Key] = entry.OldValue
+			}
+			if !profileKeys[entry.Key] && entry.OldValue != "" {
+				preservedEntries = append(preservedEntries, entry)
+			}
+		}
+	}
+
 	state := &RuntimeState{
 		Profile:   profile.Name,
 		AppliedAt: time.Now(),
-		Entries:   make([]RuntimeEntry, 0, len(profile.Settings)),
+		Entries:   make([]RuntimeEntry, 0, len(profile.Settings)+len(preservedEntries)),
 	}
 	var failures []string
 
 	for _, setting := range profile.Settings {
 		target := normalizeValue(setting.Value)
-		current, err := ReadSysctl(setting.Key)
+		current, err := readSysctlFn(setting.Key)
 		switch {
 		case errors.Is(err, ErrUnsupported):
 			state.Entries = append(state.Entries, RuntimeEntry{
@@ -84,17 +106,26 @@ func ApplyProfile(profile Profile) (*RuntimeState, error) {
 			continue
 		}
 
+		oldVal := current
+		if orig, ok := existingOldValues[setting.Key]; ok && orig != "" {
+			oldVal = orig
+		}
+
 		entry := RuntimeEntry{
 			Key:      setting.Key,
-			OldValue: current,
+			OldValue: oldVal,
 			NewValue: target,
 		}
 		if current == target {
-			entry.Status = "ok"
+			if oldVal == target {
+				entry.Status = "ok"
+			} else {
+				entry.Status = "applied"
+			}
 			state.Entries = append(state.Entries, entry)
 			continue
 		}
-		if err := WriteSysctl(setting.Key, target); err != nil {
+		if err := writeSysctlFn(setting.Key, target); err != nil {
 			if errors.Is(err, ErrUnsupported) {
 				entry.Status = "unsupported"
 			} else {
@@ -108,6 +139,8 @@ func ApplyProfile(profile Profile) (*RuntimeState, error) {
 		entry.Status = "applied"
 		state.Entries = append(state.Entries, entry)
 	}
+
+	state.Entries = append(state.Entries, preservedEntries...)
 
 	if err := SaveRuntimeState(state); err != nil {
 		return state, err
@@ -144,7 +177,7 @@ func RollbackRuntimeState(state *RuntimeState) ([]RuntimeEntry, error) {
 				result.Error = "missing previous value"
 				break
 			}
-			current, err := ReadSysctl(entry.Key)
+			current, err := readSysctlFn(entry.Key)
 			if err != nil {
 				if errors.Is(err, ErrUnsupported) {
 					result.Status = "unsupported"
@@ -159,7 +192,7 @@ func RollbackRuntimeState(state *RuntimeState) ([]RuntimeEntry, error) {
 				result.Status = "ok"
 				break
 			}
-			if err := WriteSysctl(entry.Key, entry.OldValue); err != nil {
+			if err := writeSysctlFn(entry.Key, entry.OldValue); err != nil {
 				if errors.Is(err, ErrUnsupported) {
 					result.Status = "unsupported"
 				} else {
@@ -205,7 +238,7 @@ func ShowDataForKeys() ShowData {
 	}
 	values := make([]DiffEntry, 0, len(keys))
 	for _, key := range keys {
-		current, err := ReadSysctl(key)
+		current, err := readSysctlFn(key)
 		switch {
 		case err == nil:
 			values = append(values, DiffEntry{Key: key, Current: current, Status: "ok", Supported: true})
