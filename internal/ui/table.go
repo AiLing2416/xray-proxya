@@ -40,22 +40,27 @@ type tableRow struct {
 
 // Table renders tabular data with ANSI-safe width calculation and configurable borders.
 type Table struct {
-	headers    []string
-	alignments []Alignment
-	rows       []tableRow
-	style      TableStyle
+	headers      []string
+	alignments   []Alignment
+	colMaxWidths []int
+	autoWrap     bool
+	rows         []tableRow
+	style        TableStyle
 }
 
 // NewTable initializes a new table with the provided column headers.
 func NewTable(headers ...string) *Table {
 	aligns := make([]Alignment, len(headers))
+	maxWidths := make([]int, len(headers))
 	for i := range aligns {
 		aligns[i] = AlignLeft
 	}
 	return &Table{
-		headers:    headers,
-		alignments: aligns,
-		style:      StyleMinimalist,
+		headers:      headers,
+		alignments:   aligns,
+		colMaxWidths: maxWidths,
+		autoWrap:     true,
+		style:        StyleMinimalist,
 	}
 }
 
@@ -80,6 +85,20 @@ func (t *Table) SetAlignments(aligns ...Alignment) *Table {
 			t.alignments[i] = a
 		}
 	}
+	return t
+}
+
+// SetMaxWidth sets the maximum visual width for a specific column index, wrapping overflowing text.
+func (t *Table) SetMaxWidth(colIdx int, width int) *Table {
+	if colIdx >= 0 && colIdx < len(t.colMaxWidths) {
+		t.colMaxWidths[colIdx] = width
+	}
+	return t
+}
+
+// SetAutoWrap controls whether the table automatically constrains columns to the terminal width.
+func (t *Table) SetAutoWrap(autoWrap bool) *Table {
+	t.autoWrap = autoWrap
 	return t
 }
 
@@ -123,20 +142,95 @@ func (t *Table) Render() string {
 		if r.kind == rowNormal {
 			for i, c := range r.cells {
 				if i < numCols {
-					w := VisualWidth(c)
-					if w > colWidths[i] {
-						colWidths[i] = w
+					for _, line := range strings.Split(c, "\n") {
+						w := VisualWidth(line)
+						if w > colWidths[i] {
+							colWidths[i] = w
+						}
 					}
 				}
 			}
 		} else if r.kind == rowSpanned {
 			for i, c := range r.cells {
 				if i < numCols {
-					w := VisualWidth(c)
-					if w > colWidths[i] {
-						colWidths[i] = w
+					for _, line := range strings.Split(c, "\n") {
+						w := VisualWidth(line)
+						if w > colWidths[i] {
+							colWidths[i] = w
+						}
 					}
 				}
+			}
+			leadCount := len(r.cells)
+			if leadCount < numCols {
+				currentRem := 0
+				for i := leadCount; i < numCols; i++ {
+					currentRem += colWidths[i]
+				}
+				currentRem += 3 * (numCols - leadCount - 1)
+
+				maxSpannedLine := 0
+				for _, line := range strings.Split(r.spannedText, "\n") {
+					vw := VisualWidth(line)
+					if vw > maxSpannedLine {
+						maxSpannedLine = vw
+					}
+				}
+
+				if maxSpannedLine > currentRem {
+					diff := maxSpannedLine - currentRem
+					colWidths[numCols-1] += diff
+				}
+			}
+		}
+	}
+
+	// 2. Apply explicit column max widths if configured
+	for i := 0; i < numCols; i++ {
+		if t.colMaxWidths[i] > 0 && colWidths[i] > t.colMaxWidths[i] {
+			hw := VisualWidth(t.headers[i])
+			if t.colMaxWidths[i] >= hw {
+				colWidths[i] = t.colMaxWidths[i]
+			} else {
+				colWidths[i] = hw
+			}
+		}
+	}
+
+	// 3. Auto-constrain to terminal width if enabled
+	if t.autoWrap {
+		termWidth := TerminalWidth()
+		if termWidth > 0 {
+			overhead := 3*(numCols-1) + 2
+			if t.style == StyleRounded {
+				overhead = 3*(numCols-1) + 4
+			} else if t.style == StylePlain {
+				overhead = 3 * (numCols - 1)
+			}
+
+			totalWidth := overhead
+			for _, w := range colWidths {
+				totalWidth += w
+			}
+
+			excess := totalWidth - termWidth
+			for excess > 0 {
+				bestCol := -1
+				bestHeadroom := 0
+				for i := 0; i < numCols; i++ {
+					headroom := colWidths[i] - VisualWidth(t.headers[i])
+					if headroom > bestHeadroom {
+						bestHeadroom = headroom
+						bestCol = i
+					}
+				}
+
+				if bestCol == -1 || bestHeadroom <= 0 {
+					break
+				}
+
+				colWidths[bestCol]--
+				excess--
 			}
 		}
 	}
@@ -178,25 +272,33 @@ func (t *Table) renderMinimalist(sb *strings.Builder, colWidths []int) {
 	// Data rows
 	for _, r := range t.rows {
 		if r.kind == rowNormal {
-			var rParts []string
+			linesPerCol := make([][]string, numCols)
+			maxLines := 1
 			for i := 0; i < numCols; i++ {
 				var cell string
 				if i < len(r.cells) {
 					cell = r.cells[i]
 				}
-				align := t.alignments[i]
-				rParts = append(rParts, padCell(cell, colWidths[i], align))
-			}
-			sb.WriteString(" " + strings.Join(rParts, " │ ") + " \n")
-		} else if r.kind == rowSpanned {
-			var rParts []string
-			leadCount := len(r.cells)
-			for i := 0; i < leadCount && i < numCols; i++ {
-				align := t.alignments[i]
-				rParts = append(rParts, padCell(r.cells[i], colWidths[i], align))
+				lines := WrapVisual(cell, colWidths[i])
+				linesPerCol[i] = lines
+				if len(lines) > maxLines {
+					maxLines = len(lines)
+				}
 			}
 
-			// Calculate remaining width
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var rParts []string
+				for i := 0; i < numCols; i++ {
+					cellLine := ""
+					if lineIdx < len(linesPerCol[i]) {
+						cellLine = linesPerCol[i][lineIdx]
+					}
+					rParts = append(rParts, padCell(cellLine, colWidths[i], t.alignments[i]))
+				}
+				sb.WriteString(" " + strings.Join(rParts, " │ ") + " \n")
+			}
+		} else if r.kind == rowSpanned {
+			leadCount := len(r.cells)
 			remWidth := 0
 			for i := leadCount; i < numCols; i++ {
 				remWidth += colWidths[i] + 2 // +2 padding per col
@@ -206,9 +308,37 @@ func (t *Table) renderMinimalist(sb *strings.Builder, colWidths []int) {
 				remWidth -= 2                             // account for outer padding
 			}
 
-			spannedPadded := padCell(r.spannedText, remWidth, AlignLeft)
-			rParts = append(rParts, spannedPadded)
-			sb.WriteString(" " + strings.Join(rParts, " │ ") + " \n")
+			linesPerCol := make([][]string, leadCount)
+			maxLines := 1
+			for i := 0; i < leadCount && i < numCols; i++ {
+				lines := WrapVisual(r.cells[i], colWidths[i])
+				linesPerCol[i] = lines
+				if len(lines) > maxLines {
+					maxLines = len(lines)
+				}
+			}
+
+			spannedLines := WrapVisual(r.spannedText, remWidth)
+			if len(spannedLines) > maxLines {
+				maxLines = len(spannedLines)
+			}
+
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var rParts []string
+				for i := 0; i < leadCount && i < numCols; i++ {
+					cellLine := ""
+					if lineIdx < len(linesPerCol[i]) {
+						cellLine = linesPerCol[i][lineIdx]
+					}
+					rParts = append(rParts, padCell(cellLine, colWidths[i], t.alignments[i]))
+				}
+				spannedLine := ""
+				if lineIdx < len(spannedLines) {
+					spannedLine = spannedLines[lineIdx]
+				}
+				rParts = append(rParts, padCell(spannedLine, remWidth, AlignLeft))
+				sb.WriteString(" " + strings.Join(rParts, " │ ") + " \n")
+			}
 		}
 	}
 }
@@ -248,24 +378,33 @@ func (t *Table) renderBox(
 	// Data rows
 	for _, r := range t.rows {
 		if r.kind == rowNormal {
-			var rParts []string
+			linesPerCol := make([][]string, numCols)
+			maxLines := 1
 			for i := 0; i < numCols; i++ {
 				var cell string
 				if i < len(r.cells) {
 					cell = r.cells[i]
 				}
-				align := t.alignments[i]
-				rParts = append(rParts, padCell(cell, colWidths[i], align))
-			}
-			sb.WriteString(vLine + " " + strings.Join(rParts, " "+vLine+" ") + " " + vLine + "\n")
-		} else if r.kind == rowSpanned {
-			var rParts []string
-			leadCount := len(r.cells)
-			for i := 0; i < leadCount && i < numCols; i++ {
-				align := t.alignments[i]
-				rParts = append(rParts, padCell(r.cells[i], colWidths[i], align))
+				lines := WrapVisual(cell, colWidths[i])
+				linesPerCol[i] = lines
+				if len(lines) > maxLines {
+					maxLines = len(lines)
+				}
 			}
 
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var rParts []string
+				for i := 0; i < numCols; i++ {
+					cellLine := ""
+					if lineIdx < len(linesPerCol[i]) {
+						cellLine = linesPerCol[i][lineIdx]
+					}
+					rParts = append(rParts, padCell(cellLine, colWidths[i], t.alignments[i]))
+				}
+				sb.WriteString(vLine + " " + strings.Join(rParts, " "+vLine+" ") + " " + vLine + "\n")
+			}
+		} else if r.kind == rowSpanned {
+			leadCount := len(r.cells)
 			remWidth := 0
 			for i := leadCount; i < numCols; i++ {
 				remWidth += colWidths[i] + 2
@@ -275,9 +414,37 @@ func (t *Table) renderBox(
 				remWidth -= 2
 			}
 
-			spannedPadded := padCell(r.spannedText, remWidth, AlignLeft)
-			rParts = append(rParts, spannedPadded)
-			sb.WriteString(vLine + " " + strings.Join(rParts, " "+vLine+" ") + " " + vLine + "\n")
+			linesPerCol := make([][]string, leadCount)
+			maxLines := 1
+			for i := 0; i < leadCount && i < numCols; i++ {
+				lines := WrapVisual(r.cells[i], colWidths[i])
+				linesPerCol[i] = lines
+				if len(lines) > maxLines {
+					maxLines = len(lines)
+				}
+			}
+
+			spannedLines := WrapVisual(r.spannedText, remWidth)
+			if len(spannedLines) > maxLines {
+				maxLines = len(spannedLines)
+			}
+
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var rParts []string
+				for i := 0; i < leadCount && i < numCols; i++ {
+					cellLine := ""
+					if lineIdx < len(linesPerCol[i]) {
+						cellLine = linesPerCol[i][lineIdx]
+					}
+					rParts = append(rParts, padCell(cellLine, colWidths[i], t.alignments[i]))
+				}
+				spannedLine := ""
+				if lineIdx < len(spannedLines) {
+					spannedLine = spannedLines[lineIdx]
+				}
+				rParts = append(rParts, padCell(spannedLine, remWidth, AlignLeft))
+				sb.WriteString(vLine + " " + strings.Join(rParts, " "+vLine+" ") + " " + vLine + "\n")
+			}
 		}
 	}
 
@@ -307,33 +474,70 @@ func (t *Table) renderPlain(sb *strings.Builder, colWidths []int) {
 
 	for _, r := range t.rows {
 		if r.kind == rowNormal {
-			var rParts []string
+			linesPerCol := make([][]string, numCols)
+			maxLines := 1
 			for i := 0; i < numCols; i++ {
 				var cell string
 				if i < len(r.cells) {
 					cell = r.cells[i]
 				}
-				align := t.alignments[i]
-				rParts = append(rParts, padCell(cell, colWidths[i], align))
-			}
-			sb.WriteString(strings.Join(rParts, " | ") + "\n")
-		} else if r.kind == rowSpanned {
-			var rParts []string
-			leadCount := len(r.cells)
-			for i := 0; i < leadCount && i < numCols; i++ {
-				align := t.alignments[i]
-				rParts = append(rParts, padCell(r.cells[i], colWidths[i], align))
+				lines := WrapVisual(cell, colWidths[i])
+				linesPerCol[i] = lines
+				if len(lines) > maxLines {
+					maxLines = len(lines)
+				}
 			}
 
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var rParts []string
+				for i := 0; i < numCols; i++ {
+					cellLine := ""
+					if lineIdx < len(linesPerCol[i]) {
+						cellLine = linesPerCol[i][lineIdx]
+					}
+					rParts = append(rParts, padCell(cellLine, colWidths[i], t.alignments[i]))
+				}
+				sb.WriteString(strings.Join(rParts, " | ") + "\n")
+			}
+		} else if r.kind == rowSpanned {
+			leadCount := len(r.cells)
 			remWidth := 0
 			for i := leadCount; i < numCols; i++ {
 				remWidth += colWidths[i]
 			}
 			remWidth += (numCols - leadCount - 1) * 3
 
-			spannedPadded := padCell(r.spannedText, remWidth, AlignLeft)
-			rParts = append(rParts, spannedPadded)
-			sb.WriteString(strings.Join(rParts, " | ") + "\n")
+			linesPerCol := make([][]string, leadCount)
+			maxLines := 1
+			for i := 0; i < leadCount && i < numCols; i++ {
+				lines := WrapVisual(r.cells[i], colWidths[i])
+				linesPerCol[i] = lines
+				if len(lines) > maxLines {
+					maxLines = len(lines)
+				}
+			}
+
+			spannedLines := WrapVisual(r.spannedText, remWidth)
+			if len(spannedLines) > maxLines {
+				maxLines = len(spannedLines)
+			}
+
+			for lineIdx := 0; lineIdx < maxLines; lineIdx++ {
+				var rParts []string
+				for i := 0; i < leadCount && i < numCols; i++ {
+					cellLine := ""
+					if lineIdx < len(linesPerCol[i]) {
+						cellLine = linesPerCol[i][lineIdx]
+					}
+					rParts = append(rParts, padCell(cellLine, colWidths[i], t.alignments[i]))
+				}
+				spannedLine := ""
+				if lineIdx < len(spannedLines) {
+					spannedLine = spannedLines[lineIdx]
+				}
+				rParts = append(rParts, padCell(spannedLine, remWidth, AlignLeft))
+				sb.WriteString(strings.Join(rParts, " | ") + "\n")
+			}
 		}
 	}
 }

@@ -110,3 +110,97 @@ func TestBannersAndCallout(t *testing.T) {
 	}
 }
 
+func TestWrapVisual(t *testing.T) {
+	// 1. Basic word wrap
+	words := "direct ping to 10.0.82.20 timed out"
+	wrapped := WrapVisual(words, 20)
+	if len(wrapped) != 2 {
+		t.Fatalf("expected 2 lines, got %d: %v", len(wrapped), wrapped)
+	}
+	for _, l := range wrapped {
+		if VisualWidth(l) > 20 {
+			t.Errorf("line %q exceeds visual width 20 (got %d)", l, VisualWidth(l))
+		}
+	}
+
+	// 2. CJK wrapping without spaces
+	cjk := "核心启动失败请检查配置"
+	cjkWrapped := WrapVisual(cjk, 8)
+	if len(cjkWrapped) != 3 {
+		t.Fatalf("expected 3 lines for 12-char wide CJK with width 8, got %d: %v", len(cjkWrapped), cjkWrapped)
+	}
+	for _, l := range cjkWrapped {
+		if VisualWidth(l) > 8 {
+			t.Errorf("cjk line %q exceeds visual width 8 (got %d)", l, VisualWidth(l))
+		}
+	}
+
+	// 3. Very long single word
+	longWord := "http://example.com/a/very/long/path/that/cannot/be/broken/by/spaces"
+	longWrapped := WrapVisual(longWord, 15)
+	if len(longWrapped) < 4 {
+		t.Fatalf("expected at least 4 chunks, got %d", len(longWrapped))
+	}
+	for _, l := range longWrapped {
+		if VisualWidth(l) > 15 {
+			t.Errorf("long word chunk %q exceeds 15 (got %d)", l, VisualWidth(l))
+		}
+	}
+
+	// 4. ANSI color preservation
+	colored := "\033[31mError: connection refused to remote host\033[0m"
+	colWrapped := WrapVisual(colored, 20)
+	if len(colWrapped) != 3 {
+		t.Fatalf("expected 3 lines for colored text, got %d: %v", len(colWrapped), colWrapped)
+	}
+	for _, l := range colWrapped {
+		if VisualWidth(l) > 20 {
+			t.Errorf("colored line %q exceeds 20 (visual %d)", l, VisualWidth(l))
+		}
+	}
+}
+
+func TestTableMultilineWrapping(t *testing.T) {
+	table := NewTable("CATEGORY", "CHECK ITEM", "STATUS", "DETAILS")
+	table.SetAlignment(2, AlignCenter)
+	table.SetMaxWidth(3, 30)
+
+	longDetail := "Direct ping to 10.0.82.20 timed out (Fix: check remote firewall and default gateway)"
+	table.AddRow("NETWORK", "Ping Check", "\033[31mFAIL\033[0m", longDetail)
+
+	out := table.Render()
+	lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+
+	// Table must have header (0), divider (1), and multiple row lines (2+)
+	if len(lines) < 4 {
+		t.Fatalf("expected multiline table with at least 4 lines, got %d lines:\n%s", len(lines), out)
+	}
+
+	// Check that visual width of all data rows is identical
+	expectedWidth := VisualWidth(lines[0])
+	for i, l := range lines {
+		w := VisualWidth(l)
+		if w != expectedWidth {
+			t.Errorf("line %d width mismatch: want %d, got %d (line: %q)", i, expectedWidth, w, l)
+		}
+	}
+
+	// Check that table contains borders on wrapped lines
+	for i := 2; i < len(lines); i++ {
+		if !strings.Contains(lines[i], "│") {
+			t.Errorf("line %d missing vertical separator: %q", i, lines[i])
+		}
+	}
+
+	// Test Box style with multiline
+	table.SetStyle(StyleRounded)
+	boxOut := table.Render()
+	boxLines := strings.Split(strings.TrimSuffix(boxOut, "\n"), "\n")
+	boxWidth := VisualWidth(boxLines[0])
+	for i, l := range boxLines {
+		if VisualWidth(l) != boxWidth {
+			t.Errorf("box line %d width mismatch: want %d, got %d (line: %q)", i, boxWidth, VisualWidth(l), l)
+		}
+	}
+}
+

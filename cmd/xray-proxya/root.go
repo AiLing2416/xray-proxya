@@ -9,6 +9,7 @@ import (
 	"strings"
 	"xray-proxya/internal/buildinfo"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
 )
@@ -53,11 +54,29 @@ var versionCmd = &cobra.Command{
 		cmd.Printf("  Go Runtime : %s (%s, static)\n", goVer, arch)
 
 		xrayVer := "not found"
-		if path, err := exec.LookPath("xray"); err == nil {
-			if out, err := exec.Command(path, "version").Output(); err == nil {
-				fields := strings.Fields(string(out))
-				if len(fields) >= 2 {
-					xrayVer = fields[1]
+		candidates := []string{
+			xray.GetXrayBinaryPath(),
+			filepath.Join(os.Getenv("HOME"), ".local", "share", "xray-proxya", "bin", "xray"),
+			"/usr/local/bin/xray",
+			"/usr/bin/xray",
+		}
+		if lp, err := exec.LookPath("xray"); err == nil {
+			candidates = append([]string{lp}, candidates...)
+		}
+
+		for _, bin := range candidates {
+			if bin == "" {
+				continue
+			}
+			if info, err := os.Stat(bin); err == nil && !info.IsDir() {
+				cmdXray := exec.Command(bin, "version")
+				cmdXray.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+				if out, err := cmdXray.Output(); err == nil {
+					fields := strings.Fields(string(out))
+					if len(fields) >= 2 {
+						xrayVer = "v" + strings.TrimPrefix(fields[1], "v")
+						break
+					}
 				}
 			}
 		}

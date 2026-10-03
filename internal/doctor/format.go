@@ -29,6 +29,7 @@ func RenderTerminal(report *Report, verbose bool) string {
 	colorEnabled := ui.IsColorEnabled()
 	t := ui.NewTable("CATEGORY", "CHECK ITEM", "STATUS", "DETAILS / REMEDIATION")
 	t.SetAlignment(2, ui.AlignCenter)
+	t.SetMaxWidth(3, 56)
 
 	for _, r := range report.Results {
 		detail := r.Detail
