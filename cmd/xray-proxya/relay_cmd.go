@@ -17,6 +17,7 @@ import (
 	"xray-proxya/internal/relayspeed"
 	"xray-proxya/internal/relaytest"
 	"xray-proxya/internal/sharelink"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 
 	"github.com/google/uuid"
@@ -28,12 +29,16 @@ var (
 	relayTestFull        bool
 	relayTestJSON        bool
 	relayTestConcurrency int
+	relayTestNoProgress  bool
+	relayTestFailFast    bool
 	relayInfoFull        bool
 	relayInfoJSON        bool
 	relayInfoConcurrency int
 	relayInfoIPv4        bool
 	relayInfoIPv6        bool
 	relayInfoNatural     bool
+	relayInfoNoProgress  bool
+	relayInfoFailFast    bool
 	outboundIPv4         bool
 	outboundIPv6         bool
 	relaySpeedProvider   string
@@ -241,12 +246,18 @@ func runListOutbound(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n%-3s | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n", "ID", "ALIAS", "STATE", "PROTO", "REMOTE", "TRANSPORT", "INTERNAL", "PRIVATE", "DNS")
-	fmt.Println("---------------------------------------------------------------------------------------------------------------------------------------------------")
+	table := ui.NewTable("ID", "ALIAS", "STATE", "PROTO", "REMOTE", "TRANSPORT", "INTERNAL", "PRIVATE", "DNS")
+	table.SetAlignment(0, ui.AlignRight)
+	table.SetAlignment(2, ui.AlignCenter)
+	table.SetAlignment(7, ui.AlignCenter)
+	colorEnabled := ui.IsColorEnabled()
+
 	for i, co := range cfg.CustomOutbounds {
 		status := "OFF"
 		if co.Enabled {
-			status = "ON"
+			status = ui.Green("ON", colorEnabled)
+		} else {
+			status = ui.Gray("OFF", colorEnabled)
 		}
 		internal := "-"
 		if co.InternalProxyPort > 0 {
@@ -262,11 +273,12 @@ func runListOutbound(cmd *cobra.Command, args []string) error {
 		}
 		privateTargets := "BLOCKED"
 		if co.AllowPrivateTargets {
-			privateTargets = "ALLOWED"
+			privateTargets = ui.Green("ALLOWED", colorEnabled)
+		} else {
+			privateTargets = ui.Gray("BLOCKED", colorEnabled)
 		}
-		fmt.Printf(
-			"%-3d | %-14s | %-5s | %-11s | %-30s | %-20s | %-18s | %-8s | %-s\n",
-			i+1,
+		table.AddRow(
+			strconv.Itoa(i+1),
 			co.Alias,
 			status,
 			outboundProtocol(co),
@@ -277,6 +289,9 @@ func runListOutbound(cmd *cobra.Command, args []string) error {
 			outboundDNSSummary(co, strategy),
 		)
 	}
+
+	fmt.Println()
+	fmt.Print(table.Render())
 	fmt.Println()
 	return nil
 }
@@ -380,7 +395,7 @@ func trimText(value string, limit int) string {
 }
 
 var testOutboundCmd = &cobra.Command{
-	Use:               "test [alias]",
+	Use:               "test [alias...]",
 	Short:             "Verify relay node connectivity and protocol health",
 	ValidArgsFunction: completeRelayAliasesArg,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -396,7 +411,12 @@ var testOutboundCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		if len(args) > 0 {
+		realTTY := ui.IsTerminal(os.Stdout.Fd())
+		progressTTY := realTTY && !relayTestNoProgress
+		disabled := relayTestJSON || relayTestNoProgress
+
+		// 1. Single node test
+		if len(args) == 1 {
 			target := args[0]
 			found := false
 			for _, co := range cfg.CustomOutbounds {
@@ -409,40 +429,106 @@ var testOutboundCmd = &cobra.Command{
 				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
+			renderer := ui.NewProgressRenderer(os.Stdout, progressTTY, disabled)
+			renderer.Start(target, "Testing transport (TCP & UDP)...")
+
 			res, err := relaytest.RunTest(ctx, cfg, target, mode)
 			if err != nil {
-				return fmt.Errorf("❌ Error: %w", err)
+				res = &relaytest.TestResult{
+					Alias:  target,
+					Mode:   mode,
+					Status: relaytest.StatusFail,
+					Error:  err.Error(),
+				}
 			}
+			isSuccess := res.Status == relaytest.StatusPass || res.Status == relaytest.StatusWarn
+			renderer.Complete(target, isSuccess, relaytest.FormatDoneSummary(res))
+			renderer.Stop()
+
 			if relayTestJSON {
 				out, _ := relaytest.RenderJSON(res)
 				fmt.Println(out)
 			} else {
-				fmt.Print(relaytest.RenderTerminal([]*relaytest.TestResult{res}))
-				fmt.Println()
+				if !relayTestNoProgress {
+					fmt.Println()
+				}
+				fmt.Print(relaytest.RenderSingleCard(res))
 			}
 			return nil
 		}
 
-		if len(cfg.CustomOutbounds) == 0 {
-			fmt.Println("No custom relay nodes configured.")
-			return nil
+		// 2. Multiple nodes or all nodes (Queue execution)
+		var targets []string
+		if len(args) > 1 {
+			for _, a := range args {
+				found := false
+				for _, co := range cfg.CustomOutbounds {
+					if co.Alias == a {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return fmt.Errorf("❌ Relay '%s' not found.", a)
+				}
+				targets = append(targets, a)
+			}
+		} else {
+			if len(cfg.CustomOutbounds) == 0 {
+				fmt.Println("No custom relay nodes configured.")
+				return nil
+			}
+			for _, co := range cfg.CustomOutbounds {
+				targets = append(targets, co.Alias)
+			}
 		}
 
-		var aliases []string
-		for _, co := range cfg.CustomOutbounds {
-			aliases = append(aliases, co.Alias)
+		if !relayTestJSON {
+			modeLabel := "Simple"
+			if relayTestFull {
+				modeLabel = "Full Diagnostics"
+			}
+			fmt.Printf("Starting relay connectivity test queue (%d nodes, Mode: %s)...\n\n", len(targets), modeLabel)
 		}
 
-		results, err := relaytest.RunTests(ctx, cfg, aliases, mode, relayTestConcurrency)
-		if err != nil {
-			return fmt.Errorf("❌ Error: %w", err)
+		renderer := ui.NewProgressRenderer(os.Stdout, progressTTY, disabled)
+		defer renderer.Stop()
+
+		var results []*relaytest.TestResult
+		for _, target := range targets {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			renderer.Start(target, "Testing transport (TCP & UDP)...")
+			res, err := relaytest.RunTest(ctx, cfg, target, mode)
+			if err != nil {
+				res = &relaytest.TestResult{
+					Alias:  target,
+					Mode:   mode,
+					Status: relaytest.StatusFail,
+					Error:  err.Error(),
+				}
+			}
+			isSuccess := res.Status == relaytest.StatusPass || res.Status == relaytest.StatusWarn
+			renderer.Complete(target, isSuccess, relaytest.FormatDoneSummary(res))
+			results = append(results, res)
+
+			if relayTestFailFast && res.Status == relaytest.StatusFail {
+				break
+			}
 		}
 
 		if relayTestJSON {
 			out, _ := relaytest.RenderJSON(results)
 			fmt.Println(out)
 		} else {
-			fmt.Print(relaytest.RenderTerminal(results))
+			if !relayTestNoProgress {
+				fmt.Println()
+			}
+			fmt.Print(relaytest.RenderTable(results))
 		}
 		return nil
 	},
@@ -474,6 +560,11 @@ var infoOutboundCmd = &cobra.Command{
 
 		ctx := context.Background()
 
+		realTTY := ui.IsTerminal(os.Stdout.Fd())
+		progressTTY := realTTY && !relayInfoNoProgress
+		disabled := relayInfoJSON || relayInfoNoProgress
+
+		// 1. Single node
 		if len(args) == 1 {
 			target := args[0]
 			found := false
@@ -487,19 +578,34 @@ var infoOutboundCmd = &cobra.Command{
 				return fmt.Errorf("❌ Relay '%s' not found.", target)
 			}
 
+			renderer := ui.NewProgressRenderer(os.Stdout, progressTTY, disabled)
+			renderer.Start(target, "Probing exit IP and streaming unlocks...")
+
 			res, err := relayinfo.RunInfo(ctx, cfg, target, mode, family)
 			if err != nil {
-				return fmt.Errorf("❌ Error: %w", err)
+				res = &relayinfo.InfoResult{
+					Alias:  target,
+					Mode:   mode,
+					Family: family,
+					Error:  err.Error(),
+				}
 			}
+			renderer.Complete(target, res.Error == "", relayinfo.FormatDoneSummary(res))
+			renderer.Stop()
+
 			if relayInfoJSON {
 				out, _ := relayinfo.RenderJSON(res)
 				fmt.Println(out)
 			} else {
-				fmt.Print(relayinfo.RenderTerminal([]*relayinfo.InfoResult{res}))
+				if !relayInfoNoProgress {
+					fmt.Println()
+				}
+				fmt.Print(relayinfo.RenderSingleCard(res))
 			}
 			return nil
 		}
 
+		// 2. Multiple nodes or all nodes (Queue execution)
 		var targets []string
 		if len(args) > 1 {
 			for _, a := range args {
@@ -525,16 +631,47 @@ var infoOutboundCmd = &cobra.Command{
 			}
 		}
 
-		results, err := relayinfo.RunInfos(ctx, cfg, targets, mode, family, relayInfoConcurrency)
-		if err != nil {
-			return fmt.Errorf("❌ Error: %w", err)
+		if !relayInfoJSON {
+			fmt.Printf("Starting relay info probe queue (%d nodes, Family: %s)...\n\n", len(targets), family)
+		}
+
+		renderer := ui.NewProgressRenderer(os.Stdout, progressTTY, disabled)
+		defer renderer.Stop()
+
+		var results []*relayinfo.InfoResult
+		for _, target := range targets {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+
+			renderer.Start(target, "Probing exit IP and streaming unlocks...")
+			res, err := relayinfo.RunInfo(ctx, cfg, target, mode, family)
+			if err != nil {
+				res = &relayinfo.InfoResult{
+					Alias:  target,
+					Mode:   mode,
+					Family: family,
+					Error:  err.Error(),
+				}
+			}
+			renderer.Complete(target, res.Error == "", relayinfo.FormatDoneSummary(res))
+			results = append(results, res)
+
+			if relayInfoFailFast && res.Error != "" {
+				break
+			}
 		}
 
 		if relayInfoJSON {
 			out, _ := relayinfo.RenderJSON(results)
 			fmt.Println(out)
 		} else {
-			fmt.Print(relayinfo.RenderTerminal(results))
+			if !relayInfoNoProgress {
+				fmt.Println()
+			}
+			fmt.Print(relayinfo.RenderTable(results))
 		}
 		return nil
 	},
@@ -1195,12 +1332,16 @@ func init() {
 	testOutboundCmd.Flags().BoolVarP(&relayTestFull, "full", "f", false, "Run complete diagnostic mode including modern web protocols and UDP stack")
 	testOutboundCmd.Flags().BoolVarP(&relayTestJSON, "json", "j", false, "Output test results in JSON format")
 	testOutboundCmd.Flags().IntVar(&relayTestConcurrency, "concurrency", 4, "Number of concurrent relay tests")
+	testOutboundCmd.Flags().BoolVar(&relayTestNoProgress, "no-progress", false, "Disable live progress bar and terminal animations")
+	testOutboundCmd.Flags().BoolVarP(&relayTestFailFast, "fail-fast", "x", false, "Cancel remaining test queue on first node failure")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoFull, "full", "f", false, "Run complete profile and unlock mode including timezone and local time")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoJSON, "json", "j", false, "Output info results in JSON format")
 	infoOutboundCmd.Flags().IntVarP(&relayInfoConcurrency, "concurrency", "c", 4, "Number of concurrent relay info tests")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoIPv4, "ipv4", "4", false, "Force IPv4 stack for unlock and profile testing")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoIPv6, "ipv6", "6", false, "Force IPv6 stack for unlock and profile testing")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoNatural, "natural", "n", false, "Use natural dual-stack DNS resolution and domain routing")
+	infoOutboundCmd.Flags().BoolVar(&relayInfoNoProgress, "no-progress", false, "Disable live progress bar and terminal animations")
+	infoOutboundCmd.Flags().BoolVarP(&relayInfoFailFast, "fail-fast", "x", false, "Cancel remaining probe queue on first node failure")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedProvider, "provider", "p", "cloudflare", "Speed test provider (cloudflare, fast, mlab, ookla, custom)")

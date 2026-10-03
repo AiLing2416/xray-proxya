@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/units"
 )
 
@@ -216,44 +217,49 @@ func renderTableInternal(results []*SpeedResult, colorEnabled bool, showChart bo
 		return ""
 	}
 
-	var sb strings.Builder
-	var header, sep string
+	var table *ui.Table
 	if showChart {
-		header = fmt.Sprintf("%-10s | %-12s | %-13s | %-13s | %-10s | %-10s | %-6s | %-12s\n",
-			"ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS", "TREND (DL)")
-		sep = strings.Repeat("-", 101) + "\n"
+		table = ui.NewTable("ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS", "TREND (DL)")
+		table.SetAlignment(2, ui.AlignRight)
+		table.SetAlignment(3, ui.AlignRight)
+		table.SetAlignment(4, ui.AlignRight)
+		table.SetAlignment(5, ui.AlignRight)
+		table.SetAlignment(6, ui.AlignRight)
 	} else {
-		header = fmt.Sprintf("%-10s | %-12s | %-13s | %-13s | %-10s | %-10s | %-6s\n",
-			"ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS")
-		sep = strings.Repeat("-", 86) + "\n"
+		table = ui.NewTable("ALIAS", "PROVIDER", "DOWNLOAD", "UPLOAD", "IDLE PING", "LOAD PING", "LOSS")
+		table.SetAlignment(2, ui.AlignRight)
+		table.SetAlignment(3, ui.AlignRight)
+		table.SetAlignment(4, ui.AlignRight)
+		table.SetAlignment(5, ui.AlignRight)
+		table.SetAlignment(6, ui.AlignRight)
 	}
 
-	sb.WriteString(header)
-	sb.WriteString(sep)
-
 	for _, r := range results {
-		dlStr := fmt.Sprintf("%-13s", "N/A")
-		ulStr := fmt.Sprintf("%-13s", "N/A")
-		idleStr := "N/A"
-		loadStr := "N/A"
-		lossStr := "0.0%"
+		if r == nil {
+			continue
+		}
 
 		if r.Error != "" && r.Download == nil && r.Upload == nil {
 			failStr := "FAIL: " + truncate(r.Error, 50)
 			if colorEnabled {
-				failStr = "\033[31mFAIL:\033[0m " + truncate(r.Error, 50)
+				failStr = ui.Red("FAIL: ", true) + truncate(r.Error, 50)
 			}
-			failWidth := 60
-			if showChart {
-				failWidth = 75
-			}
-			sb.WriteString(fmt.Sprintf("%-10s | %-12s | %-*s\n",
-				truncate(r.Alias, 10), truncate(r.Provider, 12), failWidth, failStr))
+			table.AddSpannedRow(failStr, r.Alias, r.Provider)
 			continue
 		}
 
+		dlStr := "N/A"
+		ulStr := "N/A"
+		idleStr := "N/A"
+		loadStr := "N/A"
+		lossStr := "0.0%"
+
 		if r.Download != nil {
-			dlStr = formatTableBitrate(r.Download.AvgSpeedBps, 13, colorEnabled)
+			if colorEnabled {
+				dlStr = FormatBitrateColored(r.Download.AvgSpeedBps, true)
+			} else {
+				dlStr = FormatBitrate(r.Download.AvgSpeedBps)
+			}
 			if r.Download.IdleLatencyAvg > 0 {
 				idleStr = FormatDurationMetric(r.Download.IdleLatencyAvg)
 			}
@@ -264,7 +270,11 @@ func renderTableInternal(results []*SpeedResult, colorEnabled bool, showChart bo
 		}
 
 		if r.Upload != nil {
-			ulStr = formatTableBitrate(r.Upload.AvgSpeedBps, 13, colorEnabled)
+			if colorEnabled {
+				ulStr = FormatBitrateColored(r.Upload.AvgSpeedBps, true)
+			} else {
+				ulStr = FormatBitrate(r.Upload.AvgSpeedBps)
+			}
 			if idleStr == "N/A" && r.Upload.IdleLatencyAvg > 0 {
 				idleStr = FormatDurationMetric(r.Upload.IdleLatencyAvg)
 			}
@@ -274,28 +284,18 @@ func renderTableInternal(results []*SpeedResult, colorEnabled bool, showChart bo
 			}
 		}
 
-		trendCol := ""
 		if showChart {
+			trendCol := "N/A"
 			if r.Download != nil && len(r.Download.Samples) > 0 {
-				trendCol = " | " + RenderSparkline(r.Download.Samples, 12)
-			} else {
-				trendCol = " | " + fmt.Sprintf("%-12s", "N/A")
+				trendCol = RenderSparkline(r.Download.Samples, 12)
 			}
+			table.AddRow(r.Alias, r.Provider, dlStr, ulStr, idleStr, loadStr, lossStr, trendCol)
+		} else {
+			table.AddRow(r.Alias, r.Provider, dlStr, ulStr, idleStr, loadStr, lossStr)
 		}
-
-		sb.WriteString(fmt.Sprintf("%-10s | %-12s | %s | %s | %-10s | %-10s | %-6s%s\n",
-			truncate(r.Alias, 10),
-			truncate(r.Provider, 12),
-			dlStr,
-			ulStr,
-			idleStr,
-			loadStr,
-			lossStr,
-			trendCol,
-		))
 	}
 
-	return sb.String()
+	return table.Render()
 }
 
 // RenderJSON formats results as structured JSON.
