@@ -121,7 +121,13 @@ func (m *Manager) Uninstall() error {
 	if len(active) > 0 {
 		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
 	}
-	for _, unit := range []string{MainUnit, PathdUnit, SubUnit, SubTemplateUnit, "xray-proxya-ipv6-rotate.service"} {
+	managedUnits := []string{MainUnit, PathdUnit, SubUnit, SubTemplateUnit, "xray-proxya-ipv6-rotate.service"}
+	for _, unit := range managedUnits {
+		if _, err := os.Stat(ManagedUnitPath(unit)); err == nil {
+			_ = xray.ManageSystemdUnit("disable", unit)
+		}
+	}
+	for _, unit := range managedUnits {
 		if err := os.Remove(ManagedUnitPath(unit)); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", unit, err)
 		}
