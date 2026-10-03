@@ -8,6 +8,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/sub"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/qrcode"
 	"xray-proxya/pkg/utils"
 
@@ -490,6 +491,37 @@ Supported target types:
 	},
 }
 
+func renderGuestSubTable(cfg *config.UserConfig, guests []config.GuestConfig, withQR bool, invertQR bool) {
+	colorEnabled := ui.IsColorEnabled()
+	t := ui.NewTable("ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
+	t.SetAlignment(1, ui.AlignCenter)
+	t.SetAlignment(3, ui.AlignRight)
+
+	for _, g := range guests {
+		state := ui.Green("active", colorEnabled)
+		if !g.Enabled {
+			state = ui.Gray("disabled", colorEnabled)
+		}
+		limit := config.FormatByteSize(g.EffectiveLimitBytes())
+		used := config.FormatByteSize(g.UsedBytes)
+		url := subGuestSubURL(cfg, g.UUID)
+		t.AddRow(g.Alias, state, used+"/"+limit, fmt.Sprintf("%d", g.ResetDay), url)
+	}
+	fmt.Print(t.Render())
+	if withQR {
+		for _, g := range guests {
+			url := subGuestSubURL(cfg, g.UUID)
+			if url != "" {
+				fmt.Println()
+				if qr, err := qrcode.RenderTerminal(url, invertQR); err == nil {
+					fmt.Print(qr)
+					fmt.Println()
+				}
+			}
+		}
+	}
+}
+
 func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR bool, invertQR bool) error {
 	if guestFilter != "" {
 		var target *config.GuestConfig
@@ -504,23 +536,7 @@ func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR b
 		}
 
 		fmt.Println("\n--- Guest Subscription ---")
-		fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
-		fmt.Println("-----------------------------------------------------------------------------------------")
-		state := "active"
-		if !target.Enabled {
-			state = "disabled"
-		}
-		limit := config.FormatByteSize(target.EffectiveLimitBytes())
-		used := config.FormatByteSize(target.UsedBytes)
-		url := subGuestSubURL(cfg, target.UUID)
-		fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", target.Alias, state, used+"/"+limit, target.ResetDay, url)
-		if withQR && url != "" {
-			fmt.Println()
-			if qr, err := qrcode.RenderTerminal(url, invertQR); err == nil {
-				fmt.Print(qr)
-				fmt.Println()
-			}
-		}
+		renderGuestSubTable(cfg, []config.GuestConfig{*target}, withQR, invertQR)
 		fmt.Println()
 		return nil
 	}
@@ -599,25 +615,7 @@ func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR b
 
 	if len(cfg.Guests) > 0 {
 		fmt.Println("\n--- Guest Subscriptions ---")
-		fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
-		fmt.Println("-----------------------------------------------------------------------------------------")
-		for _, g := range cfg.Guests {
-			state := "active"
-			if !g.Enabled {
-				state = "disabled"
-			}
-			limit := config.FormatByteSize(g.EffectiveLimitBytes())
-			used := config.FormatByteSize(g.UsedBytes)
-			url := subGuestSubURL(cfg, g.UUID)
-			fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", g.Alias, state, used+"/"+limit, g.ResetDay, url)
-			if withQR && url != "" {
-				fmt.Println()
-				if qr, err := qrcode.RenderTerminal(url, invertQR); err == nil {
-					fmt.Print(qr)
-					fmt.Println()
-				}
-			}
-		}
+		renderGuestSubTable(cfg, cfg.Guests, withQR, invertQR)
 		fmt.Println()
 	}
 	return nil
@@ -724,23 +722,7 @@ var subShowCmd = &cobra.Command{
 			}
 
 			fmt.Println("\n--- Guest Subscription ---")
-			fmt.Printf("%-15s | %-8s | %-18s | %-5s | %-s\n", "ALIAS", "STATE", "QUOTA (USED/LIM)", "RESET", "URL")
-			fmt.Println("-----------------------------------------------------------------------------------------")
-			state := "active"
-			if !target.Enabled {
-				state = "disabled"
-			}
-			limit := config.FormatByteSize(target.EffectiveLimitBytes())
-			used := config.FormatByteSize(target.UsedBytes)
-			url := subGuestSubURL(cfg, target.UUID)
-			fmt.Printf("%-15s | %-8s | %-18s | %-5d | %s\n", target.Alias, state, used+"/"+limit, target.ResetDay, url)
-			if subShowQRCode && url != "" {
-				fmt.Println()
-				if qr, err := qrcode.RenderTerminal(url, subShowQRInvert); err == nil {
-					fmt.Print(qr)
-					fmt.Println()
-				}
-			}
+			renderGuestSubTable(cfg, []config.GuestConfig{*target}, subShowQRCode, subShowQRInvert)
 			fmt.Println()
 			return nil
 		}

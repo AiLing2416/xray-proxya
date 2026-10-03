@@ -9,6 +9,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/relaysub"
 	"xray-proxya/internal/relaytest"
+	"xray-proxya/internal/ui"
 
 	"github.com/google/uuid"
 	"github.com/spf13/cobra"
@@ -288,8 +289,10 @@ var relaySubListCmd = &cobra.Command{
 		}
 		sort.Strings(names)
 
-		fmt.Printf("\n%-16s | %-8s | %-8s | %s\n", "PROVIDER", "STAGING", "ACTIVE", "SUBSCRIPTION URL")
-		fmt.Println("-----------------+----------+----------+------------------------------------------------")
+		t := ui.NewTable("PROVIDER", "STAGING", "ACTIVE", "SUBSCRIPTION URL")
+		t.SetAlignment(1, ui.AlignRight)
+		t.SetAlignment(2, ui.AlignRight)
+
 		for _, name := range names {
 			prefix := name + "/"
 			stagingCount := 0
@@ -309,8 +312,11 @@ var relaySubListCmd = &cobra.Command{
 
 			subURL := cfg.RelaySubs[name]
 			maskedURL := maskURL(subURL)
-			fmt.Printf("%-16s | %-8d | %-8d | %s\n", name, stagingCount, activeCount, maskedURL)
+			t.AddRow(name, fmt.Sprintf("%d", stagingCount), fmt.Sprintf("%d", activeCount), maskedURL)
 		}
+
+		fmt.Println()
+		fmt.Print(t.Render())
 		fmt.Println()
 	},
 }

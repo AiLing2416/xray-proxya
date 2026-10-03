@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
@@ -10,6 +11,7 @@ import (
 	"xray-proxya/internal/notify"
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/sub"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -129,8 +131,16 @@ func runGuestsList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n%-12s | %-8s | %-13s | %-18s | %-8s | %-12s | %-s\n", "ALIAS", "STATE", "REASON", "QUOTA (USED/LIM)", "RESET", "ENDPOINT", "RELAY")
-	fmt.Println("-----------------------------------------------------------------------------------------------------------------------------")
+	if len(views) == 0 {
+		fmt.Println("No guests configured.")
+		return nil
+	}
+
+	table := ui.NewTable("ALIAS", "STATE", "REASON", "QUOTA (USED / LIM)", "RESET", "ENDPOINT", "RELAY")
+	table.SetAlignment(1, ui.AlignCenter)
+	table.SetAlignment(4, ui.AlignRight)
+	colorEnabled := ui.IsColorEnabled()
+
 	for _, v := range views {
 		limit := config.FormatByteSize(v.LimitBytes)
 		used := config.FormatByteSize(v.UsedBytes)
@@ -138,8 +148,42 @@ func runGuestsList(cmd *cobra.Command, args []string) error {
 		if ep == "" {
 			ep = "default"
 		}
-		fmt.Printf("%-12s | %-8s | %-13s | %-18s | %-8d | %-12s | %-s\n", v.Alias, v.StateLabel, v.ReasonLabel, used+"/"+limit, v.ResetDay, ep, v.RelayLabel)
+
+		var stateStr string
+		switch strings.ToUpper(v.StateLabel) {
+		case "ACTIVE":
+			stateStr = ui.Green(v.StateLabel, colorEnabled)
+		case "PAUSED":
+			stateStr = ui.Yellow(v.StateLabel, colorEnabled)
+		case "EXHAUSTED":
+			stateStr = ui.Red(v.StateLabel, colorEnabled)
+		default:
+			stateStr = v.StateLabel
+		}
+
+		quotaDisplay := used + " / " + limit
+		if v.LimitBytes > 0 && float64(v.UsedBytes)/float64(v.LimitBytes) >= 0.9 {
+			quotaDisplay = ui.Yellow(quotaDisplay, colorEnabled)
+		}
+
+		relayLabel := v.RelayLabel
+		if relayLabel == "" {
+			relayLabel = ui.Gray("-", colorEnabled)
+		}
+
+		table.AddRow(
+			v.Alias,
+			stateStr,
+			v.ReasonLabel,
+			quotaDisplay,
+			strconv.Itoa(v.ResetDay),
+			ep,
+			relayLabel,
+		)
 	}
+
+	fmt.Println()
+	fmt.Print(table.Render())
 	fmt.Println()
 	return nil
 }
@@ -1023,7 +1067,7 @@ func init() {
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
 	guestsSubSetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
-	guestsListCmd.Flags().BoolVar(&guestsListJSON, "json", false, "Output guests list in JSON format")
+	guestsListCmd.Flags().BoolVarP(&guestsListJSON, "json", "j", false, "Output guests list in JSON format")
 	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd, guestsSubSetCmd)
 	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsRemoveCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)

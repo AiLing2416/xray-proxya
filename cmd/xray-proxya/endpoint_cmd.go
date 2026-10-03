@@ -10,6 +10,7 @@ import (
 
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -162,21 +163,44 @@ func runEndpointList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n%-15s | %-12s | %-28s | %-25s | %-s\n", "NAME", "TYPE", "TARGET", "RESOLVED IP(S)", "REFERENCES")
-	fmt.Println("-------------------------------------------------------------------------------------------------------------")
+	if len(views) == 0 {
+		fmt.Println("No endpoints configured.")
+		return nil
+	}
+
+	table := ui.NewTable("NAME", "TYPE", "TARGET", "RESOLVED IP(S)", "REFERENCES")
+	table.SetAlignment(1, ui.AlignCenter)
+	colorEnabled := ui.IsColorEnabled()
+
 	for _, v := range views {
 		ep := cfg.Endpoints[v.Name]
 		displayIPs := endpoint.FormatDisplayResolvedIPs(ep, v.ResolvedIPs)
 		resolvedStr := strings.Join(displayIPs, ", ")
 		if resolvedStr == "" {
-			resolvedStr = "-"
+			resolvedStr = ui.Gray("-", colorEnabled)
 		}
 		refsStr := strings.Join(v.References, ", ")
 		if refsStr == "" {
-			refsStr = "-"
+			refsStr = ui.Gray("-", colorEnabled)
 		}
-		fmt.Printf("%-15s | %-12s | %-28s | %-25s | %-s\n", v.Name, v.Type, v.Target, resolvedStr, refsStr)
+
+		typeStr := v.Type
+		if colorEnabled {
+			switch v.Type {
+			case string(config.EndpointTypeDynamicV6):
+				typeStr = ui.Cyan(v.Type, true)
+			case string(config.EndpointTypeStatic):
+				typeStr = ui.Bold(v.Type, true)
+			case string(config.EndpointTypeAuto):
+				typeStr = ui.Yellow(v.Type, true)
+			}
+		}
+
+		table.AddRow(v.Name, typeStr, v.Target, resolvedStr, refsStr)
 	}
+
+	fmt.Println()
+	fmt.Print(table.Render())
 	fmt.Println()
 	return nil
 }
@@ -767,14 +791,26 @@ var endpointRotateProfilesCmd = &cobra.Command{
 	Use:   "rotate-profiles",
 	Short: "Display available dynamic-v6 rotation profiles and behaviors",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("\n%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n", "PROFILE", "SCOPE", "ACTIVE IPS", "ROTATION TRIGGER", "RETIREMENT", "BEST FOR")
-		fmt.Println("-----------------------------------------------------------------------------------------------------------------------------")
-		fmt.Printf("%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n",
-			"turtle", "Shared", "1", "TTL Expired + On-Pull", "3600s", "Recommended. High stability, zero broken links")
-		fmt.Printf("%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n",
-			"proactive", "Shared", "1", "Strict TTL Schedule", "3600s", "Periodic forced refresh, strict sanitization")
-		fmt.Printf("%-12s | %-10s | %-12s | %-24s | %-10s | %-s\n",
-			"isolated", "Per-Guest", "1 / user", "User Pull + Cooldown", "3600s", "Multi-tenant isolation & tracing")
+		table := ui.NewTable("PROFILE", "SCOPE", "ACTIVE IPS", "ROTATION TRIGGER", "RETIREMENT", "BEST FOR")
+		table.SetAlignment(2, ui.AlignCenter)
+		table.SetAlignment(4, ui.AlignRight)
+		colorEnabled := ui.IsColorEnabled()
+
+		p1 := "turtle"
+		p2 := "proactive"
+		p3 := "isolated"
+		if colorEnabled {
+			p1 = ui.Green(p1, true)
+			p2 = ui.Cyan(p2, true)
+			p3 = ui.Yellow(p3, true)
+		}
+
+		table.AddRow(p1, "Shared", "1", "TTL Expired + On-Pull", "3600s", "Recommended. High stability, zero broken links")
+		table.AddRow(p2, "Shared", "1", "Strict TTL Schedule", "3600s", "Periodic forced refresh, strict sanitization")
+		table.AddRow(p3, "Per-Guest", "1 / user", "User Pull + Cooldown", "3600s", "Multi-tenant isolation & tracing")
+
+		fmt.Println()
+		fmt.Print(table.Render())
 		fmt.Println()
 	},
 }
@@ -788,7 +824,7 @@ var endpointRotateCmd = &cobra.Command{
 }
 
 func init() {
-	endpointListCmd.Flags().BoolVar(&endpointListJSON, "json", false, "Output in JSON format")
+	endpointListCmd.Flags().BoolVarP(&endpointListJSON, "json", "j", false, "Output in JSON format")
 
 	endpointShowCmd.Flags().BoolVar(&endpointShowJSON, "json", false, "Output in JSON format")
 

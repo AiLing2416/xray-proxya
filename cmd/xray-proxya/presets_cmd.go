@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/ui"
 
 	"github.com/spf13/cobra"
 )
@@ -78,13 +79,16 @@ var presetsListCmd = &cobra.Command{
 			return fmt.Errorf("❌ Failed to load staging config.")
 		}
 
-		fmt.Printf("\n%-3s | %-25s | %-8s | %-6s | %-26s | %-24s | %-12s | %-s\n",
-			"ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "SKIN", "MIN VER", "DEST / PATH")
-		fmt.Println("-----------------------------------------------------------------------------------------------------------------------------------------")
+		colorEnabled := ui.IsColorEnabled()
+		t := ui.NewTable("ID", "TECHNICAL COMBINATION", "STATUS", "PORT", "SNI", "SKIN", "MIN VER", "DEST / PATH")
+		t.SetAlignment(0, ui.AlignRight)
+		t.SetAlignment(2, ui.AlignCenter)
+		t.SetAlignment(3, ui.AlignRight)
+
 		for i, mode := range cfg.Presets {
-			status := "OFF"
+			status := ui.Gray("OFF", colorEnabled)
 			if mode.Enabled {
-				status = "ON"
+				status = ui.Green("ON", colorEnabled)
 			}
 			sni := "-"
 			if mode.SNI != "" {
@@ -108,9 +112,11 @@ var presetsListCmd = &cobra.Command{
 			} else if mode.Path != "" {
 				destOrPath = mode.Path
 			}
-			fmt.Printf("%-3d | %-25s | %-8s | %-6d | %-26s | %-24s | %-12s | %-s\n",
-				i+1, mode.Mode, status, mode.Port, sni, skin, minVer, destOrPath)
+			t.AddRow(fmt.Sprintf("%d", i+1), string(mode.Mode), status, fmt.Sprintf("%d", mode.Port), sni, skin, minVer, destOrPath)
 		}
+
+		fmt.Println()
+		fmt.Print(t.Render())
 		if cfg.SkinPort > 0 {
 			fmt.Printf("\n🎨 Web Camouflage Skin Port: %d (127.0.0.1:%d)\n", cfg.SkinPort, cfg.SkinPort)
 		}
@@ -132,12 +138,14 @@ var presetsSkinListCmd = &cobra.Command{
 	Aliases: []string{"ls"},
 	Short:   "List available Web camouflage skins and their characteristics",
 	Run: func(cmd *cobra.Command, args []string) {
+		t := ui.NewTable("SKIN", "DESCRIPTION")
+		t.AddRow("nextcloud", "Official Nextcloud Hub login replica with /status.php & auth rejection")
+		t.AddRow("filebrowser", "Modern Vue-based File Browser login replica with /manifest.json & 403 rejection")
+		t.AddRow("seafile", "Seafile Seahub login replica with /api2/ping & 200 error banner")
+		t.AddRow("off / none", "Disable Web camouflage skin")
+
 		fmt.Println("\nAVAILABLE WEB CAMOUFLAGE SKINS:")
-		fmt.Println("--------------------------------------------------------------------------------------")
-		fmt.Println("nextcloud   - Official Nextcloud Hub login replica with /status.php & auth rejection")
-		fmt.Println("filebrowser - Modern Vue-based File Browser login replica with /manifest.json & 403 rejection")
-		fmt.Println("seafile     - Seafile Seahub login replica with /api2/ping & 200 error banner")
-		fmt.Println("off / none  - Disable Web camouflage skin")
+		fmt.Print(t.Render())
 		fmt.Println()
 	},
 }

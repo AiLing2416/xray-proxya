@@ -7,6 +7,7 @@ import (
 	"time"
 	"xray-proxya/internal/certmanager"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -144,22 +145,29 @@ var certListCmd = &cobra.Command{
 			return nil
 		}
 
-		fmt.Printf("\n%-25s | %-16s | %-19s | %-19s | %-s\n",
-			"DOMAIN", "ISSUER", "ISSUED AT", "EXPIRES AT", "ATTACHED PRESET")
-		fmt.Println("---------------------------------------------------------------------------------------------------------")
+		colorEnabled := ui.IsColorEnabled()
+		t := ui.NewTable("DOMAIN", "ISSUER", "ISSUED AT", "EXPIRES AT", "ATTACHED PRESET")
 
+		now := time.Now()
 		for _, c := range cfg.Certs {
 			issuer := c.Issuer
 			if issuer == "" {
 				issuer = "Let's Encrypt"
 			}
-			issuedStr := "-"
+			issuedStr := ui.Gray("-", colorEnabled)
 			if !c.IssuedAt.IsZero() {
 				issuedStr = c.IssuedAt.Format("2006-01-02 15:04:05")
 			}
-			expiresStr := "-"
+			expiresStr := ui.Gray("-", colorEnabled)
 			if !c.ExpiresAt.IsZero() {
-				expiresStr = c.ExpiresAt.Format("2006-01-02 15:04:05")
+				rawExpires := c.ExpiresAt.Format("2006-01-02 15:04:05")
+				if now.After(c.ExpiresAt) {
+					expiresStr = ui.Red(rawExpires+" (expired)", colorEnabled)
+				} else if time.Until(c.ExpiresAt) < 30*24*time.Hour {
+					expiresStr = ui.Yellow(rawExpires, colorEnabled)
+				} else {
+					expiresStr = ui.Green(rawExpires, colorEnabled)
+				}
 			}
 
 			// Check attached presets
@@ -169,14 +177,15 @@ var certListCmd = &cobra.Command{
 					attached = append(attached, fmt.Sprintf("#%d (%s)", i+1, p.Mode))
 				}
 			}
-			attachedDesc := "-"
+			attachedDesc := ui.Gray("-", colorEnabled)
 			if len(attached) > 0 {
 				attachedDesc = strings.Join(attached, ", ")
 			}
 
-			fmt.Printf("%-25s | %-16s | %-19s | %-19s | %-s\n",
-				c.Domain, issuer, issuedStr, expiresStr, attachedDesc)
+			t.AddRow(c.Domain, issuer, issuedStr, expiresStr, attachedDesc)
 		}
+		fmt.Println()
+		fmt.Print(t.Render())
 		fmt.Println()
 		return nil
 	},

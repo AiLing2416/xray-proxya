@@ -4,10 +4,24 @@ import (
 	"fmt"
 	"strings"
 	"xray-proxya/internal/tune"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
+
+func formatTuneStatus(status string, colorEnabled bool) string {
+	switch strings.ToLower(status) {
+	case "ok", "applied", "rolled_back":
+		return ui.Green(status, colorEnabled)
+	case "diff", "suboptimal", "skipped", "unsupported":
+		return ui.Yellow(status, colorEnabled)
+	case "failed", "error":
+		return ui.Red(status, colorEnabled)
+	default:
+		return status
+	}
+}
 
 func requireRoot() bool {
 	if err := utils.RequireRootOnly("tune"); err != nil {
@@ -38,18 +52,22 @@ var tuneShowCmd = &cobra.Command{
 		} else {
 			fmt.Println("Runtime Tune: none")
 		}
-		fmt.Printf("\n%-40s | %-12s | %-s\n", "KEY", "STATUS", "VALUE")
-		fmt.Println("------------------------------------------------------------------------------------------------")
+		colorEnabled := ui.IsColorEnabled()
+		t := ui.NewTable("KEY", "STATUS", "VALUE")
+		t.SetAlignment(1, ui.AlignCenter)
 		for _, entry := range data.Values {
 			value := entry.Current
 			if value == "" {
-				value = "-"
+				value = ui.Gray("-", colorEnabled)
 			}
 			if entry.Error != "" {
-				value = entry.Error
+				value = ui.Red(entry.Error, colorEnabled)
 			}
-			fmt.Printf("%-40s | %-12s | %-s\n", entry.Key, entry.Status, value)
+			t.AddRow(entry.Key, formatTuneStatus(entry.Status, colorEnabled), value)
 		}
+		fmt.Println()
+		fmt.Print(t.Render())
+		fmt.Println()
 	},
 }
 
@@ -57,11 +75,12 @@ var tuneProfilesCmd = &cobra.Command{
 	Use:   "profiles",
 	Short: "List available kernel tuning profiles",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("\n%-10s | %-s\n", "PROFILE", "DESCRIPTION")
-		fmt.Println("----------------------------------------------------------------")
+		t := ui.NewTable("PROFILE", "DESCRIPTION")
 		for _, profile := range tune.Profiles() {
-			fmt.Printf("%-10s | %-s\n", profile.Name, profile.Description)
+			t.AddRow(profile.Name, profile.Description)
 		}
+		fmt.Println()
+		fmt.Print(t.Render())
 		fmt.Println()
 	},
 }
@@ -78,18 +97,21 @@ var tuneDiffCmd = &cobra.Command{
 		}
 		fmt.Printf("Profile: %s\n", profile.Name)
 		fmt.Printf("Description: %s\n\n", profile.Description)
-		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------")
+		colorEnabled := ui.IsColorEnabled()
+		t := ui.NewTable("KEY", "STATUS", "CURRENT", "TARGET")
+		t.SetAlignment(1, ui.AlignCenter)
 		for _, entry := range tune.DiffProfile(profile) {
 			current := entry.Current
 			if current == "" {
-				current = "-"
+				current = ui.Gray("-", colorEnabled)
 			}
 			if entry.Error != "" {
-				current = entry.Error
+				current = ui.Red(entry.Error, colorEnabled)
 			}
-			fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", entry.Key, entry.Status, current, entry.Target)
+			t.AddRow(entry.Key, formatTuneStatus(entry.Status, colorEnabled), current, entry.Target)
 		}
+		fmt.Print(t.Render())
+		fmt.Println()
 	},
 }
 
@@ -108,23 +130,25 @@ var tuneUseCmd = &cobra.Command{
 		}
 		state, err := tune.ApplyProfile(profile)
 
+		colorEnabled := ui.IsColorEnabled()
 		fmt.Printf("Applied profile: %s\n\n", profile.Name)
-		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "OLD", "NEW")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------")
+		t := ui.NewTable("KEY", "STATUS", "OLD", "NEW")
+		t.SetAlignment(1, ui.AlignCenter)
 		for _, entry := range state.Entries {
 			oldValue := entry.OldValue
 			if oldValue == "" {
-				oldValue = "-"
+				oldValue = ui.Gray("-", colorEnabled)
 			}
 			newValue := entry.NewValue
 			if newValue == "" {
-				newValue = "-"
+				newValue = ui.Gray("-", colorEnabled)
 			}
 			if entry.Error != "" {
-				newValue = entry.Error
+				newValue = ui.Red(entry.Error, colorEnabled)
 			}
-			fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", entry.Key, entry.Status, oldValue, newValue)
+			t.AddRow(entry.Key, formatTuneStatus(entry.Status, colorEnabled), oldValue, newValue)
 		}
+		fmt.Print(t.Render())
 		if err != nil {
 			fmt.Printf("\n⚠️  Apply completed with errors: %v\n", err)
 			return
@@ -138,23 +162,25 @@ func runTuneVerify(cmd *cobra.Command, args []string) error {
 	if !ok {
 		return fmt.Errorf("❌ Unknown profile '%s'.", args[0])
 	}
+	colorEnabled := ui.IsColorEnabled()
 	fmt.Printf("Profile: %s\n\n", profile.Name)
-	fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")
-	fmt.Println("----------------------------------------------------------------------------------------------------------------")
+	t := ui.NewTable("KEY", "STATUS", "CURRENT", "TARGET")
+	t.SetAlignment(1, ui.AlignCenter)
 	mismatch := false
 	for _, entry := range tune.VerifyProfile(profile) {
 		current := entry.Current
 		if current == "" {
-			current = "-"
+			current = ui.Gray("-", colorEnabled)
 		}
 		if entry.Error != "" {
-			current = entry.Error
+			current = ui.Red(entry.Error, colorEnabled)
 		}
 		if entry.Status != "ok" {
 			mismatch = true
 		}
-		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", entry.Key, entry.Status, current, entry.Target)
+		t.AddRow(entry.Key, formatTuneStatus(entry.Status, colorEnabled), current, entry.Target)
 	}
+	fmt.Print(t.Render())
 	if mismatch {
 		return fmt.Errorf("⚠️  Profile is not fully active.")
 	}
@@ -186,23 +212,25 @@ var tuneRollbackCmd = &cobra.Command{
 		}
 		results, rollbackErr := tune.RollbackRuntimeState(state)
 
+		colorEnabled := ui.IsColorEnabled()
 		fmt.Printf("Rollback profile: %s\n\n", state.Profile)
-		fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", "KEY", "STATUS", "CURRENT", "TARGET")
-		fmt.Println("----------------------------------------------------------------------------------------------------------------")
+		t := ui.NewTable("KEY", "STATUS", "CURRENT", "TARGET")
+		t.SetAlignment(1, ui.AlignCenter)
 		for _, entry := range results {
 			current := entry.OldValue
 			if current == "" {
-				current = "-"
+				current = ui.Gray("-", colorEnabled)
 			}
 			target := entry.NewValue
 			if target == "" {
-				target = "-"
+				target = ui.Gray("-", colorEnabled)
 			}
 			if entry.Error != "" {
-				target = entry.Error
+				target = ui.Red(entry.Error, colorEnabled)
 			}
-			fmt.Printf("%-40s | %-12s | %-18s | %-18s\n", entry.Key, entry.Status, current, target)
+			t.AddRow(entry.Key, formatTuneStatus(entry.Status, colorEnabled), current, target)
 		}
+		fmt.Print(t.Render())
 		if rollbackErr != nil {
 			fmt.Printf("\n⚠️  Rollback completed with errors: %v\n", rollbackErr)
 			return

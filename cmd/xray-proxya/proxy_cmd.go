@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -192,18 +193,22 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	colorEnabled := ui.IsColorEnabled()
 	hasPending := false
-	fmt.Printf("\n%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n", "ALIAS", "STATE", "SOCKS PORT", "HTTP PORT", "LISTEN IP", "REMOTE ENDPOINT")
-	fmt.Println("---------------------------------------------------------------------------------------------------------")
+	t := ui.NewTable("ALIAS", "STATE", "SOCKS PORT", "HTTP PORT", "LISTEN IP", "REMOTE ENDPOINT")
+	t.SetAlignment(1, ui.AlignCenter)
+	t.SetAlignment(2, ui.AlignRight)
+	t.SetAlignment(3, ui.AlignRight)
+
 	for _, co := range cfg.CustomOutbounds {
 		if !proxyListAll && co.InternalProxyPort <= 0 {
 			continue
 		}
 
-		state := "OFF"
-		socksPortStr := "-"
-		httpPortStr := "-"
-		listenIP := "-"
+		state := ui.Gray("OFF", colorEnabled)
+		socksPortStr := ui.Gray("-", colorEnabled)
+		httpPortStr := ui.Gray("-", colorEnabled)
+		listenIP := ui.Gray("-", colorEnabled)
 
 		applied := isProxyApplied(co, activeCfg)
 		if !applied {
@@ -212,11 +217,11 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 
 		if co.InternalProxyPort > 0 {
 			if !applied {
-				state = "PENDING"
+				state = ui.Yellow("PENDING", colorEnabled)
 			} else if co.Enabled {
-				state = "ON"
+				state = ui.Green("ON", colorEnabled)
 			} else {
-				state = "DISABLED"
+				state = ui.Gray("DISABLED", colorEnabled)
 			}
 			socksPortStr = fmt.Sprintf("%d", co.InternalProxyPort)
 			httpPort := co.InternalHttpPort
@@ -231,8 +236,7 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 			}
 		}
 
-		fmt.Printf(
-			"%-15s | %-8s | %-10s | %-10s | %-15s | %-s\n",
+		t.AddRow(
 			co.Alias,
 			state,
 			socksPortStr,
@@ -242,8 +246,12 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 		)
 	}
 
+	fmt.Println()
+	fmt.Print(t.Render())
 	if hasPending {
 		fmt.Println("\n⚠️  Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
+	} else {
+		fmt.Println()
 	}
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/service"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -347,31 +348,37 @@ func runPathList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n%-15s | %-10s | %-17s | %-6s | %-9s | %-s\n", "ALIAS", "PATHLINK", "LISTEN", "IDLE", "TOKEN", "ACTIVE")
-	fmt.Println("-------------------------------------------------------------------------")
+	colorEnabled := ui.IsColorEnabled()
+	t := ui.NewTable("ALIAS", "PATHLINK", "LISTEN", "IDLE", "TOKEN", "ACTIVE")
+	t.SetAlignment(3, ui.AlignRight)
+	t.SetAlignment(4, ui.AlignCenter)
+
 	for _, item := range items {
-		activeMarker := "-"
+		activeMarker := ui.Gray("-", colorEnabled)
 		if item.IsActiveRelay {
-			activeMarker = "*active"
+			activeMarker = ui.Green("*active", colorEnabled)
 		}
 		listen := item.Listen
 		if listen == "" {
-			listen = "-"
+			listen = ui.Gray("-", colorEnabled)
 		}
-		idle := "-"
+		idle := ui.Gray("-", colorEnabled)
 		if item.IdleSeconds > 0 {
 			idle = fmt.Sprintf("%ds", item.IdleSeconds)
 		}
-		token := "NOT SET"
+		token := ui.Gray("NOT SET", colorEnabled)
 		if item.TokenConfigured {
-			token = "SET"
+			token = ui.Green("SET", colorEnabled)
 		}
-		fmt.Printf("%-15s | %-10s | %-17s | %-6s | %-9s | %-s\n",
-			item.Alias, item.PathLink, listen, idle, token, activeMarker)
+		t.AddRow(item.Alias, item.PathLink, listen, idle, token, activeMarker)
 	}
 
+	fmt.Println()
+	fmt.Print(t.Render())
 	if hasPending {
 		fmt.Println("\n⚠️  Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
+	} else {
+		fmt.Println()
 	}
 	return nil
 }
