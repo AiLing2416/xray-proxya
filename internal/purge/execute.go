@@ -89,6 +89,26 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 		}
 	}
 
+	for _, item := range plan.Items {
+		if item.Category == CatService && item.Action == ActionCleanSELinux {
+			for _, pattern := range []string{
+				`/root/.local/share/xray-proxya(/.*)?`,
+				`/root/.local/share/xray-proxya/bin/pathd`,
+				`/root/.local/bin/xray-proxya`,
+				`/root/.config/xray-proxya(/.*)?`,
+			} {
+				_ = exec.Command("semanage", "fcontext", "-d", pattern).Run()
+			}
+			if semoduleOut, err := exec.Command("semodule", "-r", item.Target).CombinedOutput(); err != nil {
+				if !strings.Contains(string(semoduleOut), "not found") {
+					errs = append(errs, fmt.Errorf("remove SELinux policy module %s: %w (%s)", item.Target, err, semoduleOut))
+				}
+			} else {
+				fmt.Fprintf(out, "✅ Removed SELinux policy module: %s\n", item.Target)
+			}
+		}
+	}
+
 	// Phase 4: Shell environment & completions
 	for _, item := range plan.Items {
 		if item.Category == CatProfile {

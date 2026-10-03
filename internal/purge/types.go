@@ -93,6 +93,7 @@ const (
 	ActionFlush           = "flush"
 	ActionCleanCompletion = "clean-completion"
 	ActionCleanPath       = "clean-path"
+	ActionCleanSELinux    = "clean-selinux"
 )
 
 // ParseTargets parses and validates a slice of raw strings (possibly comma-separated).

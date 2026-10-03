@@ -98,6 +98,13 @@ func BuildPlan(opts Options) (*Plan, error) {
 			service.SubTemplateUnit,
 			"xray-proxya-ipv6-rotate.service",
 		}
+		if os.Geteuid() == 0 {
+			if matches, _ := filepath.Glob(filepath.Join(service.UnitDirectory(), "he-tunnel*.service")); len(matches) > 0 {
+				for _, m := range matches {
+					managedUnits = append(managedUnits, filepath.Base(m))
+				}
+			}
+		}
 		unitSet := make(map[string]bool)
 		for _, u := range managedUnits {
 			unitSet[u] = true
@@ -121,6 +128,20 @@ func BuildPlan(opts Options) (*Plan, error) {
 					Target:   unitPath,
 					Detail:   "systemd unit file",
 				})
+			}
+		}
+
+		// SELinux policy module and file contexts cleanup if root and module exists
+		if os.Geteuid() == 0 {
+			if _, err := exec.LookPath("semodule"); err == nil {
+				if out, err := exec.Command("semodule", "-l").Output(); err == nil && strings.Contains(string(out), "xray_proxya") {
+					plan.Items = append(plan.Items, PlanItem{
+						Category: CatService,
+						Action:   ActionCleanSELinux,
+						Target:   "xray_proxya",
+						Detail:   "SELinux policy module and file contexts",
+					})
+				}
 			}
 		}
 

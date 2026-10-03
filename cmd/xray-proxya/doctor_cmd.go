@@ -23,15 +23,24 @@ Includes shell autocompletion installer, user session lingering manager,
 and SELinux security policy installer.`,
 }
 
+var selinuxUninstall bool
+
 var doctorSELinuxCmd = &cobra.Command{
 	Use:   "selinux",
-	Short: "Install the reviewed SELinux policy for the root service",
+	Short: "Install or remove the reviewed SELinux policy for the root service",
 	Long: `Compile, package, and load the dedicated SELinux policy module (xray_proxya.te)
-and set appropriate security contexts for Xray-Proxya binaries, configs, and sockets.`,
+or remove it with --uninstall, managing security contexts for Xray-Proxya.`,
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := utils.RequireRootShell("doctor selinux"); err != nil {
 			return err
+		}
+		if selinuxUninstall {
+			if err := uninstallSELinuxPolicy(); err != nil {
+				return fmt.Errorf("SELinux policy removal failed: %w", err)
+			}
+			fmt.Fprintln(cmd.OutOrStdout(), "✅ Reviewed SELinux policy and file contexts removed.")
+			return nil
 		}
 		if err := installSELinuxPolicy(); err != nil {
 			return fmt.Errorf("SELinux policy installation failed: %w", err)
@@ -98,11 +107,45 @@ func installSELinuxPolicy() error {
 	return nil
 }
 
+func uninstallSELinuxPolicy() error {
+	for _, name := range []string{"sestatus", "semodule", "semanage", "restorecon"} {
+		if _, err := exec.LookPath(name); err != nil {
+			return fmt.Errorf("%s is required", name)
+		}
+	}
+	if out, err := exec.Command("sestatus").Output(); err != nil || !containsSELinuxEnabled(string(out)) {
+		return fmt.Errorf("SELinux is not enabled")
+	}
+
+	for _, pattern := range []string{
+		`/root/.local/share/xray-proxya(/.*)?`,
+		`/root/.local/share/xray-proxya/bin/pathd`,
+		`/root/.local/bin/xray-proxya`,
+		`/root/.config/xray-proxya(/.*)?`,
+	} {
+		_ = exec.Command("semanage", "fcontext", "-d", pattern).Run()
+	}
+
+	if out, err := exec.Command("semodule", "-r", "xray_proxya").CombinedOutput(); err != nil {
+		if !strings.Contains(string(out), "not found") && !strings.Contains(string(out), "Failed to resolve") {
+			return fmt.Errorf("remove policy module: %w (%s)", err, out)
+		}
+	}
+
+	for _, path := range []string{"/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.config/xray-proxya"} {
+		if _, err := os.Stat(path); err == nil {
+			_ = exec.Command("restorecon", "-RF", path).Run()
+		}
+	}
+	return nil
+}
+
 func containsSELinuxEnabled(status string) bool {
 	return strings.Contains(status, "SELinux status:") && strings.Contains(status, "enabled")
 }
 
 func init() {
+	doctorSELinuxCmd.Flags().BoolVarP(&selinuxUninstall, "uninstall", "u", false, "Uninstall the SELinux policy module and file contexts")
 	doctorCmd.AddCommand(doctorSELinuxCmd, doctorCompletionCmd, doctorLingerCmd, doctorTunnelCmd)
 	rootCmd.AddCommand(doctorCmd)
 }

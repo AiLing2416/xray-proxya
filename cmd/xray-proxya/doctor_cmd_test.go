@@ -20,6 +20,16 @@ func TestDoctorCommandIsAContainerWithSELinuxSubcommand(t *testing.T) {
 	}
 }
 
+func TestDoctorSELinuxUninstallFlag(t *testing.T) {
+	flag := doctorSELinuxCmd.Flags().Lookup("uninstall")
+	if flag == nil {
+		t.Fatal("expected doctor selinux to have --uninstall flag")
+	}
+	if flag.Shorthand != "u" {
+		t.Fatalf("expected shorthand 'u', got %q", flag.Shorthand)
+	}
+}
+
 func TestSELinuxEnabledStatus(t *testing.T) {
 	if !containsSELinuxEnabled("SELinux status:                 enabled\nCurrent mode:                   enforcing\n") {
 		t.Fatal("enabled SELinux status was not recognized")
