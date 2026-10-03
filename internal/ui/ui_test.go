@@ -82,3 +82,31 @@ func TestProgressRenderer_TTY(t *testing.T) {
 		t.Errorf("expected TTY complete output, got: %q", out)
 	}
 }
+
+func TestBannersAndCallout(t *testing.T) {
+	succ := Success("Operation completed")
+	if !strings.Contains(succ, "✔") || !strings.Contains(succ, "Operation completed") {
+		t.Errorf("unexpected Success output: %q", succ)
+	}
+
+	warn := Warning("Staging pending")
+	if !strings.Contains(warn, "▲") || !strings.Contains(warn, "Staging pending") {
+		t.Errorf("unexpected Warning output: %q", warn)
+	}
+
+	errOut := Error("Fatal error")
+	if !strings.Contains(errOut, "✖") || !strings.Contains(errOut, "Fatal error") {
+		t.Errorf("unexpected Error output: %q", errOut)
+	}
+
+	not := Notice("Info line")
+	if !strings.Contains(not, "ℹ") || !strings.Contains(not, "Info line") {
+		t.Errorf("unexpected Notice output: %q", not)
+	}
+
+	box := Callout("NOTICE", "Line 1", "Line 2 is longer")
+	if !strings.Contains(box, "┌─ NOTICE") || !strings.Contains(box, "│ Line 1") || !strings.Contains(box, "└") {
+		t.Errorf("unexpected Callout output:\n%s", box)
+	}
+}
+

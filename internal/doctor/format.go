@@ -4,29 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-)
-
-// ANSI color escape codes
-const (
-	colorReset  = "\033[0m"
-	colorRed    = "\033[31m"
-	colorGreen  = "\033[32m"
-	colorYellow = "\033[33m"
-	colorGray   = "\033[90m"
-	colorBold   = "\033[1m"
+	"xray-proxya/internal/ui"
 )
 
 // FormatStatus returns colored status without brackets.
 func FormatStatus(s Status) string {
+	color := ui.IsColorEnabled()
 	switch s {
 	case StatusPass:
-		return colorGreen + string(s) + colorReset
+		return ui.Green(string(s), color)
 	case StatusWarn:
-		return colorYellow + string(s) + colorReset
+		return ui.Yellow(string(s), color)
 	case StatusFail:
-		return colorRed + string(s) + colorReset
+		return ui.Red(string(s), color)
 	case StatusSkip:
-		return colorGray + string(s) + colorReset
+		return ui.Gray(string(s), color)
 	default:
 		return string(s)
 	}
@@ -34,12 +26,9 @@ func FormatStatus(s Status) string {
 
 // RenderTerminal renders a clean aligned table of the diagnostic results.
 func RenderTerminal(report *Report, verbose bool) string {
-	var sb strings.Builder
-
-	// Header
-	sb.WriteString("\n")
-	sb.WriteString(fmt.Sprintf("%-22s %-32s %-8s %s\n", "CATEGORY", "CHECK ITEM", "STATUS", "DETAILS / REMEDIATION"))
-	sb.WriteString(strings.Repeat("-", 108) + "\n")
+	colorEnabled := ui.IsColorEnabled()
+	t := ui.NewTable("CATEGORY", "CHECK ITEM", "STATUS", "DETAILS / REMEDIATION")
+	t.SetAlignment(2, ui.AlignCenter)
 
 	for _, r := range report.Results {
 		detail := r.Detail
@@ -47,36 +36,35 @@ func RenderTerminal(report *Report, verbose bool) string {
 			detail += fmt.Sprintf(" (Fix: %s)", r.Remediation)
 		}
 
-		// Ensure 8-character spacing alignment for the 4-character colored status
-		sb.WriteString(fmt.Sprintf("%-22s %-32s %s%-4s%s   %s\n",
-			truncate(r.Category, 21),
-			truncate(r.Name, 31),
-			colorForStatus(r.Status),
-			string(r.Status),
-			colorReset,
-			detail,
-		))
+		statusStr := string(r.Status)
+		switch r.Status {
+		case StatusPass:
+			statusStr = ui.Green(string(r.Status), colorEnabled)
+		case StatusWarn:
+			statusStr = ui.Yellow(string(r.Status), colorEnabled)
+		case StatusFail:
+			statusStr = ui.Red(string(r.Status), colorEnabled)
+		case StatusSkip:
+			statusStr = ui.Gray(string(r.Status), colorEnabled)
+		}
+
+		t.AddRow(r.Category, r.Name, statusStr, detail)
 	}
 
-	sb.WriteString(strings.Repeat("-", 108) + "\n")
+	var sb strings.Builder
+	sb.WriteString("\n")
+	sb.WriteString(t.Render())
+	sb.WriteString("\n")
 
 	// Summary footer
 	sum := report.Summary
-	summaryColor := colorGreen
-	if sum.Failed > 0 {
-		summaryColor = colorRed
-	} else if sum.Warning > 0 {
-		summaryColor = colorYellow
-	}
-
-	sb.WriteString(fmt.Sprintf("Summary: %s%d PASSED%s, %s%d WARNING%s, %s%d FAILED%s, %s%d SKIPPED%s (Total: %d)\n\n",
-		colorGreen, sum.Passed, colorReset,
-		colorYellow, sum.Warning, colorReset,
-		colorRed, sum.Failed, colorReset,
-		colorGray, sum.Skipped, colorReset,
+	sb.WriteString(fmt.Sprintf("Summary: %s %d Passed │ %s %d Warning │ %s %d Failed │ %s %d Skipped (Total: %d)\n\n",
+		ui.Green(ui.SymCheck, colorEnabled), sum.Passed,
+		ui.Yellow(ui.SymTriangle, colorEnabled), sum.Warning,
+		ui.Red(ui.SymCross, colorEnabled), sum.Failed,
+		ui.Gray(ui.SymHollow, colorEnabled), sum.Skipped,
 		sum.Total,
 	))
-	_ = summaryColor
 
 	return sb.String()
 }
@@ -88,26 +76,4 @@ func RenderJSON(report *Report) (string, error) {
 		return "", err
 	}
 	return string(data), nil
-}
-
-func colorForStatus(s Status) string {
-	switch s {
-	case StatusPass:
-		return colorGreen
-	case StatusWarn:
-		return colorYellow
-	case StatusFail:
-		return colorRed
-	case StatusSkip:
-		return colorGray
-	default:
-		return ""
-	}
-}
-
-func truncate(str string, maxLen int) string {
-	if len(str) <= maxLen {
-		return str
-	}
-	return str[:maxLen-3] + "..."
 }

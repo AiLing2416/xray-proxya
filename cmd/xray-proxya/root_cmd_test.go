@@ -14,6 +14,7 @@ func TestRootVersionFlags(t *testing.T) {
 		{"flag --version", []string{"--version"}},
 		{"shorthand flag -v", []string{"-v"}},
 		{"subcommand version", []string{"version"}},
+		{"subcommand version verbose", []string{"version", "--verbose"}},
 	}
 
 	expectedPrefix := "Xray-Proxya v" + Version

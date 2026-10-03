@@ -11,6 +11,7 @@ import (
 	"xray-proxya/internal/quota"
 	"xray-proxya/internal/service"
 	"xray-proxya/internal/trafficstats"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -38,46 +39,42 @@ var statusCmd = &cobra.Command{
 			return outputStatusJSON(cfg, isRoot)
 		}
 
-		fmt.Printf("\n🛰️  XRAY-PROXYA RUNTIME OVERVIEW (Role: %s)\n", strings.ToUpper(string(cfg.Role)))
-		fmt.Println("============================================================")
-
-		// 1. Managed Services (systemd)
-		fmt.Println("🧩 Managed Services (systemd):")
-		printServiceUnitStatus(cfg, isRoot)
-
-		// 2. User session lingering (if non-root)
+		colorEnabled := ui.IsColorEnabled()
+		user := "root"
 		if !isRoot {
-			user := currentLingerUser()
-			enabled, err := checkLingerStatus(user)
-			if err == nil && enabled {
-				fmt.Printf("   👤 User Session Lingering:      [Enabled]  (User: %s, linger is enabled)\n", user)
-			} else {
-				fmt.Printf("   👤 User Session Lingering:      [Disabled] (User: %s, linger is disabled)\n", user)
-			}
+			user = currentLingerUser()
 		}
 
-		// 3. Network & Role Configuration
-		fmt.Println("\n🌐 Network & Proxy State:")
+		fmt.Printf("\n🛰️  XRAY-PROXYA RUNTIME OVERVIEW (Role: %s, User: %s)\n\n", strings.ToUpper(string(cfg.Role)), user)
+
+		// 1. Managed Services (systemd)
+		fmt.Println("● SERVICES (systemd)")
+		printServiceUnitStatus(cfg, isRoot)
+
+		// 2. Network & Role Configuration
+		fmt.Println("\n🌐 NETWORK & PROXY")
 		if cfg.Role == config.RoleGateway {
 			gwState := cfg.Gateway.State
 			if gwState == "" {
 				gwState = "proxy"
 			}
-			localStr := "OFF"
+			localStr := ui.Gray("OFF", colorEnabled)
 			if cfg.Gateway.LocalEnabled {
-				localStr = "ON"
+				localStr = ui.Green("ON", colorEnabled)
 			}
-			lanStr := "OFF"
+			lanStr := ui.Gray("OFF", colorEnabled)
 			if cfg.Gateway.LANEnabled {
-				lanStr = fmt.Sprintf("ON (Iface: %s)", cfg.Gateway.LANInterface)
+				lanStr = fmt.Sprintf("%s (Iface: %s)", ui.Green("ON", colorEnabled), cfg.Gateway.LANInterface)
 			}
 			relayStr := cfg.Gateway.RelayAlias
 			if relayStr == "" {
 				relayStr = "direct"
 			}
-			fmt.Printf("   - Gateway State  : %s (Mode: %s)\n", gwState, cfg.Gateway.Mode)
-			fmt.Printf("   - Local / LAN    : Local: %s | LAN: %s\n", localStr, lanStr)
-			fmt.Printf("   - Active Relay   : %s\n", relayStr)
+			fmt.Printf("  Gateway State      : %s (Mode: %s)\n", gwState, cfg.Gateway.Mode)
+			fmt.Printf("  Interception       : Local: %s │ LAN: %s\n", localStr, lanStr)
+			fmt.Printf("  Active Outbound    : %s\n", relayStr)
+			fmt.Printf("  Managed Resources  : %d relays │ %d guest tenants │ %d certificates\n",
+				len(cfg.CustomOutbounds), len(cfg.Guests), len(cfg.Certs))
 		} else {
 			activePresets := 0
 			for _, p := range cfg.Presets {
@@ -85,45 +82,39 @@ var statusCmd = &cobra.Command{
 					activePresets++
 				}
 			}
-			fmt.Printf("   - Active Presets : %d / %d\n", activePresets, len(cfg.Presets))
-			fmt.Printf("   - Relays / Guests: %d relays | %d guests\n", len(cfg.CustomOutbounds), len(cfg.Guests))
+			fmt.Printf("  Active Presets     : %d / %d enabled\n", activePresets, len(cfg.Presets))
+			fmt.Printf("  Managed Resources  : %d relays │ %d guest tenants │ %d certificates\n",
+				len(cfg.CustomOutbounds), len(cfg.Guests), len(cfg.Certs))
 		}
 
-		if config.StagingExists() {
-			fmt.Println("   - Staging Config : ⚠️ Pending changes in STAGING (Run 'apply' to commit)")
-		} else {
-			fmt.Println("   - Staging Config : Clean (In sync with active)")
-		}
-
-		// 4. Traffic Statistics
+		// 3. Traffic Statistics
 		mainActive, _, _ := querySystemdUnitState(xray.MainServiceUnit)
 		if !mainActive {
-			fmt.Println("\n📊 Traffic Statistics (gRPC API):")
-			fmt.Println("   (Xray Core service is inactive; traffic statistics unavailable)")
-			fmt.Println("============================================================")
-			return nil
+			fmt.Println("\n📊 TRAFFIC & USAGE")
+			fmt.Println("  (Xray Core service is inactive; traffic statistics unavailable)")
+		} else {
+			allStats, err := xray.GetXrayStats(cfg.APIInbound)
+			if err != nil {
+				fmt.Println("\n📊 TRAFFIC & USAGE")
+				fmt.Printf("  ⚠️ Failed to query API traffic stats (port %d): %v\n", cfg.APIInbound, err)
+			} else {
+				fmt.Println("\n📊 TRAFFIC & USAGE")
+				summary := trafficstats.Summarize(allStats)
+				fmt.Printf("  Throughput Total   : Direct: %s │ Relay: %s\n",
+					utils.FormatBytes(summary.Direct), utils.FormatBytes(summary.Relay))
+				printNamedStats("\n  📥 Service Inbounds:", summary.InboundStats)
+				printNamedStats("\n  🧭 Direct / Service Usage:", summary.ServiceStats)
+				printNamedStats("\n  🔁 Relay Usage:", summary.RelayStats)
+				printGuestStatsWithDetails(summary.GuestStats, cfg.Guests)
+			}
 		}
 
-		allStats, err := xray.GetXrayStats(cfg.APIInbound)
-		if err != nil {
-			fmt.Println("\n📊 Traffic Statistics (gRPC API):")
-			fmt.Printf("   ⚠️ Failed to query API traffic stats (port %d): %v\n", cfg.APIInbound, err)
-			fmt.Println("============================================================")
-			return nil
+		// 4. Staging Status Banner
+		if config.StagingExists() {
+			fmt.Printf("\n%s\n\n", ui.Warning("Pending changes in STAGING. Run 'xray-proxya apply' to commit."))
+		} else {
+			fmt.Printf("\n%s\n\n", ui.Success("Staging configuration is clean and in sync with active."))
 		}
-
-		fmt.Println("\n📊 Traffic Statistics (gRPC API):")
-		summary := trafficstats.Summarize(allStats)
-
-		fmt.Printf("   🌐 Total Direct: %s | Total Relay: %s\n",
-			utils.FormatBytes(summary.Direct), utils.FormatBytes(summary.Relay))
-
-		printNamedStats("\n   📥 Service Inbounds:", summary.InboundStats)
-		printNamedStats("\n   🧭 Direct / Service Usage:", summary.ServiceStats)
-		printNamedStats("\n   🔁 Relay Usage:", summary.RelayStats)
-		printGuestStatsWithDetails(summary.GuestStats, cfg.Guests)
-
-		fmt.Println("============================================================")
 		return nil
 	},
 }
@@ -139,23 +130,49 @@ func querySystemdUnitState(unit string) (bool, int, string) {
 	return st.Active, st.PID, statusStr
 }
 
+func formatServiceUnitLine(displayName, unitName, stateStr string, active bool, detail string, colorEnabled bool) string {
+	icon := ui.Gray(ui.SymHollow, colorEnabled)
+	stateColored := ui.Gray(stateStr, colorEnabled)
+	if active {
+		icon = ui.Green(ui.SymBullet, colorEnabled)
+		stateColored = ui.Green(stateStr, colorEnabled)
+	} else if strings.EqualFold(stateStr, "failed") || strings.EqualFold(stateStr, "error") {
+		icon = ui.Red(ui.SymBullet, colorEnabled)
+		stateColored = ui.Red(stateStr, colorEnabled)
+	}
+
+	detailStr := detail
+	if detailStr == "" {
+		detailStr = ui.Gray("-", colorEnabled)
+	}
+
+	return fmt.Sprintf("  %-18s │ %s %-10s │ %-12s │ %s\n",
+		displayName,
+		icon,
+		stateColored,
+		detailStr,
+		unitName,
+	)
+}
+
 func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
+	colorEnabled := ui.IsColorEnabled()
+
 	// 1. Main service
-	mainLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(xray.MainServiceUnit), xray.MainServiceUnit)
 	mainRootOnly := (cfg.Role == config.RoleGateway)
 	if !isRoot && mainRootOnly {
-		fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", mainLabel)
+		fmt.Print(formatServiceUnitLine("Main Core", xray.MainServiceUnit, "Unavailable", false, "root only", colorEnabled))
 	} else {
-		active, pid, status := querySystemdUnitState(xray.MainServiceUnit)
-		icon := "●"
-		if !active {
-			icon = "○"
+		active, pid, _ := querySystemdUnitState(xray.MainServiceUnit)
+		stateStr := "Inactive"
+		detail := "-"
+		if active {
+			stateStr = "Active"
+			if pid > 0 {
+				detail = fmt.Sprintf("PID: %d", pid)
+			}
 		}
-		if active && pid > 0 {
-			fmt.Printf("   %s %-40s %-12s PID: %-7d\n", icon, mainLabel, status, pid)
-		} else {
-			fmt.Printf("   %s %-40s %s\n", icon, mainLabel, status)
-		}
+		fmt.Print(formatServiceUnitLine("Main Core", xray.MainServiceUnit, stateStr, active, detail, colorEnabled))
 	}
 
 	// 2. Subscription service
@@ -164,44 +181,54 @@ func printServiceUnitStatus(cfg *config.UserConfig, isRoot bool) {
 		port = cfg.AdminSub.Port
 	}
 	subConfigured := cfg.AdminSub.Token != "" || port > 0
-	subLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(subServiceUnit), subServiceUnit)
 	if !subConfigured {
-		fmt.Printf("   ○ %-40s [Inactive] (Not configured)\n", subLabel)
+		fmt.Print(formatServiceUnitLine("Subscription Dist", subServiceUnit, "Inactive", false, "Not configured", colorEnabled))
 	} else {
 		subRootOnly := port <= 1024
 		if !isRoot && subRootOnly {
-			fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", subLabel)
+			fmt.Print(formatServiceUnitLine("Subscription Dist", subServiceUnit, "Unavailable", false, "root only", colorEnabled))
 		} else {
-			active, pid, status := querySystemdUnitState(subServiceUnit)
-			icon := "●"
-			if !active {
-				icon = "○"
+			active, pid, _ := querySystemdUnitState(subServiceUnit)
+			stateStr := "Inactive"
+			detail := fmt.Sprintf("Port: %d", port)
+			if active {
+				stateStr = "Active"
+				if pid > 0 {
+					detail = fmt.Sprintf("PID: %d", pid)
+				}
 			}
-			if active && pid > 0 {
-				fmt.Printf("   %s %-40s %-12s Port: %-5d PID: %-7d\n", icon, subLabel, status, port, pid)
-			} else {
-				fmt.Printf("   %s %-40s %s (Port: %d)\n", icon, subLabel, status, port)
-			}
+			fmt.Print(formatServiceUnitLine("Subscription Dist", subServiceUnit, stateStr, active, detail, colorEnabled))
 		}
 	}
 
 	// 3. Pathd service
-	pathdLabel := fmt.Sprintf("%s (%s)", service.UnitDisplayName(pathdServiceUnit), pathdServiceUnit)
 	if !isRoot {
-		fmt.Printf("   ○ %-40s [Unavailable] (root only)\n", pathdLabel)
+		fmt.Print(formatServiceUnitLine("Pathd Daemon", pathdServiceUnit, "Unavailable", false, "root only", colorEnabled))
 	} else if cfg.Role != config.RoleServer {
-		fmt.Printf("   ○ %-40s [N/A] (Server role only)\n", pathdLabel)
+		fmt.Print(formatServiceUnitLine("Pathd Daemon", pathdServiceUnit, "N/A", false, "Server only", colorEnabled))
 	} else {
-		active, pid, status := querySystemdUnitState(pathdServiceUnit)
-		icon := "●"
-		if !active {
-			icon = "○"
+		active, pid, _ := querySystemdUnitState(pathdServiceUnit)
+		stateStr := "Inactive"
+		detail := "-"
+		if active {
+			stateStr = "Active"
+			if pid > 0 {
+				detail = fmt.Sprintf("PID: %d", pid)
+			}
 		}
-		if active && pid > 0 {
-			fmt.Printf("   %s %-40s %-12s PID: %-7d (ICMP Probe)\n", icon, pathdLabel, status, pid)
-		} else {
-			fmt.Printf("   %s %-40s %s\n", icon, pathdLabel, status)
+		fmt.Print(formatServiceUnitLine("Pathd Daemon", pathdServiceUnit, stateStr, active, detail, colorEnabled))
+	}
+
+	// 4. Session linger (if non-root)
+	if !isRoot {
+		user := currentLingerUser()
+		enabled, err := checkLingerStatus(user)
+		lingerState := "Disabled"
+		detail := "User: " + user
+		if err == nil && enabled {
+			lingerState = "Enabled"
 		}
+		fmt.Print(formatServiceUnitLine("User Session Linger", "systemd --user", lingerState, enabled, detail, colorEnabled))
 	}
 }
 
