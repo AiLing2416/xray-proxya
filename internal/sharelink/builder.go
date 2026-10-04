@@ -21,7 +21,11 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 			"encryption": "none",
 		}
 		if n.Flow != "" {
-			userObj["flow"] = n.Flow
+			flow := n.Flow
+			if flow == "xtls-rprx-vision" {
+				flow = "xtls-rprx-vision-udp443"
+			}
+			userObj["flow"] = flow
 		}
 
 		vlessSettings := map[string]interface{}{

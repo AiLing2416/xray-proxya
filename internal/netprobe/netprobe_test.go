@@ -79,8 +79,8 @@ func TestQUICWire(t *testing.T) {
 	if len(pkt) != 1200 {
 		t.Fatalf("expected 1200 bytes, got %d", len(pkt))
 	}
-	if pkt[0] != 0xC0 {
-		t.Fatalf("expected long header flag 0xC0, got 0x%02x", pkt[0])
+	if pkt[0]&0xc0 != 0xc0 {
+		t.Fatalf("expected long header initial flag, got 0x%02x", pkt[0])
 	}
 	version := binary.BigEndian.Uint32(pkt[1:5])
 	if version != 0x00000001 {

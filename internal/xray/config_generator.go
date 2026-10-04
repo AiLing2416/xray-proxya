@@ -409,6 +409,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 		out := deepCopyMap(co.Config)
 		out["tag"] = "outbound-" + co.Alias
+		ensureUDP443Support(out)
 		ss, _ := out["streamSettings"].(map[string]interface{})
 		if ss == nil {
 			ss = make(map[string]interface{})
@@ -428,6 +429,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 		out := deepCopyMap(guest.OutboundConf)
 		out["tag"] = guestOutboundTag(guest.Alias)
+		ensureUDP443Support(out)
 		ss, _ := out["streamSettings"].(map[string]interface{})
 		if ss == nil {
 			ss = make(map[string]interface{})
@@ -615,6 +617,38 @@ func sanitizeTagComponent(value string) string {
 
 func relayUserEmail(alias string) string {
 	return "relay-" + sanitizeTagComponent(alias)
+}
+
+func ensureUDP443Support(outbound map[string]interface{}) {
+	settings, ok := outbound["settings"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	vnext, ok := settings["vnext"].([]interface{})
+	if !ok {
+		return
+	}
+	for _, rawV := range vnext {
+		v, ok := rawV.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		users, ok := v["users"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, rawU := range users {
+			u, ok := rawU.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if flow, ok := u["flow"].(string); ok {
+				if flow == "xtls-rprx-vision" {
+					u["flow"] = "xtls-rprx-vision-udp443"
+				}
+			}
+		}
+	}
 }
 
 func guestUserEmail(alias string) string {
