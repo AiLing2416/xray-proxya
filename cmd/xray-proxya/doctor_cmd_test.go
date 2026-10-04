@@ -93,3 +93,14 @@ func TestSELinuxPolicyAllowsUDPPortBinding(t *testing.T) {
 		t.Fatal("policy must permit UDP port binding for local proxies and inbounds")
 	}
 }
+
+func TestSELinuxPolicyAllowsGatewayNetworkStateAndTerminal(t *testing.T) {
+	for _, rule := range []string{
+		"kernel_read_network_state(xray_proxya_gateway_t)",
+		"userdom_use_inherited_user_ptys(xray_proxya_gateway_t)",
+	} {
+		if !strings.Contains(proxyaSELinux.PolicySource, rule) {
+			t.Fatalf("policy missing %q for gateway domain", rule)
+		}
+	}
+}

@@ -1,4 +1,4 @@
-policy_module(xray_proxya, 2.1.0)
+policy_module(xray_proxya, 2.1.1)
 
 ########################################
 # Dedicated domain for the root-managed Xray-Proxya service.  This policy is
@@ -38,6 +38,7 @@ type xray_proxya_gateway_t;
 domain_type(xray_proxya_gateway_t)
 role system_r types xray_proxya_gateway_t;
 domain_use_interactive_fds(xray_proxya_gateway_t)
+userdom_use_inherited_user_ptys(xray_proxya_gateway_t)
 
 ########################################
 # Own configuration, generated Xray JSON, PID and gateway state. Service logs
@@ -167,9 +168,8 @@ allow xray_proxya_gateway_t self:udp_socket create_socket_perms;
 # Fedora's legacy iptables backend uses a raw control socket for the fixed
 # mangle rules that preserve ICMP TTL across path-tun.
 allow xray_proxya_gateway_t self:rawip_socket create_socket_perms;
-# IPv6 availability is detected from this kernel-owned namespace link only.
-allow xray_proxya_gateway_t proc_net_t:lnk_file { getattr open read };
-allow xray_proxya_gateway_t proc_net_t:file getattr;
+# IPv6 availability and host network state detection.
+kernel_read_network_state(xray_proxya_gateway_t)
 kernel_rw_net_sysctls(xray_proxya_gateway_t)
 
 files_read_etc_files(xray_proxya_t)
