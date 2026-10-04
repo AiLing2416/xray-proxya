@@ -20,16 +20,18 @@ A typical setup has two or three machines:
 
 ## Runtime Principle
 
-Do not run `sudo xray-proxya ...` across users. `sudo` changes the user, HOME, PATH, and config directory, which can easily produce a split setup where the binary was installed by one user but commands read another user's config.
+**Do not run single-command `sudo xray-proxya ...` across users.** Single-command `sudo` produces an uncleaned environment with conflicting `SUDO_USER`, `HOME`, `PATH`, and config directories, which easily causes split setups where binaries or configurations are read from unexpected paths.
 
-Use one of these models:
+When performing privileged operations (transparent gateway requires managing TUN, nftables, policy routing, and sysctl), use **Root Mode**:
+- Switch to a clean, full root login environment using `sudo -i`, `su -`, or by logging in as `root` directly.
+- Execute `xray-proxya` commands only after entering the root environment.
 
-- User mode: install and run as the same non-root user, and only use features that do not require system network privileges.
-- Root mode: log into a root shell directly, or run `su -` first, then install and run `xray-proxya` there. Transparent gateway needs TUN, nftables, policy routing, and sysctl access, so Root mode is recommended.
-
-Commands in this guide are meant to be run directly in the correct user's shell. If you use Root mode, enter a root shell first:
+Commands in this guide assume a full root shell. If currently running as a standard user, switch to root first:
 
 ```bash
+# Enter a full root environment (sudo -i or su - recommended)
+sudo -i
+# or
 su -
 ```
 

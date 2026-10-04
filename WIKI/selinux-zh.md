@@ -1,10 +1,13 @@
 # Xray-Proxya SELinux（Fedora）配置指南
 
 本文适用于 Fedora Server 等默认启用 SELinux 的系统。以下操作以 `root`
-管理的 systemd 服务为前提；请直接使用 root shell，避免以普通用户配置再用
-`sudo` 启动服务。
+管理的 systemd 服务为前提。请通过 `sudo -i`、`su -` 切换至完整的 root 环境，
+或直接以 root 登录；避免以普通用户配置再使用单命令 `sudo` 执行。
 
 ```bash
+# 切换至完整 root 环境
+sudo -i
+# 或
 su -
 ```
 
@@ -121,7 +124,11 @@ ip rule show
 测试结束务必清理：
 
 ```bash
+# 关闭网关运行态
 xray-proxya gateway down
+
+# 若需要彻底卸载专用 SELinux 策略并恢复默认安全上下文
+xray-proxya doctor selinux --uninstall
 ```
 
 随后 `proxya-tun`、`inet xray_proxya` 和 Gateway 的策略路由都应不存在。

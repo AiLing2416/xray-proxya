@@ -20,16 +20,18 @@
 
 ## 运行原则
 
-不要使用 `sudo xray-proxya ...` 这种跨用户调用方式。原因是 `sudo` 会切换用户、HOME、PATH 和配置目录，容易出现“普通用户安装，root 环境找不到二进制或读到另一份配置”的问题。
+**不要使用单命令 `sudo xray-proxya ...` 跨用户调用**。原因是单命令 `sudo` 会导致 `SUDO_USER`、`HOME`、`PATH` 和配置目录环境不纯净，容易出现“普通用户安装，root 环境找不到二进制或读错另一份配置”的问题。
 
-推荐二选一：
+若需执行特权操作（透明网关需要管理 TUN、nftables、策略路由和 sysctl），推荐使用 **Root 模式**：
+- 先通过 `sudo -i`、`su -` 切换到完整的 root 登录环境，或直接以 `root` 用户登录；
+- 进入 root 环境后再执行 `xray-proxya` 命令。
 
-- 普通用户模式：以同一个普通用户安装和运行，只使用不需要系统网络权限的功能。
-- Root 模式：直接登录 root shell，或先执行 `su -` 进入 root 环境，再安装和运行 `xray-proxya`。透明网关需要修改 TUN、nftables、policy routing 和 sysctl，推荐使用 Root 模式。
-
-本文中的命令默认在正确用户的 shell 中直接执行。如果你采用 Root 模式，请先进入 root shell：
+本文中的命令默认在完整的 root shell 中执行。若当前为普通用户，请先进入 root 环境：
 
 ```bash
+# 切换至完整 root 环境（推荐使用 sudo -i 或 su -）
+sudo -i
+# 或
 su -
 ```
 

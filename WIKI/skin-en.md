@@ -59,7 +59,7 @@ When operating alongside underlying Xray REALITY / Inbound configurations, the s
 > **Prerequisites**: Ensure you have a domain pointing to your server's public IP address, with TCP ports 80 and 443 opened in your firewall and cloud security groups.
 
 ### Step 1: Issue a Let's Encrypt Certificate (Root Shell)
-Execute certificate issuance from a direct root shell:
+Execute certificate issuance from a clean root environment (`sudo -i`, `su -`, or root login):
 ```bash
 # Automatically complete HTTP-01 challenge on port 80 and issue a TLS certificate
 xray-proxya cert add sea.example.com

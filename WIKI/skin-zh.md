@@ -58,7 +58,7 @@ Authentic Skin v3 针对以下三款广泛部署的知名企业级/个人网盘�
 > **前置条件**：请确保拥有一个解析至服务器公网 IP 的域名，并已在防火墙/安全组中放通 TCP 80 与 443 端口。
 
 ### 步骤 1：申请 Let's Encrypt 证书 (Root 权限)
-以 root 身份执行证书申请命令：
+在完整的 root 环境（通过 `sudo -i`、`su -` 切换或以 root 登录）下执行证书申请命令：
 ```bash
 # 自动通过 80 端口完成 HTTP-01 验证并签发 TLS 证书
 xray-proxya cert add sea.example.com

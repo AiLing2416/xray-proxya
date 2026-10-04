@@ -1,8 +1,11 @@
 # Xray-Proxya SELinux (Fedora) Configuration Guide
 
-This document applies to Linux distributions with SELinux enabled by default, such as Fedora Server. The operations below assume systemd services managed by `root`. Always use a direct root shell; avoid configuring under an unprivileged user and then starting services via `sudo`.
+This document applies to Linux distributions with SELinux enabled by default, such as Fedora Server. The operations below assume systemd services managed by `root`. Enter a clean root environment using `sudo -i`, `su -`, or a direct root login; avoid configuring under an unprivileged user and then invoking commands via single-command `sudo`.
 
 ```bash
+# Enter a clean root environment
+sudo -i
+# or
 su -
 ```
 
@@ -109,7 +112,11 @@ ip rule show
 Always clean up after testing:
 
 ```bash
+# Tear down gateway runtime state
 xray-proxya gateway down
+
+# If a complete wipe of the SELinux module is desired
+xray-proxya doctor selinux --uninstall
 ```
 
 After tearing down, `proxya-tun`, the `inet xray_proxya` nftables table, and the gateway policy routing rules should no longer exist.
