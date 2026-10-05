@@ -147,6 +147,17 @@ Examples:
 			return fmt.Errorf("purge completed with errors: %w", err)
 		}
 
+		if configDir != "" {
+			lockFile := filepath.Join(configDir, "lifecycle.lock")
+			entries, readErr := os.ReadDir(configDir)
+			if readErr == nil && (len(entries) == 0 || (len(entries) == 1 && entries[0].Name() == "lifecycle.lock")) {
+				_ = os.Remove(lockFile)
+				if err := os.Remove(configDir); err == nil {
+					fmt.Fprintf(out, "✅ Cleaned empty config directory: %s\n", configDir)
+				}
+			}
+		}
+
 		fmt.Fprintln(out, "\n✨ Purge operation completed.")
 		return nil
 	},

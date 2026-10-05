@@ -95,6 +95,15 @@ func (m *Manager) Install(cfg *config.UserConfig) error {
 		return fmt.Errorf("write %s: %w", SubUnit, err)
 	}
 
+	if system {
+		restoreContent := BuildGatewayRestoreServiceContent(binPath)
+		if err := os.WriteFile(ManagedUnitPath(GatewayRestoreUnit), []byte(restoreContent), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", GatewayRestoreUnit, err)
+		}
+		_ = xray.ManageSystemdUnit("enable", GatewayRestoreUnit)
+		_ = configureNetworkManagerUnmanaged()
+	}
+
 	// Clean up obsolete legacy ipv6-rotate service unit if present
 	_ = os.Remove(ManagedUnitPath("xray-proxya-ipv6-rotate.service"))
 
@@ -121,7 +130,7 @@ func (m *Manager) Uninstall() error {
 	if len(active) > 0 {
 		return fmt.Errorf("stop all managed services before uninstalling: %s", strings.Join(active, ", "))
 	}
-	managedUnits := []string{MainUnit, PathdUnit, SubUnit, SubTemplateUnit, "xray-proxya-ipv6-rotate.service"}
+	managedUnits := []string{MainUnit, PathdUnit, SubUnit, SubTemplateUnit, GatewayRestoreUnit, "xray-proxya-ipv6-rotate.service"}
 	for _, unit := range managedUnits {
 		if _, err := os.Stat(ManagedUnitPath(unit)); err == nil {
 			_ = xray.ManageSystemdUnit("disable", unit)
@@ -132,6 +141,7 @@ func (m *Manager) Uninstall() error {
 			return fmt.Errorf("remove %s: %w", unit, err)
 		}
 	}
+	removeNetworkManagerUnmanaged()
 	return xray.ReloadSystemdDaemon()
 }
 
@@ -299,4 +309,30 @@ func GetStatus(unit string) (Status, error) {
 
 func ListManaged(cfg *config.UserConfig) ([]Status, error) {
 	return DefaultManager.ListManaged(cfg)
+}
+
+func configureNetworkManagerUnmanaged() error {
+	dir := "/etc/NetworkManager/conf.d"
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		return nil
+	}
+	content := "[keyfile]\nunmanaged-devices=interface-name:proxya-tun;interface-name:path-tun\n"
+	target := filepath.Join(dir, "99-xray-proxya.conf")
+	if err := os.WriteFile(target, []byte(content), 0644); err != nil {
+		return err
+	}
+	if _, err := exec.LookPath("nmcli"); err == nil {
+		_ = exec.Command("nmcli", "general", "reload", "conf").Run()
+	}
+	return nil
+}
+
+func removeNetworkManagerUnmanaged() {
+	target := "/etc/NetworkManager/conf.d/99-xray-proxya.conf"
+	if _, err := os.Stat(target); err == nil {
+		_ = os.Remove(target)
+		if _, err := exec.LookPath("nmcli"); err == nil {
+			_ = exec.Command("nmcli", "general", "reload", "conf").Run()
+		}
+	}
 }

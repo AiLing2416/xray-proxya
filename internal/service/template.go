@@ -43,15 +43,17 @@ func BuildSystemdServiceContent(binPath, workDir, assetDir, configDir, capabilit
 	if !privateDevices {
 		privateDevicesValue = "no"
 	}
+	wantsLine := "Wants=network-online.target"
 	if system {
 		userLine = "User=root\n"
 		wantedBy = "multi-user.target"
 		capabilityLines = fmt.Sprintf("CapabilityBoundingSet=%s\nAmbientCapabilities=%s\n", capabilities, capabilities)
+		wantsLine = fmt.Sprintf("Wants=network-online.target %s", GatewayRestoreUnit)
 	}
 	return fmt.Sprintf(`[Unit]
 Description=Xray-Proxya Service
 After=network-online.target he-tunnel.service he-tunnel-he-ipv6.service
-Wants=network-online.target
+%s
 
 [Service]
 Type=exec
@@ -67,10 +69,31 @@ PrivateTmp=yes
 PrivateDevices=%s
 ReadWritePaths=%s %s
 %s
+[Install]
+WantedBy=%s
+`, wantsLine, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, workDir, capabilityLines, wantedBy)
+}
+
+// BuildGatewayRestoreServiceContent generates the systemd unit file content for the oneshot gateway restore service.
+func BuildGatewayRestoreServiceContent(binPath string) string {
+	return fmt.Sprintf(`[Unit]
+Description=Xray-Proxya Gateway Runtime Restore
+After=%s
+BindsTo=%s
+PartOf=%s
+ConditionPathExists=%s
+
+[Service]
+Type=oneshot
+User=root
+SELinuxContext=-system_u:system_r:xray_proxya_gateway_t:s0
+ExecStart=%s gateway system-restore
+RemainAfterExit=no
+TimeoutStartSec=30
 
 [Install]
 WantedBy=%s
-`, userLine, binPath, workDir, assetDir, privateDevicesValue, configDir, workDir, capabilityLines, wantedBy)
+`, MainUnit, MainUnit, MainUnit, config.GetConfigPath(), binPath, MainUnit)
 }
 
 // BuildSubServiceContent generates the systemd unit file content for the subscription service.

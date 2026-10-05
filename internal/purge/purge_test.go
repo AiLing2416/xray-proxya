@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"xray-proxya/internal/service"
 )
 
 func TestParseTargets(t *testing.T) {
@@ -267,5 +268,41 @@ export BAZ=qux
 	}
 	if !strings.Contains(textPath, "export FOO=bar") || !strings.Contains(textPath, "export BAZ=qux") {
 		t.Errorf("cleanProfilePath wiped unrelated environment variables:\n%s", textPath)
+	}
+}
+
+func TestBuildPlanIncludesGatewayRestoreUnit(t *testing.T) {
+	unitDir := service.UnitDirectory()
+	_ = os.MkdirAll(unitDir, 0755)
+	restorePath := service.ManagedUnitPath(service.GatewayRestoreUnit)
+	if err := os.WriteFile(restorePath, []byte("[Unit]\n"), 0644); err != nil {
+		t.Skipf("cannot write to unit directory %s: %v", unitDir, err)
+	}
+	defer os.Remove(restorePath)
+
+	opts := Options{
+		Targets: []string{"service"},
+	}
+	plan, err := BuildPlan(opts)
+	if err != nil {
+		t.Fatalf("BuildPlan() err = %v", err)
+	}
+
+	foundDisable := false
+	foundRemove := false
+	for _, item := range plan.Items {
+		if item.Target == service.GatewayRestoreUnit && item.Action == ActionDisable {
+			foundDisable = true
+		}
+		if item.Target == restorePath && item.Action == ActionRemove {
+			foundRemove = true
+		}
+	}
+
+	if !foundDisable {
+		t.Errorf("expected plan to disable %s", service.GatewayRestoreUnit)
+	}
+	if !foundRemove {
+		t.Errorf("expected plan to remove %s", restorePath)
 	}
 }

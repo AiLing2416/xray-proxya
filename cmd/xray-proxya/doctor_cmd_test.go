@@ -104,3 +104,16 @@ func TestSELinuxPolicyAllowsGatewayNetworkStateAndTerminal(t *testing.T) {
 		}
 	}
 }
+
+func TestSELinuxPolicyAllowsSystemdGatewayRestoreTransition(t *testing.T) {
+	for _, rule := range []string{
+		"spec_domtrans_pattern(init_t, xray_proxya_exec_t, xray_proxya_gateway_t)",
+		"allow init_t xray_proxya_gateway_t:process2 { nnp_transition nosuid_transition };",
+		"allow init_t xray_proxya_gateway_t:unix_stream_socket create_stream_socket_perms;",
+		"allow xray_proxya_gateway_t init_t:unix_dgram_socket sendto;",
+	} {
+		if !strings.Contains(proxyaSELinux.PolicySource, rule) {
+			t.Fatalf("policy missing %q for companion restore service", rule)
+		}
+	}
+}

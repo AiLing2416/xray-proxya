@@ -24,6 +24,12 @@ func ValidateServiceStart(unit string) error {
 		}
 		return nil
 
+	case GatewayRestoreUnit:
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("xray-proxya-gateway-restore requires a root system service")
+		}
+		return nil
+
 	case PathdUnit:
 		if os.Geteuid() != 0 {
 			return fmt.Errorf("xray-proxya-pathd requires a root system service")

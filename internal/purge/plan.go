@@ -93,6 +93,7 @@ func BuildPlan(opts Options) (*Plan, error) {
 		// Disable and remove unit files
 		managedUnits := []string{
 			service.MainUnit,
+			service.GatewayRestoreUnit,
 			service.PathdUnit,
 			service.SubUnit,
 			service.SubTemplateUnit,
@@ -142,6 +143,18 @@ func BuildPlan(opts Options) (*Plan, error) {
 						Detail:   "SELinux policy module and file contexts",
 					})
 				}
+			}
+		}
+
+		if os.Geteuid() == 0 {
+			nmConf := "/etc/NetworkManager/conf.d/99-xray-proxya.conf"
+			if _, err := os.Stat(nmConf); err == nil {
+				plan.Items = append(plan.Items, PlanItem{
+					Category: CatService,
+					Action:   ActionRemove,
+					Target:   nmConf,
+					Detail:   "NetworkManager unmanaged configuration",
+				})
 			}
 		}
 

@@ -7,11 +7,12 @@ import (
 )
 
 const (
-	MainUnit          = "xray-proxya.service"
-	PathdUnit         = "xray-proxya-pathd.service"
-	SubUnit           = "xray-proxya-sub.service"
-	SubTemplateUnit   = "xray-proxya-sub@.service"
-	RootManagerBinary = "/root/.local/bin/xray-proxya"
+	MainUnit           = "xray-proxya.service"
+	GatewayRestoreUnit = "xray-proxya-gateway-restore.service"
+	PathdUnit          = "xray-proxya-pathd.service"
+	SubUnit            = "xray-proxya-sub.service"
+	SubTemplateUnit    = "xray-proxya-sub@.service"
+	RootManagerBinary  = "/root/.local/bin/xray-proxya"
 )
 
 // Status represents the complete state of a managed systemd unit.
@@ -50,6 +51,9 @@ func NormalizeUnitName(input string) (string, error) {
 	if clean == "" || clean == "xray-proxya" || clean == "core" || clean == MainUnit || clean == strings.TrimSuffix(MainUnit, ".service") {
 		return MainUnit, nil
 	}
+	if clean == "xray-proxya-gateway-restore" || clean == "gateway-restore" || clean == GatewayRestoreUnit || clean == strings.TrimSuffix(GatewayRestoreUnit, ".service") {
+		return GatewayRestoreUnit, nil
+	}
 	if clean == "xray-proxya-pathd" || clean == "pathd" || clean == PathdUnit || clean == strings.TrimSuffix(PathdUnit, ".service") {
 		return PathdUnit, nil
 	}
@@ -69,6 +73,8 @@ func UnitDisplayName(unit string) string {
 	switch norm {
 	case MainUnit:
 		return "Core"
+	case GatewayRestoreUnit:
+		return "GatewayRestore"
 	case SubUnit:
 		return "Sub"
 	case PathdUnit:

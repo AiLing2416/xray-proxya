@@ -1,4 +1,4 @@
-policy_module(xray_proxya, 2.1.1)
+policy_module(xray_proxya, 2.1.2)
 
 ########################################
 # Dedicated domain for the root-managed Xray-Proxya service.  This policy is
@@ -32,13 +32,18 @@ domain_use_interactive_fds(xray_proxya_pathd_t)
 # still required for systemd to enter the dedicated pathd domain.
 allow init_t xray_proxya_pathd_t:process2 nnp_transition;
 
-# Short-lived domain entered only by explicit `gateway up` / `gateway down`.
+# Short-lived domain entered by explicit `gateway up` / `gateway down` or
+# the companion systemd gateway-restore service.
 # The long-running proxy service never receives these system-management rights.
 type xray_proxya_gateway_t;
 domain_type(xray_proxya_gateway_t)
 role system_r types xray_proxya_gateway_t;
 domain_use_interactive_fds(xray_proxya_gateway_t)
 userdom_use_inherited_user_ptys(xray_proxya_gateway_t)
+spec_domtrans_pattern(init_t, xray_proxya_exec_t, xray_proxya_gateway_t)
+allow init_t xray_proxya_gateway_t:process2 { nnp_transition nosuid_transition };
+allow init_t xray_proxya_gateway_t:unix_stream_socket create_stream_socket_perms;
+allow xray_proxya_gateway_t init_t:unix_dgram_socket sendto;
 
 ########################################
 # Own configuration, generated Xray JSON, PID and gateway state. Service logs

@@ -19,6 +19,8 @@ func GetUnitStatus(unit string) Status {
 	switch unit {
 	case MainUnit:
 		st.Description = "Main Xray-Core proxy service"
+	case GatewayRestoreUnit:
+		st.Description = "Gateway runtime state restore"
 	case PathdUnit:
 		st.Description = "PathLink ICMP latency & health daemon"
 	case SubUnit:
@@ -115,7 +117,7 @@ func ActiveManagedUnits() ([]string, error) {
 		return nil, fmt.Errorf("systemctl is required: %w", err)
 	}
 	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units",
-		MainUnit, PathdUnit, SubUnit, "xray-proxya-sub@*.service", "he-tunnel*.service")
+		MainUnit, GatewayRestoreUnit, PathdUnit, SubUnit, "xray-proxya-sub@*.service", "he-tunnel*.service")
 	out, err := exec.Command("systemctl", args...).CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))

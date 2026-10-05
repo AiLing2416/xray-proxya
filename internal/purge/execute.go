@@ -71,10 +71,19 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 
 	for _, item := range plan.Items {
 		if item.Category == CatService && item.Action == ActionRemove {
+			desc := "unit file"
+			if !strings.HasSuffix(item.Target, ".service") {
+				desc = "service configuration"
+			}
 			if err := os.Remove(item.Target); err != nil && !os.IsNotExist(err) {
-				errs = append(errs, fmt.Errorf("remove unit file %s: %w", item.Target, err))
+				errs = append(errs, fmt.Errorf("remove %s %s: %w", desc, item.Target, err))
 			} else {
-				fmt.Fprintf(out, "✅ Removed unit file: %s\n", item.Target)
+				fmt.Fprintf(out, "✅ Removed %s: %s\n", desc, item.Target)
+				if strings.Contains(item.Target, "NetworkManager") {
+					if _, err := exec.LookPath("nmcli"); err == nil {
+						_ = exec.Command("nmcli", "general", "reload", "conf").Run()
+					}
+				}
 			}
 		}
 	}

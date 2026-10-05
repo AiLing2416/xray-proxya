@@ -79,6 +79,25 @@ func TestBuildPathdServiceContent(t *testing.T) {
 	}
 }
 
+func TestBuildGatewayRestoreServiceContent(t *testing.T) {
+	content := BuildGatewayRestoreServiceContent(RootManagerBinary)
+	for _, required := range []string{
+		"Description=Xray-Proxya Gateway Runtime Restore",
+		"After=xray-proxya.service",
+		"BindsTo=xray-proxya.service",
+		"PartOf=xray-proxya.service",
+		"Type=oneshot",
+		"User=root",
+		"SELinuxContext=-system_u:system_r:xray_proxya_gateway_t:s0",
+		"ExecStart=/root/.local/bin/xray-proxya gateway system-restore",
+		"RemainAfterExit=no",
+	} {
+		if !strings.Contains(content, required) {
+			t.Fatalf("gateway restore service missing %q:\n%s", required, content)
+		}
+	}
+}
+
 func TestNormalizeUnitName(t *testing.T) {
 	tests := []struct {
 		input   string
@@ -89,6 +108,9 @@ func TestNormalizeUnitName(t *testing.T) {
 		{"xray-proxya", MainUnit, false},
 		{"core", MainUnit, false},
 		{MainUnit, MainUnit, false},
+		{"xray-proxya-gateway-restore", GatewayRestoreUnit, false},
+		{"gateway-restore", GatewayRestoreUnit, false},
+		{GatewayRestoreUnit, GatewayRestoreUnit, false},
 		{"xray-proxya-pathd", PathdUnit, false},
 		{"pathd", PathdUnit, false},
 		{PathdUnit, PathdUnit, false},
