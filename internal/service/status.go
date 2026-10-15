@@ -3,70 +3,29 @@ package service
 import (
 	"fmt"
 	"os/exec"
-	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/xray"
 )
 
-// GetUnitStatus queries systemd for the current status of a specific unit.
+// GetUnitStatus queries the active provider for the current status of a specific unit.
 func GetUnitStatus(unit string) Status {
-	st := Status{
-		UnitName:    unit,
-		DisplayName: UnitDisplayName(unit),
-		State:       "Stopped",
+	norm, err := NormalizeUnitName(unit)
+	if err != nil {
+		norm = unit
 	}
-	switch unit {
-	case MainUnit:
-		st.Description = "Main Xray-Core proxy service"
-	case GatewayRestoreUnit:
-		st.Description = "Gateway runtime state restore"
-	case PathdUnit:
-		st.Description = "PathLink ICMP latency & health daemon"
-	case SubUnit:
-		st.Description = "Subscription server"
-	default:
-		st.Description = "Managed systemd service"
-	}
-
-	st.UnitPath = FindUnitFile(unit)
-	st.Installed = st.UnitPath != ""
-
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		st.State = "Unavailable (systemctl missing)"
-		return st
-	}
-
-	// Check if active
-	args := append(xray.SystemdScopeArgs(), "is-active", unit)
-	if err := exec.Command("systemctl", args...).Run(); err == nil {
-		st.Active = true
-		st.State = "Running"
-		showPIDArgs := append(xray.SystemdScopeArgs(), "show", "-p", "MainPID", "--value", unit)
-		if out, err := exec.Command("systemctl", showPIDArgs...).Output(); err == nil {
-			st.PID, _ = strconv.Atoi(strings.TrimSpace(string(out)))
-		}
-	} else {
-		// Not active: check detailed load/active state
-		showArgs := append(xray.SystemdScopeArgs(), "show", "-p", "ActiveState", "-p", "LoadState", unit)
-		if out, err := exec.Command("systemctl", showArgs...).Output(); err == nil {
-			state, installed := parseUnitShowState(string(out))
-			st.State = state
-			if !installed {
-				st.Installed = false
-			}
+	st, err := CurrentProvider().GetStatus(norm)
+	if err != nil {
+		return Status{
+			UnitName:    norm,
+			DisplayName: UnitDisplayName(norm),
+			State:       fmt.Sprintf("Error: %v", err),
 		}
 	}
-
-	// Check if enabled
-	enabledArgs := append(xray.SystemdScopeArgs(), "is-enabled", unit)
-	if out, err := exec.Command("systemctl", enabledArgs...).Output(); err == nil {
-		st.Enabled = strings.TrimSpace(string(out)) == "enabled"
-	}
-
 	return st
 }
 
+// parseUnitShowState parses systemd show key-value outputs for load and active states.
 func parseUnitShowState(output string) (state string, installed bool) {
 	activeState := ""
 	loadState := ""
@@ -87,63 +46,54 @@ func parseUnitShowState(output string) (state string, installed bool) {
 	return "Stopped", true
 }
 
-
 // IsUnitActive reports whether the given unit is currently active.
 func IsUnitActive(unit string) bool {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	args := append(xray.SystemdScopeArgs(), "is-active", "--quiet", unit)
-	return exec.Command("systemctl", args...).Run() == nil
+	return CurrentProvider().IsActive(unit)
 }
 
 // IsUnitEnabled reports whether the given unit is enabled for autostart.
 func IsUnitEnabled(unit string) bool {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return false
-	}
-	args := append(xray.SystemdScopeArgs(), "is-enabled", "--quiet", unit)
-	return exec.Command("systemctl", args...).Run() == nil
+	return CurrentProvider().IsEnabled(unit)
 }
 
 // IsUnitInstalled reports whether the unit file exists on disk.
 func IsUnitInstalled(unit string) bool {
-	return FindUnitFile(unit) != ""
+	return CurrentProvider().IsInstalled(unit)
 }
 
 // ActiveManagedUnits lists all currently active managed service unit names.
 func ActiveManagedUnits() ([]string, error) {
-	if _, err := exec.LookPath("systemctl"); err != nil {
-		return nil, fmt.Errorf("systemctl is required: %w", err)
+	p := CurrentProvider()
+	if p.Type() == InitSystemd {
+		if _, err := exec.LookPath("systemctl"); err != nil {
+			return nil, fmt.Errorf("systemctl is required: %w", err)
+		}
+		args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units",
+			MainUnit, GatewayRestoreUnit, PathdUnit, SubUnit, "xray-proxya-sub@*.service", "he-tunnel*.service")
+		out, err := exec.Command("systemctl", args...).CombinedOutput()
+		if err != nil {
+			return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		var units []string
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) > 0 {
+				units = append(units, fields[0])
+			}
+		}
+		return units, nil
 	}
-	args := append(xray.SystemdScopeArgs(), "--no-legend", "--plain", "--type=service", "--state=active", "list-units",
-		MainUnit, GatewayRestoreUnit, PathdUnit, SubUnit, "xray-proxya-sub@*.service", "he-tunnel*.service")
-	out, err := exec.Command("systemctl", args...).CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("list active managed units: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	var units []string
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) > 0 {
-			units = append(units, fields[0])
+
+	var active []string
+	for _, u := range []string{MainUnit, PathdUnit, SubUnit} {
+		if p.IsActive(u) {
+			active = append(active, u)
 		}
 	}
-	return units, nil
+	return active, nil
 }
 
 // ListManagedServices queries and returns the status of all managed services for the given configuration.
 func ListManagedServices(cfg *config.UserConfig) ([]Status, error) {
-	var list []Status
-
-	// 1. Core Service
-	list = append(list, GetUnitStatus(MainUnit))
-
-	// 2. Pathd Probe Service
-	list = append(list, GetUnitStatus(PathdUnit))
-
-	// 3. Subscription service
-	list = append(list, GetUnitStatus(SubUnit))
-
-	return list, nil
+	return CurrentProvider().ListManaged(cfg)
 }

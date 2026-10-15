@@ -28,7 +28,17 @@ type Status struct {
 	Description string `json:"description"`
 }
 
-// Controller defines the unified interface for managing systemd service units.
+// InitType represents the supported init / supervisor system type.
+type InitType string
+
+const (
+	InitSystemd InitType = "systemd"
+	InitOpenRC  InitType = "openrc"
+	InitProcd   InitType = "procd"
+	InitUnknown InitType = "unknown"
+)
+
+// Controller defines the unified interface for managing service units.
 type Controller interface {
 	Install(cfg *config.UserConfig) error
 	Uninstall() error
@@ -42,6 +52,24 @@ type Controller interface {
 	IsActive(unit string) bool
 	IsEnabled(unit string) bool
 	IsInstalled(unit string) bool
+}
+
+// Provider extends Controller with init system identification and path resolution.
+type Provider interface {
+	Controller
+	Type() InitType
+	Detect() bool
+	UnitPath(unit string) string
+	UnitDirectory() string
+}
+
+// BaseServiceName returns the canonical service name without the ".service" suffix.
+func BaseServiceName(unit string) string {
+	norm, err := NormalizeUnitName(unit)
+	if err != nil {
+		norm = unit
+	}
+	return strings.TrimSuffix(norm, ".service")
 }
 
 // NormalizeUnitName standardizes various aliases (e.g. "xray-proxya", "core", "sub", "pathd")

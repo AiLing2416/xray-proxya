@@ -99,14 +99,41 @@ func systemctlWrapper(action string) *cobra.Command {
 				return err
 			}
 			if action == "status" {
-				arguments := []string{"--no-pager", "status", unit}
-				if err := xray.RunSystemd(arguments...); err != nil {
-					var exitErr *exec.ExitError
-					if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+				p := service.CurrentProvider()
+				if p.Type() == service.InitSystemd {
+					arguments := []string{"--no-pager", "status", unit}
+					if err := xray.RunSystemd(arguments...); err != nil {
+						var exitErr *exec.ExitError
+						if errors.As(err, &exitErr) && exitErr.ExitCode() == 3 {
+							return nil
+						}
+						return err
+					}
+					return nil
+				}
+				if p.Type() == service.InitOpenRC {
+					name := service.BaseServiceName(unit)
+					c := exec.Command("rc-service", name, "status")
+					c.Stdout, c.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
+					_ = c.Run()
+					return nil
+				}
+				if p.Type() == service.InitProcd {
+					path := p.UnitPath(unit)
+					if _, err := os.Stat(path); err == nil {
+						c := exec.Command(path, "status")
+						c.Stdout, c.Stderr = cmd.OutOrStdout(), cmd.ErrOrStderr()
+						_ = c.Run()
 						return nil
 					}
-					return err
+					st, _ := p.GetStatus(unit)
+					fmt.Fprintf(cmd.OutOrStdout(), "%s: %s (PID: %d, Installed: %v, Enabled: %v)\n",
+						st.DisplayName, st.State, st.PID, st.Installed, st.Enabled)
+					return nil
 				}
+				st, _ := service.GetStatus(unit)
+				fmt.Fprintf(cmd.OutOrStdout(), "%s: %s (PID: %d, Installed: %v, Enabled: %v)\n",
+					st.DisplayName, st.State, st.PID, st.Installed, st.Enabled)
 				return nil
 			}
 			return service.DefaultManager.ExecuteAction(action, unit, now)
@@ -120,13 +147,14 @@ func systemctlWrapper(action string) *cobra.Command {
 
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Write managed systemd unit files without enabling or starting them",
+	Short: "Write managed service files without enabling or starting them",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := service.Install(nil); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "✅ Managed systemd unit files installed.")
-		if os.Geteuid() != 0 {
+		initType := service.CurrentProvider().Type()
+		fmt.Fprintf(cmd.OutOrStdout(), "✅ Managed %s service files installed.\n", initType)
+		if os.Geteuid() != 0 && initType == service.InitSystemd {
 			user := currentLingerUser()
 			if enabled, err := checkLingerStatus(user); err == nil && !enabled {
 				fmt.Fprintf(cmd.OutOrStdout(), "💡 Notice: User session lingering is disabled for %q.\n   Run 'xray-proxya doctor linger enable' to keep user services running after logout.\n", user)
@@ -138,12 +166,13 @@ var serviceInstallCmd = &cobra.Command{
 
 var serviceUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Remove stopped managed systemd unit files without disabling them",
+	Short: "Remove stopped managed service files without disabling them",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := service.Uninstall(); err != nil {
 			return err
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "✅ Managed systemd unit files uninstalled.")
+		initType := service.CurrentProvider().Type()
+		fmt.Fprintf(cmd.OutOrStdout(), "✅ Managed %s service files uninstalled.\n", initType)
 		return nil
 	},
 }

@@ -15,33 +15,25 @@ func UserSystemdUnitDir() string {
 	return filepath.Join(config.GetHomeDir(), ".config", "systemd", "user")
 }
 
-// UnitDirectory returns the destination directory for systemd units according to the effective UID.
+// UnitDirectory returns the destination directory for service units according to the active provider and effective UID.
 func UnitDirectory() string {
-	if os.Geteuid() == 0 {
-		return "/etc/systemd/system"
-	}
-	return UserSystemdUnitDir()
+	return CurrentProvider().UnitDirectory()
 }
 
 // ManagedUnitPath returns the expected file path for a managed unit.
 func ManagedUnitPath(unit string) string {
-	return filepath.Join(UnitDirectory(), unit)
+	return CurrentProvider().UnitPath(unit)
 }
 
-// FindUnitFile looks for the unit file across known systemd directories.
+// FindUnitFile looks for the unit file for the active provider.
 func FindUnitFile(unit string) string {
-	if os.Geteuid() != 0 {
-		p := filepath.Join(UserSystemdUnitDir(), unit)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
-		return ""
+	p := CurrentProvider()
+	if sp, ok := p.(*SystemdProvider); ok {
+		return sp.findUnitFile(unit)
 	}
-	for _, dir := range []string{"/etc/systemd/system", "/lib/systemd/system", "/usr/lib/systemd/system"} {
-		p := filepath.Join(dir, unit)
-		if _, err := os.Stat(p); err == nil {
-			return p
-		}
+	path := p.UnitPath(unit)
+	if _, err := os.Stat(path); err == nil {
+		return path
 	}
 	return ""
 }

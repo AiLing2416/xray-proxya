@@ -245,4 +245,85 @@ func TestValidateServiceStartGatewayRejectsNonRoot(t *testing.T) {
 	}
 }
 
+func TestBaseServiceName(t *testing.T) {
+	cases := []struct {
+		input    string
+		expected string
+	}{
+		{"xray-proxya.service", "xray-proxya"},
+		{"xray-proxya", "xray-proxya"},
+		{"core", "xray-proxya"},
+		{"xray-proxya-sub.service", "xray-proxya-sub"},
+		{"sub", "xray-proxya-sub"},
+		{"xray-proxya-pathd.service", "xray-proxya-pathd"},
+		{"pathd", "xray-proxya-pathd"},
+	}
+	for _, c := range cases {
+		got := BaseServiceName(c.input)
+		if got != c.expected {
+			t.Errorf("BaseServiceName(%q) = %q; want %q", c.input, got, c.expected)
+		}
+	}
+}
+
+func TestInitProvidersInterface(t *testing.T) {
+	systemd := GetProvider(InitSystemd)
+	if systemd.Type() != InitSystemd {
+		t.Errorf("expected InitSystemd, got %v", systemd.Type())
+	}
+
+	openrc := GetProvider(InitOpenRC)
+	if openrc.Type() != InitOpenRC {
+		t.Errorf("expected InitOpenRC, got %v", openrc.Type())
+	}
+	if openrc.UnitDirectory() != "/etc/init.d" {
+		t.Errorf("expected /etc/init.d, got %s", openrc.UnitDirectory())
+	}
+	if openrc.UnitPath(MainUnit) != "/etc/init.d/xray-proxya" {
+		t.Errorf("expected /etc/init.d/xray-proxya, got %s", openrc.UnitPath(MainUnit))
+	}
+
+	procd := GetProvider(InitProcd)
+	if procd.Type() != InitProcd {
+		t.Errorf("expected InitProcd, got %v", procd.Type())
+	}
+	if procd.UnitDirectory() != "/etc/init.d" {
+		t.Errorf("expected /etc/init.d, got %s", procd.UnitDirectory())
+	}
+	if procd.UnitPath(MainUnit) != "/etc/init.d/xray-proxya" {
+		t.Errorf("expected /etc/init.d/xray-proxya, got %s", procd.UnitPath(MainUnit))
+	}
+}
+
+func TestDetectInitSystemReturnsValid(t *testing.T) {
+	detected := DetectInitSystem()
+	if detected == InitUnknown {
+		t.Logf("Notice: host detected as InitUnknown")
+	} else {
+		t.Logf("Host detected init system: %s", detected)
+	}
+}
+
+func TestOpenRCAndProcdRejectNonRoot(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping non-root check when running as root")
+	}
+
+	openrc := NewOpenRCProvider()
+	if err := openrc.Start(MainUnit); err == nil {
+		t.Error("expected OpenRC Start to reject non-root execution")
+	}
+	if err := openrc.Install(nil); err == nil {
+		t.Error("expected OpenRC Install to reject non-root execution")
+	}
+
+	procd := NewProcdProvider()
+	if err := procd.Start(MainUnit); err == nil {
+		t.Error("expected Procd Start to reject non-root execution")
+	}
+	if err := procd.Install(nil); err == nil {
+		t.Error("expected Procd Install to reject non-root execution")
+	}
+}
+
 
