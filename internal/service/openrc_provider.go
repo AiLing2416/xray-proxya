@@ -90,12 +90,16 @@ func (p *OpenRCProvider) Install(cfg *config.UserConfig) error {
 	pathdPath, err := ValidateRootOwnedExecutable(PathdBinaryPath())
 	if err == nil {
 		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
-			_ = WritePathdConfig(cfg)
+			if err := WritePathdConfig(cfg); err != nil {
+				return fmt.Errorf("write pathd configuration: %w", err)
+			}
 		}
 		pathdContent := BuildOpenRCPathdServiceContent(pathdPath, PathdConfigPath())
 		if err := os.WriteFile(p.UnitPath(PathdUnit), []byte(pathdContent), 0755); err != nil {
 			return fmt.Errorf("write %s: %w", p.UnitPath(PathdUnit), err)
 		}
+	} else {
+		_ = os.Remove(p.UnitPath(PathdUnit))
 	}
 
 	_ = configureNetworkManagerUnmanaged()
@@ -118,6 +122,11 @@ func (p *OpenRCProvider) Uninstall() error {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
+	}
+	logMatches, _ := filepath.Glob("/var/log/xray-proxya*.log")
+	errMatches, _ := filepath.Glob("/var/log/xray-proxya*.err")
+	for _, f := range append(logMatches, errMatches...) {
+		_ = os.Remove(f)
 	}
 	removeNetworkManagerUnmanaged()
 	return nil

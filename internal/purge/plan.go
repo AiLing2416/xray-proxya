@@ -157,6 +157,18 @@ func BuildPlan(opts Options) (*Plan, error) {
 					Detail:   "NetworkManager unmanaged configuration",
 				})
 			}
+			logMatches, _ := filepath.Glob("/var/log/xray-proxya*.log")
+			errMatches, _ := filepath.Glob("/var/log/xray-proxya*.err")
+			for _, f := range append(logMatches, errMatches...) {
+				if _, err := os.Stat(f); err == nil {
+					plan.Items = append(plan.Items, PlanItem{
+						Category: CatService,
+						Action:   ActionRemove,
+						Target:   f,
+						Detail:   "service log file",
+					})
+				}
+			}
 		}
 
 		if initType == service.InitSystemd {

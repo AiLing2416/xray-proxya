@@ -95,6 +95,7 @@ start_service() {
 	procd_set_param command "$PROG" serve --config "$CONF"
 	procd_set_param respawn 3600 2 5
 	procd_set_param term_timeout 15
+	procd_set_param no_new_privs 1
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param user root

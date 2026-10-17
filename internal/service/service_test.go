@@ -332,6 +332,7 @@ func TestBuildOpenRCServiceContent(t *testing.T) {
 	content := BuildOpenRCServiceContent("/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin")
 	for _, expected := range []string{
 		"#!/sbin/openrc-run",
+		"umask=0077",
 		`command="/root/.local/bin/xray-proxya"`,
 		`command_args="run"`,
 		`supervisor="supervise-daemon"`,
@@ -339,11 +340,28 @@ func TestBuildOpenRCServiceContent(t *testing.T) {
 		`respawn_max=5`,
 		`respawn_period=60`,
 		`retry="TERM/15/KILL/5"`,
+		`checkpath -f -m 0600 -o root:root "$output_log" "$error_log"`,
 		`output_log="/var/log/${RC_SVCNAME}.log"`,
 		`export XRAY_LOCATION_ASSET="/root/.local/share/xray-proxya/bin"`,
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected OpenRC content to contain %q, but did not:\n%s", expected, content)
+		}
+	}
+}
+
+func TestBuildOpenRCPathdServiceContent(t *testing.T) {
+	content := BuildOpenRCPathdServiceContent("/root/.local/share/xray-proxya/bin/pathd", "/root/.config/xray-proxya/pathd.json")
+	for _, expected := range []string{
+		"#!/sbin/openrc-run",
+		"umask=0077",
+		`no_new_privs="yes"`,
+		`command="/root/.local/share/xray-proxya/bin/pathd"`,
+		`command_args="serve --config /root/.config/xray-proxya/pathd.json"`,
+		`checkpath -f -m 0600 -o root:root "$output_log" "$error_log"`,
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("expected OpenRC pathd content to contain %q, but did not:\n%s", expected, content)
 		}
 	}
 }
@@ -362,6 +380,22 @@ func TestBuildProcdServiceContent(t *testing.T) {
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected Procd content to contain %q, but did not:\n%s", expected, content)
+		}
+	}
+}
+
+func TestBuildProcdPathdServiceContent(t *testing.T) {
+	content := BuildProcdPathdServiceContent("/root/.local/share/xray-proxya/bin/pathd", "/root/.config/xray-proxya/pathd.json")
+	for _, expected := range []string{
+		"#!/bin/sh /etc/rc.common",
+		"USE_PROCD=1",
+		`PROG="/root/.local/share/xray-proxya/bin/pathd"`,
+		`CONF="/root/.config/xray-proxya/pathd.json"`,
+		"procd_set_param no_new_privs 1",
+		"procd_set_param term_timeout 15",
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("expected Procd pathd content to contain %q, but did not:\n%s", expected, content)
 		}
 	}
 }

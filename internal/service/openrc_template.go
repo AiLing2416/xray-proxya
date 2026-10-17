@@ -14,6 +14,7 @@ description="Xray-Proxya Core Service"
 command="%s"
 command_args="run"
 directory="%s"
+umask=0077
 
 pidfile="/run/${RC_SVCNAME}.pid"
 supervisor="supervise-daemon"
@@ -34,6 +35,7 @@ depend() {
 
 start_pre() {
 	checkpath -d -m 0755 /var/log
+	checkpath -f -m 0600 -o root:root "$output_log" "$error_log"
 	checkpath -d -m 0700 -o root:root "%s"
 	checkpath -d -m 0700 -o root:root "%s"
 }
@@ -50,6 +52,7 @@ description="Xray-Proxya Subscription Service"
 command="%s"
 command_args="sub run"
 directory="%s"
+umask=0077
 
 pidfile="/run/${RC_SVCNAME}.pid"
 supervisor="supervise-daemon"
@@ -70,6 +73,7 @@ depend() {
 
 start_pre() {
 	checkpath -d -m 0755 /var/log
+	checkpath -f -m 0600 -o root:root "$output_log" "$error_log"
 	checkpath -d -m 0700 -o root:root "%s"
 	checkpath -d -m 0700 -o root:root "%s"
 	"%s" sub validate
@@ -86,6 +90,7 @@ description="PathLink ICMP latency & health daemon"
 
 command="%s"
 command_args="serve --config %s"
+umask=0077
 
 pidfile="/run/${RC_SVCNAME}.pid"
 supervisor="supervise-daemon"
@@ -93,6 +98,7 @@ respawn_delay=2
 respawn_max=5
 respawn_period=60
 retry="TERM/15/KILL/5"
+no_new_privs="yes"
 
 output_log="/var/log/${RC_SVCNAME}.log"
 error_log="/var/log/${RC_SVCNAME}.err"
@@ -104,6 +110,7 @@ depend() {
 
 start_pre() {
 	checkpath -d -m 0755 /var/log
+	checkpath -f -m 0600 -o root:root "$output_log" "$error_log"
 }
 `, pathdBin, pathdConfig)
 }

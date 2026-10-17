@@ -89,12 +89,16 @@ func (p *ProcdProvider) Install(cfg *config.UserConfig) error {
 	pathdPath, err := ValidateRootOwnedExecutable(PathdBinaryPath())
 	if err == nil {
 		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
-			_ = WritePathdConfig(cfg)
+			if err := WritePathdConfig(cfg); err != nil {
+				return fmt.Errorf("write pathd configuration: %w", err)
+			}
 		}
 		pathdContent := BuildProcdPathdServiceContent(pathdPath, PathdConfigPath())
 		if err := os.WriteFile(p.UnitPath(PathdUnit), []byte(pathdContent), 0755); err != nil {
 			return fmt.Errorf("write %s: %w", p.UnitPath(PathdUnit), err)
 		}
+	} else {
+		_ = os.Remove(p.UnitPath(PathdUnit))
 	}
 
 	_ = configureNetworkManagerUnmanaged()
@@ -212,8 +216,7 @@ func (p *ProcdProvider) GetStatus(unit string) (Status, error) {
 		st.PID = pid
 	} else {
 		// Fallback to running /etc/init.d/<name> status if executable
-		out, err := exec.Command(st.UnitPath, "status").CombinedOutput()
-		if err == nil && strings.Contains(strings.ToLower(string(out)), "running") {
+		if err := exec.Command(st.UnitPath, "status").Run(); err == nil {
 			st.Active = true
 			st.State = "Running"
 		} else {
