@@ -326,4 +326,39 @@ func TestOpenRCAndProcdRejectNonRoot(t *testing.T) {
 	}
 }
 
+func TestBuildOpenRCServiceContent(t *testing.T) {
+	content := BuildOpenRCServiceContent("/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin")
+	for _, expected := range []string{
+		"#!/sbin/openrc-run",
+		`command="/root/.local/bin/xray-proxya"`,
+		`command_args="run"`,
+		`supervisor="supervise-daemon"`,
+		`respawn_delay=2`,
+		`output_log="/var/log/${RC_SVCNAME}.log"`,
+		`export XRAY_LOCATION_ASSET="/root/.local/share/xray-proxya/bin"`,
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("expected OpenRC content to contain %q, but did not:\n%s", expected, content)
+		}
+	}
+}
+
+func TestBuildProcdServiceContent(t *testing.T) {
+	content := BuildProcdServiceContent("/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin")
+	for _, expected := range []string{
+		"#!/bin/sh /etc/rc.common",
+		"USE_PROCD=1",
+		"START=95",
+		`PROG="/root/.local/bin/xray-proxya"`,
+		`procd_set_param command "$PROG" run`,
+		`procd_set_param env XRAY_LOCATION_ASSET=`,
+		`procd_set_param respawn 3600 2 5`,
+	} {
+		if !strings.Contains(content, expected) {
+			t.Errorf("expected Procd content to contain %q, but did not:\n%s", expected, content)
+		}
+	}
+}
+
+
 

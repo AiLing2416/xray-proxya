@@ -53,7 +53,53 @@ func (p *OpenRCProvider) Install(cfg *config.UserConfig) error {
 	if _, err := exec.LookPath("rc-service"); err != nil {
 		return fmt.Errorf("openrc rc-service binary not found: %w", err)
 	}
-	return fmt.Errorf("openrc service templates are ready for implementation in step 2")
+	if cfg == nil {
+		var err error
+		cfg, err = config.LoadConfig()
+		if err != nil {
+			return fmt.Errorf("load configuration: %w", err)
+		}
+	}
+
+	binPath, err := ValidateRootManagerBinary()
+	if err != nil {
+		return err
+	}
+
+	workDir := filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya")
+	assetDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(assetDir, 0700); err != nil {
+		return fmt.Errorf("create asset directory: %w", err)
+	}
+
+	// 1. Write /etc/init.d/xray-proxya
+	mainContent := BuildOpenRCServiceContent(binPath, workDir, assetDir)
+	mainPath := p.UnitPath(MainUnit)
+	if err := os.WriteFile(mainPath, []byte(mainContent), 0755); err != nil {
+		return fmt.Errorf("write %s: %w", mainPath, err)
+	}
+
+	// 2. Write /etc/init.d/xray-proxya-sub
+	subContent := BuildOpenRCSubServiceContent(binPath, workDir, assetDir)
+	subPath := p.UnitPath(SubUnit)
+	if err := os.WriteFile(subPath, []byte(subContent), 0755); err != nil {
+		return fmt.Errorf("write %s: %w", subPath, err)
+	}
+
+	// 3. Write /etc/init.d/xray-proxya-pathd if pathd binary is available
+	pathdPath, err := ValidateRootOwnedExecutable(PathdBinaryPath())
+	if err == nil {
+		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
+			_ = WritePathdConfig(cfg)
+		}
+		pathdContent := BuildOpenRCPathdServiceContent(pathdPath, PathdConfigPath())
+		if err := os.WriteFile(p.UnitPath(PathdUnit), []byte(pathdContent), 0755); err != nil {
+			return fmt.Errorf("write %s: %w", p.UnitPath(PathdUnit), err)
+		}
+	}
+
+	_ = configureNetworkManagerUnmanaged()
+	return nil
 }
 
 func (p *OpenRCProvider) Uninstall() error {
@@ -73,6 +119,7 @@ func (p *OpenRCProvider) Uninstall() error {
 			return fmt.Errorf("remove %s: %w", path, err)
 		}
 	}
+	removeNetworkManagerUnmanaged()
 	return nil
 }
 
@@ -198,7 +245,6 @@ func (p *OpenRCProvider) IsActive(unit string) bool {
 
 func (p *OpenRCProvider) IsEnabled(unit string) bool {
 	name := BaseServiceName(unit)
-	// OpenRC default runlevel symlinks reside in /etc/runlevels/default/
 	symlink := filepath.Join("/etc/runlevels/default", name)
 	_, err := os.Lstat(symlink)
 	return err == nil
