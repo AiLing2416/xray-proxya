@@ -79,14 +79,20 @@ func ReadLogTail(lines int) (string, error) {
 	return JournalTail(MainServiceUnit, lines)
 }
 
-// IsServiceActive reports whether the main xray-proxya systemd service is active/running.
+// IsServiceActive reports whether the main xray-proxya service is active/running.
 func IsServiceActive() bool {
+	if b := getServiceBridge(); b != nil && b.IsUnitActive != nil {
+		return b.IsUnitActive(serviceUnitName)
+	}
 	active, _ := getSystemdState(serviceUnitName)
 	return active
 }
 
-// IsUnitActive reports whether the specified systemd unit is active/running.
+// IsUnitActive reports whether the specified service unit is active/running.
 func IsUnitActive(name string) bool {
+	if b := getServiceBridge(); b != nil && b.IsUnitActive != nil {
+		return b.IsUnitActive(name)
+	}
 	active, _ := getSystemdState(name)
 	return active
 }

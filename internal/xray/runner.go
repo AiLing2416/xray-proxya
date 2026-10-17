@@ -65,7 +65,18 @@ func RestartXrayServiceWithoutHook() error {
 }
 
 func restartXrayService() error {
+	if b := getServiceBridge(); b != nil && b.RestartMainService != nil {
+		return b.RestartMainService()
+	}
 	return ManageSystemdUnit("restart", MainServiceUnit)
+}
+
+// StopXrayService stops the main Xray service via the registered bridge or fallback systemctl.
+func StopXrayService() error {
+	if b := getServiceBridge(); b != nil && b.StopMainService != nil {
+		return b.StopMainService()
+	}
+	return ManageSystemdUnit("stop", MainServiceUnit)
 }
 
 // --- Xray Execution Core ---

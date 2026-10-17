@@ -234,9 +234,9 @@ func prepareFreshInit() {
 		if err := gateway.CleanupFirewall(); err != nil {
 			fmt.Printf("⚠️ Failed to clean gateway firewall: %v\n", err)
 		}
-		_ = xray.ManageSystemdUnit("stop", xray.MainServiceUnit)
+		_ = xray.StopXrayService()
 	} else {
-		_ = xray.ManageSystemdUnit("stop", xray.MainServiceUnit)
+		_ = xray.StopXrayService()
 	}
 	for _, name := range []string{
 		"config.active.json",

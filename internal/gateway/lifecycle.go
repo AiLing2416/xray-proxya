@@ -123,12 +123,12 @@ func convergeDownLocked() error {
 	if markerReady {
 		if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 			errs = append(errs, fmt.Errorf("restart Xray service without TUN: %w", err))
-			if stopErr := xray.ManageSystemdUnit("stop", xray.MainServiceUnit); stopErr != nil {
+			if stopErr := xray.StopXrayService(); stopErr != nil {
 				errs = append(errs, fmt.Errorf("stop Xray service after failed restart: %w", stopErr))
 			}
 		}
 	} else {
-		if stopErr := xray.ManageSystemdUnit("stop", xray.MainServiceUnit); stopErr != nil {
+		if stopErr := xray.StopXrayService(); stopErr != nil {
 			errs = append(errs, fmt.Errorf("stop Xray service after failed state update: %w", stopErr))
 		}
 	}

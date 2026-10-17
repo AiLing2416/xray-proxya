@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/service"
 	"xray-proxya/internal/tune"
 	"xray-proxya/internal/xray"
 )
@@ -27,7 +28,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 	// immediately to prevent deleting units/binaries/configs while an unmanaged process runs.
 	for _, item := range plan.Items {
 		if item.Category == CatService && item.Action == ActionStop {
-			if err := xray.ManageSystemdUnit("stop", item.Target); err != nil {
+			if err := service.CurrentProvider().Stop(item.Target); err != nil {
 				return fmt.Errorf("stop %s: %w (aborting purge to prevent orphaned running service)", item.Target, err)
 			}
 			fmt.Fprintf(out, "✅ Stopped service: %s\n", item.Target)
@@ -60,7 +61,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 	// Phase 3: Disable services, remove unit files & reload daemon
 	for _, item := range plan.Items {
 		if item.Category == CatService && item.Action == ActionDisable {
-			if err := xray.ManageSystemdUnit("disable", item.Target); err != nil {
+			if err := service.CurrentProvider().Disable(item.Target, false); err != nil {
 				// Non-fatal notice if service was not previously enabled
 				fmt.Fprintf(out, "ℹ️  Service disable notice (%s): %v\n", item.Target, err)
 			} else {
@@ -90,10 +91,12 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 
 	for _, item := range plan.Items {
 		if item.Category == CatService && item.Action == ActionReload {
-			if err := xray.ReloadSystemdDaemon(); err != nil {
-				errs = append(errs, fmt.Errorf("systemd daemon-reload: %w", err))
-			} else {
-				fmt.Fprintln(out, "✅ Reloaded systemd daemon")
+			if service.CurrentProvider().Type() == service.InitSystemd {
+				if err := xray.ReloadSystemdDaemon(); err != nil {
+					errs = append(errs, fmt.Errorf("systemd daemon-reload: %w", err))
+				} else {
+					fmt.Fprintln(out, "✅ Reloaded systemd daemon")
+				}
 			}
 		}
 	}

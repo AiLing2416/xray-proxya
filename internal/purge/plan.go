@@ -52,13 +52,14 @@ func BuildPlan(opts Options) (*Plan, error) {
 
 	// 1. SERVICES & NETWORK RULES
 	if targets[TypeService] {
+		initType := service.CurrentProvider().Type()
 		// Stop running services (iterate directly over all active units, including template instances)
 		for _, u := range activeUnits {
 			plan.Items = append(plan.Items, PlanItem{
 				Category: CatService,
 				Action:   ActionStop,
 				Target:   u,
-				Detail:   "active systemd service",
+				Detail:   fmt.Sprintf("active %s service", initType),
 			})
 		}
 
@@ -121,13 +122,13 @@ func BuildPlan(opts Options) (*Plan, error) {
 					Category: CatService,
 					Action:   ActionDisable,
 					Target:   u,
-					Detail:   "disable systemd unit",
+					Detail:   fmt.Sprintf("disable %s unit", initType),
 				})
 				plan.Items = append(plan.Items, PlanItem{
 					Category: CatService,
 					Action:   ActionRemove,
 					Target:   unitPath,
-					Detail:   "systemd unit file",
+					Detail:   fmt.Sprintf("%s service file", initType),
 				})
 			}
 		}
@@ -158,12 +159,14 @@ func BuildPlan(opts Options) (*Plan, error) {
 			}
 		}
 
-		plan.Items = append(plan.Items, PlanItem{
-			Category: CatService,
-			Action:   ActionReload,
-			Target:   "systemd daemon",
-			Detail:   "systemctl daemon-reload",
-		})
+		if initType == service.InitSystemd {
+			plan.Items = append(plan.Items, PlanItem{
+				Category: CatService,
+				Action:   ActionReload,
+				Target:   "systemd daemon",
+				Detail:   "systemctl daemon-reload",
+			})
+		}
 	}
 
 	// 2. SHELL PROFILE & COMPLETIONS
