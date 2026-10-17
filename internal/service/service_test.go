@@ -4,6 +4,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 	"xray-proxya/internal/config"
 )
 
@@ -357,6 +358,60 @@ func TestBuildProcdServiceContent(t *testing.T) {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected Procd content to contain %q, but did not:\n%s", expected, content)
 		}
+	}
+}
+
+type mockInitProvider struct {
+	initType      InitType
+	restartCalled bool
+}
+
+func (m *mockInitProvider) Install(cfg *config.UserConfig) error { return nil }
+func (m *mockInitProvider) Uninstall() error                     { return nil }
+func (m *mockInitProvider) Start(unit string) error              { return nil }
+func (m *mockInitProvider) Stop(unit string) error               { return nil }
+func (m *mockInitProvider) Restart(unit string) error {
+	m.restartCalled = true
+	return nil
+}
+func (m *mockInitProvider) Enable(unit string, now bool) error                   { return nil }
+func (m *mockInitProvider) Disable(unit string, now bool) error                  { return nil }
+func (m *mockInitProvider) GetStatus(unit string) (Status, error)                { return Status{}, nil }
+func (m *mockInitProvider) ListManaged(cfg *config.UserConfig) ([]Status, error) { return nil, nil }
+func (m *mockInitProvider) IsActive(unit string) bool                            { return true }
+func (m *mockInitProvider) IsEnabled(unit string) bool                           { return true }
+func (m *mockInitProvider) IsInstalled(unit string) bool                         { return true }
+func (m *mockInitProvider) Type() InitType                                       { return m.initType }
+func (m *mockInitProvider) Detect() bool                                         { return true }
+func (m *mockInitProvider) UnitPath(unit string) string                          { return "/test/" + unit }
+func (m *mockInitProvider) UnitDirectory() string                                { return "/test" }
+
+func TestManagerRestartMainUnitNonSystemdDoesNotDeadlock(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	for _, initType := range []InitType{InitOpenRC, InitProcd} {
+		t.Run(string(initType), func(t *testing.T) {
+			mock := &mockInitProvider{initType: initType}
+			mgr := NewManagerWithProvider(mock)
+
+			done := make(chan error, 1)
+			go func() {
+				done <- mgr.ExecuteAction("restart", MainUnit, false)
+			}()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("unexpected restart error: %v", err)
+				}
+				if !mock.restartCalled {
+					t.Fatalf("expected restart to be called on provider")
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("ExecuteAction deadlock detected for %s", initType)
+			}
+		})
 	}
 }
 

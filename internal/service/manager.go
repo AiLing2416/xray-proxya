@@ -135,7 +135,9 @@ func (m *Manager) ExecuteAction(action, unitInput string, now bool) error {
 				if os.Geteuid() == 0 {
 					cfg, err := config.LoadConfig()
 					if err == nil && cfg.Role == config.RoleGateway {
-						_ = gateway.RestoreTunState(cfg)
+						if err := gateway.RestoreTunStateLocked(cfg); err != nil {
+							return fmt.Errorf("restore gateway runtime after service restart: %w", err)
+						}
 					}
 				}
 				return nil
