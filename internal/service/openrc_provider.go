@@ -220,10 +220,49 @@ func (p *OpenRCProvider) GetStatus(unit string) (Status, error) {
 }
 
 func (p *OpenRCProvider) findPid(name string) int {
-	pidPath := filepath.Join("/run", name+".pid")
-	if data, err := os.ReadFile(pidPath); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && pid > 0 {
-			return pid
+	return resolveOpenRCPid(filepath.Join("/run", name+".pid"), "/proc")
+}
+
+func resolveOpenRCPid(pidPath, procBase string) int {
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0
+	}
+	supPid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || supPid <= 0 {
+		return 0
+	}
+
+	childPid := readFirstChildPidFrom(supPid, procBase)
+	if childPid > 0 {
+		return childPid
+	}
+	return supPid
+}
+
+func readFirstChildPidFrom(supPid int, procBase string) int {
+	taskPath := filepath.Join(procBase, strconv.Itoa(supPid), "task", strconv.Itoa(supPid), "children")
+	if data, err := os.ReadFile(taskPath); err == nil {
+		for _, field := range strings.Fields(string(data)) {
+			if cPid, err := strconv.Atoi(field); err == nil && cPid > 0 {
+				return cPid
+			}
+		}
+	}
+	tasks, err := os.ReadDir(filepath.Join(procBase, strconv.Itoa(supPid), "task"))
+	if err == nil {
+		for _, entry := range tasks {
+			if !entry.IsDir() {
+				continue
+			}
+			tPath := filepath.Join(procBase, strconv.Itoa(supPid), "task", entry.Name(), "children")
+			if data, err := os.ReadFile(tPath); err == nil {
+				for _, field := range strings.Fields(string(data)) {
+					if cPid, err := strconv.Atoi(field); err == nil && cPid > 0 {
+						return cPid
+					}
+				}
+			}
 		}
 	}
 	return 0

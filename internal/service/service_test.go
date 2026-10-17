@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -335,6 +336,9 @@ func TestBuildOpenRCServiceContent(t *testing.T) {
 		`command_args="run"`,
 		`supervisor="supervise-daemon"`,
 		`respawn_delay=2`,
+		`respawn_max=5`,
+		`respawn_period=60`,
+		`retry="TERM/15/KILL/5"`,
 		`output_log="/var/log/${RC_SVCNAME}.log"`,
 		`export XRAY_LOCATION_ASSET="/root/.local/share/xray-proxya/bin"`,
 	} {
@@ -354,10 +358,42 @@ func TestBuildProcdServiceContent(t *testing.T) {
 		`procd_set_param command "$PROG" run`,
 		`procd_set_param env XRAY_LOCATION_ASSET=`,
 		`procd_set_param respawn 3600 2 5`,
+		`procd_set_param term_timeout 15`,
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected Procd content to contain %q, but did not:\n%s", expected, content)
 		}
+	}
+}
+
+func TestResolveOpenRCPid(t *testing.T) {
+	tempDir := t.TempDir()
+	pidFile := filepath.Join(tempDir, "xray-proxya.pid")
+	procDir := filepath.Join(tempDir, "proc")
+
+	// Case 1: PID file does not exist
+	if pid := resolveOpenRCPid(pidFile, procDir); pid != 0 {
+		t.Fatalf("expected 0 for missing pidfile, got %d", pid)
+	}
+
+	// Case 2: PID file exists, but no proc children (fallback to supervisor PID)
+	if err := os.WriteFile(pidFile, []byte("1234\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if pid := resolveOpenRCPid(pidFile, procDir); pid != 1234 {
+		t.Fatalf("expected 1234 for missing proc children, got %d", pid)
+	}
+
+	// Case 3: Proc children file exists and has child PID
+	childPath := filepath.Join(procDir, "1234", "task", "1234")
+	if err := os.MkdirAll(childPath, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childPath, "children"), []byte("5678 9999\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if pid := resolveOpenRCPid(pidFile, procDir); pid != 5678 {
+		t.Fatalf("expected 5678 for resolved child PID, got %d", pid)
 	}
 }
 

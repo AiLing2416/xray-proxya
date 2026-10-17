@@ -19,6 +19,8 @@ pidfile="/run/${RC_SVCNAME}.pid"
 supervisor="supervise-daemon"
 respawn_delay=2
 respawn_max=5
+respawn_period=60
+retry="TERM/15/KILL/5"
 
 output_log="/var/log/${RC_SVCNAME}.log"
 error_log="/var/log/${RC_SVCNAME}.err"
@@ -53,6 +55,8 @@ pidfile="/run/${RC_SVCNAME}.pid"
 supervisor="supervise-daemon"
 respawn_delay=2
 respawn_max=5
+respawn_period=60
+retry="TERM/15/KILL/5"
 
 output_log="/var/log/${RC_SVCNAME}.log"
 error_log="/var/log/${RC_SVCNAME}.err"
@@ -87,6 +91,8 @@ pidfile="/run/${RC_SVCNAME}.pid"
 supervisor="supervise-daemon"
 respawn_delay=2
 respawn_max=5
+respawn_period=60
+retry="TERM/15/KILL/5"
 
 output_log="/var/log/${RC_SVCNAME}.log"
 error_log="/var/log/${RC_SVCNAME}.err"
