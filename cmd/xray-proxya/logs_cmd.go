@@ -41,9 +41,9 @@ func runServiceLogs(cmd *cobra.Command, args []string) error {
 
 var serviceLogsCmd = &cobra.Command{
 	Use:   "logs [unit-name]",
-	Short: "Show logs for a managed systemd unit",
+	Short: "Show logs for a managed service (systemd / OpenRC / procd)",
 	Long: strings.TrimSpace(`
-Show logs for a managed service from the systemd journal. Use --follow to stream new entries.
+Show logs for a managed service across systemd, OpenRC, and procd. Use --follow to stream new entries.
 `),
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeManagedServiceUnits,
@@ -55,9 +55,9 @@ Show logs for a managed service from the systemd journal. Use --follow to stream
 
 var logsCmd = &cobra.Command{
 	Use:   "logs [unit-name]",
-	Short: "Show Xray-Proxya logs from the systemd journal",
+	Short: "Show Xray-Proxya logs (systemd / OpenRC / procd)",
 	Long: strings.TrimSpace(`
-Show the managed service journal. Use --follow to stream new entries.
+Show managed service logs across systemd, OpenRC, and procd. Use --follow to stream new entries.
 `),
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeManagedServiceUnits,

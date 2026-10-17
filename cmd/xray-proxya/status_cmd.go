@@ -22,7 +22,7 @@ var statusJSON bool
 
 var statusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Show unified systemd services, network state, and traffic overview",
+	Short: "Show unified services, network state, and traffic overview",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
 			return fmt.Errorf("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
@@ -47,8 +47,8 @@ var statusCmd = &cobra.Command{
 
 		fmt.Printf("\n🛰️  XRAY-PROXYA RUNTIME OVERVIEW (Role: %s, User: %s)\n\n", strings.ToUpper(string(cfg.Role)), user)
 
-		// 1. Managed Services (systemd)
-		fmt.Println("● SERVICES (systemd)")
+		// 1. Managed Services
+		fmt.Printf("● SERVICES (%s)\n", service.CurrentProvider().Type())
 		printServiceUnitStatus(cfg, isRoot)
 
 		// 2. Network & Role Configuration

@@ -47,7 +47,27 @@ func GetServiceState() ServiceState {
 		GeoIPPath:  filepath.Join(GetXrayAssetPath(), "geoip.dat"),
 	}
 
-	if _, err := exec.LookPath("systemctl"); err == nil {
+	b := getServiceBridge()
+	if b != nil && b.GetServiceInfo != nil {
+		info := b.GetServiceInfo()
+		state.InitSystem = info.InitType
+		state.UnitInstalled = info.Installed
+		state.ServiceFile = info.UnitPath
+		state.Active = info.Active
+		state.PID = info.PID
+		if info.Active {
+			state.Status = "running"
+			state.ControlMode = info.InitType
+		}
+		switch info.InitType {
+		case "openrc":
+			state.LogPath = "/var/log/xray-proxya.log"
+		case "procd":
+			state.LogPath = "logread (syslog)"
+		case "systemd":
+			state.LogPath = "systemd journal"
+		}
+	} else if _, err := exec.LookPath("systemctl"); err == nil {
 		state.InitSystem = "systemd"
 		if path := findSystemdServiceFile(serviceUnitName + ".service"); path != "" {
 			state.UnitInstalled = true
@@ -133,17 +153,21 @@ func getSystemdState(name string) (bool, int) {
 }
 
 func buildServiceHint(state ServiceState) string {
+	initName := state.InitSystem
+	if initName == "" || initName == "none" {
+		initName = "systemd"
+	}
 	switch {
-	case state.Active && state.ControlMode == "systemd":
-		return "Managed by systemd."
+	case state.Active && state.ControlMode != "":
+		return fmt.Sprintf("Managed by %s.", state.ControlMode)
 	case state.Active:
-		return "Managed by systemd."
+		return fmt.Sprintf("Managed by %s.", initName)
 	case state.IsRoot && state.UnitInstalled:
-		return fmt.Sprintf("Managed unit installed via %s, currently stopped.", state.InitSystem)
+		return fmt.Sprintf("Managed unit installed via %s, currently stopped.", initName)
 	case state.IsRoot:
-		return "No managed systemd unit found. Run service install first."
+		return fmt.Sprintf("No managed %s unit found. Run service install first.", initName)
 	default:
-		return "No user systemd unit found. Run service install first."
+		return fmt.Sprintf("No user %s unit found. Run service install first.", initName)
 	}
 }
 

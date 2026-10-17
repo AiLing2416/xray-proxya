@@ -20,8 +20,8 @@ const (
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Install and control Xray-Proxya systemd units",
-	Long: `Install, start, stop, restart, enable, disable, and query managed systemd units.
+	Short: "Install and control Xray-Proxya system services (systemd / OpenRC / procd)",
+	Long: `Install, start, stop, restart, enable, disable, and query managed services across systemd, OpenRC, and procd.
 
 Managed units include:
   - core / xray-proxya:               Main Xray-Core proxy service

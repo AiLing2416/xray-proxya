@@ -133,7 +133,7 @@ func pathdConfigPath() string { return filepath.Join(config.GetConfigDir(), "pat
 func pathdBinaryPath() string {
 	return filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya", "bin", "pathd")
 }
-func pathdUnitPath() string { return "/etc/systemd/system/" + pathdUnit + ".service" }
+func pathdUnitPath() string { return service.ManagedUnitPath(service.PathdUnit) }
 
 func buildPathdSystemdServiceContent(binaryPath, configPath string) string {
 	return service.BuildPathdServiceContent(binaryPath, configPath)

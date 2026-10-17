@@ -2,11 +2,22 @@ package xray
 
 import "sync"
 
+// ServiceInfo contains basic service state provided by the active init provider.
+type ServiceInfo struct {
+	InitType  string
+	UnitPath  string
+	Installed bool
+	Active    bool
+	PID       int
+}
+
 // ServiceBridge provides callbacks into the active init system provider.
 type ServiceBridge struct {
 	IsUnitActive       func(unit string) bool
 	RestartMainService func() error
 	StopMainService    func() error
+	GetServiceInfo     func() ServiceInfo
+	GetInitType        func() string
 }
 
 var (
