@@ -385,9 +385,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag": "tun-in", "protocol": "tun",
 			"settings": map[string]interface{}{
-				"name": "proxya-tun", "mtu": 1500,
-				"address":   []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
-				"autoRoute": false, "strictRoute": true, "stack": "gvisor",
+				"name":    "proxya-tun",
+				"mtu":     1500,
+				"gateway": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
 			},
 			"sniffing": buildSniffingConfig(userCfg),
 		})
@@ -399,7 +399,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 
 	// 4. Outbounds
 	xc["outbounds"] = []interface{}{
-		map[string]interface{}{"protocol": "freedom", "tag": "direct", "settings": map[string]interface{}{"domainStrategy": "UseIP"}, "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
+		map[string]interface{}{"protocol": "freedom", "tag": "direct", "settings": map[string]interface{}{}, "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255, "domainStrategy": "UseIP"}}},
 		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}

@@ -325,6 +325,8 @@ func TestNormalizeMinClientVersion(t *testing.T) {
 		want    string
 		wantErr bool
 	}{
+		{"26.10.17", "26.10.17", false},
+		{"v26.10.17", "26.10.17", false},
 		{"26.3.27", "26.3.27", false},
 		{"v26.3.27", "26.3.27", false},
 		{"V26.3.27", "26.3.27", false},

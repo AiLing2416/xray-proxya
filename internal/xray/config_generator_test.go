@@ -287,6 +287,82 @@ func TestGenerateXrayJSONCanDisableGatewayTunForRuntimeTest(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONGatewayTunSettings(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role:        config.RoleGateway,
+		APIInbound:  10085,
+		TestInbound: 10086,
+		Gateway: config.GatewayConfig{
+			LocalEnabled: true,
+			LANEnabled:   true,
+			Mode:         "tun",
+			State:        "proxy",
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-a",
+				Enabled: true,
+				Config: map[string]interface{}{
+					"protocol": "freedom",
+					"settings": map[string]interface{}{},
+				},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds := parsed["inbounds"].([]interface{})
+	var tunInbound map[string]interface{}
+	for _, rawInbound := range inbounds {
+		inbound := rawInbound.(map[string]interface{})
+		if inbound["tag"] == "tun-in" {
+			tunInbound = inbound
+			break
+		}
+	}
+	if tunInbound == nil {
+		t.Fatal("expected tun-in inbound to be generated for active gateway")
+	}
+
+	if tunInbound["protocol"] != "tun" {
+		t.Errorf("tun-in protocol = %v, want tun", tunInbound["protocol"])
+	}
+
+	settings, ok := tunInbound["settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tun-in settings missing or invalid type: %T", tunInbound["settings"])
+	}
+
+	if settings["name"] != "proxya-tun" {
+		t.Errorf("tun-in name = %v, want proxya-tun", settings["name"])
+	}
+	if settings["mtu"] != float64(1500) && settings["mtu"] != 1500 {
+		t.Errorf("tun-in mtu = %v, want 1500", settings["mtu"])
+	}
+
+	gatewaysRaw, ok := settings["gateway"].([]interface{})
+	if !ok {
+		t.Fatalf("tun-in gateway missing or invalid type: %T", settings["gateway"])
+	}
+	expectedGateways := []string{"172.16.255.1/30", "fd00:eea:ff::1/126"}
+	if len(gatewaysRaw) != len(expectedGateways) {
+		t.Fatalf("tun-in gateway count = %d, want %d", len(gatewaysRaw), len(expectedGateways))
+	}
+	for i, g := range gatewaysRaw {
+		if g.(string) != expectedGateways[i] {
+			t.Errorf("tun-in gateway[%d] = %v, want %v", i, g, expectedGateways[i])
+		}
+	}
+
+	// Verify deprecated gVisor fields are NOT present
+	for _, deprecatedField := range []string{"stack", "autoRoute", "strictRoute", "address"} {
+		if val, exists := settings[deprecatedField]; exists {
+			t.Errorf("tun-in settings should not include deprecated field %q (got %v)", deprecatedField, val)
+		}
+	}
+}
+
 func TestGenerateXrayJSONUsesConfiguredTestInboundPort(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role:        config.RoleServer,

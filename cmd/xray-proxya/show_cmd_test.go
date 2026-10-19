@@ -492,15 +492,22 @@ func TestShowCmd_QRCodeFlag(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
+	var buf bytes.Buffer
+	readDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf, r)
+		close(readDone)
+	}()
+
 	err := showCmd.RunE(showCmd, []string{})
 	w.Close()
+	<-readDone
 	os.Stdout = origStdout
+	r.Close()
 	if err != nil {
 		t.Fatalf("showCmd.RunE failed: %v", err)
 	}
 
-	var buf bytes.Buffer
-	_, _ = io.Copy(&buf, r)
 	output := buf.String()
 
 	if !strings.Contains(output, "vless://test-uuid-show-qr@198.51.100.1:443") {
@@ -515,15 +522,22 @@ func TestShowCmd_QRCodeFlag(t *testing.T) {
 	r2, w2, _ := os.Pipe()
 	os.Stdout = w2
 
+	var buf2 bytes.Buffer
+	readDone2 := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&buf2, r2)
+		close(readDone2)
+	}()
+
 	err = showCmd.RunE(showCmd, []string{})
 	w2.Close()
+	<-readDone2
 	os.Stdout = origStdout
+	r2.Close()
 	if err != nil {
 		t.Fatalf("showCmd.RunE without qrcode failed: %v", err)
 	}
 
-	var buf2 bytes.Buffer
-	_, _ = io.Copy(&buf2, r2)
 	output2 := buf2.String()
 
 	if !strings.Contains(output2, "vless://test-uuid-show-qr@198.51.100.1:443") {

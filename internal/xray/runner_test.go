@@ -2,8 +2,11 @@ package xray
 
 import (
 	"bytes"
+	"encoding/base64"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/curve25519"
 )
 
 func TestXrayDownloadURLIsPinned(t *testing.T) {
@@ -55,5 +58,43 @@ func TestStartXrayTempWithOutput(t *testing.T) {
 
 	if cmd.Stderr != &stderr {
 		t.Errorf("expected cmd.Stderr to be assigned, got %v", cmd.Stderr)
+	}
+}
+
+func TestGenerateX25519Clamped(t *testing.T) {
+	for i := 0; i < 20; i++ {
+		privB64, pubB64, err := GenerateX25519()
+		if err != nil {
+			t.Fatalf("GenerateX25519 failed: %v", err)
+		}
+		priv, err := base64.RawURLEncoding.DecodeString(privB64)
+		if err != nil {
+			t.Fatalf("failed to decode priv: %v", err)
+		}
+		if len(priv) != 32 {
+			t.Fatalf("expected 32 bytes, got %d", len(priv))
+		}
+		// Verify RFC 7748 Curve25519 clamping
+		if priv[0]&7 != 0 {
+			t.Errorf("byte 0 lowest 3 bits not cleared: %d", priv[0])
+		}
+		if priv[31]&128 != 0 {
+			t.Errorf("byte 31 highest bit not cleared: %d", priv[31])
+		}
+		if priv[31]&64 == 0 {
+			t.Errorf("byte 31 second highest bit not set: %d", priv[31])
+		}
+
+		pub, err := base64.RawURLEncoding.DecodeString(pubB64)
+		if err != nil {
+			t.Fatalf("failed to decode pub: %v", err)
+		}
+		var expectedPub [32]byte
+		var privArr [32]byte
+		copy(privArr[:], priv)
+		curve25519.ScalarBaseMult(&expectedPub, &privArr)
+		if !bytes.Equal(pub, expectedPub[:]) {
+			t.Errorf("pub key mismatch")
+		}
 	}
 }

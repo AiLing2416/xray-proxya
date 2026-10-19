@@ -30,7 +30,7 @@ var restartHook func() error
 // PinnedXrayVersion is deliberately fixed for reproducible installs. Update
 // this value only after the release has passed the project's gateway and
 // protocol regression tests.
-const PinnedXrayVersion = "v26.3.27"
+const PinnedXrayVersion = "v26.10.17"
 
 // RegisterRestartHook installs the post-restart runtime synchronizer used by
 // consumers that own kernel state associated with the Xray process. The hook
@@ -362,7 +362,12 @@ func GetXrayProxyaPath() string {
 
 func GenerateX25519() (string, string, error) {
 	var priv [32]byte
-	rand.Read(priv[:])
+	if _, err := rand.Read(priv[:]); err != nil {
+		return "", "", err
+	}
+	priv[0] &= 248
+	priv[31] &= 127
+	priv[31] |= 64
 	var pub [32]byte
 	curve25519.ScalarBaseMult(&pub, &priv)
 	return base64.RawURLEncoding.EncodeToString(priv[:]), base64.RawURLEncoding.EncodeToString(pub[:]), nil

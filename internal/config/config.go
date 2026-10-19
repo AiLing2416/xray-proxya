@@ -35,7 +35,7 @@ const (
 )
 
 const (
-	MinRealityClientVersion = "26.3.27"
+	MinRealityClientVersion = "26.10.17"
 )
 
 var AllowedRealityFingerprints = []string{
@@ -46,13 +46,20 @@ var AllowedRealityFingerprints = []string{
 	"edge",
 }
 
-// GetRandomRealityFingerprint picks a random browser fingerprint from AllowedRealityFingerprints using crypto/rand.
+// DefaultRealityFingerprints contains browser fingerprints with optimal TLS 1.3/REALITY compatibility.
+var DefaultRealityFingerprints = []string{
+	"chrome",
+	"firefox",
+	"safari",
+}
+
+// GetRandomRealityFingerprint picks a random browser fingerprint from DefaultRealityFingerprints using crypto/rand.
 func GetRandomRealityFingerprint() (string, error) {
-	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(AllowedRealityFingerprints))))
+	n, err := rand.Int(rand.Reader, big.NewInt(int64(len(DefaultRealityFingerprints))))
 	if err != nil {
 		return "", fmt.Errorf("failed to generate random reality fingerprint: %w", err)
 	}
-	return AllowedRealityFingerprints[n.Int64()], nil
+	return DefaultRealityFingerprints[n.Int64()], nil
 }
 
 // IsAllowedRealityFingerprint checks whether a fingerprint is within the allowed browser fingerprint list.
@@ -66,7 +73,7 @@ func IsAllowedRealityFingerprint(fp string) bool {
 }
 
 // NormalizeMinClientVersion normalizes and validates a minimum client version string.
-// It accepts formats like "26.3.27", "26.3", "0", "0.0.0", or "v26.3.27" and strips leading 'v'/'V'.
+// It accepts formats like "26.10.17", "26.10", "0", "0.0.0", or "v26.10.17" and strips leading 'v'/'V'.
 // A single "0" or "0.0.0" is normalized to "0.0.0".
 func NormalizeMinClientVersion(ver string) (string, error) {
 	ver = strings.TrimSpace(ver)
