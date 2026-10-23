@@ -382,12 +382,21 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	if gatewayTunEnabled {
+		tproxyPort := getPort("tproxy-in", userCfg.Gateway.EffectiveTProxyPort())
 		inbounds = append(inbounds, map[string]interface{}{
-			"tag": "tun-in", "protocol": "tun",
+			"tag":      "tproxy-in",
+			"port":     tproxyPort,
+			"listen":   "::",
+			"protocol": "dokodemo-door",
 			"settings": map[string]interface{}{
-				"name":    "proxya-tun",
-				"mtu":     1500,
-				"gateway": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
+				"network":        "tcp,udp",
+				"followRedirect": true,
+			},
+			"streamSettings": map[string]interface{}{
+				"sockopt": map[string]interface{}{
+					"tproxy": "tproxy",
+					"mark":   255,
+				},
 			},
 			"sniffing": buildSniffingConfig(userCfg),
 		})
@@ -498,7 +507,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		if len(bypassGeoSites) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
-				"inboundTag":  []string{"tun-in"},
+				"inboundTag":  []string{"tproxy-in"},
 				"domain":      bypassGeoSites,
 				"outboundTag": "direct",
 			})
@@ -506,7 +515,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		if len(bypassGeoIPs) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
-				"inboundTag":  []string{"tun-in"},
+				"inboundTag":  []string{"tproxy-in"},
 				"ip":          bypassGeoIPs,
 				"outboundTag": "direct",
 			})
@@ -516,7 +525,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if gatewayTunEnabled && relayAlias != "" {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
-			"inboundTag":  []string{"tun-in"},
+			"inboundTag":  []string{"tproxy-in"},
 			"outboundTag": "outbound-" + relayAlias,
 		})
 	}

@@ -128,7 +128,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 	if role == config.RoleGateway {
 		cfg.Gateway.LocalEnabled = true
 		cfg.Gateway.LANEnabled = true
-		cfg.Gateway.Mode = "tun"
+		cfg.Gateway.Mode = "tproxy"
+		cfg.Gateway.TProxyPort = config.DefaultTProxyPort
 		if iface, err := gateway.DetectDefaultInterface(); err == nil {
 			cfg.Gateway.LANInterface = iface
 		}

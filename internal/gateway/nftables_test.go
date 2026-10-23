@@ -65,22 +65,37 @@ func TestParseDefaultInterfaceNoDefault(t *testing.T) {
 
 func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	rules := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24", "")
-	if !strings.Contains(rules, `iifname != "ens18" return`) {
-		t.Fatalf("rules should use configured LAN interface: %s", rules)
+	if !strings.Contains(rules, `iifname != { "lo", "ens18" } return`) {
+		t.Fatalf("rules should allow lo and configured LAN interface: %s", rules)
 	}
 	if !strings.Contains(rules, "ip daddr 192.168.50.0/24 return") {
 		t.Fatalf("rules should exclude configured LAN subnet: %s", rules)
 	}
-	if !strings.Contains(rules, "ip saddr != 192.168.50.0/24 return") {
+	if !strings.Contains(rules, `iifname "ens18" ip saddr != 192.168.50.0/24 return`) {
 		t.Fatalf("rules should reject spoofed IPv4 LAN sources: %s", rules)
 	}
 
 	rulesIPv6 := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24", "fd00::/64")
-	if !strings.Contains(rulesIPv6, "ip6 saddr != fd00::/64 return") {
+	if !strings.Contains(rulesIPv6, `iifname "ens18" ip6 saddr != fd00::/64 return`) {
 		t.Fatalf("rules should reject spoofed IPv6 LAN sources: %s", rulesIPv6)
 	}
-	if !strings.Contains(rules, "ip6 saddr ::/0 return") {
+	if !strings.Contains(rules, `iifname "ens18" ip6 saddr ::/0 return`) {
 		t.Fatalf("rules should bypass IPv6 LAN interception without a LAN IPv6 subnet: %s", rules)
+	}
+
+	// LAN only
+	rulesLANOnly := buildNFT(testGatewayConfig(false, true), "ens18", "192.168.50.0/24", "")
+	if !strings.Contains(rulesLANOnly, `iifname != "ens18" return`) {
+		t.Fatalf("LAN-only rules should filter on LAN interface: %s", rulesLANOnly)
+	}
+	if !strings.Contains(rulesLANOnly, "ip saddr != 192.168.50.0/24 return") {
+		t.Fatalf("LAN-only rules should reject spoofed IPv4 sources: %s", rulesLANOnly)
+	}
+
+	// Local only
+	rulesLocalOnly := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24", "")
+	if !strings.Contains(rulesLocalOnly, `iifname != "lo" return`) {
+		t.Fatalf("local-only rules should filter on lo interface in prerouting: %s", rulesLocalOnly)
 	}
 }
 
@@ -93,6 +108,18 @@ func TestBuildNFTConditionalChains(t *testing.T) {
 	if !strings.Contains(rulesBoth, "chain output") {
 		t.Error("rules should contain output chain when LocalEnabled is true")
 	}
+	if !strings.Contains(rulesBoth, "chain input") {
+		t.Error("rules should contain input chain when gateway is enabled")
+	}
+	if !strings.Contains(rulesBoth, "meta mark != 1 meta l4proto { tcp, udp } th dport 12345 drop") {
+		t.Error("input chain should contain tproxy port guard")
+	}
+	if !strings.Contains(rulesBoth, "fib daddr type local return") {
+		t.Error("output chain should contain fib daddr type local return")
+	}
+	if !strings.Contains(rulesBoth, "tproxy to :12345 meta mark set 1 accept") {
+		t.Error("prerouting should contain tproxy interception rule")
+	}
 
 	// LAN only
 	rulesLANOnly := buildNFT(testGatewayConfig(false, true), "ens18", "192.168.50.0/24", "")
@@ -103,25 +130,31 @@ func TestBuildNFTConditionalChains(t *testing.T) {
 		t.Error("rules should not contain output chain when LocalEnabled is false")
 	}
 
-	// Local only
+	// Local only: prerouting is required for lo loopback tproxy
 	rulesLocalOnly := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24", "")
-	if strings.Contains(rulesLocalOnly, "chain prerouting") {
-		t.Error("rules should not contain prerouting chain when LANEnabled is false")
+	if !strings.Contains(rulesLocalOnly, "chain prerouting") {
+		t.Error("rules must contain prerouting chain for lo redirection when LocalEnabled is true")
 	}
 	if !strings.Contains(rulesLocalOnly, "chain output") {
 		t.Error("rules should contain output chain when LocalEnabled is true")
 	}
 }
 
-func TestBuildNFT_Proxy_LocalOnly_GeneratesOutputOnly(t *testing.T) {
+func TestBuildNFT_Proxy_LocalOnly_GeneratesPreroutingAndOutput(t *testing.T) {
 	cfg := testGatewayConfig(true, false)
 	cfg.Gateway.State = "proxy"
 	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
-	if strings.Contains(rules, "chain prerouting") {
-		t.Error("rules should not contain prerouting chain when LANEnabled is false in proxy state")
+	if !strings.Contains(rules, "chain prerouting") {
+		t.Error("rules must contain prerouting chain when LocalEnabled is true in proxy state")
+	}
+	if !strings.Contains(rules, `iifname != "lo" return`) {
+		t.Error("rules must filter on lo in prerouting for local-only")
 	}
 	if !strings.Contains(rules, "chain output") {
 		t.Error("rules must contain output chain when LocalEnabled is true in proxy state")
+	}
+	if !strings.Contains(rules, "tproxy to :12345 meta mark set 1 accept") {
+		t.Error("rules must contain tproxy rule in prerouting")
 	}
 }
 
@@ -155,10 +188,48 @@ func testGatewayConfig(local, lan bool) *config.UserConfig {
 		Gateway: config.GatewayConfig{
 			LocalEnabled: local,
 			LANEnabled:   lan,
-			Mode:         "tun",
+			Mode:         "tproxy",
 			RelayAlias:   "relay-a",
 		},
 		CustomOutbounds: []config.CustomOutbound{{Alias: "relay-a", Enabled: true}},
+	}
+}
+
+func TestHasDefaultRoute_Parsing(t *testing.T) {
+	origExecCombined := execCommandCombinedOutput
+	defer func() { execCommandCombinedOutput = origExecCombined }()
+
+	// Case 1: IPv4 local default route via lo
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte("local default dev lo scope host\n"), nil
+	}
+	ok, err := hasDefaultRoute("100", "lo", false)
+	if err != nil || !ok {
+		t.Fatalf("expected IPv4 local default route via lo to match: ok=%v, err=%v", ok, err)
+	}
+
+	// Case 2: IPv6 local default route via lo
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte("local default dev lo metric 1024 pref medium\n"), nil
+	}
+	ok, err = hasDefaultRoute("100", "lo", true)
+	if err != nil || !ok {
+		t.Fatalf("expected IPv6 local default route via lo to match: ok=%v, err=%v", ok, err)
+	}
+
+	// Case 3: Path-tun default route
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte("default dev path-tun scope link\n"), nil
+	}
+	ok, err = hasDefaultRoute("101", "path-tun", false)
+	if err != nil || !ok {
+		t.Fatalf("expected default dev path-tun to match: ok=%v, err=%v", ok, err)
+	}
+
+	// Case 4: Mismatched device
+	ok, err = hasDefaultRoute("101", "other-dev", false)
+	if err != nil || ok {
+		t.Fatalf("expected mismatch for other-dev: ok=%v, err=%v", ok, err)
 	}
 }
 
@@ -642,5 +713,24 @@ func TestVerify_DetectsUnauthorizedForwardingRules(t *testing.T) {
 	}
 	if !foundUnauthorized {
 		t.Fatalf("expected unauthorized forward rule detection, but got: %v", problems)
+	}
+}
+
+func TestTProxyPortListening(t *testing.T) {
+	origFn := isTProxyPortListeningFn
+	defer func() { isTProxyPortListeningFn = origFn }()
+
+	isTProxyPortListeningFn = func(port int) bool {
+		return port == 12345
+	}
+
+	if !isTProxyPortListening(12345) {
+		t.Fatal("expected port 12345 to report listening")
+	}
+	if isTProxyPortListening(54321) {
+		t.Fatal("expected port 54321 to report not listening")
+	}
+	if err := waitForTProxyListener(12345); err != nil {
+		t.Fatalf("waitForTProxyListener(12345) failed: %v", err)
 	}
 }

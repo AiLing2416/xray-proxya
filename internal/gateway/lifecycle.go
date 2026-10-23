@@ -45,8 +45,8 @@ func init() {
 	})
 }
 
-// WantsTunnel reports whether the desired gateway configuration needs an Xray
-// TUN inbound. Forward-only and disabled states deliberately run without one.
+// WantsTunnel reports whether the desired gateway configuration needs gateway
+// proxy interception. Forward-only and disabled states deliberately run without one.
 func WantsTunnel(cfg *config.UserConfig) bool {
 	state := ""
 	if cfg != nil {
@@ -55,15 +55,18 @@ func WantsTunnel(cfg *config.UserConfig) bool {
 	if state == "" {
 		state = "proxy"
 	}
+	mode := ""
+	if cfg != nil {
+		mode = cfg.Gateway.Mode
+	}
+	if mode == "" || mode == "tun" {
+		mode = "tproxy"
+	}
 	return cfg != nil &&
 		cfg.Role == config.RoleGateway &&
-		cfg.Gateway.Mode == "tun" &&
+		mode == "tproxy" &&
 		state == "proxy" &&
 		(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled)
-}
-
-func waitForTun(present bool) error {
-	return waitForInterface(tunName, present)
 }
 
 func waitForInterface(name string, present bool) error {
@@ -97,8 +100,14 @@ func restartWithTunDisabled(disabled bool) error {
 	if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 		return fmt.Errorf("restart Xray service: %w", err)
 	}
-	if err := waitForTun(!disabled); err != nil {
-		return err
+	if !disabled {
+		port := config.DefaultTProxyPort
+		if cfg, err := config.LoadConfig(); err == nil && cfg != nil {
+			port = cfg.Gateway.EffectiveTProxyPort()
+		}
+		if err := waitForTProxyListener(port); err != nil {
+			return err
+		}
 	}
 	if disabled {
 		return waitForInterface(pathTunName, false)
@@ -106,10 +115,10 @@ func restartWithTunDisabled(disabled bool) error {
 	return nil
 }
 
-// convergeDownLocked is the failure-safe counterpart of gateway down.  The
+// convergeDownLocked is the failure-safe counterpart of gateway down. The
 // marker is written before process management, then the service is restarted
-// without its TUN inbound.  If restarting fails, stopping it is safer than
-// continuing with a possibly stale TUN and interception rules.
+// without its gateway inbound. If restarting fails, stopping it is safer than
+// continuing with possibly stale rules.
 func convergeDownLocked() error {
 	var errs []error
 	markerReady := true
@@ -122,7 +131,7 @@ func convergeDownLocked() error {
 	}
 	if markerReady {
 		if err := xray.RestartXrayServiceWithoutHook(); err != nil {
-			errs = append(errs, fmt.Errorf("restart Xray service without TUN: %w", err))
+			errs = append(errs, fmt.Errorf("restart Xray service without TProxy: %w", err))
 			if stopErr := xray.StopXrayService(); stopErr != nil {
 				errs = append(errs, fmt.Errorf("stop Xray service after failed restart: %w", stopErr))
 			}
@@ -131,9 +140,6 @@ func convergeDownLocked() error {
 		if stopErr := xray.StopXrayService(); stopErr != nil {
 			errs = append(errs, fmt.Errorf("stop Xray service after failed state update: %w", stopErr))
 		}
-	}
-	if err := waitForTun(false); err != nil {
-		errs = append(errs, err)
 	}
 	if err := waitForInterface(pathTunName, false); err != nil {
 		errs = append(errs, err)
@@ -186,9 +192,6 @@ func restoreTunStateLocked(cfg *config.UserConfig) error {
 	if len(Verify(cfg)) == 0 {
 		return nil
 	}
-	if err := waitForTun(true); err != nil {
-		return err
-	}
 	if pathTunnelEnabled(cfg) {
 		if err := waitForInterface(pathTunName, true); err != nil {
 			return err
@@ -233,13 +236,11 @@ func upLocked(cfg *config.UserConfig) error {
 		return fmt.Errorf("gateway up requires root")
 	}
 	if !WantsTunnel(cfg) {
-		return fmt.Errorf("gateway TUN is not enabled in active config; set state=proxy and enable local or LAN first")
+		return fmt.Errorf("gateway TProxy is not enabled in active config; set state=proxy and enable local or LAN first")
 	}
-	// Start every explicit transition from a verified TUN-free state.  This
-	// rejects stale or foreign fixed-name interfaces instead of mistaking them
-	// for a freshly-created Xray/PathLink device.
+	// Start every explicit transition from a verified clean state.
 	if err := convergeDownLocked(); err != nil {
-		return fmt.Errorf("prepare TUN-free gateway state: %w", err)
+		return fmt.Errorf("prepare clean gateway state: %w", err)
 	}
 	if err := restartWithTunDisabled(false); err != nil {
 		return errors.Join(err, convergeDownLocked())

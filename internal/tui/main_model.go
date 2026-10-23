@@ -1461,7 +1461,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					ifaces, _ := net.Interfaces()
 					choices := []string{"none"}
 					for _, iface := range ifaces {
-						if iface.Name != "proxya-tun" {
+						if iface.Name != "proxya-tun" && iface.Name != "path-tun" {
 							choices = append(choices, iface.Name)
 						}
 					}
@@ -2556,8 +2556,10 @@ func (m Model) performApply() tea.Cmd {
 }
 
 func checkGatewayStatus() (nft bool, tun bool, fwd bool) {
-	if _, err := net.InterfaceByName("proxya-tun"); err == nil {
-		tun = true
+	if out, err := exec.Command("ip", "route", "show", "table", "100").Output(); err == nil {
+		if strings.Contains(string(out), "local default dev lo") || strings.Contains(string(out), "default") {
+			tun = true
+		}
 	}
 	cmd := exec.Command("nft", "list", "table", "inet", "xray_proxya")
 	if err := cmd.Run(); err == nil {

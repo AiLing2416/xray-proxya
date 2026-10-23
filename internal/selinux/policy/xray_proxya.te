@@ -1,4 +1,4 @@
-policy_module(xray_proxya, 2.1.2)
+policy_module(xray_proxya, 2.1.3)
 
 ########################################
 # Dedicated domain for the root-managed Xray-Proxya service.  This policy is
@@ -132,7 +132,7 @@ corecmd_exec_bin(xray_proxya_t)
 corenet_rw_tun_tap_dev(xray_proxya_t)
 # Path owns the dedicated ICMP TUN and emits relay ICMP packets from the
 # service domain, requiring administrative and raw-socket capabilities.
-allow xray_proxya_t self:capability { net_admin net_raw };
+allow xray_proxya_t self:capability { net_admin net_raw net_bind_service };
 allow xray_proxya_t self:netlink_route_socket { create bind read write getattr setopt nlmsg_read nlmsg_write };
 allow xray_proxya_t self:tun_socket create_socket_perms;
 kernel_read_network_state(xray_proxya_t)

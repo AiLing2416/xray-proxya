@@ -86,7 +86,7 @@ func TestGenerateXrayJSONUsesGatewayRelayDNSConfig(t *testing.T) {
 func TestGenerateXrayJSONOmitsGatewayTunWhenDisabled(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role:    config.RoleGateway,
-		Gateway: config.GatewayConfig{Mode: "tun", State: "disabled", LocalEnabled: true},
+		Gateway: config.GatewayConfig{Mode: "tproxy", State: "disabled", LocalEnabled: true},
 	}
 	parsed := generateAndDecodeXrayConfig(t, cfg, "")
 	inbounds, ok := parsed["inbounds"].([]interface{})
@@ -98,8 +98,8 @@ func TestGenerateXrayJSONOmitsGatewayTunWhenDisabled(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if inbound["tag"] == "tun-in" {
-			t.Fatal("disabled gateway config must not include tun-in")
+		if inbound["tag"] == "tun-in" || inbound["tag"] == "tproxy-in" {
+			t.Fatal("disabled gateway config must not include tun-in or tproxy-in")
 		}
 	}
 }
@@ -281,13 +281,13 @@ func TestGenerateXrayJSONCanDisableGatewayTunForRuntimeTest(t *testing.T) {
 	inbounds := parsed["inbounds"].([]interface{})
 	for _, rawInbound := range inbounds {
 		inbound := rawInbound.(map[string]interface{})
-		if inbound["tag"] == "tun-in" {
-			t.Fatal("tun-in inbound should be disabled during runtime isolation tests")
+		if inbound["tag"] == "tun-in" || inbound["tag"] == "tproxy-in" {
+			t.Fatal("tproxy-in/tun-in inbound should be disabled during runtime isolation tests")
 		}
 	}
 }
 
-func TestGenerateXrayJSONGatewayTunSettings(t *testing.T) {
+func TestGenerateXrayJSONGatewayTProxySettings(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role:        config.RoleGateway,
 		APIInbound:  10085,
@@ -295,7 +295,8 @@ func TestGenerateXrayJSONGatewayTunSettings(t *testing.T) {
 		Gateway: config.GatewayConfig{
 			LocalEnabled: true,
 			LANEnabled:   true,
-			Mode:         "tun",
+			Mode:         "tproxy",
+			TProxyPort:   12345,
 			State:        "proxy",
 			RelayAlias:   "relay-a",
 		},
@@ -313,53 +314,60 @@ func TestGenerateXrayJSONGatewayTunSettings(t *testing.T) {
 
 	parsed := generateAndDecodeXrayConfig(t, cfg, "")
 	inbounds := parsed["inbounds"].([]interface{})
-	var tunInbound map[string]interface{}
+	var tproxyInbound map[string]interface{}
 	for _, rawInbound := range inbounds {
 		inbound := rawInbound.(map[string]interface{})
-		if inbound["tag"] == "tun-in" {
-			tunInbound = inbound
+		if inbound["tag"] == "tproxy-in" {
+			tproxyInbound = inbound
 			break
 		}
 	}
-	if tunInbound == nil {
-		t.Fatal("expected tun-in inbound to be generated for active gateway")
+	if tproxyInbound == nil {
+		t.Fatal("expected tproxy-in inbound to be generated for active gateway")
 	}
 
-	if tunInbound["protocol"] != "tun" {
-		t.Errorf("tun-in protocol = %v, want tun", tunInbound["protocol"])
+	if tproxyInbound["protocol"] != "dokodemo-door" {
+		t.Errorf("tproxy-in protocol = %v, want dokodemo-door", tproxyInbound["protocol"])
+	}
+	if tproxyInbound["listen"] != "::" {
+		t.Errorf("tproxy-in listen = %v, want ::", tproxyInbound["listen"])
+	}
+	portVal := int(tproxyInbound["port"].(float64))
+	if portVal != 12345 {
+		t.Errorf("tproxy-in port = %d, want 12345", portVal)
 	}
 
-	settings, ok := tunInbound["settings"].(map[string]interface{})
+	settings, ok := tproxyInbound["settings"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("tun-in settings missing or invalid type: %T", tunInbound["settings"])
+		t.Fatalf("tproxy-in settings missing or invalid type: %T", tproxyInbound["settings"])
+	}
+	if settings["network"] != "tcp,udp" {
+		t.Errorf("tproxy-in network = %v, want tcp,udp", settings["network"])
+	}
+	if settings["followRedirect"] != true {
+		t.Errorf("tproxy-in followRedirect = %v, want true", settings["followRedirect"])
 	}
 
-	if settings["name"] != "proxya-tun" {
-		t.Errorf("tun-in name = %v, want proxya-tun", settings["name"])
-	}
-	if settings["mtu"] != float64(1500) && settings["mtu"] != 1500 {
-		t.Errorf("tun-in mtu = %v, want 1500", settings["mtu"])
-	}
-
-	gatewaysRaw, ok := settings["gateway"].([]interface{})
+	streamSettings, ok := tproxyInbound["streamSettings"].(map[string]interface{})
 	if !ok {
-		t.Fatalf("tun-in gateway missing or invalid type: %T", settings["gateway"])
+		t.Fatalf("tproxy-in streamSettings missing or invalid type: %T", tproxyInbound["streamSettings"])
 	}
-	expectedGateways := []string{"172.16.255.1/30", "fd00:eea:ff::1/126"}
-	if len(gatewaysRaw) != len(expectedGateways) {
-		t.Fatalf("tun-in gateway count = %d, want %d", len(gatewaysRaw), len(expectedGateways))
+	sockopt, ok := streamSettings["sockopt"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tproxy-in sockopt missing or invalid type: %T", streamSettings["sockopt"])
 	}
-	for i, g := range gatewaysRaw {
-		if g.(string) != expectedGateways[i] {
-			t.Errorf("tun-in gateway[%d] = %v, want %v", i, g, expectedGateways[i])
-		}
+	if sockopt["tproxy"] != "tproxy" {
+		t.Errorf("tproxy-in sockopt.tproxy = %v, want tproxy", sockopt["tproxy"])
+	}
+	markVal := int(sockopt["mark"].(float64))
+	if markVal != 255 {
+		t.Errorf("tproxy-in sockopt.mark = %d, want 255", markVal)
 	}
 
-	// Verify deprecated gVisor fields are NOT present
-	for _, deprecatedField := range []string{"stack", "autoRoute", "strictRoute", "address"} {
-		if val, exists := settings[deprecatedField]; exists {
-			t.Errorf("tun-in settings should not include deprecated field %q (got %v)", deprecatedField, val)
-		}
+	// Verify routing rules route tproxy-in to relay-a
+	rules := parsed["routing"].(map[string]interface{})["rules"].([]interface{})
+	if !containsInboundRule(rules, "tproxy-in", "outbound-relay-a") {
+		t.Fatal("tproxy-in inbound is not routed to outbound-relay-a")
 	}
 }
 
@@ -892,7 +900,7 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 			continue
 		}
 		inboundsRaw, _ := rule["inboundTag"].([]interface{})
-		if len(inboundsRaw) != 1 || inboundsRaw[0] != "tun-in" {
+		if len(inboundsRaw) != 1 || inboundsRaw[0] != "tproxy-in" {
 			continue
 		}
 

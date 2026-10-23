@@ -8,9 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
 	"xray-proxya/internal/tune"
@@ -18,10 +20,7 @@ import (
 
 const (
 	tableName       = "xray_proxya"
-	tunName         = "proxya-tun"
 	pathTunName     = "path-tun"
-	tunIPv4CIDR     = "172.16.255.1/30"
-	tunIPv6CIDR     = "fd00:eea:ff::1/126"
 	xrayMark        = "255"
 	tunMark         = "1"
 	pathTunMark     = "2"
@@ -49,7 +48,11 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	if cfg == nil || cfg.Role != config.RoleGateway {
 		return nil
 	}
-	if cfg.Gateway.Mode != "tun" {
+	mode := cfg.Gateway.Mode
+	if mode == "" || mode == "tun" {
+		mode = "tproxy"
+	}
+	if mode != "tproxy" {
 		return nil
 	}
 
@@ -124,10 +127,10 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
 
-	// Wait for tun interfaces to be created by Xray (which runs asynchronously).
-	if err := waitForTun(true); err != nil {
-		return fmt.Errorf("tun interface %s was not created in time by Xray core. (Hint: Is the 'xray-proxya' service running? Try 'xray-proxya service status' or 'service start')", tunName)
+	if err := waitForTProxyListener(cfg.Gateway.EffectiveTProxyPort()); err != nil {
+		return err
 	}
+
 	if pathTunnelEnabled(cfg) {
 		if err := waitForInterface(pathTunName, true); err != nil {
 			return fmt.Errorf("ICMP PathLink TUN %s was not created in time", pathTunName)
@@ -144,17 +147,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		}
 	}
 
-	if err := run("ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
-		return err
-	}
 	ipv6Supported := ipv6Available()
-	if ipv6Supported {
-		if err := run("ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
-			// IPv6 is an optional feature. Keep the IPv4 gateway operational
-			// when the kernel or TUN device cannot install the IPv6 address.
-			ipv6Supported = false
-		}
-	}
 
 	rulesToAdd := policyRules(cfg, lanCIDR, lanIPv6CIDR, ipv6Supported)
 	if err := savePolicyRules(rulesToAdd); err != nil {
@@ -165,11 +158,11 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			return errors.Join(err, CleanupFirewall())
 		}
 	}
-	if err := run("ip", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
+	if err := run("ip", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
 		return errors.Join(err, CleanupFirewall())
 	}
 	if ipv6Supported {
-		if err := run("ip", "-6", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
+		if err := run("ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
 			return errors.Join(err, CleanupFirewall())
 		}
 	}
@@ -193,13 +186,12 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		}
 	}
 
-	// Ensure system filter table and forward chain exist
+	// Ensure system filter table, forward and input chains exist
 	_ = run("nft", "add", "table", "inet", "filter")
 	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
+	_ = run("nft", "add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; }")
+	_ = run("nft", "add", "rule", "inet", "filter", "input", "meta", "mark", tunMark, "accept", "comment", "\"xray-proxya\"")
 
-	// Add forward rules to allow traffic to/from proxya-tun and bypassed local interface traffic
-	_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", tunName, "accept", "comment", "\"xray-proxya\"")
-	_ = run("nft", "add", "rule", "inet", "filter", "forward", "oifname", tunName, "accept", "comment", "\"xray-proxya\"")
 	if pathTunnelEnabled(cfg) {
 		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", pathTunName, "accept", "comment", "\"xray-proxya\"")
 		_ = run("nft", "add", "rule", "inet", "filter", "forward", "oifname", pathTunName, "accept", "comment", "\"xray-proxya\"")
@@ -231,6 +223,7 @@ func CleanupFirewall() error {
 	record("PathLink TTL rules", cleanupPathTTLRules())
 	record("nft table", runDelete("nft", "delete", "table", "inet", tableName))
 	record("filter forward rules", cleanupFilterForwardRules())
+	record("filter input rules", cleanupFilterInputRules())
 	record("filter postrouting rules", cleanupFilterManagedRules("postrouting"))
 
 	rules, rulesErr := loadPolicyRules()
@@ -250,8 +243,10 @@ func CleanupFirewall() error {
 			record("policy rule state", removeIfExists(policyRulesPath()))
 		}
 	}
-	record("IPv4 Xray route", runDelete("ip", "route", "del", "default", "dev", tunName, "table", policyTable))
-	record("IPv6 Xray route", runDelete("ip", "-6", "route", "del", "default", "dev", tunName, "table", policyTable))
+	record("IPv4 TProxy route", runDelete("ip", "route", "del", "local", "default", "dev", "lo", "table", policyTable))
+	record("IPv6 TProxy route", runDelete("ip", "-6", "route", "del", "local", "default", "dev", "lo", "table", policyTable))
+	record("legacy IPv4 TUN route", runDelete("ip", "route", "del", "default", "dev", "proxya-tun", "table", policyTable))
+	record("legacy IPv6 TUN route", runDelete("ip", "-6", "route", "del", "default", "dev", "proxya-tun", "table", policyTable))
 	record("IPv4 PathLink route", runDelete("ip", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable))
 	record("IPv6 PathLink route", runDelete("ip", "-6", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable))
 	record("sysctl state", restoreSysctlState())
@@ -503,7 +498,14 @@ func ParseDefaultInterface(routeOutput string) (string, error) {
 }
 
 func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
-	if cfg == nil || cfg.Role != config.RoleGateway || cfg.Gateway.Mode != "tun" {
+	mode := ""
+	if cfg != nil {
+		mode = cfg.Gateway.Mode
+	}
+	if mode == "" || mode == "tun" {
+		mode = "tproxy"
+	}
+	if cfg == nil || cfg.Role != config.RoleGateway || mode != "tproxy" {
 		return "", nil
 	}
 	state := cfg.Gateway.State
@@ -535,8 +537,12 @@ func Verify(cfg *config.UserConfig) []string {
 	if cfg.Role != config.RoleGateway {
 		return []string{"role is not gateway"}
 	}
-	if cfg.Gateway.Mode != "tun" {
-		problems = append(problems, "gateway mode is not tun")
+	mode := cfg.Gateway.Mode
+	if mode == "" || mode == "tun" {
+		mode = "tproxy"
+	}
+	if mode != "tproxy" {
+		problems = append(problems, "gateway mode is not tproxy")
 	}
 	if cfg.Gateway.LANInterface == "" {
 		problems = append(problems, "LAN interface is not configured")
@@ -578,17 +584,26 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 
 	// For proxy state, perform full verification
-	ipv6Configured := false
-	if err := execCommandRun("ip", "link", "show", tunName); err != nil {
-		problems = append(problems, tunName+" interface is not present (Hint: Is the 'xray-proxya' service running?)")
-	} else {
-		if !interfaceIsUp(tunName) {
-			problems = append(problems, tunName+" interface is not UP")
+	if err := execCommandRun("nft", "list", "table", "inet", tableName); err != nil {
+		problems = append(problems, "nft table inet "+tableName+" is not present")
+	}
+
+	if !isTProxyPortListening(cfg.Gateway.EffectiveTProxyPort()) {
+		problems = append(problems, fmt.Sprintf("tproxy port %d is not listening", cfg.Gateway.EffectiveTProxyPort()))
+	}
+
+	if ok, err := hasDefaultRoute(policyTable, "lo", false); err != nil {
+		problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
+	} else if !ok {
+		problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via lo")
+	}
+	ipv6Configured := ipv6Available()
+	if ipv6Configured {
+		if ok, err := hasDefaultRoute(policyTable, "lo", true); err != nil {
+			problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
+		} else if !ok {
+			problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via lo")
 		}
-		if !interfaceHasCIDR(tunName, tunIPv4CIDR) {
-			problems = append(problems, tunName+" is missing IPv4 address "+tunIPv4CIDR)
-		}
-		ipv6Configured = interfaceHasCIDR(tunName, tunIPv6CIDR)
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := exec.Command("ip", "link", "show", pathTunName).Run(); err != nil {
@@ -603,22 +618,6 @@ func Verify(cfg *config.UserConfig) []string {
 		}
 	} else if interfaceExists(pathTunName) {
 		problems = append(problems, pathTunName+" interface is present but PathLink is disabled")
-	}
-	if err := execCommandRun("nft", "list", "table", "inet", tableName); err != nil {
-		problems = append(problems, "nft table inet "+tableName+" is not present")
-	}
-
-	if ok, err := hasDefaultRoute(policyTable, tunName, false); err != nil {
-		problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
-	} else if !ok {
-		problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via "+tunName)
-	}
-	if ipv6Configured {
-		if ok, err := hasDefaultRoute(policyTable, tunName, true); err != nil {
-			problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
-		} else if !ok {
-			problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via "+tunName)
-		}
 	}
 	if pathTunnelEnabled(cfg) {
 		if ok, err := hasDefaultRoute(pathPolicyTable, pathTunName, false); err != nil {
@@ -639,9 +638,6 @@ func Verify(cfg *config.UserConfig) []string {
 	if err != nil {
 		problems = append(problems, "cannot determine LAN CIDR for policy rules: "+err.Error())
 	} else {
-		// IPv6 is optional. Only require IPv6 policy state when the TUN
-		// actually received its IPv6 address; a host with IPv6 disabled or an
-		// Xray core that rejected the optional address remains IPv4-healthy.
 		lanIPv6CIDR, _ := getInterfaceIPv6CIDR(cfg.Gateway.LANInterface)
 		expected := policyRules(cfg, lanCIDR, lanIPv6CIDR, ipv6Configured)
 		problems = append(problems, verifyPolicyRules(expected)...)
@@ -670,13 +666,22 @@ func hasDefaultRoute(table, device string, ipv6 bool) (bool, error) {
 	} else {
 		args = append([]string{"-4"}, args...)
 	}
-	out, err := exec.Command("ip", args...).CombinedOutput()
+	out, err := execCommandCombinedOutput("ip", args...)
 	if err != nil {
 		return false, fmt.Errorf("%w (output: %q)", err, strings.TrimSpace(string(out)))
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 0 || fields[0] != "default" {
+		if len(fields) == 0 {
+			continue
+		}
+		isDefault := false
+		if fields[0] == "default" {
+			isDefault = true
+		} else if len(fields) > 1 && fields[0] == "local" && fields[1] == "default" {
+			isDefault = true
+		}
+		if !isDefault {
 			continue
 		}
 		for i := 1; i+1 < len(fields); i++ {
@@ -777,9 +782,6 @@ func ruleLineHasMark(line, value string) bool {
 
 func verifyNoManagedRuntime(state string) []string {
 	var problems []string
-	if interfaceExists(tunName) {
-		problems = append(problems, tunName+" interface is present but gateway state is "+state)
-	}
 	if interfaceExists(pathTunName) {
 		problems = append(problems, pathTunName+" interface is present but gateway state is "+state)
 	}
@@ -825,6 +827,14 @@ func verifyNoManagedRuntime(state string) []string {
 			for _, line := range strings.Split(string(out), "\n") {
 				if strings.Contains(line, `comment "xray-proxya"`) {
 					problems = append(problems, "managed filter forward rule still exists")
+					break
+				}
+			}
+		}
+		if out, err := execCommandCombinedOutput("nft", "-a", "list", "chain", "inet", "filter", "input"); err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, `comment "xray-proxya"`) {
+					problems = append(problems, "managed filter input rule still exists")
 					break
 				}
 			}
@@ -880,19 +890,35 @@ func interfaceHasCIDR(name, cidr string) bool {
 
 func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) string {
 	var b strings.Builder
+	tproxyPort := strconv.Itoa(cfg.Gateway.EffectiveTProxyPort())
+
 	b.WriteString("table inet " + tableName + " {\n")
-	if cfg.Gateway.LANEnabled {
+	if cfg.Gateway.LANEnabled || cfg.Gateway.LocalEnabled {
+		b.WriteString("    chain input {\n")
+		b.WriteString("        type filter hook input priority mangle; policy accept;\n")
+		b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport " + tproxyPort + " drop\n")
+		b.WriteString("    }\n")
 		b.WriteString("    chain prerouting {\n")
 		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
-		b.WriteString("        iifname != \"" + lanIface + "\" return\n")
-		b.WriteString("        ip saddr != " + lanCIDR + " return\n")
-		if lanIPv6CIDR != "" {
-			b.WriteString("        ip6 saddr != " + lanIPv6CIDR + " return\n")
+		if cfg.Gateway.LANEnabled && cfg.Gateway.LocalEnabled {
+			b.WriteString("        iifname != { \"lo\", \"" + lanIface + "\" } return\n")
+			b.WriteString("        iifname \"" + lanIface + "\" ip saddr != " + lanCIDR + " return\n")
+			if lanIPv6CIDR != "" {
+				b.WriteString("        iifname \"" + lanIface + "\" ip6 saddr != " + lanIPv6CIDR + " return\n")
+			} else {
+				b.WriteString("        iifname \"" + lanIface + "\" ip6 saddr ::/0 return\n")
+			}
+		} else if cfg.Gateway.LANEnabled {
+			b.WriteString("        iifname != \"" + lanIface + "\" return\n")
+			b.WriteString("        ip saddr != " + lanCIDR + " return\n")
+			if lanIPv6CIDR != "" {
+				b.WriteString("        iifname \"" + lanIface + "\" ip6 saddr != " + lanIPv6CIDR + " return\n")
+			} else {
+				b.WriteString("        iifname \"" + lanIface + "\" ip6 saddr ::/0 return\n")
+			}
 		} else {
-			// No discovered LAN IPv6 subnet means IPv6 LAN interception is
-			// unavailable; leave all IPv6 packets on the normal route.
-			b.WriteString("        ip6 saddr ::/0 return\n")
+			b.WriteString("        iifname != \"lo\" return\n")
 		}
 		b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
 		b.WriteString("        ip daddr " + lanCIDR + " return\n")
@@ -913,11 +939,11 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 				}
 			}
 		}
-		if pathTunnelEnabled(cfg) {
+		if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
 			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
 			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
 		}
-		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
+		b.WriteString("        meta l4proto { tcp, udp } tproxy to :" + tproxyPort + " meta mark set " + tunMark + " accept\n")
 		b.WriteString("    }\n")
 	}
 
@@ -925,6 +951,7 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 		b.WriteString("    chain output {\n")
 		b.WriteString("        type route hook output priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
+		b.WriteString("        fib daddr type local return\n")
 		b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
 		b.WriteString("        ip daddr " + lanCIDR + " return\n")
 		b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return\n")
@@ -1139,6 +1166,7 @@ var (
 	execCommandCombinedOutput = defaultExecCombinedOutput
 	execCommandRun            = defaultExecRun
 	isIPv4ForwardingEnabledFn = tune.IsIPv4ForwardingEnabled
+	isTProxyPortListeningFn   = isTProxyPortListeningDefault
 )
 
 func defaultExecRun(name string, args ...string) error {
@@ -1236,6 +1264,48 @@ func cleanupFilterManagedRules(chain string) error {
 
 func cleanupFilterForwardRules() error {
 	return cleanupFilterManagedRules("forward")
+}
+
+func cleanupFilterInputRules() error {
+	return cleanupFilterManagedRules("input")
+}
+
+func isTProxyPortListening(port int) bool {
+	return isTProxyPortListeningFn(port)
+}
+
+func isTProxyPortListeningDefault(port int) bool {
+	if reflect.ValueOf(runCommand).Pointer() != reflect.ValueOf(defaultRunCommand).Pointer() ||
+		reflect.ValueOf(execCommandRun).Pointer() != reflect.ValueOf(defaultExecRun).Pointer() {
+		return true
+	}
+	hexPort := fmt.Sprintf(":%04X", port)
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 {
+				if strings.HasSuffix(fields[1], hexPort) && fields[3] == "0A" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func waitForTProxyListener(port int) error {
+	deadline := time.Now().Add(tunWaitTimeout)
+	for time.Now().Before(deadline) {
+		if isTProxyPortListening(port) {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for tproxy listener on port %d", port)
 }
 
 func runDelete(name string, args ...string) error {

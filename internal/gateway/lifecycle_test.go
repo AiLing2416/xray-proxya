@@ -10,25 +10,35 @@ import (
 func TestWantsTunnel(t *testing.T) {
 	base := &config.UserConfig{
 		Role:    config.RoleGateway,
-		Gateway: config.GatewayConfig{Mode: "tun", State: "proxy", LocalEnabled: true},
+		Gateway: config.GatewayConfig{Mode: "tproxy", State: "proxy", LocalEnabled: true},
 	}
 	if !WantsTunnel(base) {
-		t.Fatal("proxy state with local gateway enabled should require TUN")
+		t.Fatal("proxy state with local gateway enabled and tproxy mode should require interception")
+	}
+
+	base.Gateway.Mode = "tun"
+	if !WantsTunnel(base) {
+		t.Fatal("proxy state with legacy tun mode should be accepted as tproxy")
+	}
+
+	base.Gateway.Mode = ""
+	if !WantsTunnel(base) {
+		t.Fatal("proxy state with empty mode should default to tproxy")
 	}
 
 	base.Gateway.State = "disabled"
 	if WantsTunnel(base) {
-		t.Fatal("disabled state should not require TUN")
+		t.Fatal("disabled state should not require interception")
 	}
 	base.Gateway.State = "forward-only"
 	if WantsTunnel(base) {
-		t.Fatal("forward-only state should not require TUN")
+		t.Fatal("forward-only state should not require interception")
 	}
 	base.Gateway.State = "proxy"
 	base.Gateway.LocalEnabled = false
 	base.Gateway.LANEnabled = false
 	if WantsTunnel(base) {
-		t.Fatal("gateway with both local and LAN disabled should not require TUN")
+		t.Fatal("gateway with both local and LAN disabled should not require interception")
 	}
 }
 

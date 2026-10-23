@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -204,8 +205,9 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 		return "", fmt.Errorf("add default route in netns: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// 6. Insert temporary nftables rule to mark traffic arriving from vethGateway
-	nftCmd := exec.Command("nft", "insert", "rule", "inet", tableName, "prerouting", "iifname", vethGateway, "meta", "l4proto", "{ tcp, udp }", "meta", "mark", "set", tunMark)
+	// 6. Insert temporary nftables rule to redirect traffic arriving from vethGateway via TProxy
+	tproxyPort := strconv.Itoa(cfg.Gateway.EffectiveTProxyPort())
+	nftCmd := exec.Command("nft", "insert", "rule", "inet", tableName, "prerouting", "iifname", vethGateway, "meta", "l4proto", "{ tcp, udp }", "tproxy", "to", ":"+tproxyPort, "meta", "mark", "set", tunMark, "accept")
 	if out, err := nftCmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("insert temporary nftables rule: %w (output: %s)", err, strings.TrimSpace(string(out)))
 	}

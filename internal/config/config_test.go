@@ -108,11 +108,48 @@ func TestBackfillDefaultsGatewayMode(t *testing.T) {
 
 	cfg.BackfillDefaults()
 
-	if cfg.Gateway.Mode != "tun" {
-		t.Fatalf("Gateway.Mode = %q, want tun", cfg.Gateway.Mode)
+	if cfg.Gateway.Mode != "tproxy" {
+		t.Fatalf("Gateway.Mode = %q, want tproxy", cfg.Gateway.Mode)
+	}
+	if cfg.Gateway.TProxyPort != DefaultTProxyPort {
+		t.Fatalf("Gateway.TProxyPort = %d, want %d", cfg.Gateway.TProxyPort, DefaultTProxyPort)
+	}
+	if cfg.Gateway.EffectiveTProxyPort() != DefaultTProxyPort {
+		t.Fatalf("EffectiveTProxyPort() = %d, want %d", cfg.Gateway.EffectiveTProxyPort(), DefaultTProxyPort)
 	}
 	if len(cfg.Presets) != 0 {
 		t.Fatalf("gateway config should not auto-expand active modes; got %d", len(cfg.Presets))
+	}
+}
+
+func TestBackfillDefaultsGatewayMigratesTunMode(t *testing.T) {
+	cfg := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Mode: "tun",
+		},
+	}
+
+	cfg.BackfillDefaults()
+
+	if cfg.Gateway.Mode != "tproxy" {
+		t.Fatalf("Gateway.Mode = %q, want tproxy", cfg.Gateway.Mode)
+	}
+	if cfg.Gateway.TProxyPort != DefaultTProxyPort {
+		t.Fatalf("Gateway.TProxyPort = %d, want %d", cfg.Gateway.TProxyPort, DefaultTProxyPort)
+	}
+}
+
+func TestNewDefaultConfig(t *testing.T) {
+	cfg := NewDefaultConfig()
+	if cfg.Role != RoleGateway {
+		t.Fatalf("cfg.Role = %q, want %q", cfg.Role, RoleGateway)
+	}
+	if cfg.Gateway.Mode != "tproxy" {
+		t.Fatalf("Gateway.Mode = %q, want tproxy", cfg.Gateway.Mode)
+	}
+	if cfg.Gateway.EffectiveTProxyPort() != DefaultTProxyPort {
+		t.Fatalf("EffectiveTProxyPort() = %d, want %d", cfg.Gateway.EffectiveTProxyPort(), DefaultTProxyPort)
 	}
 }
 

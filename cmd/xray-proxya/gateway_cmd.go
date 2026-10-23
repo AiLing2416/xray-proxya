@@ -107,11 +107,7 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Failed to load gateway configuration")
 	}
 
-	iface, err := net.InterfaceByName("proxya-tun")
-	tunPresent := (err == nil)
-	tunUp := tunPresent && (iface.Flags&net.FlagUp != 0)
-	ipForward := tune.IsIPv4ForwardingEnabled()
-
+	nftActive := exec.Command("nft", "list", "table", "inet", "xray_proxya").Run() == nil
 	var problems []string
 	if activeCfg != nil {
 		problems = gateway.Verify(activeCfg)
@@ -121,6 +117,17 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 	if problems == nil {
 		problems = []string{}
 	}
+
+	hasRoute := false
+	if out, err := exec.Command("ip", "route", "show", "table", "100").Output(); err == nil {
+		if strings.Contains(string(out), "local default dev lo") || strings.Contains(string(out), "default") {
+			hasRoute = true
+		}
+	}
+	tproxyActive := nftActive && (hasRoute || len(problems) == 0)
+	tunPresent := tproxyActive
+	tunUp := tproxyActive
+	ipForward := tune.IsIPv4ForwardingEnabled()
 
 	if gatewayStatusJSON {
 		out := GatewayStatusJSON{
@@ -170,21 +177,30 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("\n🛰️ RUNTIME STATE")
 	fmt.Println("--------------------------------------------------")
-	tunStatus := "NOT FOUND"
-	if tunPresent {
-		if tunUp {
-			tunStatus = "UP"
-		} else {
-			tunStatus = "DOWN"
-		}
+	tproxyPort := config.DefaultTProxyPort
+	if activeCfg != nil {
+		tproxyPort = activeCfg.Gateway.EffectiveTProxyPort()
+	} else if stagingCfg != nil {
+		tproxyPort = stagingCfg.Gateway.EffectiveTProxyPort()
 	}
-	fmt.Printf("TUN Interface: proxya-tun (%s)\n", tunStatus)
+
+	tproxyStatus := "INACTIVE"
+	if tproxyActive {
+		tproxyStatus = fmt.Sprintf(":%d (ACTIVE)", tproxyPort)
+	}
+	fmt.Printf("TProxy Port:   %s\n", tproxyStatus)
 
 	nftStatus := "INACTIVE"
-	if exec.Command("nft", "list", "table", "inet", "xray_proxya").Run() == nil {
+	if nftActive {
 		nftStatus = "ACTIVE (table inet xray_proxya)"
 	}
 	fmt.Printf("nftables:      %s\n", nftStatus)
+
+	routeStatus := "INACTIVE"
+	if tproxyActive {
+		routeStatus = "ACTIVE (lo table 100)"
+	}
+	fmt.Printf("TProxy Routing: %s\n", routeStatus)
 
 	forwardStatus := "DISABLED"
 	if ipForward {
@@ -217,7 +233,7 @@ func runGatewayEnable(cmd *cobra.Command, args []string) error {
 	}
 	cfg.Gateway.LocalEnabled = true
 	cfg.Gateway.LANEnabled = true
-	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.Mode = "tproxy"
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("failed to save staging config: %w", err)
 	}
@@ -254,7 +270,7 @@ func runGatewayDisable(cmd *cobra.Command, args []string) error {
 	}
 	cfg.Gateway.LocalEnabled = false
 	cfg.Gateway.LANEnabled = false
-	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.Mode = "tproxy"
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("failed to save staging config: %w", err)
 	}
@@ -352,7 +368,7 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Failed to load staging config: %v", err)
 	}
 
-	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.Mode = "tproxy"
 	if cmd.Flags().Changed("relay") {
 		relay, _ := cmd.Flags().GetString("relay")
 		if positionalRelay != "" && relay != positionalRelay {
@@ -467,7 +483,7 @@ var gatewayDiffCmd = &cobra.Command{
 		fmt.Println("# policy routing")
 		fmt.Println("ip rule add fwmark 1 table 100 pref 10100")
 		fmt.Println("ip rule add fwmark 255 table main pref 10000")
-		fmt.Println("ip route replace default dev proxya-tun table 100")
+		fmt.Println("ip route replace local default dev lo table 100")
 	},
 }
 

@@ -185,7 +185,7 @@ func TestConfigShowCmd(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
-			Mode:         "tun",
+			Mode:         "tproxy",
 			LANInterface: "eth0",
 			LocalEnabled: true,
 		},
@@ -249,7 +249,7 @@ func TestConfigShowCmd(t *testing.T) {
 	if err := json.Unmarshal([]byte(out), &gwConfig); err != nil {
 		t.Fatalf("unmarshal filter section json: %v\nOutput: %s", err, out)
 	}
-	if gwConfig.Mode != "tun" || gwConfig.LANInterface != "eth0" || !gwConfig.LocalEnabled {
+	if gwConfig.Mode != "tproxy" || gwConfig.LANInterface != "eth0" || !gwConfig.LocalEnabled {
 		t.Errorf("unexpected gateway section content: %+v", gwConfig)
 	}
 

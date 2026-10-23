@@ -24,6 +24,10 @@ const (
 	RoleGateway AppRole = "gateway"
 )
 
+const (
+	DefaultTProxyPort = 12345
+)
+
 type PresetMode string
 
 const (
@@ -492,9 +496,29 @@ type GatewayConfig struct {
 	Mode            string   `json:"mode"` // "tun" or "tproxy"
 	RelayAlias      string   `json:"relay_alias"`
 	LANInterface    string   `json:"lan_interface"`
+	TProxyPort      int      `json:"tproxy_port,omitempty"`
 	BypassDNS       []string `json:"bypass_dns,omitempty"`
 	State           string   `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
 	BypassCountries []string `json:"bypass_countries,omitempty"`
+}
+
+func (g GatewayConfig) EffectiveTProxyPort() int {
+	if g.TProxyPort > 0 {
+		return g.TProxyPort
+	}
+	return DefaultTProxyPort
+}
+
+func NewDefaultConfig() *UserConfig {
+	cfg := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Mode:       "tproxy",
+			TProxyPort: DefaultTProxyPort,
+		},
+	}
+	cfg.BackfillDefaults()
+	return cfg
 }
 
 type CustomOutbound struct {
@@ -823,9 +847,13 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		changes = append(changes, "migrated address_sub to gate_url")
 	}
 	if cfg.Role == RoleGateway {
-		if cfg.Gateway.Mode == "" {
-			cfg.Gateway.Mode = "tun"
-			changes = append(changes, "set missing gateway.mode=tun")
+		if cfg.Gateway.Mode == "" || cfg.Gateway.Mode == "tun" {
+			cfg.Gateway.Mode = "tproxy"
+			changes = append(changes, "set missing gateway.mode=tproxy")
+		}
+		if cfg.Gateway.TProxyPort <= 0 {
+			cfg.Gateway.TProxyPort = DefaultTProxyPort
+			changes = append(changes, "set default gateway.tproxy_port")
 		}
 		if cfg.Gateway.State == "" {
 			if cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled {

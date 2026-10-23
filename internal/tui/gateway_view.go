@@ -214,7 +214,7 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		b.WriteString(fmt.Sprintf("Option:      Gateway State (%s)\n", strings.ToUpper(gw.State)))
 		switch gw.State {
 		case "proxy":
-			b.WriteString("Mode:        Full transparent proxying (TUN + nftables redirect to Xray)\n")
+			b.WriteString("Mode:        Full transparent proxying (TProxy + nftables redirect to Xray)\n")
 		case "forward-only":
 			b.WriteString("Mode:        Direct kernel IP forwarding (bypasses Xray proxy)\n")
 		case "disabled":
@@ -236,27 +236,16 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		if nft {
 			nftStr = "Active (proxya_prerouting, proxya_output)"
 		}
-		tunStr := "Down"
+		tproxyStr := "Down"
 		if tun {
-			tunStr = "Up (proxya-tun)"
-			if iface, err := net.InterfaceByName("proxya-tun"); err == nil {
-				if addrs, err := iface.Addrs(); err == nil {
-					for _, addr := range addrs {
-						ip, _, err := net.ParseCIDR(addr.String())
-						if err == nil && ip.To4() != nil {
-							tunStr = fmt.Sprintf("Up (proxya-tun, %s)", addr.String())
-							break
-						}
-					}
-				}
-			}
+			tproxyStr = "Active (lo table 100)"
 		}
 		fwdStr := "Disabled"
 		if fwd {
 			fwdStr = "Enabled (net.ipv4.ip_forward = 1)"
 		}
 		b.WriteString(fmt.Sprintf("NFTables:    %s\n", nftStr))
-		b.WriteString(fmt.Sprintf("TUN Adapter: %s\n", tunStr))
+		b.WriteString(fmt.Sprintf("TProxy:      %s\n", tproxyStr))
 		b.WriteString(fmt.Sprintf("IP Forward:  %s\n", fwdStr))
 
 	case 2:
@@ -270,7 +259,7 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 			testStr = "Not tested"
 		}
 		b.WriteString(fmt.Sprintf("Egress IP:   %s\n", testStr))
-		b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to proxya-tun\n")
+		b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to lo (TProxy)\n")
 		b.WriteString("Bypass:      SSH (port 22) and local subnet are excluded to prevent lockout\n")
 
 	case 3:
