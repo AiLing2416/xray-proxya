@@ -35,7 +35,7 @@ const (
 )
 
 const (
-	MinRealityClientVersion = "26.10.17"
+	MinRealityClientVersion = "26.10.21"
 )
 
 var AllowedRealityFingerprints = []string{

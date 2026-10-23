@@ -50,7 +50,7 @@ func TestRenderTerminal(t *testing.T) {
 				Category: "Core & Assets",
 				Name:     "Xray Binary & Version",
 				Status:   StatusPass,
-				Detail:   "v26.10.17 (matches pinned)",
+				Detail:   "v26.10.21 (matches pinned)",
 			},
 			{
 				Category: "Kernel Capabilities",

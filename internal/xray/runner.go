@@ -30,7 +30,7 @@ var restartHook func() error
 // PinnedXrayVersion is deliberately fixed for reproducible installs. Update
 // this value only after the release has passed the project's gateway and
 // protocol regression tests.
-const PinnedXrayVersion = "v26.10.17"
+const PinnedXrayVersion = "v26.10.21"
 
 // RegisterRestartHook installs the post-restart runtime synchronizer used by
 // consumers that own kernel state associated with the Xray process. The hook
