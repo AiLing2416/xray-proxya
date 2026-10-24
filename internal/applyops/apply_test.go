@@ -338,3 +338,78 @@ func TestBuildImpactDetectsGatewayDNSAndTProxyPortChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildImpactGatewayRouter(t *testing.T) {
+	baseActive := func() *config.UserConfig {
+		return &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				State:        "proxy",
+				LANEnabled:   true,
+				LANInterface: "eth1",
+				WANInterface: "eth0",
+				NATDisabled:  false,
+				Rules:        []config.GatewayRule{{Interface: "eth1", Target: "direct"}},
+			},
+		}
+	}
+
+	// 1. LANInterfaces change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.LANInterface = "eth1,eth2"
+		staging.Gateway.LANInterfaces = []string{"eth1", "eth2"}
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("LANInterfaces change: expected GatewayRuntimeChanged and XrayConfigChanged true, got: %+v", impact)
+		}
+	}
+
+	// 2. WANInterface change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.WANInterface = "eth3"
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("WANInterface change: expected GatewayRuntimeChanged and XrayConfigChanged true, got: %+v", impact)
+		}
+	}
+
+	// 3. NATDisabled change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.NATDisabled = true
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("NATDisabled change: expected GatewayRuntimeChanged and XrayConfigChanged true, got: %+v", impact)
+		}
+	}
+
+	// 4. Rules change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.Rules = append(staging.Gateway.Rules, config.GatewayRule{MAC: "52:54:00:83:00:11", Target: "block"})
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("Rules change: expected GatewayRuntimeChanged and XrayConfigChanged true, got: %+v", impact)
+		}
+	}
+
+	// 5. Initial apply with Rules
+	{
+		staging := &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				Rules: []config.GatewayRule{{Interface: "eth1", Target: "direct"}},
+			},
+		}
+		impact := BuildImpact(nil, staging)
+		if !impact.GatewayRuntimeChanged {
+			t.Errorf("Initial apply with Rules: expected GatewayRuntimeChanged true, got: %+v", impact)
+		}
+	}
+}

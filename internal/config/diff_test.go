@@ -123,3 +123,42 @@ func TestDiffUserConfigGatewayDNS(t *testing.T) {
 		t.Errorf("expected DNS Records diff, got: %s", joined)
 	}
 }
+
+func TestDiffUserConfigGatewayRouter(t *testing.T) {
+	active := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			LANInterface: "eth1",
+			WANInterface: "eth0",
+			NATDisabled:  false,
+			Rules:        []GatewayRule{{Interface: "eth1", Target: "direct"}},
+		},
+	}
+	staging := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			LANInterface: "eth1,eth2",
+			WANInterface: "eth3",
+			NATDisabled:  true,
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{MAC: "52:54:00:83:00:11", Target: "block"},
+			},
+		},
+	}
+
+	diffs := DiffUserConfig(active, staging)
+	joined := strings.Join(diffs, "\n")
+	if !strings.Contains(joined, "LAN Interfaces") {
+		t.Errorf("expected LAN Interfaces diff, got: %s", joined)
+	}
+	if !strings.Contains(joined, `WAN Interface: "eth0" -> "eth3"`) {
+		t.Errorf("expected WAN Interface diff, got: %s", joined)
+	}
+	if !strings.Contains(joined, `NAT Masquerade: true -> false`) {
+		t.Errorf("expected NAT Masquerade diff, got: %s", joined)
+	}
+	if !strings.Contains(joined, `Gateway Rules: 1 rule(s) -> 2 rule(s)`) {
+		t.Errorf("expected Gateway Rules diff, got: %s", joined)
+	}
+}

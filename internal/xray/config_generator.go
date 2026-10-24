@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"sort"
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/pkg/utils"
@@ -436,7 +437,8 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	if gatewayTunEnabled {
-		tproxyPort := getPort("tproxy-in", userCfg.Gateway.EffectiveTProxyPort())
+		basePort := userCfg.Gateway.EffectiveTProxyPort()
+		tproxyPort := getPort("tproxy-in", basePort)
 		inbounds = append(inbounds, map[string]interface{}{
 			"tag":      "tproxy-in",
 			"port":     tproxyPort,
@@ -454,6 +456,36 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			},
 			"sniffing": buildSniffingConfig(userCfg),
 		})
+
+		tproxyPorts := config.GatewayTProxyPorts(userCfg)
+		var extraAliases []string
+		for alias, port := range tproxyPorts {
+			if port != basePort {
+				extraAliases = append(extraAliases, alias)
+			}
+		}
+		sort.Strings(extraAliases)
+		for _, alias := range extraAliases {
+			port := tproxyPorts[alias]
+			inboundTag := "tproxy-in-" + sanitizeTagComponent(alias)
+			inbounds = append(inbounds, map[string]interface{}{
+				"tag":      inboundTag,
+				"port":     getPort(inboundTag, port),
+				"listen":   "::",
+				"protocol": "dokodemo-door",
+				"settings": map[string]interface{}{
+					"network":        "tcp,udp",
+					"followRedirect": true,
+				},
+				"streamSettings": map[string]interface{}{
+					"sockopt": map[string]interface{}{
+						"tproxy": "tproxy",
+						"mark":   255,
+					},
+				},
+				"sniffing": buildSniffingConfig(userCfg),
+			})
+		}
 	}
 	if err := validateInboundsPortConflicts(inbounds); err != nil {
 		return nil, err
@@ -462,7 +494,19 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 
 	// 4. Outbounds
 	xc["outbounds"] = []interface{}{
-		map[string]interface{}{"protocol": "freedom", "tag": "direct", "settings": map[string]interface{}{}, "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255, "domainStrategy": "UseIP"}}},
+		map[string]interface{}{
+			"protocol": "freedom",
+			"tag":      "direct",
+			"settings": map[string]interface{}{
+				"finalRules": []interface{}{
+					map[string]interface{}{
+						"action": "allow",
+						"ip":     []string{"0.0.0.0/0", "::/0"},
+					},
+				},
+			},
+			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255, "domainStrategy": "UseIP"}},
+		},
 		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}
@@ -528,6 +572,10 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
 	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
+
+	// Explicit loopback protection before AllowPrivateTargets rules
+	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"127.0.0.0/8", "::1/128"}, "outboundTag": "direct"})
+
 	// Only an outbound explicitly opted into private targets may route its
 	// relay user before the private-IP guard. This supports chained relays to
 	// a next-hop loopback service (such as remote pathd) without exposing a
@@ -542,13 +590,52 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			"outboundTag": "outbound-" + co.Alias,
 		})
 	}
-	rules = append(rules,
-		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
-	)
 
+	type tproxyRoute struct {
+		alias      string
+		inboundTag string
+	}
+	var tproxyRoutes []tproxyRoute
+	if gatewayTunEnabled {
+		basePort := userCfg.Gateway.EffectiveTProxyPort()
+		tproxyPorts := config.GatewayTProxyPorts(userCfg)
+		mainAlias := userCfg.Gateway.RelayAlias
+		if mainAlias == "" || mainAlias == "direct" || mainAlias == "block" {
+			for alias, p := range tproxyPorts {
+				if p == basePort {
+					mainAlias = alias
+					break
+				}
+			}
+		}
+		if mainAlias != "" && mainAlias != "direct" && mainAlias != "block" {
+			tproxyRoutes = append(tproxyRoutes, tproxyRoute{alias: mainAlias, inboundTag: "tproxy-in"})
+		}
+		var extraAliases []string
+		for alias, p := range tproxyPorts {
+			if p != basePort {
+				extraAliases = append(extraAliases, alias)
+			}
+		}
+		sort.Strings(extraAliases)
+		for _, alias := range extraAliases {
+			tproxyRoutes = append(tproxyRoutes, tproxyRoute{
+				alias:      alias,
+				inboundTag: "tproxy-in-" + sanitizeTagComponent(alias),
+			})
+		}
+	}
+
+	allowPrivateByAlias := make(map[string]bool)
+	for _, co := range userCfg.CustomOutbounds {
+		if co.Enabled && co.AllowPrivateTargets {
+			allowPrivateByAlias[co.Alias] = true
+		}
+	}
+
+	var bypassGeoIPs []string
+	var bypassGeoSites []string
 	if gatewayTunEnabled && len(userCfg.Gateway.BypassCountries) > 0 {
-		var bypassGeoIPs []string
-		var bypassGeoSites []string
 		for _, country := range userCfg.Gateway.BypassCountries {
 			code := strings.ToLower(strings.TrimSpace(country))
 			if code != "" {
@@ -558,10 +645,13 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				bypassGeoIPs = append(bypassGeoIPs, "geoip:"+code)
 			}
 		}
+	}
+
+	appendBypassCountries := func(tag string) {
 		if len(bypassGeoSites) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
-				"inboundTag":  []string{"tproxy-in"},
+				"inboundTag":  []string{tag},
 				"domain":      bypassGeoSites,
 				"outboundTag": "direct",
 			})
@@ -569,19 +659,40 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		if len(bypassGeoIPs) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
-				"inboundTag":  []string{"tproxy-in"},
+				"inboundTag":  []string{tag},
 				"ip":          bypassGeoIPs,
 				"outboundTag": "direct",
 			})
 		}
 	}
 
-	if gatewayTunEnabled && relayAlias != "" {
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"inboundTag":  []string{"tproxy-in"},
-			"outboundTag": "outbound-" + relayAlias,
-		})
+	// 1. Relays with AllowPrivateTargets == true placed ABOVE geoip:private
+	for _, tr := range tproxyRoutes {
+		if allowPrivateByAlias[tr.alias] {
+			appendBypassCountries(tr.inboundTag)
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{tr.inboundTag},
+				"outboundTag": "outbound-" + tr.alias,
+			})
+		}
+	}
+
+	// geoip:private guard
+	rules = append(rules,
+		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
+	)
+
+	// 2. Relays without AllowPrivateTargets placed AFTER geoip:private
+	for _, tr := range tproxyRoutes {
+		if !allowPrivateByAlias[tr.alias] {
+			appendBypassCountries(tr.inboundTag)
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{tr.inboundTag},
+				"outboundTag": "outbound-" + tr.alias,
+			})
+		}
 	}
 	for _, co := range userCfg.CustomOutbounds {
 		if !co.Enabled {

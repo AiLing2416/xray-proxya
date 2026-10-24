@@ -40,15 +40,19 @@ var gatewayCmd = &cobra.Command{
 }
 
 type GatewayConfigJSON struct {
-	LocalEnabled bool                `json:"local_enabled"`
-	LANEnabled   bool                `json:"lan_enabled"`
-	Relay        string              `json:"relay"`
-	Interface    string              `json:"interface"`
-	State        string              `json:"state"`
-	DNSListen    string              `json:"dns_listen,omitempty"`
-	DNSStrategy  string              `json:"dns_strategy,omitempty"`
-	DNSServers   []string            `json:"dns_servers,omitempty"`
-	DNSRecords   map[string][]string `json:"dns_records,omitempty"`
+	LocalEnabled  bool                 `json:"local_enabled"`
+	LANEnabled    bool                 `json:"lan_enabled"`
+	Relay         string               `json:"relay"`
+	Interface     string               `json:"interface"`
+	LANInterfaces []string             `json:"lan_interfaces,omitempty"`
+	WANInterface  string               `json:"wan_interface,omitempty"`
+	NATDisabled   bool                 `json:"nat_disabled,omitempty"`
+	Rules         []config.GatewayRule `json:"rules,omitempty"`
+	State         string               `json:"state"`
+	DNSListen     string               `json:"dns_listen,omitempty"`
+	DNSStrategy   string               `json:"dns_strategy,omitempty"`
+	DNSServers    []string             `json:"dns_servers,omitempty"`
+	DNSRecords    map[string][]string  `json:"dns_records,omitempty"`
 }
 
 type GatewayRuntimeJSON struct {
@@ -72,16 +76,25 @@ func toGatewayConfigJSON(cfg *config.UserConfig) *GatewayConfigJSON {
 	if state == "" {
 		state = "proxy"
 	}
+	effectiveLANs := cfg.Gateway.EffectiveLANInterfaces()
+	lanInterface := cfg.Gateway.LANInterface
+	if lanInterface == "" && len(effectiveLANs) > 0 {
+		lanInterface = strings.Join(effectiveLANs, ",")
+	}
 	return &GatewayConfigJSON{
-		LocalEnabled: cfg.Gateway.LocalEnabled,
-		LANEnabled:   cfg.Gateway.LANEnabled,
-		Relay:        cfg.Gateway.RelayAlias,
-		Interface:    cfg.Gateway.LANInterface,
-		State:        state,
-		DNSListen:    cfg.Gateway.DNSListen,
-		DNSStrategy:  cfg.Gateway.DNSStrategy,
-		DNSServers:   cfg.Gateway.DNSServers,
-		DNSRecords:   cfg.Gateway.DNSRecords,
+		LocalEnabled:  cfg.Gateway.LocalEnabled,
+		LANEnabled:    cfg.Gateway.LANEnabled,
+		Relay:         cfg.Gateway.RelayAlias,
+		Interface:     lanInterface,
+		LANInterfaces: effectiveLANs,
+		WANInterface:  cfg.Gateway.WANInterface,
+		NATDisabled:   cfg.Gateway.NATDisabled,
+		Rules:         cfg.Gateway.Rules,
+		State:         state,
+		DNSListen:     cfg.Gateway.DNSListen,
+		DNSStrategy:   cfg.Gateway.DNSStrategy,
+		DNSServers:    cfg.Gateway.DNSServers,
+		DNSRecords:    cfg.Gateway.DNSRecords,
 	}
 }
 
@@ -163,7 +176,24 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Local Proxy: %s\n", formatGatewayBoolState(activeCfg.Gateway.LocalEnabled))
 		fmt.Printf("  LAN Gateway: %s\n", formatGatewayBoolState(activeCfg.Gateway.LANEnabled))
 		fmt.Printf("  Relay:       %s\n", activeCfg.Gateway.RelayAlias)
-		fmt.Printf("  LAN Iface:   %s\n", activeCfg.Gateway.LANInterface)
+		lanStr := activeCfg.Gateway.LANInterface
+		if len(activeCfg.Gateway.EffectiveLANInterfaces()) > 0 {
+			lanStr = strings.Join(activeCfg.Gateway.EffectiveLANInterfaces(), ", ")
+		}
+		fmt.Printf("  LAN Iface:   %s\n", lanStr)
+		wanStr := activeCfg.Gateway.WANInterface
+		if wanStr == "" {
+			wanStr = "(auto)"
+		}
+		fmt.Printf("  WAN Iface:   %s\n", wanStr)
+		natStr := "ENABLED"
+		if activeCfg.Gateway.NATDisabled {
+			natStr = "DISABLED"
+		}
+		fmt.Printf("  NAT:         %s\n", natStr)
+		if len(activeCfg.Gateway.Rules) > 0 {
+			fmt.Printf("  Rules:       %d rule(s)\n", len(activeCfg.Gateway.Rules))
+		}
 		fmt.Printf("  State:       %s\n", getEffectiveGatewayState(activeCfg))
 		if activeCfg.Gateway.DNSListen != "" {
 			fmt.Printf("  DNS Listen:  %s\n", activeCfg.Gateway.DNSListen)
@@ -182,7 +212,24 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Local Proxy: %s\n", formatGatewayBoolState(stagingCfg.Gateway.LocalEnabled))
 		fmt.Printf("  LAN Gateway: %s\n", formatGatewayBoolState(stagingCfg.Gateway.LANEnabled))
 		fmt.Printf("  Relay:       %s\n", stagingCfg.Gateway.RelayAlias)
-		fmt.Printf("  LAN Iface:   %s\n", stagingCfg.Gateway.LANInterface)
+		lanStr := stagingCfg.Gateway.LANInterface
+		if len(stagingCfg.Gateway.EffectiveLANInterfaces()) > 0 {
+			lanStr = strings.Join(stagingCfg.Gateway.EffectiveLANInterfaces(), ", ")
+		}
+		fmt.Printf("  LAN Iface:   %s\n", lanStr)
+		wanStr := stagingCfg.Gateway.WANInterface
+		if wanStr == "" {
+			wanStr = "(auto)"
+		}
+		fmt.Printf("  WAN Iface:   %s\n", wanStr)
+		natStr := "ENABLED"
+		if stagingCfg.Gateway.NATDisabled {
+			natStr = "DISABLED"
+		}
+		fmt.Printf("  NAT:         %s\n", natStr)
+		if len(stagingCfg.Gateway.Rules) > 0 {
+			fmt.Printf("  Rules:       %d rule(s)\n", len(stagingCfg.Gateway.Rules))
+		}
 		fmt.Printf("  State:       %s\n", getEffectiveGatewayState(stagingCfg))
 		if stagingCfg.Gateway.DNSListen != "" {
 			fmt.Printf("  DNS Listen:  %s\n", stagingCfg.Gateway.DNSListen)
@@ -412,12 +459,55 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 		iface, _ = cmd.Flags().GetString("lan-interface")
 	}
 	if iface != "" {
-		for _, r := range iface {
-			if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
-				return fmt.Errorf("❌ Invalid interface name: %s", iface)
+		parts := strings.Split(iface, ",")
+		var validIfaces []string
+		seen := make(map[string]bool)
+		for _, part := range parts {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			for _, r := range trimmed {
+				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+					return fmt.Errorf("❌ Invalid interface name: %s", trimmed)
+				}
+			}
+			if !seen[trimmed] {
+				seen[trimmed] = true
+				validIfaces = append(validIfaces, trimmed)
 			}
 		}
-		cfg.Gateway.LANInterface = iface
+		if len(validIfaces) == 0 {
+			return fmt.Errorf("❌ Invalid interface parameter: empty interface name")
+		}
+		cfg.Gateway.LANInterfaces = validIfaces
+		cfg.Gateway.LANInterface = strings.Join(validIfaces, ",")
+	}
+
+	if cmd.Flags().Changed("wan") {
+		wan, _ := cmd.Flags().GetString("wan")
+		wanTrimmed := strings.TrimSpace(wan)
+		if wanTrimmed == "" || strings.EqualFold(wanTrimmed, "auto") {
+			cfg.Gateway.WANInterface = ""
+		} else {
+			for _, r := range wanTrimmed {
+				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+					return fmt.Errorf("❌ Invalid WAN interface name: %s", wanTrimmed)
+				}
+			}
+			cfg.Gateway.WANInterface = wanTrimmed
+		}
+	}
+
+	natEnable := cmd.Flags().Changed("nat")
+	natDisable := cmd.Flags().Changed("no-nat")
+	if natEnable && natDisable {
+		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --nat and --no-nat")
+	}
+	if natEnable {
+		cfg.Gateway.NATDisabled = false
+	} else if natDisable {
+		cfg.Gateway.NATDisabled = true
 	}
 
 	if cmd.Flags().Changed("state") {
@@ -674,8 +764,11 @@ func init() {
 	gatewayStatusCmd.Flags().BoolVar(&gatewayStatusJSON, "json", false, "Output in JSON format")
 
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
-	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name")
+	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name (supports comma-separated multiple interfaces)")
 	gatewaySetCmd.Flags().String("lan-interface", "", "LAN interface name")
+	gatewaySetCmd.Flags().String("wan", "", "WAN interface name ('auto' or empty to auto-detect)")
+	gatewaySetCmd.Flags().Bool("nat", false, "Enable WAN NAT masquerade in staging")
+	gatewaySetCmd.Flags().Bool("no-nat", false, "Disable WAN NAT masquerade in staging")
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
 	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
@@ -717,6 +810,19 @@ func init() {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		var names []string
+		for _, iface := range ifaces {
+			if iface.Name != "" {
+				names = append(names, iface.Name)
+			}
+		}
+		return names, cobra.ShellCompDirectiveNoFileComp
+	})
+	gatewaySetCmd.RegisterFlagCompletionFunc("wan", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		ifaces, err := net.Interfaces()
+		if err != nil {
+			return []string{"auto"}, cobra.ShellCompDirectiveNoFileComp
+		}
+		names := []string{"auto"}
 		for _, iface := range ifaces {
 			if iface.Name != "" {
 				names = append(names, iface.Name)

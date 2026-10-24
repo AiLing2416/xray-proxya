@@ -1214,3 +1214,127 @@ func TestDNSRoutingTargetsSkipsLocalSchemes(t *testing.T) {
 		t.Errorf("expected 8.8.8.8 in ips, got: %v", ips)
 	}
 }
+
+func TestMultiRelayTProxyInboundsAndAllowPrivateTargets(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LANEnabled:   true,
+			LocalEnabled: true,
+			TProxyPort:   12345,
+			RelayAlias:   "relay-public",
+			Rules: []config.GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{MAC: "52:54:00:83:00:11", Target: "relay-private"},
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:               "relay-public",
+				Enabled:             true,
+				AllowPrivateTargets: false,
+			},
+			{
+				Alias:               "relay-private",
+				Enabled:             true,
+				AllowPrivateTargets: true,
+			},
+		},
+	}
+
+	rawJSON, err := GenerateXrayJSON(cfg, nil, "")
+	if err != nil {
+		t.Fatalf("GenerateXrayJSON failed: %v", err)
+	}
+
+	var root map[string]interface{}
+	if err := json.Unmarshal([]byte(rawJSON), &root); err != nil {
+		t.Fatalf("unmarshal xray json failed: %v", err)
+	}
+
+	// 1. Inbounds check
+	inbounds, ok := root["inbounds"].([]interface{})
+	if !ok {
+		t.Fatalf("missing inbounds")
+	}
+	inboundMap := make(map[string]map[string]interface{})
+	for _, in := range inbounds {
+		m := in.(map[string]interface{})
+		tag := m["tag"].(string)
+		inboundMap[tag] = m
+	}
+
+	tproxyIn, ok := inboundMap["tproxy-in"]
+	if !ok {
+		t.Fatalf("expected tproxy-in inbound")
+	}
+	if int(tproxyIn["port"].(float64)) != 12345 {
+		t.Errorf("tproxy-in port = %v, want 12345", tproxyIn["port"])
+	}
+
+	tproxyExtra, ok := inboundMap["tproxy-in-relay-private"]
+	if !ok {
+		t.Fatalf("expected tproxy-in-relay-private inbound, got inbounds: %v", inboundMap)
+	}
+	if int(tproxyExtra["port"].(float64)) != 12346 {
+		t.Errorf("tproxy-in-relay-private port = %v, want 12346", tproxyExtra["port"])
+	}
+
+	// 2. Routing rules order check
+	routing := root["routing"].(map[string]interface{})
+	rules := routing["rules"].([]interface{})
+
+	var idxLoopback = -1
+	var idxPrivateRelay = -1
+	var idxGeoIPPrivate = -1
+	var idxPublicRelay = -1
+
+	for i, r := range rules {
+		rm := r.(map[string]interface{})
+		outTag, _ := rm["outboundTag"].(string)
+		inTags, _ := rm["inboundTag"].([]interface{})
+		ips, _ := rm["ip"].([]interface{})
+
+		if outTag == "direct" && len(ips) == 2 {
+			if ips[0] == "127.0.0.0/8" && ips[1] == "::1/128" {
+				idxLoopback = i
+			}
+		}
+		if outTag == "direct" && len(ips) == 1 && ips[0] == "geoip:private" {
+			idxGeoIPPrivate = i
+		}
+		if outTag == "outbound-relay-private" && len(inTags) == 1 && inTags[0] == "tproxy-in-relay-private" {
+			idxPrivateRelay = i
+		}
+		if outTag == "outbound-relay-public" && len(inTags) == 1 && inTags[0] == "tproxy-in" {
+			idxPublicRelay = i
+		}
+	}
+
+	if idxLoopback == -1 {
+		t.Fatal("missing loopback protection rule (127.0.0.0/8, ::1/128 -> direct)")
+	}
+	if idxPrivateRelay == -1 {
+		t.Fatal("missing relay-private routing rule")
+	}
+	if idxGeoIPPrivate == -1 {
+		t.Fatal("missing geoip:private rule")
+	}
+	if idxPublicRelay == -1 {
+		t.Fatal("missing relay-public routing rule")
+	}
+
+	// Order asserts:
+	// idxLoopback < idxPrivateRelay < idxGeoIPPrivate < idxPublicRelay
+	if idxLoopback >= idxPrivateRelay {
+		t.Errorf("idxLoopback (%d) should be before idxPrivateRelay (%d)", idxLoopback, idxPrivateRelay)
+	}
+	if idxPrivateRelay >= idxGeoIPPrivate {
+		t.Errorf("idxPrivateRelay (%d) should be BEFORE idxGeoIPPrivate (%d)", idxPrivateRelay, idxGeoIPPrivate)
+	}
+	if idxGeoIPPrivate >= idxPublicRelay {
+		t.Errorf("idxGeoIPPrivate (%d) should be BEFORE idxPublicRelay (%d)", idxGeoIPPrivate, idxPublicRelay)
+	}
+}

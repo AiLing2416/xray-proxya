@@ -820,3 +820,145 @@ func TestVerify_GatewayDNSListening(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			State:         "proxy",
+			LANEnabled:    true,
+			LocalEnabled:  true,
+			TProxyPort:    12345,
+			RelayAlias:    "relay-default",
+			LANInterfaces: []string{"eth1", "eth2"},
+			WANInterface:  "eth0",
+			NATDisabled:   false,
+			Rules: []config.GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{Interface: "eth2", Target: "block"},
+				{MAC: "52:54:00:83:00:11", Target: "block"},
+				{MAC: "52:54:00:83:00:12", Target: "direct"},
+				{MAC: "52:54:00:83:00:13", Target: "relay-extra"},
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-default", Enabled: true, AllowPrivateTargets: false},
+			{Alias: "relay-extra", Enabled: true, AllowPrivateTargets: true},
+		},
+	}
+
+	lanIfaces := []string{"eth1", "eth2"}
+	lanCIDRs := []string{"10.0.83.0/24", "10.0.84.0/24"}
+	lanIPv6CIDRs := []string{"fd00:83::/64", "fd00:84::/64"}
+	wanIface := "eth0"
+
+	rules := buildNFTMulti(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
+
+	// 1. Input chain guards
+	if !strings.Contains(rules, `th dport { 12345, 12346 } drop`) {
+		t.Errorf("expected multi-port tproxy guard in input chain, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `iifname "eth2" drop`) {
+		t.Errorf("expected interface eth2 block in input chain, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `ether saddr 52:54:00:83:00:11 drop`) {
+		t.Errorf("expected MAC block in input chain, got:\n%s", rules)
+	}
+
+	// 2. Prerouting local fib return
+	if !strings.Contains(rules, `iifname != "lo" fib daddr type local return`) {
+		t.Errorf("expected local fib return in prerouting, got:\n%s", rules)
+	}
+
+	// 3. Multi-LAN interface guards
+	if !strings.Contains(rules, `iifname != { "lo", "eth1", "eth2" } return`) {
+		t.Errorf("expected multi-lan guard in prerouting, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `iifname "eth1" ip saddr != 10.0.83.0/24 return`) {
+		t.Errorf("expected eth1 IPv4 source guard, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `iifname "eth2" ip saddr != 10.0.84.0/24 return`) {
+		t.Errorf("expected eth2 IPv4 source guard, got:\n%s", rules)
+	}
+
+	// 4. Private targets NOT globally bypassed in prerouting because relay-extra has AllowPrivateTargets == true
+	if strings.Contains(rules, "10.0.0.0/8") {
+		t.Errorf("RFC1918 10.0.0.0/8 should NOT be globally bypassed when AllowPrivateTargets is active, got:\n%s", rules)
+	}
+	// But local LAN CIDRs ARE bypassed
+	if !strings.Contains(rules, "ip daddr 10.0.83.0/24 return") {
+		t.Errorf("expected eth1 subnet bypass, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, "ip daddr 10.0.84.0/24 return") {
+		t.Errorf("expected eth2 subnet bypass, got:\n%s", rules)
+	}
+
+	// 5. Per-MAC rules
+	if !strings.Contains(rules, `ether saddr 52:54:00:83:00:12 return`) {
+		t.Errorf("expected MAC direct return rule, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `ether saddr 52:54:00:83:00:13 meta l4proto { tcp, udp } tproxy to :12346 meta mark set 1 accept`) {
+		t.Errorf("expected MAC relay-extra tproxy rule to :12346, got:\n%s", rules)
+	}
+
+	// 6. Per-Interface rules
+	if !strings.Contains(rules, `iifname "eth1" return`) {
+		t.Errorf("expected interface eth1 direct rule, got:\n%s", rules)
+	}
+
+	// 7. Default Gateway Policy
+	if !strings.Contains(rules, `meta l4proto { tcp, udp } tproxy to :12345 meta mark set 1 accept`) {
+		t.Errorf("expected default relay policy to :12345, got:\n%s", rules)
+	}
+
+	// 8. Forward and Postrouting NAT chains
+	if !strings.Contains(rules, `chain forward {`) {
+		t.Errorf("expected chain forward, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `iifname { "eth1", "eth2" } oifname "eth0" accept`) {
+		t.Errorf("expected LAN to WAN accept in forward chain, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `iifname "eth0" oifname { "eth1", "eth2" } ct state established,related accept`) {
+		t.Errorf("expected WAN to LAN established accept in forward chain, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `chain postrouting {`) {
+		t.Errorf("expected chain postrouting, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `iifname { "eth1", "eth2" } oifname "eth0" masquerade`) {
+		t.Errorf("expected LAN to WAN masquerade in postrouting chain, got:\n%s", rules)
+	}
+
+	// 9. Policy rules check
+	policyList := policyRulesMulti(cfg, lanCIDRs, lanIPv6CIDRs, true)
+	var foundPref10010, foundPref10011 bool
+	for _, pr := range policyList {
+		argsStr := strings.Join(pr.Args, " ")
+		if strings.Contains(argsStr, "to 10.0.83.0/24 table main pref 10010") {
+			foundPref10010 = true
+		}
+		if strings.Contains(argsStr, "to 10.0.84.0/24 table main pref 10011") {
+			foundPref10011 = true
+		}
+	}
+	if !foundPref10010 || !foundPref10011 {
+		t.Errorf("expected multi-LAN policy rules with pref 10010 and 10011, got: %v", policyList)
+	}
+
+	// 10. managedRuleLine check
+	if !managedRuleLine("10010: from all to 10.0.83.0/24 lookup main") {
+		t.Error("managedRuleLine should match pref 10010")
+	}
+	if !managedRuleLine("10015: from all to 10.0.85.0/24 lookup main") {
+		t.Error("managedRuleLine should match pref 10015")
+	}
+	if !managedRuleLine("10029: from all to 10.0.99.0/24 lookup main") {
+		t.Error("managedRuleLine should match pref 10029")
+	}
+	if !managedRuleLine("10030: from all to 127.0.0.0/8 lookup main") {
+		t.Error("managedRuleLine should match pref 10030 (prefLoopback)")
+	}
+	if managedRuleLine("10031: from all to 10.0.99.0/24 lookup main") {
+		t.Error("managedRuleLine should NOT match pref 10031")
+	}
+}

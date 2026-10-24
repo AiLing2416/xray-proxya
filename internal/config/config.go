@@ -492,12 +492,22 @@ func CleanGuestAlias(raw string) (string, error) {
 	return alias, nil
 }
 
+type GatewayRule struct {
+	MAC       string `json:"mac,omitempty"`       // normalized lowercase MAC e.g. "52:54:00:83:00:11"
+	Interface string `json:"interface,omitempty"` // LAN interface e.g. "eth1"
+	Target    string `json:"target"`              // "direct", "block", or relay alias
+}
+
 type GatewayConfig struct {
 	LocalEnabled    bool                `json:"local_enabled"`
 	LANEnabled      bool                `json:"lan_enabled"`
 	Mode            string              `json:"mode"` // "tun" or "tproxy"
 	RelayAlias      string              `json:"relay_alias"`
 	LANInterface    string              `json:"lan_interface"`
+	LANInterfaces   []string            `json:"lan_interfaces,omitempty"`
+	WANInterface    string              `json:"wan_interface,omitempty"`
+	NATDisabled     bool                `json:"nat_disabled,omitempty"`
+	Rules           []GatewayRule       `json:"rules,omitempty"`
 	TProxyPort      int                 `json:"tproxy_port,omitempty"`
 	BypassDNS       []string            `json:"bypass_dns,omitempty"`
 	State           string              `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
@@ -682,6 +692,112 @@ func (g GatewayConfig) EffectiveTProxyPort() int {
 		return g.TProxyPort
 	}
 	return DefaultTProxyPort
+}
+
+// EffectiveLANInterfaces parses, trims, and deduplicates interfaces from both
+// g.LANInterfaces and comma-separated g.LANInterface (preserving order).
+func (g GatewayConfig) EffectiveLANInterfaces() []string {
+	var result []string
+	seen := make(map[string]bool)
+
+	add := func(raw string) {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			return
+		}
+		if !seen[trimmed] {
+			seen[trimmed] = true
+			result = append(result, trimmed)
+		}
+	}
+
+	for _, item := range g.LANInterfaces {
+		for _, part := range strings.Split(item, ",") {
+			add(part)
+		}
+	}
+	for _, part := range strings.Split(g.LANInterface, ",") {
+		add(part)
+	}
+	return result
+}
+
+// NormalizeMAC parses a MAC address using net.ParseMAC, requires a 6-byte EUI-48 hardware address,
+// and returns the lowercase normalized format "xx:xx:xx:xx:xx:xx".
+func NormalizeMAC(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("empty MAC address")
+	}
+	hw, err := net.ParseMAC(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid MAC address %q: %w", raw, err)
+	}
+	if len(hw) != 6 {
+		return "", fmt.Errorf("invalid MAC address %q: expected 6-byte EUI-48 address, got %d bytes", raw, len(hw))
+	}
+	return strings.ToLower(hw.String()), nil
+}
+
+// ValidateGatewayRule validates and normalizes a GatewayRule.
+// It requires at least one of MAC or Interface to be non-empty,
+// normalizes MAC if set, trims Interface, and normalizes Target.
+func ValidateGatewayRule(rule GatewayRule) (GatewayRule, error) {
+	norm := GatewayRule{
+		Interface: strings.TrimSpace(rule.Interface),
+	}
+	if strings.TrimSpace(rule.MAC) != "" {
+		mac, err := NormalizeMAC(rule.MAC)
+		if err != nil {
+			return rule, err
+		}
+		norm.MAC = mac
+	}
+	if norm.MAC == "" && norm.Interface == "" {
+		return rule, errors.New("gateway rule must specify at least one of MAC or Interface")
+	}
+
+	target := strings.TrimSpace(rule.Target)
+	if target == "" {
+		return rule, errors.New("gateway rule target cannot be empty")
+	}
+	if strings.EqualFold(target, "direct") {
+		norm.Target = "direct"
+	} else if strings.EqualFold(target, "block") {
+		norm.Target = "block"
+	} else {
+		norm.Target = target
+	}
+	return norm, nil
+}
+
+// GatewayTProxyPorts returns a map of relay aliases to their allocated TProxy ports.
+// The default relay alias (if set and not direct/block) uses basePort (default 12345).
+// Additional relay targets specified in Gateway.Rules receive basePort + len(ports).
+func GatewayTProxyPorts(userCfg *UserConfig) map[string]int {
+	ports := make(map[string]int)
+	if userCfg == nil {
+		return ports
+	}
+	basePort := userCfg.Gateway.EffectiveTProxyPort()
+	defaultRelay := strings.TrimSpace(userCfg.Gateway.RelayAlias)
+	if defaultRelay != "" && !strings.EqualFold(defaultRelay, "direct") && !strings.EqualFold(defaultRelay, "block") {
+		ports[defaultRelay] = basePort
+	}
+	for _, rule := range userCfg.Gateway.Rules {
+		target := strings.TrimSpace(rule.Target)
+		if target == "" || strings.EqualFold(target, "direct") || strings.EqualFold(target, "block") {
+			continue
+		}
+		if _, exists := ports[target]; !exists {
+			if len(ports) == 0 && defaultRelay == "" {
+				ports[target] = basePort
+			} else {
+				ports[target] = basePort + len(ports)
+			}
+		}
+	}
+	return ports
 }
 
 func NewDefaultConfig() *UserConfig {
@@ -1049,6 +1165,39 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			default:
 				cfg.Gateway.State = "disabled"
 				changes = append(changes, "reset invalid gateway.state to disabled")
+			}
+		}
+		effectiveLANs := cfg.Gateway.EffectiveLANInterfaces()
+		if !reflect.DeepEqual(cfg.Gateway.LANInterfaces, effectiveLANs) {
+			cfg.Gateway.LANInterfaces = effectiveLANs
+			changes = append(changes, "synchronized gateway.lan_interfaces")
+		}
+		expectedLANInterface := strings.Join(effectiveLANs, ",")
+		if cfg.Gateway.LANInterface != expectedLANInterface {
+			cfg.Gateway.LANInterface = expectedLANInterface
+			changes = append(changes, "synchronized gateway.lan_interface")
+		}
+		if cfg.Gateway.WANInterface != strings.TrimSpace(cfg.Gateway.WANInterface) {
+			cfg.Gateway.WANInterface = strings.TrimSpace(cfg.Gateway.WANInterface)
+			changes = append(changes, "normalized gateway.wan_interface")
+		}
+		if len(cfg.Gateway.Rules) > 0 {
+			var normRules []GatewayRule
+			changedRules := false
+			for _, r := range cfg.Gateway.Rules {
+				normRule, err := ValidateGatewayRule(r)
+				if err != nil {
+					changedRules = true
+					continue
+				}
+				if normRule != r {
+					changedRules = true
+				}
+				normRules = append(normRules, normRule)
+			}
+			if changedRules || len(normRules) != len(cfg.Gateway.Rules) {
+				cfg.Gateway.Rules = normRules
+				changes = append(changes, "normalized gateway.rules")
 			}
 		}
 	}

@@ -102,11 +102,22 @@ func restartWithTunDisabled(disabled bool) error {
 	}
 	if !disabled {
 		port := config.DefaultTProxyPort
-		if cfg, err := config.LoadConfig(); err == nil && cfg != nil {
+		var cfg *config.UserConfig
+		if loaded, err := config.LoadConfig(); err == nil && loaded != nil {
+			cfg = loaded
 			port = cfg.Gateway.EffectiveTProxyPort()
 		}
 		if err := waitForTProxyListener(port); err != nil {
 			return err
+		}
+		if cfg != nil {
+			for alias, p := range config.GatewayTProxyPorts(cfg) {
+				if p != port {
+					if err := waitForTProxyListener(p); err != nil {
+						return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
+					}
+				}
+			}
 		}
 	}
 	if disabled {

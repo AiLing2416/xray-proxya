@@ -218,8 +218,19 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 	if active.Gateway.LANEnabled != staging.Gateway.LANEnabled {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ LAN Proxy: %v -> %v", active.Gateway.LANEnabled, staging.Gateway.LANEnabled))
 	}
-	if active.Gateway.LANInterface != staging.Gateway.LANInterface {
+	if !reflect.DeepEqual(active.Gateway.EffectiveLANInterfaces(), staging.Gateway.EffectiveLANInterfaces()) {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ LAN Interfaces: %v -> %v", active.Gateway.EffectiveLANInterfaces(), staging.Gateway.EffectiveLANInterfaces()))
+	} else if active.Gateway.LANInterface != staging.Gateway.LANInterface {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ LAN Interface: %q -> %q", active.Gateway.LANInterface, staging.Gateway.LANInterface))
+	}
+	if active.Gateway.WANInterface != staging.Gateway.WANInterface {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ WAN Interface: %q -> %q", active.Gateway.WANInterface, staging.Gateway.WANInterface))
+	}
+	if active.Gateway.NATDisabled != staging.Gateway.NATDisabled {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ NAT Masquerade: %v -> %v", !active.Gateway.NATDisabled, !staging.Gateway.NATDisabled))
+	}
+	if !reflect.DeepEqual(active.Gateway.Rules, staging.Gateway.Rules) {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Gateway Rules: %d rule(s) -> %d rule(s)", len(active.Gateway.Rules), len(staging.Gateway.Rules)))
 	}
 	if !reflect.DeepEqual(active.Gateway.BypassCountries, staging.Gateway.BypassCountries) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Bypass Countries: %v -> %v", active.Gateway.BypassCountries, staging.Gateway.BypassCountries))

@@ -139,7 +139,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.XrayConfigChanged = true
 		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
 		impact.SubContentChanged = stagingCfg.AdminSub.Token != "" || len(stagingCfg.Subscriptions) > 0 || len(stagingCfg.Endpoints) > 0
-		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled || stagingCfg.Gateway.DNSListen != ""
+		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled || stagingCfg.Gateway.DNSListen != "" || len(stagingCfg.Gateway.Rules) > 0 || len(stagingCfg.Gateway.EffectiveLANInterfaces()) > 0
 		impact.PathdConfigChanged = stagingCfg.Role == config.RoleServer && stagingCfg.Path.Token != ""
 		impact.ChangedSections = []string{"initial_apply"}
 		if len(stagingCfg.Endpoints) > 0 {
@@ -268,6 +268,10 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		activeCfg.Gateway.LANEnabled != stagingCfg.Gateway.LANEnabled ||
 		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
 		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||
+		!reflect.DeepEqual(activeCfg.Gateway.EffectiveLANInterfaces(), stagingCfg.Gateway.EffectiveLANInterfaces()) ||
+		activeCfg.Gateway.WANInterface != stagingCfg.Gateway.WANInterface ||
+		activeCfg.Gateway.NATDisabled != stagingCfg.Gateway.NATDisabled ||
+		!reflect.DeepEqual(activeCfg.Gateway.Rules, stagingCfg.Gateway.Rules) ||
 		activeCfg.Gateway.State != stagingCfg.Gateway.State ||
 		activeCfg.Gateway.TProxyPort != stagingCfg.Gateway.TProxyPort ||
 		activeCfg.Gateway.DNSListen != stagingCfg.Gateway.DNSListen ||

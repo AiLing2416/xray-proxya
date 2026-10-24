@@ -752,3 +752,193 @@ func TestBackfillDefaultsGatewayDNS(t *testing.T) {
 	}
 }
 
+func TestNormalizeMAC(t *testing.T) {
+	tests := []struct {
+		input   string
+		want    string
+		wantErr bool
+	}{
+		{"52:54:00:83:00:11", "52:54:00:83:00:11", false},
+		{"52-54-00-83-00-11", "52:54:00:83:00:11", false},
+		{"5254.0083.0011", "52:54:00:83:00:11", false},
+		{"  52:54:00:AB:CD:EF  ", "52:54:00:ab:cd:ef", false},
+		{"", "", true},
+		{"invalid", "", true},
+		{"52:54:00:83:00", "", true},                                   // 5 bytes
+		{"52:54:00:83:00:11:22:33", "", true},                         // 8 bytes (EUI-64)
+	}
+
+	for _, tc := range tests {
+		got, err := NormalizeMAC(tc.input)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("NormalizeMAC(%q) error = %v, wantErr %v", tc.input, err, tc.wantErr)
+			continue
+		}
+		if !tc.wantErr && got != tc.want {
+			t.Errorf("NormalizeMAC(%q) = %q, want %q", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestValidateGatewayRule(t *testing.T) {
+	// Empty MAC and interface
+	_, err := ValidateGatewayRule(GatewayRule{Target: "direct"})
+	if err == nil {
+		t.Error("expected error for empty MAC and interface")
+	}
+
+	// Empty target
+	_, err = ValidateGatewayRule(GatewayRule{Interface: "eth1"})
+	if err == nil {
+		t.Error("expected error for empty target")
+	}
+
+	// Valid rule with MAC and interface, target case normalization
+	rule, err := ValidateGatewayRule(GatewayRule{
+		MAC:       "52-54-00-83-00-11",
+		Interface: "  eth1  ",
+		Target:    "DIRECT",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rule.MAC != "52:54:00:83:00:11" {
+		t.Errorf("MAC = %q, want 52:54:00:83:00:11", rule.MAC)
+	}
+	if rule.Interface != "eth1" {
+		t.Errorf("Interface = %q, want eth1", rule.Interface)
+	}
+	if rule.Target != "direct" {
+		t.Errorf("Target = %q, want direct", rule.Target)
+	}
+
+	// Target BLOCK normalization
+	ruleBlock, err := ValidateGatewayRule(GatewayRule{
+		Interface: "eth2",
+		Target:    "BLOCK",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ruleBlock.Target != "block" {
+		t.Errorf("Target = %q, want block", ruleBlock.Target)
+	}
+
+	// Target custom relay
+	ruleRelay, err := ValidateGatewayRule(GatewayRule{
+		MAC:    "52:54:00:83:00:12",
+		Target: "relay-jp",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ruleRelay.Target != "relay-jp" {
+		t.Errorf("Target = %q, want relay-jp", ruleRelay.Target)
+	}
+}
+
+func TestEffectiveLANInterfaces(t *testing.T) {
+	// From LANInterface
+	g1 := GatewayConfig{LANInterface: "eth1, eth2 ,eth1"}
+	got1 := g1.EffectiveLANInterfaces()
+	if len(got1) != 2 || got1[0] != "eth1" || got1[1] != "eth2" {
+		t.Errorf("EffectiveLANInterfaces() = %v, want [eth1 eth2]", got1)
+	}
+
+	// From LANInterfaces
+	g2 := GatewayConfig{LANInterfaces: []string{"eth1", "eth2", "eth1"}}
+	got2 := g2.EffectiveLANInterfaces()
+	if len(got2) != 2 || got2[0] != "eth1" || got2[1] != "eth2" {
+		t.Errorf("EffectiveLANInterfaces() = %v, want [eth1 eth2]", got2)
+	}
+
+	// Mixed
+	g3 := GatewayConfig{
+		LANInterface:  "eth2,eth3",
+		LANInterfaces: []string{"eth1", "eth2"},
+	}
+	got3 := g3.EffectiveLANInterfaces()
+	if len(got3) != 3 || got3[0] != "eth1" || got3[1] != "eth2" || got3[2] != "eth3" {
+		t.Errorf("EffectiveLANInterfaces() = %v, want [eth1 eth2 eth3]", got3)
+	}
+}
+
+func TestGatewayTProxyPorts(t *testing.T) {
+	cfg := &UserConfig{
+		Gateway: GatewayConfig{
+			TProxyPort: 12345,
+			RelayAlias: "relay-default",
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{Interface: "eth2", Target: "block"},
+				{Interface: "eth3", Target: "relay-extra1"},
+				{MAC: "52:54:00:83:00:11", Target: "relay-extra1"}, // duplicate target
+				{MAC: "52:54:00:83:00:12", Target: "relay-extra2"},
+			},
+		},
+	}
+
+	ports := GatewayTProxyPorts(cfg)
+	if ports["relay-default"] != 12345 {
+		t.Errorf("relay-default port = %d, want 12345", ports["relay-default"])
+	}
+	if ports["relay-extra1"] != 12346 {
+		t.Errorf("relay-extra1 port = %d, want 12346", ports["relay-extra1"])
+	}
+	if ports["relay-extra2"] != 12347 {
+		t.Errorf("relay-extra2 port = %d, want 12347", ports["relay-extra2"])
+	}
+	if _, ok := ports["direct"]; ok {
+		t.Error("ports should not contain direct")
+	}
+	if _, ok := ports["block"]; ok {
+		t.Error("ports should not contain block")
+	}
+
+	// No default relay
+	cfgNoDef := &UserConfig{
+		Gateway: GatewayConfig{
+			TProxyPort: 12345,
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "relay-first"},
+				{Interface: "eth2", Target: "relay-second"},
+			},
+		},
+	}
+	portsNoDef := GatewayTProxyPorts(cfgNoDef)
+	if portsNoDef["relay-first"] != 12345 {
+		t.Errorf("relay-first port = %d, want 12345", portsNoDef["relay-first"])
+	}
+	if portsNoDef["relay-second"] != 12346 {
+		t.Errorf("relay-second port = %d, want 12346", portsNoDef["relay-second"])
+	}
+}
+
+func TestBackfillDefaultsGatewayRouter(t *testing.T) {
+	cfg := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			LANInterface: "eth1,eth2, eth1",
+			WANInterface: "  eth0  ",
+			Rules: []GatewayRule{
+				{MAC: "52-54-00-83-00-11", Target: "DIRECT"},
+				{MAC: "invalid", Target: "direct"}, // invalid, should be discarded
+			},
+		},
+	}
+
+	cfg.BackfillDefaults()
+	if len(cfg.Gateway.LANInterfaces) != 2 || cfg.Gateway.LANInterfaces[0] != "eth1" || cfg.Gateway.LANInterfaces[1] != "eth2" {
+		t.Errorf("LANInterfaces = %v, want [eth1 eth2]", cfg.Gateway.LANInterfaces)
+	}
+	if cfg.Gateway.LANInterface != "eth1,eth2" {
+		t.Errorf("LANInterface = %q, want eth1,eth2", cfg.Gateway.LANInterface)
+	}
+	if cfg.Gateway.WANInterface != "eth0" {
+		t.Errorf("WANInterface = %q, want eth0", cfg.Gateway.WANInterface)
+	}
+	if len(cfg.Gateway.Rules) != 1 || cfg.Gateway.Rules[0].MAC != "52:54:00:83:00:11" || cfg.Gateway.Rules[0].Target != "direct" {
+		t.Errorf("Rules = %v, want 1 normalized rule", cfg.Gateway.Rules)
+	}
+}
+
