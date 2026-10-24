@@ -40,11 +40,15 @@ var gatewayCmd = &cobra.Command{
 }
 
 type GatewayConfigJSON struct {
-	LocalEnabled bool   `json:"local_enabled"`
-	LANEnabled   bool   `json:"lan_enabled"`
-	Relay        string `json:"relay"`
-	Interface    string `json:"interface"`
-	State        string `json:"state"`
+	LocalEnabled bool                `json:"local_enabled"`
+	LANEnabled   bool                `json:"lan_enabled"`
+	Relay        string              `json:"relay"`
+	Interface    string              `json:"interface"`
+	State        string              `json:"state"`
+	DNSListen    string              `json:"dns_listen,omitempty"`
+	DNSStrategy  string              `json:"dns_strategy,omitempty"`
+	DNSServers   []string            `json:"dns_servers,omitempty"`
+	DNSRecords   map[string][]string `json:"dns_records,omitempty"`
 }
 
 type GatewayRuntimeJSON struct {
@@ -74,6 +78,10 @@ func toGatewayConfigJSON(cfg *config.UserConfig) *GatewayConfigJSON {
 		Relay:        cfg.Gateway.RelayAlias,
 		Interface:    cfg.Gateway.LANInterface,
 		State:        state,
+		DNSListen:    cfg.Gateway.DNSListen,
+		DNSStrategy:  cfg.Gateway.DNSStrategy,
+		DNSServers:   cfg.Gateway.DNSServers,
+		DNSRecords:   cfg.Gateway.DNSRecords,
 	}
 }
 
@@ -157,6 +165,15 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Relay:       %s\n", activeCfg.Gateway.RelayAlias)
 		fmt.Printf("  LAN Iface:   %s\n", activeCfg.Gateway.LANInterface)
 		fmt.Printf("  State:       %s\n", getEffectiveGatewayState(activeCfg))
+		if activeCfg.Gateway.DNSListen != "" {
+			fmt.Printf("  DNS Listen:  %s\n", activeCfg.Gateway.DNSListen)
+		}
+		if len(activeCfg.Gateway.DNSServers) > 0 {
+			fmt.Printf("  DNS Upstream:%s\n", strings.Join(activeCfg.Gateway.DNSServers, ", "))
+		}
+		if len(activeCfg.Gateway.DNSRecords) > 0 {
+			fmt.Printf("  DNS Records: %d domain(s)\n", len(activeCfg.Gateway.DNSRecords))
+		}
 	} else {
 		fmt.Println("ACTIVE:      (not initialized)")
 	}
@@ -167,6 +184,15 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Relay:       %s\n", stagingCfg.Gateway.RelayAlias)
 		fmt.Printf("  LAN Iface:   %s\n", stagingCfg.Gateway.LANInterface)
 		fmt.Printf("  State:       %s\n", getEffectiveGatewayState(stagingCfg))
+		if stagingCfg.Gateway.DNSListen != "" {
+			fmt.Printf("  DNS Listen:  %s\n", stagingCfg.Gateway.DNSListen)
+		}
+		if len(stagingCfg.Gateway.DNSServers) > 0 {
+			fmt.Printf("  DNS Upstream:%s\n", strings.Join(stagingCfg.Gateway.DNSServers, ", "))
+		}
+		if len(stagingCfg.Gateway.DNSRecords) > 0 {
+			fmt.Printf("  DNS Records: %d domain(s)\n", len(stagingCfg.Gateway.DNSRecords))
+		}
 		if len(stagingCfg.Gateway.BypassDNS) > 0 {
 			fmt.Printf("  Bypass DNS:  %s\n", strings.Join(stagingCfg.Gateway.BypassDNS, ", "))
 		}

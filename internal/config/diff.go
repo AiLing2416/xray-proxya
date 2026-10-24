@@ -227,6 +227,18 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 	if !reflect.DeepEqual(active.Gateway.BypassDNS, staging.Gateway.BypassDNS) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Bypass DNS: %v -> %v", active.Gateway.BypassDNS, staging.Gateway.BypassDNS))
 	}
+	if active.Gateway.DNSListen != staging.Gateway.DNSListen {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ DNS Listen: %q -> %q", active.Gateway.DNSListen, staging.Gateway.DNSListen))
+	}
+	if active.Gateway.DNSStrategy != staging.Gateway.DNSStrategy {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ DNS Strategy: %q -> %q", active.Gateway.DNSStrategy, staging.Gateway.DNSStrategy))
+	}
+	if !reflect.DeepEqual(active.Gateway.DNSServers, staging.Gateway.DNSServers) {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ DNS Servers: %v -> %v", active.Gateway.DNSServers, staging.Gateway.DNSServers))
+	}
+	if !reflect.DeepEqual(active.Gateway.DNSRecords, staging.Gateway.DNSRecords) {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ DNS Records: %v -> %v", active.Gateway.DNSRecords, staging.Gateway.DNSRecords))
+	}
 	if len(gwDiffs) > 0 {
 		lines = append(lines, "[Gateway]")
 		lines = append(lines, gwDiffs...)

@@ -130,6 +130,13 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	if err := waitForTProxyListener(cfg.Gateway.EffectiveTProxyPort()); err != nil {
 		return err
 	}
+	if cfg.Gateway.DNSListen != "" {
+		if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+			if err := waitForTProxyListener(dnsPort); err != nil {
+				return fmt.Errorf("wait for gateway dns listener: %w", err)
+			}
+		}
+	}
 
 	if pathTunnelEnabled(cfg) {
 		if err := waitForInterface(pathTunName, true); err != nil {
@@ -191,6 +198,13 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
 	_ = run("nft", "add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; }")
 	_ = run("nft", "add", "rule", "inet", "filter", "input", "meta", "mark", tunMark, "accept", "comment", "\"xray-proxya\"")
+	if cfg.Gateway.DNSListen != "" {
+		if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+			if !isLoopbackDNSListenHost(host) && lanIface != "" {
+				_ = run("nft", "add", "rule", "inet", "filter", "input", "iifname", lanIface, "meta", "l4proto", "{", "tcp,", "udp", "}", "th", "dport", strconv.Itoa(dnsPort), "accept", "comment", "\"xray-proxya\"")
+			}
+		}
+	}
 
 	if pathTunnelEnabled(cfg) {
 		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", pathTunName, "accept", "comment", "\"xray-proxya\"")
@@ -591,6 +605,13 @@ func Verify(cfg *config.UserConfig) []string {
 	if !isTProxyPortListening(cfg.Gateway.EffectiveTProxyPort()) {
 		problems = append(problems, fmt.Sprintf("tproxy port %d is not listening", cfg.Gateway.EffectiveTProxyPort()))
 	}
+	if cfg.Gateway.DNSListen != "" {
+		if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+			if !isTProxyPortListening(dnsPort) {
+				problems = append(problems, fmt.Sprintf("gateway dns port %d is not listening", dnsPort))
+			}
+		}
+	}
 
 	if ok, err := hasDefaultRoute(policyTable, "lo", false); err != nil {
 		problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
@@ -888,6 +909,14 @@ func interfaceHasCIDR(name, cidr string) bool {
 	return false
 }
 
+func isLoopbackDNSListenHost(host string) bool {
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
+}
+
 func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) string {
 	var b strings.Builder
 	tproxyPort := strconv.Itoa(cfg.Gateway.EffectiveTProxyPort())
@@ -897,10 +926,18 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 		b.WriteString("    chain input {\n")
 		b.WriteString("        type filter hook input priority mangle; policy accept;\n")
 		b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport " + tproxyPort + " drop\n")
+		if cfg.Gateway.DNSListen != "" {
+			if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+				if !isLoopbackDNSListenHost(host) && lanIface != "" {
+					b.WriteString("        iifname != { \"lo\", \"" + lanIface + "\" } meta l4proto { tcp, udp } th dport " + strconv.Itoa(dnsPort) + " drop\n")
+				}
+			}
+		}
 		b.WriteString("    }\n")
 		b.WriteString("    chain prerouting {\n")
 		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
+		b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
 		if cfg.Gateway.LANEnabled && cfg.Gateway.LocalEnabled {
 			b.WriteString("        iifname != { \"lo\", \"" + lanIface + "\" } return\n")
 			b.WriteString("        iifname \"" + lanIface + "\" ip saddr != " + lanCIDR + " return\n")
@@ -1289,6 +1326,20 @@ func isTProxyPortListeningDefault(port int) bool {
 			fields := strings.Fields(line)
 			if len(fields) >= 4 {
 				if strings.HasSuffix(fields[1], hexPort) && fields[3] == "0A" {
+					return true
+				}
+			}
+		}
+	}
+	for _, path := range []string{"/proc/net/udp", "/proc/net/udp6"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 4 {
+				if strings.HasSuffix(fields[1], hexPort) && fields[3] == "07" {
 					return true
 				}
 			}

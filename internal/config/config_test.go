@@ -578,3 +578,177 @@ func TestBackfillDefaultsNormalizesGuestAlias(t *testing.T) {
 	}
 }
 
+func TestParseDNSListen(t *testing.T) {
+	tests := []struct {
+		input       string
+		wantHost    string
+		wantPort    int
+		wantNorm    string
+		wantErr     bool
+	}{
+		{"127.0.0.1:5353", "127.0.0.1", 5353, "127.0.0.1:5353", false},
+		{"5353", "127.0.0.1", 5353, "127.0.0.1:5353", false},
+		{":53", "::", 53, ":53", false},
+		{"0.0.0.0:53", "::", 53, ":53", false},
+		{"[::]:53", "::", 53, ":53", false},
+		{"[::1]:5353", "::1", 5353, "[::1]:5353", false},
+		{"192.168.1.1:53", "192.168.1.1", 53, "192.168.1.1:53", false},
+		{"[2001:db8::1]:5353", "2001:db8::1", 5353, "[2001:db8::1]:5353", false},
+		{"", "", 0, "", true},
+		{"0", "", 0, "", true},
+		{"70000", "", 0, "", true},
+		{":-1", "", 0, "", true},
+		{":70000", "", 0, "", true},
+		{"localhost:53", "", 0, "", true},
+		{"example.com:53", "", 0, "", true},
+		{"127.0.0.1", "", 0, "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			host, port, norm, err := ParseDNSListen(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ParseDNSListen(%q) error = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if host != tc.wantHost || port != tc.wantPort || norm != tc.wantNorm {
+					t.Errorf("ParseDNSListen(%q) = (%q, %d, %q), want (%q, %d, %q)",
+						tc.input, host, port, norm, tc.wantHost, tc.wantPort, tc.wantNorm)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateDNSServerEntry(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantNorm string
+		wantErr  bool
+	}{
+		{"1.1.1.1", "1.1.1.1", false},
+		{"2606:4700:4700::1111", "2606:4700:4700::1111", false},
+		{"8.8.8.8:53", "8.8.8.8:53", false},
+		{"[2606:4700:4700::1111]:53", "[2606:4700:4700::1111]:53", false},
+		{"localhost", "localhost", false},
+		{"https://1.1.1.1/dns-query", "https://1.1.1.1/dns-query", false},
+		{"https+local://1.1.1.1/dns-query", "https+local://1.1.1.1/dns-query", false},
+		{"h2c://127.0.0.1:8053", "h2c://127.0.0.1:8053", false},
+		{"tcp://8.8.8.8:53", "tcp://8.8.8.8:53", false},
+		{"tcp+local://8.8.8.8:53", "tcp+local://8.8.8.8:53", false},
+		{"tls://1.1.1.1:853", "tls://1.1.1.1:853", false},
+		{"quic://dns.adguard.com:853", "quic://dns.adguard.com:853", false},
+		{"quic+local://dns.adguard.com:853", "quic+local://dns.adguard.com:853", false},
+		{"", "", true},
+		{"ftp://1.1.1.1", "", true},
+		{"invalid-server", "", true},
+		{"8.8.8.8:99999", "", true},
+		{"https://", "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			norm, err := ValidateDNSServerEntry(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateDNSServerEntry(%q) error = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+			if !tc.wantErr && norm != tc.wantNorm {
+				t.Errorf("ValidateDNSServerEntry(%q) = %q, want %q", tc.input, norm, tc.wantNorm)
+			}
+		})
+	}
+}
+
+func TestNormalizeDNSRecordDomain(t *testing.T) {
+	tests := []struct {
+		input    string
+		wantNorm string
+		wantErr  bool
+	}{
+		{"router.lan", "router.lan", false},
+		{"  ROUTER.LAN  ", "router.lan", false},
+		{"domain:google.com", "domain:google.com", false},
+		{"full:router.lan", "full:router.lan", false},
+		{"regexp:.*\\.lan", "regexp:.*\\.lan", false},
+		{"", "", true},
+		{"   ", "", true},
+		{"router lan", "", true},
+		{"router/lan", "", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.input, func(t *testing.T) {
+			norm, err := NormalizeDNSRecordDomain(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("NormalizeDNSRecordDomain(%q) error = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+			if !tc.wantErr && norm != tc.wantNorm {
+				t.Errorf("NormalizeDNSRecordDomain(%q) = %q, want %q", tc.input, norm, tc.wantNorm)
+			}
+		})
+	}
+}
+
+func TestValidateDNSRecordIPs(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []string
+		wantNorm []string
+		wantErr  bool
+	}{
+		{"single IPv4", []string{"10.0.82.1"}, []string{"10.0.82.1"}, false},
+		{"dual stack with dedup", []string{"10.0.82.1", "10.0.82.1", "fd00:82::1"}, []string{"10.0.82.1", "fd00:82::1"}, false},
+		{"empty list", []string{}, nil, true},
+		{"invalid IP", []string{"not-an-ip"}, nil, true},
+		{"mix valid and invalid", []string{"10.0.82.1", "bad-ip"}, nil, true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			norm, err := ValidateDNSRecordIPs(tc.input)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateDNSRecordIPs(%v) error = %v, wantErr = %v", tc.input, err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if len(norm) != len(tc.wantNorm) {
+					t.Fatalf("len = %d, want %d", len(norm), len(tc.wantNorm))
+				}
+				for i := range norm {
+					if norm[i] != tc.wantNorm[i] {
+						t.Errorf("norm[%d] = %q, want %q", i, norm[i], tc.wantNorm[i])
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestBackfillDefaultsGatewayDNS(t *testing.T) {
+	cfg := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			DNSStrategy: "useipv4",
+			DNSServers:  []string{" 1.1.1.1 ", "1.1.1.1", ""},
+			DNSListen:   "5353",
+			DNSRecords: map[string][]string{
+				" ROUTER.LAN ": {" 10.0.82.1 ", "10.0.82.1"},
+			},
+		},
+	}
+
+	cfg.BackfillDefaults()
+	if cfg.Gateway.DNSStrategy != "UseIPv4" {
+		t.Errorf("DNSStrategy = %q, want UseIPv4", cfg.Gateway.DNSStrategy)
+	}
+	if len(cfg.Gateway.DNSServers) != 1 || cfg.Gateway.DNSServers[0] != "1.1.1.1" {
+		t.Errorf("DNSServers = %v, want [1.1.1.1]", cfg.Gateway.DNSServers)
+	}
+	if cfg.Gateway.DNSListen != "127.0.0.1:5353" {
+		t.Errorf("DNSListen = %q, want 127.0.0.1:5353", cfg.Gateway.DNSListen)
+	}
+	ips, ok := cfg.Gateway.DNSRecords["router.lan"]
+	if !ok || len(ips) != 1 || ips[0] != "10.0.82.1" {
+		t.Errorf("DNSRecords[router.lan] = %v, want [10.0.82.1]", ips)
+	}
+}
+

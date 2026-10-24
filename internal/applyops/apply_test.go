@@ -242,3 +242,99 @@ func TestApplyPendingDisplaysEndpointChanges(t *testing.T) {
 		t.Fatalf("expected 'Added endpoint 'my-ep'' in apply output, got:\n%s", fullText)
 	}
 }
+
+func TestBuildImpactDetectsGatewayDNSAndTProxyPortChanges(t *testing.T) {
+	baseActive := func() *config.UserConfig {
+		return &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				Mode:        "tproxy",
+				State:       "proxy",
+				TProxyPort:  12345,
+				DNSListen:   ":53",
+				DNSStrategy: "UseIP",
+				DNSServers:  []string{"1.1.1.1"},
+				DNSRecords:  map[string][]string{"router.lan": {"10.0.82.1"}},
+			},
+		}
+	}
+
+	// 1. TProxyPort change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.TProxyPort = 12346
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("TProxyPort change: expected GatewayRuntimeChanged and XrayConfigChanged to be true, got: %+v", impact)
+		}
+	}
+
+	// 2. DNSListen change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.DNSListen = ":5353"
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("DNSListen change: expected GatewayRuntimeChanged and XrayConfigChanged to be true, got: %+v", impact)
+		}
+	}
+
+	// 3. DNSStrategy change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.DNSStrategy = "UseIPv4"
+		impact := BuildImpact(active, staging)
+		if !impact.XrayConfigChanged {
+			t.Errorf("DNSStrategy change: expected XrayConfigChanged to be true, got: %+v", impact)
+		}
+		found := false
+		for _, s := range impact.ChangedSections {
+			if s == "gateway.dns" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected 'gateway.dns' in ChangedSections, got: %v", impact.ChangedSections)
+		}
+	}
+
+	// 4. DNSServers change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.DNSServers = []string{"8.8.8.8"}
+		impact := BuildImpact(active, staging)
+		if !impact.XrayConfigChanged {
+			t.Errorf("DNSServers change: expected XrayConfigChanged to be true, got: %+v", impact)
+		}
+	}
+
+	// 5. DNSRecords change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.DNSRecords = map[string][]string{"router.lan": {"10.0.82.1", "fd00:82::1"}}
+		impact := BuildImpact(active, staging)
+		if !impact.XrayConfigChanged {
+			t.Errorf("DNSRecords change: expected XrayConfigChanged to be true, got: %+v", impact)
+		}
+	}
+
+	// 6. Initial apply with DNSListen
+	{
+		staging := &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				DNSListen: ":53",
+			},
+		}
+		impact := BuildImpact(nil, staging)
+		if !impact.GatewayRuntimeChanged {
+			t.Errorf("Initial apply with DNSListen: expected GatewayRuntimeChanged to be true, got: %+v", impact)
+		}
+	}
+}

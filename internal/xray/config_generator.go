@@ -69,14 +69,10 @@ func selectDNSOutboundAlias(relayAlias string, testTarget string) string {
 
 func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget string, isGateway bool) (string, string, []string) {
 	selectedAlias := selectDNSOutboundAlias(relayAlias, testTarget)
-	strategy := DefaultDNSQueryStrategy
-	servers := make([]string, 0, len(defaultDNSServers(isGateway)))
-	for _, server := range defaultDNSServers(isGateway) {
-		if text, ok := server.(string); ok {
-			servers = append(servers, text)
-		}
-	}
+	strategy := ""
+	var servers []string
 
+	// 1. If selectedAlias has per-relay co.DNSStrategy / co.DNSServers set, use those.
 	if selectedAlias != "" {
 		if co := findOutboundByAlias(userCfg, selectedAlias); co != nil {
 			if normalized, ok := NormalizeDNSQueryStrategy(co.DNSStrategy); ok {
@@ -84,6 +80,33 @@ func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget 
 			}
 			if customServers := normalizeDNSServers(co.DNSServers); len(customServers) > 0 {
 				servers = customServers
+			}
+		}
+	}
+
+	// 2. Else if isGateway: if userCfg.Gateway.DNSStrategy != "" (valid strategy), use it;
+	//    if len(userCfg.Gateway.DNSServers) > 0, use normalizeDNSServers(userCfg.Gateway.DNSServers).
+	if isGateway && userCfg != nil {
+		if strategy == "" && userCfg.Gateway.DNSStrategy != "" {
+			if normalized, ok := NormalizeDNSQueryStrategy(userCfg.Gateway.DNSStrategy); ok {
+				strategy = normalized
+			}
+		}
+		if len(servers) == 0 && len(userCfg.Gateway.DNSServers) > 0 {
+			if customServers := normalizeDNSServers(userCfg.Gateway.DNSServers); len(customServers) > 0 {
+				servers = customServers
+			}
+		}
+	}
+
+	// 3. Else use DefaultDNSQueryStrategy ("UseIP") and defaultDNSServers.
+	if strategy == "" {
+		strategy = DefaultDNSQueryStrategy
+	}
+	if len(servers) == 0 {
+		for _, server := range defaultDNSServers(isGateway) {
+			if text, ok := server.(string); ok {
+				servers = append(servers, text)
 			}
 		}
 	}
@@ -98,11 +121,27 @@ func buildDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget st
 		servers = append(servers, server)
 	}
 
+	hosts := map[string]interface{}{
+		"dns.google":         "8.8.8.8",
+		"cloudflare-dns.com": "1.1.1.1",
+	}
+
+	if isGateway && userCfg != nil && len(userCfg.Gateway.DNSRecords) > 0 {
+		for domain, ips := range userCfg.Gateway.DNSRecords {
+			d := strings.ToLower(strings.TrimSpace(domain))
+			if d == "" {
+				continue
+			}
+			if len(ips) == 1 {
+				hosts[d] = ips[0]
+			} else if len(ips) > 1 {
+				hosts[d] = ips
+			}
+		}
+	}
+
 	return map[string]interface{}{
-		"hosts": map[string]interface{}{
-			"dns.google":         "8.8.8.8",
-			"cloudflare-dns.com": "1.1.1.1",
-		},
+		"hosts":         hosts,
 		"servers":       servers,
 		"tag":           "dns-internal",
 		"queryStrategy": strategy,
@@ -124,6 +163,10 @@ func dnsRoutingTargets(servers []string) ([]string, []string) {
 		if strings.Contains(server, "://") {
 			u, err := url.Parse(server)
 			if err != nil {
+				continue
+			}
+			scheme := strings.ToLower(u.Scheme)
+			if strings.HasSuffix(scheme, "+local") {
 				continue
 			}
 			host = u.Hostname()
@@ -195,11 +238,14 @@ func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []inte
 	return rules
 }
 
-func buildDNSInbound(port int) map[string]interface{} {
+func buildDNSInbound(listen string, port int) map[string]interface{} {
+	if listen == "" {
+		listen = "127.0.0.1"
+	}
 	return map[string]interface{}{
 		"tag":      "dns-in",
 		"port":     port,
-		"listen":   "127.0.0.1",
+		"listen":   listen,
 		"protocol": "dokodemo-door",
 		"settings": map[string]interface{}{
 			"address": "8.8.8.8",
@@ -275,8 +321,16 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		xc["api"] = map[string]interface{}{"tag": "api", "services": []string{"HandlerService", "LoggerService", "StatsService"}}
 		inbounds = append(inbounds, map[string]interface{}{"tag": "api", "port": apiPort, "listen": "127.0.0.1", "protocol": "dokodemo-door", "settings": map[string]interface{}{"address": "127.0.0.1"}})
 	}
+	var hasDNSIn bool
 	if dnsInPort > 0 {
-		inbounds = append(inbounds, buildDNSInbound(dnsInPort))
+		inbounds = append(inbounds, buildDNSInbound("127.0.0.1", dnsInPort))
+		hasDNSIn = true
+	} else if isGateway && !disableGatewayTun && userCfg.Gateway.DNSListen != "" {
+		host, port, _, err := config.ParseDNSListen(userCfg.Gateway.DNSListen)
+		if err == nil && port > 0 {
+			inbounds = append(inbounds, buildDNSInbound(host, port))
+			hasDNSIn = true
+		}
 	}
 	inbounds = append(inbounds, map[string]interface{}{"tag": "test-socks", "port": testPort, "listen": "127.0.0.1", "protocol": "socks", "settings": map[string]interface{}{"auth": "noauth", "udp": true}, "sniffing": buildSniffingConfig(userCfg)})
 	if pathdPort > 0 {
@@ -464,7 +518,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	if pathdPort > 0 && relayAlias != "" {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"pathd-socks"}, "outboundTag": "outbound-" + relayAlias})
 	}
-	if dnsInPort > 0 {
+	if hasDNSIn {
 		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"dns-in"}, "outboundTag": "dns-out"})
 	}
 	// test-socks is only used as a local validation endpoint. Keep its

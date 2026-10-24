@@ -1047,3 +1047,170 @@ func TestGenerateXrayJSONInboundPortConflict(t *testing.T) {
 		t.Fatalf("expected 'inbound port conflict' error, got %v", err)
 	}
 }
+
+func TestGenerateXrayJSONGatewayDNSConfig(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:        "tproxy",
+			State:       "proxy",
+			DNSStrategy: "UseIPv4",
+			DNSServers:  []string{"8.8.8.8", "tcp://1.1.1.1:53"},
+			DNSRecords: map[string][]string{
+				"router.lan": {"10.0.82.1"},
+				"multi.lan":  {"10.0.82.1", "fd00:82::1"},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	dns := getMap(t, parsed, "dns")
+
+	if got := getString(t, dns, "queryStrategy"); got != "UseIPv4" {
+		t.Fatalf("queryStrategy = %q, want UseIPv4", got)
+	}
+
+	servers := getStringSlice(t, dns, "servers")
+	wantServers := []string{"8.8.8.8", "tcp://1.1.1.1:53"}
+	assertStringSliceEqual(t, servers, wantServers)
+
+	hosts := getMap(t, dns, "hosts")
+	if hosts["router.lan"] != "10.0.82.1" {
+		t.Errorf("hosts[router.lan] = %v, want 10.0.82.1", hosts["router.lan"])
+	}
+	multi, ok := hosts["multi.lan"].([]interface{})
+	if !ok || len(multi) != 2 || multi[0] != "10.0.82.1" || multi[1] != "fd00:82::1" {
+		t.Errorf("hosts[multi.lan] = %v, want [10.0.82.1, fd00:82::1]", hosts["multi.lan"])
+	}
+}
+
+func TestGenerateXrayJSONGatewayDNSInbound(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LocalEnabled: true,
+			LANEnabled:   true,
+			DNSListen:    ":53",
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds, ok := parsed["inbounds"].([]interface{})
+	if !ok {
+		t.Fatal("inbounds not found")
+	}
+
+	var dnsIn map[string]interface{}
+	for _, inb := range inbounds {
+		m, _ := inb.(map[string]interface{})
+		if m["tag"] == "dns-in" {
+			dnsIn = m
+			break
+		}
+	}
+
+	if dnsIn == nil {
+		t.Fatal("expected dns-in inbound")
+	}
+	if dnsIn["port"] != float64(53) {
+		t.Errorf("dns-in port = %v, want 53", dnsIn["port"])
+	}
+	if dnsIn["listen"] != "::" {
+		t.Errorf("dns-in listen = %v, want ::", dnsIn["listen"])
+	}
+
+	// Verify routing rule
+	routing := getMap(t, parsed, "routing")
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		t.Fatal("routing rules not found")
+	}
+	foundDNSInRule := false
+	for _, r := range rules {
+		ruleMap, _ := r.(map[string]interface{})
+		inTags, _ := ruleMap["inboundTag"].([]interface{})
+		for _, tag := range inTags {
+			if tag == "dns-in" && ruleMap["outboundTag"] == "dns-out" {
+				foundDNSInRule = true
+				break
+			}
+		}
+	}
+	if !foundDNSInRule {
+		t.Fatal("expected routing rule for dns-in -> dns-out")
+	}
+}
+
+func TestGenerateXrayJSONGatewayDNSInboundDisabledWhenTunDisabled(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LocalEnabled: true,
+			DNSListen:    ":53",
+		},
+	}
+
+	raw, err := GenerateXrayJSON(cfg, map[string]int{"gateway-tun-disabled": 1}, "")
+	if err != nil {
+		t.Fatalf("GenerateXrayJSON failed: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatal(err)
+	}
+
+	inbounds, _ := parsed["inbounds"].([]interface{})
+	for _, inb := range inbounds {
+		m, _ := inb.(map[string]interface{})
+		if m["tag"] == "dns-in" {
+			t.Fatal("dns-in should NOT be present when gateway-tun-disabled is set")
+		}
+	}
+}
+
+func TestDNSRoutingTargetsSkipsLocalSchemes(t *testing.T) {
+	servers := []string{
+		"https+local://1.1.1.1/dns-query",
+		"tcp+local://8.8.8.8:53",
+		"quic+local://dns.adguard.com:853",
+		"tls://1.1.1.1:853",
+		"quic://dns.adguard.com:853",
+		"tcp://8.8.8.8:53",
+	}
+
+	domains, ips := dnsRoutingTargets(servers)
+	for _, d := range domains {
+		if strings.Contains(d, "local") {
+			t.Errorf("unexpected local domain in routing targets: %s", d)
+		}
+	}
+	for _, ip := range ips {
+		if ip == "1.1.1.1" && len(domains) == 0 {
+			// 1.1.1.1 comes from tls://1.1.1.1:853
+		}
+	}
+	foundAdguard := false
+	for _, d := range domains {
+		if d == "dns.adguard.com" {
+			foundAdguard = true
+			break
+		}
+	}
+	if !foundAdguard {
+		t.Errorf("expected dns.adguard.com in domains, got: %v", domains)
+	}
+	found8888 := false
+	for _, ip := range ips {
+		if ip == "8.8.8.8" {
+			found8888 = true
+			break
+		}
+	}
+	if !found8888 {
+		t.Errorf("expected 8.8.8.8 in ips, got: %v", ips)
+	}
+}

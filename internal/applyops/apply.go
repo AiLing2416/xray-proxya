@@ -139,7 +139,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.XrayConfigChanged = true
 		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
 		impact.SubContentChanged = stagingCfg.AdminSub.Token != "" || len(stagingCfg.Subscriptions) > 0 || len(stagingCfg.Endpoints) > 0
-		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled
+		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled || stagingCfg.Gateway.DNSListen != ""
 		impact.PathdConfigChanged = stagingCfg.Role == config.RoleServer && stagingCfg.Path.Token != ""
 		impact.ChangedSections = []string{"initial_apply"}
 		if len(stagingCfg.Endpoints) > 0 {
@@ -269,10 +269,19 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
 		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||
 		activeCfg.Gateway.State != stagingCfg.Gateway.State ||
+		activeCfg.Gateway.TProxyPort != stagingCfg.Gateway.TProxyPort ||
+		activeCfg.Gateway.DNSListen != stagingCfg.Gateway.DNSListen ||
 		!reflect.DeepEqual(activeCfg.Gateway.BypassDNS, stagingCfg.Gateway.BypassDNS) {
 		impact.GatewayRuntimeChanged = true
 		impact.XrayConfigChanged = true
 		mark("gateway.runtime")
+	}
+
+	if activeCfg.Gateway.DNSStrategy != stagingCfg.Gateway.DNSStrategy ||
+		!reflect.DeepEqual(activeCfg.Gateway.DNSServers, stagingCfg.Gateway.DNSServers) ||
+		!reflect.DeepEqual(activeCfg.Gateway.DNSRecords, stagingCfg.Gateway.DNSRecords) {
+		impact.XrayConfigChanged = true
+		mark("gateway.dns")
 	}
 
 	return impact

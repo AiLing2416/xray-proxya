@@ -734,3 +734,89 @@ func TestTProxyPortListening(t *testing.T) {
 		t.Fatalf("waitForTProxyListener(12345) failed: %v", err)
 	}
 }
+
+func TestBuildNFTWithDNSListen(t *testing.T) {
+	// 1. Wildcard listen ":53"
+	cfgWildcard := testGatewayConfig(true, true)
+	cfgWildcard.Gateway.DNSListen = ":53"
+	rules := buildNFT(cfgWildcard, "ens18", "192.168.50.0/24", "")
+	expectedRule := `iifname != { "lo", "ens18" } meta l4proto { tcp, udp } th dport 53 drop`
+	if !strings.Contains(rules, expectedRule) {
+		t.Fatalf("expected wildcard dns drop rule %q, got:\n%s", expectedRule, rules)
+	}
+	if !strings.Contains(rules, `iifname != "lo" fib daddr type local return`) {
+		t.Fatalf("expected prerouting local fib return rule, got:\n%s", rules)
+	}
+
+	// 2. Specific LAN IP listen "10.0.82.21:53"
+	cfgSpecific := testGatewayConfig(true, true)
+	cfgSpecific.Gateway.DNSListen = "10.0.82.21:53"
+	rulesSpecific := buildNFT(cfgSpecific, "ens18", "192.168.50.0/24", "")
+	if !strings.Contains(rulesSpecific, expectedRule) {
+		t.Fatalf("expected specific non-loopback dns drop rule %q, got:\n%s", expectedRule, rulesSpecific)
+	}
+
+	// 3. Loopback-only listen "127.0.0.1:5353"
+	cfgLoopback := testGatewayConfig(true, true)
+	cfgLoopback.Gateway.DNSListen = "127.0.0.1:5353"
+	rulesLoopback := buildNFT(cfgLoopback, "ens18", "192.168.50.0/24", "")
+	if strings.Contains(rulesLoopback, "th dport 5353 drop") {
+		t.Fatalf("unexpected dns drop rule for loopback listen, got:\n%s", rulesLoopback)
+	}
+}
+
+func TestVerify_GatewayDNSListening(t *testing.T) {
+	origListening := isTProxyPortListeningFn
+	origForwarding := isIPv4ForwardingEnabledFn
+	origExecCombined := execCommandCombinedOutput
+	origExecRun := execCommandRun
+	defer func() {
+		isTProxyPortListeningFn = origListening
+		isIPv4ForwardingEnabledFn = origForwarding
+		execCommandCombinedOutput = origExecCombined
+		execCommandRun = origExecRun
+	}()
+
+	isIPv4ForwardingEnabledFn = func() bool { return true }
+	execCommandRun = func(name string, args ...string) error { return nil }
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) { return []byte(""), nil }
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LANInterface: "lo",
+			LocalEnabled: true,
+			LANEnabled:   true,
+			DNSListen:    ":53",
+		},
+	}
+
+	// Case 1: Port 53 NOT listening
+	isTProxyPortListeningFn = func(port int) bool {
+		return port == 12345 // only tproxy port listening, not 53
+	}
+	problems := Verify(cfg)
+	foundDNSProblem := false
+	for _, p := range problems {
+		if strings.Contains(p, "gateway dns port 53 is not listening") {
+			foundDNSProblem = true
+			break
+		}
+	}
+	if !foundDNSProblem {
+		t.Fatalf("expected 'gateway dns port 53 is not listening' problem, got: %v", problems)
+	}
+
+	// Case 2: Port 53 listening
+	isTProxyPortListeningFn = func(port int) bool {
+		return port == 12345 || port == 53
+	}
+	problems = Verify(cfg)
+	for _, p := range problems {
+		if strings.Contains(p, "gateway dns port 53 is not listening") {
+			t.Fatalf("unexpected dns port 53 problem when listening: %v", problems)
+		}
+	}
+}

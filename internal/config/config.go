@@ -9,8 +9,10 @@ import (
 	"math"
 	"math/big"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -491,15 +493,188 @@ func CleanGuestAlias(raw string) (string, error) {
 }
 
 type GatewayConfig struct {
-	LocalEnabled    bool     `json:"local_enabled"`
-	LANEnabled      bool     `json:"lan_enabled"`
-	Mode            string   `json:"mode"` // "tun" or "tproxy"
-	RelayAlias      string   `json:"relay_alias"`
-	LANInterface    string   `json:"lan_interface"`
-	TProxyPort      int      `json:"tproxy_port,omitempty"`
-	BypassDNS       []string `json:"bypass_dns,omitempty"`
-	State           string   `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
-	BypassCountries []string `json:"bypass_countries,omitempty"`
+	LocalEnabled    bool                `json:"local_enabled"`
+	LANEnabled      bool                `json:"lan_enabled"`
+	Mode            string              `json:"mode"` // "tun" or "tproxy"
+	RelayAlias      string              `json:"relay_alias"`
+	LANInterface    string              `json:"lan_interface"`
+	TProxyPort      int                 `json:"tproxy_port,omitempty"`
+	BypassDNS       []string            `json:"bypass_dns,omitempty"`
+	State           string              `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
+	BypassCountries []string            `json:"bypass_countries,omitempty"`
+	DNSListen       string              `json:"dns_listen,omitempty"`
+	DNSStrategy     string              `json:"dns_strategy,omitempty"`
+	DNSServers      []string            `json:"dns_servers,omitempty"`
+	DNSRecords      map[string][]string `json:"dns_records,omitempty"`
+}
+
+var allowedDNSServerSchemes = map[string]bool{
+	"https":       true,
+	"https+local": true,
+	"h2c":         true,
+	"tcp":         true,
+	"tcp+local":   true,
+	"tls":         true,
+	"quic":        true,
+	"quic+local":  true,
+}
+
+// ParseDNSListen parses and normalizes a DNS listen address.
+// Accepts: "127.0.0.1:5353", "[::1]:5353", ":53", "0.0.0.0:53", "[::]:53", or a bare port like "5353".
+// Bare port normalizes to "127.0.0.1:<port>".
+// Wildcard hosts ("", "0.0.0.0", "::", "[::]") normalize to ":<port>" with Xray listen host "::".
+// Specific IP hosts must be valid IPv4/IPv6 addresses (net.ParseIP), port must be 1..65535.
+func ParseDNSListen(raw string) (host string, port int, normalized string, err error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", 0, "", fmt.Errorf("empty dns listen address")
+	}
+
+	// 1. Bare port: "5353" -> "127.0.0.1:5353"
+	if p, convErr := strconv.Atoi(trimmed); convErr == nil {
+		if p < 1 || p > 65535 {
+			return "", 0, "", fmt.Errorf("invalid port %d: must be between 1 and 65535", p)
+		}
+		return "127.0.0.1", p, fmt.Sprintf("127.0.0.1:%d", p), nil
+	}
+
+	// 2. Colon port: ":53" -> wildcard host "::", normalized ":53"
+	if strings.HasPrefix(trimmed, ":") && !strings.HasPrefix(trimmed, "::") {
+		pStr := strings.TrimPrefix(trimmed, ":")
+		p, convErr := strconv.Atoi(pStr)
+		if convErr != nil || p < 1 || p > 65535 {
+			return "", 0, "", fmt.Errorf("invalid port %q: must be between 1 and 65535", pStr)
+		}
+		return "::", p, fmt.Sprintf(":%d", p), nil
+	}
+
+	// 3. host:port
+	h, portStr, splitErr := net.SplitHostPort(trimmed)
+	if splitErr != nil {
+		return "", 0, "", fmt.Errorf("invalid dns listen address %q: %w", raw, splitErr)
+	}
+
+	p, convErr := strconv.Atoi(portStr)
+	if convErr != nil || p < 1 || p > 65535 {
+		return "", 0, "", fmt.Errorf("invalid port %q: must be between 1 and 65535", portStr)
+	}
+
+	hTrim := strings.Trim(h, "[]")
+	if hTrim == "" || hTrim == "0.0.0.0" || hTrim == "::" {
+		return "::", p, fmt.Sprintf(":%d", p), nil
+	}
+
+	ip := net.ParseIP(hTrim)
+	if ip == nil {
+		return "", 0, "", fmt.Errorf("invalid host IP %q in dns listen address", h)
+	}
+
+	if ip.To4() != nil {
+		return ip.String(), p, fmt.Sprintf("%s:%d", ip.String(), p), nil
+	}
+	return ip.String(), p, fmt.Sprintf("[%s]:%d", ip.String(), p), nil
+}
+
+// ValidateDNSServerEntry validates and normalizes an upstream DNS server entry.
+// Accepts plain IPv4/IPv6, ip:port, "localhost", or URI with supported schemes:
+// https://, https+local://, h2c://, tcp://, tcp+local://, tls://, quic://, quic+local://.
+func ValidateDNSServerEntry(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", fmt.Errorf("empty dns server entry")
+	}
+
+	if strings.EqualFold(trimmed, "localhost") {
+		return "localhost", nil
+	}
+
+	if ip := net.ParseIP(trimmed); ip != nil {
+		return ip.String(), nil
+	}
+
+	if host, portStr, err := net.SplitHostPort(trimmed); err == nil {
+		if p, pErr := strconv.Atoi(portStr); pErr == nil && p >= 1 && p <= 65535 {
+			hTrim := strings.Trim(host, "[]")
+			if ip := net.ParseIP(hTrim); ip != nil {
+				if ip.To4() != nil {
+					return fmt.Sprintf("%s:%d", ip.String(), p), nil
+				}
+				return fmt.Sprintf("[%s]:%d", ip.String(), p), nil
+			}
+		}
+	}
+
+	if strings.Contains(trimmed, "://") {
+		u, err := url.Parse(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("invalid dns server URI %q: %w", raw, err)
+		}
+		scheme := strings.ToLower(u.Scheme)
+		if !allowedDNSServerSchemes[scheme] {
+			return "", fmt.Errorf("unsupported dns server scheme %q in %q", u.Scheme, raw)
+		}
+		if u.Host == "" {
+			return "", fmt.Errorf("missing host in dns server URI %q", raw)
+		}
+		return trimmed, nil
+	}
+
+	return "", fmt.Errorf("invalid dns server entry %q: must be IP, IP:port, localhost, or URI with supported scheme", raw)
+}
+
+// NormalizeDNSRecordDomain trims, validates, and lowercases a DNS record domain.
+// Allows standard domains like "router.lan" as well as Xray "domain:", "full:", "regexp:" prefixes.
+func NormalizeDNSRecordDomain(raw string) (string, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(raw))
+	if trimmed == "" {
+		return "", fmt.Errorf("domain cannot be empty")
+	}
+	if strings.ContainsAny(trimmed, " \t\r\n/") {
+		return "", fmt.Errorf("invalid domain %q: contains whitespace or slashes", raw)
+	}
+	return trimmed, nil
+}
+
+// ValidateDNSRecordIPs validates, normalizes, and deduplicates IPv4/IPv6 addresses while preserving order.
+func ValidateDNSRecordIPs(ips []string) ([]string, error) {
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("at least one IP address must be provided")
+	}
+	seen := make(map[string]bool, len(ips))
+	var result []string
+	for _, ipStr := range ips {
+		trimmed := strings.TrimSpace(ipStr)
+		if trimmed == "" {
+			continue
+		}
+		parsed := net.ParseIP(trimmed)
+		if parsed == nil {
+			return nil, fmt.Errorf("invalid IP address %q", ipStr)
+		}
+		norm := parsed.String()
+		if !seen[norm] {
+			seen[norm] = true
+			result = append(result, norm)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("at least one valid IP address must be provided")
+	}
+	return result, nil
+}
+
+// NormalizeDNSQueryStrategy validates and normalizes DNS query strategy names.
+func NormalizeDNSQueryStrategy(value string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "useip":
+		return "UseIP", true
+	case "useipv4":
+		return "UseIPv4", true
+	case "useipv6":
+		return "UseIPv6", true
+	default:
+		return "", false
+	}
 }
 
 func (g GatewayConfig) EffectiveTProxyPort() int {
@@ -889,6 +1064,52 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		if changed {
 			cfg.Gateway.BypassCountries = normalized
 			changes = append(changes, "normalized gateway.bypass_countries")
+		}
+	}
+	if cfg.Gateway.DNSStrategy != "" {
+		if norm, ok := NormalizeDNSQueryStrategy(cfg.Gateway.DNSStrategy); ok {
+			if norm != cfg.Gateway.DNSStrategy {
+				cfg.Gateway.DNSStrategy = norm
+				changes = append(changes, "normalized gateway.dns_strategy")
+			}
+		} else {
+			cfg.Gateway.DNSStrategy = ""
+			changes = append(changes, "reset invalid gateway.dns_strategy")
+		}
+	}
+	if cfg.Gateway.DNSServers != nil {
+		normalized, changed := normalizeStringSlice(cfg.Gateway.DNSServers)
+		if changed {
+			cfg.Gateway.DNSServers = normalized
+			changes = append(changes, "normalized gateway.dns_servers")
+		}
+	}
+	if cfg.Gateway.DNSListen != "" {
+		if _, _, normListen, err := ParseDNSListen(cfg.Gateway.DNSListen); err == nil {
+			if normListen != cfg.Gateway.DNSListen {
+				cfg.Gateway.DNSListen = normListen
+				changes = append(changes, "normalized gateway.dns_listen")
+			}
+		}
+	}
+	if cfg.Gateway.DNSRecords != nil {
+		normRecords := make(map[string][]string, len(cfg.Gateway.DNSRecords))
+		changed := false
+		for dom, ips := range cfg.Gateway.DNSRecords {
+			normDom, domErr := NormalizeDNSRecordDomain(dom)
+			normIPs, ipErr := ValidateDNSRecordIPs(ips)
+			if domErr != nil || ipErr != nil {
+				changed = true
+				continue
+			}
+			if normDom != dom || !reflect.DeepEqual(normIPs, ips) {
+				changed = true
+			}
+			normRecords[normDom] = normIPs
+		}
+		if changed {
+			cfg.Gateway.DNSRecords = normRecords
+			changes = append(changes, "normalized gateway.dns_records")
 		}
 	}
 	if strings.TrimSpace(cfg.GuestSubBind) == "" {

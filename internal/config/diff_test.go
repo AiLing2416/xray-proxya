@@ -87,3 +87,39 @@ func TestDiffUserConfigClean(t *testing.T) {
 		t.Fatalf("expected empty diffs for identical configs, got: %v", diffs)
 	}
 }
+
+func TestDiffUserConfigGatewayDNS(t *testing.T) {
+	active := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			DNSListen:   "127.0.0.1:5353",
+			DNSStrategy: "UseIP",
+			DNSServers:  []string{"1.1.1.1"},
+			DNSRecords:  map[string][]string{"router.lan": {"10.0.82.1"}},
+		},
+	}
+	staging := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			DNSListen:   ":53",
+			DNSStrategy: "UseIPv4",
+			DNSServers:  []string{"8.8.8.8", "1.1.1.1"},
+			DNSRecords:  map[string][]string{"router.lan": {"10.0.82.1", "fd00:82::1"}},
+		},
+	}
+
+	diffs := DiffUserConfig(active, staging)
+	joined := strings.Join(diffs, "\n")
+	if !strings.Contains(joined, `DNS Listen: "127.0.0.1:5353" -> ":53"`) {
+		t.Errorf("expected DNS Listen diff, got: %s", joined)
+	}
+	if !strings.Contains(joined, `DNS Strategy: "UseIP" -> "UseIPv4"`) {
+		t.Errorf("expected DNS Strategy diff, got: %s", joined)
+	}
+	if !strings.Contains(joined, "DNS Servers") {
+		t.Errorf("expected DNS Servers diff, got: %s", joined)
+	}
+	if !strings.Contains(joined, "DNS Records") {
+		t.Errorf("expected DNS Records diff, got: %s", joined)
+	}
+}
