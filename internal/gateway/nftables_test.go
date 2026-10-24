@@ -962,3 +962,55 @@ func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
 		t.Error("managedRuleLine should NOT match pref 10031")
 	}
 }
+
+func TestBuildNFTMulti_DanglingRelayRuleFailsClosed(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.RelayAlias = "main"
+	cfg.CustomOutbounds = []config.CustomOutbound{
+		{Alias: "main", Enabled: true},
+		{Alias: "gone", Enabled: false},
+	}
+	cfg.Gateway.Rules = []config.GatewayRule{
+		{Interface: "eth2", Target: "gone"},
+		{MAC: "aa:bb:cc:dd:ee:01", Target: "missing"},
+	}
+	out := buildNFTMulti(cfg, []string{"eth1", "eth2"}, nil, nil, "")
+	if !strings.Contains(out, "iifname \"eth2\" drop") {
+		t.Fatalf("disabled relay interface rule must drop, got:\n%s", out)
+	}
+	if !strings.Contains(out, "ether saddr aa:bb:cc:dd:ee:01 drop") {
+		t.Fatalf("missing relay MAC rule must drop, got:\n%s", out)
+	}
+	if strings.Contains(out, "iifname \"eth2\" meta l4proto") || strings.Contains(out, "ether saddr aa:bb:cc:dd:ee:01 meta l4proto") {
+		t.Fatalf("dangling rule must not fall back to a tproxy port:\n%s", out)
+	}
+}
+
+func TestValidateGatewayRuleTargets(t *testing.T) {
+	cfg := &config.UserConfig{CustomOutbounds: []config.CustomOutbound{{Alias: "a", Enabled: true}, {Alias: "b"}}}
+	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth1", Target: "a"}, {Interface: "eth2", Target: "direct"}}
+	if err := config.ValidateGatewayRuleTargets(cfg); err != nil {
+		t.Fatalf("valid targets rejected: %v", err)
+	}
+	cfg.Gateway.Rules = append(cfg.Gateway.Rules, config.GatewayRule{Interface: "eth3", Target: "b"})
+	if err := config.ValidateGatewayRuleTargets(cfg); err == nil {
+		t.Fatal("disabled relay target must be rejected")
+	}
+}
+
+func TestInsertFilterRulesPreservesOrder(t *testing.T) {
+	var calls []string
+	orig := runCommand
+	runCommand = func(name string, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	defer func() { runCommand = orig }()
+	if err := insertFilterRules("forward", []string{"drop1"}, []string{"accept2"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "accept2") || !strings.Contains(calls[1], "drop1") || !strings.HasPrefix(calls[0], "insert rule inet filter forward") {
+		t.Fatalf("rules must be inserted in reverse so first ends on top: %v", calls)
+	}
+}

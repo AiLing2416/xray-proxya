@@ -771,6 +771,38 @@ func ValidateGatewayRule(rule GatewayRule) (GatewayRule, error) {
 	return norm, nil
 }
 
+// ValidateGatewayRuleTargets verifies that every relay target referenced by a
+// gateway rule still names an existing, enabled custom outbound. It protects
+// against rules becoming dangling after a relay is deleted or disabled.
+func ValidateGatewayRuleTargets(userCfg *UserConfig) error {
+	if userCfg == nil {
+		return nil
+	}
+	for _, rule := range userCfg.Gateway.Rules {
+		target := strings.TrimSpace(rule.Target)
+		if target == "" || strings.EqualFold(target, "direct") || strings.EqualFold(target, "block") {
+			continue
+		}
+		if !GatewayRelayActive(userCfg, target) {
+			return fmt.Errorf("gateway rule (MAC=%q, Interface=%q) targets relay %q which does not exist or is disabled; delete or update the rule first", rule.MAC, rule.Interface, target)
+		}
+	}
+	return nil
+}
+
+// GatewayRelayActive reports whether alias names an enabled custom outbound.
+func GatewayRelayActive(userCfg *UserConfig, alias string) bool {
+	if userCfg == nil {
+		return false
+	}
+	for i := range userCfg.CustomOutbounds {
+		if userCfg.CustomOutbounds[i].Alias == alias {
+			return userCfg.CustomOutbounds[i].Enabled
+		}
+	}
+	return false
+}
+
 // GatewayTProxyPorts returns a map of relay aliases to their allocated TProxy ports.
 // The default relay alias (if set and not direct/block) uses basePort (default 12345).
 // Additional relay targets specified in Gateway.Rules receive basePort + len(ports).

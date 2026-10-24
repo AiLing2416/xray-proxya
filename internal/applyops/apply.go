@@ -54,6 +54,12 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		return nil, fmt.Errorf("failed to load STAGING config: %w", err)
 	}
 
+	if cfg.Role == config.RoleGateway {
+		if err := config.ValidateGatewayRuleTargets(cfg); err != nil {
+			return nil, err
+		}
+	}
+
 	impact := BuildImpact(activeCfg, cfg)
 
 	if opts.DryRun {

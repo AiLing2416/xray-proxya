@@ -212,29 +212,28 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		}
 	}
 
-	// Ensure system filter table, forward and input chains exist
+	// Ensure system filter table, forward and input chains exist. Rules are
+	// inserted at the head of the chains (not appended) so that they are not
+	// shadowed by pre-existing drop/reject rules, and failures are reported.
 	_ = run("nft", "add", "table", "inet", "filter")
 	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
 	_ = run("nft", "add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; }")
-	_ = run("nft", "add", "rule", "inet", "filter", "input", "meta", "mark", tunMark, "accept", "comment", "\"xray-proxya\"")
+
+	inputRules := [][]string{{"meta", "mark", tunMark, "accept"}}
 	if cfg.Gateway.DNSListen != "" {
 		if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
-			if !isLoopbackDNSListenHost(host) && len(lanIfaces) > 0 {
+			if !isLoopbackDNSListenHost(host) {
 				for _, liface := range lanIfaces {
-					_ = run("nft", "add", "rule", "inet", "filter", "input", "iifname", liface, "meta", "l4proto", "{", "tcp,", "udp", "}", "th", "dport", strconv.Itoa(dnsPort), "accept", "comment", "\"xray-proxya\"")
+					inputRules = append(inputRules, []string{"iifname", liface, "meta", "l4proto", "{", "tcp,", "udp", "}", "th", "dport", strconv.Itoa(dnsPort), "accept"})
 				}
 			}
 		}
 	}
-
-	if pathTunnelEnabled(cfg) {
-		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", pathTunName, "accept", "comment", "\"xray-proxya\"")
-		_ = run("nft", "add", "rule", "inet", "filter", "forward", "oifname", pathTunName, "accept", "comment", "\"xray-proxya\"")
-	}
-	for _, liface := range lanIfaces {
-		_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", liface, "oifname", liface, "accept", "comment", "\"xray-proxya\"")
+	if err := insertFilterRules("input", inputRules...); err != nil {
+		return err
 	}
 
+	var forwardRules [][]string
 	managedNATInstalled := false
 	if !cfg.Gateway.NATDisabled && wanIface != "" && len(lanIfaces) > 0 {
 		wanDistinct := true
@@ -249,19 +248,33 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			for _, rule := range cfg.Gateway.Rules {
 				if strings.EqualFold(rule.Target, "block") {
 					if rule.Interface != "" && rule.MAC != "" {
-						_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", rule.Interface, "ether", "saddr", rule.MAC, "drop", "comment", "\"xray-proxya\"")
+						forwardRules = append(forwardRules, []string{"iifname", rule.Interface, "ether", "saddr", rule.MAC, "drop"})
 					} else if rule.MAC != "" {
-						_ = run("nft", "add", "rule", "inet", "filter", "forward", "ether", "saddr", rule.MAC, "drop", "comment", "\"xray-proxya\"")
+						forwardRules = append(forwardRules, []string{"ether", "saddr", rule.MAC, "drop"})
 					} else if rule.Interface != "" {
-						_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", rule.Interface, "drop", "comment", "\"xray-proxya\"")
+						forwardRules = append(forwardRules, []string{"iifname", rule.Interface, "drop"})
 					}
 				}
 			}
-			for _, liface := range lanIfaces {
-				_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", liface, "oifname", wanIface, "accept", "comment", "\"xray-proxya\"")
-				_ = run("nft", "add", "rule", "inet", "filter", "forward", "iifname", wanIface, "oifname", liface, "ct", "state", "established,related", "accept", "comment", "\"xray-proxya\"")
-			}
 		}
+	}
+	if pathTunnelEnabled(cfg) {
+		forwardRules = append(forwardRules,
+			[]string{"iifname", pathTunName, "accept"},
+			[]string{"oifname", pathTunName, "accept"})
+	}
+	for _, liface := range lanIfaces {
+		forwardRules = append(forwardRules, []string{"iifname", liface, "oifname", liface, "accept"})
+	}
+	if managedNATInstalled {
+		for _, liface := range lanIfaces {
+			forwardRules = append(forwardRules,
+				[]string{"iifname", liface, "oifname", wanIface, "accept"},
+				[]string{"iifname", wanIface, "oifname", liface, "ct", "state", "established,related", "accept"})
+		}
+	}
+	if err := insertFilterRules("forward", forwardRules...); err != nil {
+		return err
 	}
 	if cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled && !managedNATInstalled && !cfg.Gateway.NATDisabled {
 		if err := installDirectLANForwardRules(lanIfaces...); err != nil {
@@ -1281,14 +1294,16 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 					}
 				} else {
 					port := tproxyPorts[target]
-					if port <= 0 {
-						port = basePort
-					}
 					pStr := strconv.Itoa(port)
+					match := "ether saddr " + rule.MAC
 					if rule.Interface != "" {
-						b.WriteString("        iifname \"" + rule.Interface + "\" ether saddr " + rule.MAC + " meta l4proto { tcp, udp } tproxy to :" + pStr + " meta mark set " + tunMark + " accept\n")
+						match = "iifname \"" + rule.Interface + "\" " + match
+					}
+					if port <= 0 || !config.GatewayRelayActive(cfg, target) {
+						// Fail closed: never silently fall back to the default relay.
+						b.WriteString("        " + match + " drop\n")
 					} else {
-						b.WriteString("        ether saddr " + rule.MAC + " meta l4proto { tcp, udp } tproxy to :" + pStr + " meta mark set " + tunMark + " accept\n")
+						b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy to :" + pStr + " meta mark set " + tunMark + " accept\n")
 					}
 				}
 			}
@@ -1302,11 +1317,12 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 					b.WriteString("        iifname \"" + rule.Interface + "\" return\n")
 				} else {
 					port := tproxyPorts[target]
-					if port <= 0 {
-						port = basePort
+					if port <= 0 || !config.GatewayRelayActive(cfg, target) {
+						// Fail closed: never silently fall back to the default relay.
+						b.WriteString("        iifname \"" + rule.Interface + "\" drop\n")
+					} else {
+						b.WriteString("        iifname \"" + rule.Interface + "\" meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
 					}
-					pStr := strconv.Itoa(port)
-					b.WriteString("        iifname \"" + rule.Interface + "\" meta l4proto { tcp, udp } tproxy to :" + pStr + " meta mark set " + tunMark + " accept\n")
 				}
 			}
 		}
@@ -1625,6 +1641,20 @@ func run(name string, args ...string) error {
 	return runCommand(name, args...)
 }
 
+// insertFilterRules inserts rules at the head of the given inet filter chain,
+// preserving the order in which they are supplied (first element ends up on
+// top). Each rule is tagged with the managed comment so cleanup can find it.
+func insertFilterRules(chain string, rules ...[]string) error {
+	for i := len(rules) - 1; i >= 0; i-- {
+		args := append([]string{"insert", "rule", "inet", "filter", chain}, rules[i]...)
+		args = append(args, "comment", "\"xray-proxya\"")
+		if err := run("nft", args...); err != nil {
+			return fmt.Errorf("install %s rule %q: %w", chain, strings.Join(rules[i], " "), err)
+		}
+	}
+	return nil
+}
+
 func setupLANForwardingBlock(lanIfaces ...string) error {
 	_ = run("nft", "add", "table", "inet", "filter")
 	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
@@ -1632,7 +1662,7 @@ func setupLANForwardingBlock(lanIfaces ...string) error {
 		if lanIface == "" {
 			continue
 		}
-		if err := run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "drop", "comment", "\"xray-proxya\""); err != nil {
+		if err := insertFilterRules("forward", []string{"iifname", lanIface, "drop"}); err != nil {
 			return fmt.Errorf("block LAN forwarding: %w", err)
 		}
 	}
@@ -1653,11 +1683,10 @@ func installDirectLANForwardRules(lanIfaces ...string) error {
 		if lanIface == "" {
 			continue
 		}
-		if err := run("nft", "add", "rule", "inet", "filter", "forward", "iifname", lanIface, "oifname", wanIface, "accept", "comment", "\"xray-proxya\""); err != nil {
-			return fmt.Errorf("allow LAN to WAN forwarding: %w", err)
-		}
-		if err := run("nft", "add", "rule", "inet", "filter", "forward", "iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept", "comment", "\"xray-proxya\""); err != nil {
-			return fmt.Errorf("allow WAN to LAN established forwarding: %w", err)
+		if err := insertFilterRules("forward",
+			[]string{"iifname", lanIface, "oifname", wanIface, "accept"},
+			[]string{"iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept"}); err != nil {
+			return fmt.Errorf("allow LAN/WAN forwarding: %w", err)
 		}
 		if err := run("nft", "add", "rule", "inet", "filter", "postrouting", "iifname", lanIface, "oifname", wanIface, "masquerade", "comment", "\"xray-proxya\""); err != nil {
 			return fmt.Errorf("enable direct LAN NAT masquerade: %w", err)
