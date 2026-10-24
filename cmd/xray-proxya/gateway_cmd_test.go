@@ -628,5 +628,71 @@ func TestGatewaySetPositionalRelay(t *testing.T) {
 	}
 }
 
+func TestGatewaySetModeFlag(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			LocalEnabled: true,
+			LANEnabled:   true,
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	// 1. Set mode tun
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--mode", "tun"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+		t.Fatalf("RunE error: %v", err)
+	}
+	updated, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging config: %v", err)
+	}
+	if updated.Gateway.Mode != "tun" {
+		t.Fatalf("Mode = %q, want tun", updated.Gateway.Mode)
+	}
+
+	// 2. Set mode tproxy
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--mode", "tproxy"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+		t.Fatalf("RunE error: %v", err)
+	}
+	updated, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging config: %v", err)
+	}
+	if updated.Gateway.Mode != "tproxy" {
+		t.Fatalf("Mode = %q, want tproxy", updated.Gateway.Mode)
+	}
+
+	// 3. Set invalid mode
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--mode", "badmode"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err == nil {
+		t.Fatal("expected error for invalid mode badmode, got nil")
+	}
+}
+
 
 

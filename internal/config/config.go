@@ -688,6 +688,13 @@ func NormalizeDNSQueryStrategy(value string) (string, bool) {
 	}
 }
 
+func (g GatewayConfig) EffectiveMode() string {
+	if strings.EqualFold(strings.TrimSpace(g.Mode), "tun") {
+		return "tun"
+	}
+	return "tproxy"
+}
+
 func (g GatewayConfig) EffectiveTProxyPort() int {
 	if g.TProxyPort > 0 {
 		return g.TProxyPort
@@ -792,6 +799,18 @@ func ValidateInterfaceName(name string) error {
 	return nil
 }
 
+// ValidateGatewayMode verifies that Gateway.Mode is either empty, "tproxy", or "tun".
+func ValidateGatewayMode(userCfg *UserConfig) error {
+	if userCfg == nil || userCfg.Role != RoleGateway {
+		return nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(userCfg.Gateway.Mode))
+	if mode != "" && mode != "tproxy" && mode != "tun" {
+		return fmt.Errorf("invalid gateway mode %q; valid options are 'tproxy' and 'tun'", userCfg.Gateway.Mode)
+	}
+	return nil
+}
+
 // ValidateGatewayInterfaces validates every interface name referenced by the
 // gateway configuration (LAN, WAN and per-rule interfaces).
 func ValidateGatewayInterfaces(userCfg *UserConfig) error {
@@ -876,25 +895,27 @@ func ValidateGatewayPorts(userCfg *UserConfig) error {
 		claim(co.InternalProxyPort, "relay "+co.Alias+" proxy")
 		claim(co.InternalHttpPort, "relay "+co.Alias+" http")
 	}
-	var aliases []string
-	for alias := range GatewayTProxyPorts(userCfg) {
-		aliases = append(aliases, alias)
-	}
-	sort.Strings(aliases)
-	ports := GatewayTProxyPorts(userCfg)
-	// The base port is shared with the relay that owns it; claim it explicitly
-	// only when no relay does (e.g. a gateway with no relay yet).
-	baseOwned := false
-	for _, p := range ports {
-		if p == userCfg.Gateway.EffectiveTProxyPort() {
-			baseOwned = true
+	if userCfg.Gateway.EffectiveMode() != "tun" {
+		var aliases []string
+		for alias := range GatewayTProxyPorts(userCfg) {
+			aliases = append(aliases, alias)
 		}
-	}
-	if !baseOwned {
-		claimTProxy(userCfg.Gateway.EffectiveTProxyPort(), "tproxy base port")
-	}
-	for _, alias := range aliases {
-		claimTProxy(ports[alias], "tproxy relay "+alias)
+		sort.Strings(aliases)
+		ports := GatewayTProxyPorts(userCfg)
+		// The base port is shared with the relay that owns it; claim it explicitly
+		// only when no relay does (e.g. a gateway with no relay yet).
+		baseOwned := false
+		for _, p := range ports {
+			if p == userCfg.Gateway.EffectiveTProxyPort() {
+				baseOwned = true
+			}
+		}
+		if !baseOwned {
+			claimTProxy(userCfg.Gateway.EffectiveTProxyPort(), "tproxy base port")
+		}
+		for _, alias := range aliases {
+			claimTProxy(ports[alias], "tproxy relay "+alias)
+		}
 	}
 	return conflict
 }
@@ -1298,7 +1319,7 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		changes = append(changes, "migrated address_sub to gate_url")
 	}
 	if cfg.Role == RoleGateway {
-		if cfg.Gateway.Mode == "" || cfg.Gateway.Mode == "tun" {
+		if cfg.Gateway.Mode == "" {
 			cfg.Gateway.Mode = "tproxy"
 			changes = append(changes, "set missing gateway.mode=tproxy")
 		}

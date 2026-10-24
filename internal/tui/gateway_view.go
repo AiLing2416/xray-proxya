@@ -214,7 +214,11 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		b.WriteString(fmt.Sprintf("Option:      Gateway State (%s)\n", strings.ToUpper(gw.State)))
 		switch gw.State {
 		case "proxy":
-			b.WriteString("Mode:        Full transparent proxying (TProxy + nftables redirect to Xray)\n")
+			if gw.EffectiveMode() == "tun" {
+				b.WriteString("Mode:        Full transparent proxying (TUN + nftables redirect to Xray)\n")
+			} else {
+				b.WriteString("Mode:        Full transparent proxying (TProxy + nftables redirect to Xray)\n")
+			}
 		case "forward-only":
 			b.WriteString("Mode:        Direct kernel IP forwarding (bypasses Xray proxy)\n")
 		case "disabled":
@@ -236,16 +240,24 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		if nft {
 			nftStr = "Active (proxya_prerouting, proxya_output)"
 		}
-		tproxyStr := "Down"
+		devStr := "Down"
 		if tun {
-			tproxyStr = "Active (lo table 100)"
+			if gw.EffectiveMode() == "tun" {
+				devStr = "Active (proxya-tun)"
+			} else {
+				devStr = "Active (lo table 100)"
+			}
 		}
 		fwdStr := "Disabled"
 		if fwd {
 			fwdStr = "Enabled (net.ipv4.ip_forward = 1)"
 		}
 		b.WriteString(fmt.Sprintf("NFTables:    %s\n", nftStr))
-		b.WriteString(fmt.Sprintf("TProxy:      %s\n", tproxyStr))
+		if gw.EffectiveMode() == "tun" {
+			b.WriteString(fmt.Sprintf("TUN Adapter: %s\n", devStr))
+		} else {
+			b.WriteString(fmt.Sprintf("TProxy:      %s\n", devStr))
+		}
 		b.WriteString(fmt.Sprintf("IP Forward:  %s\n", fwdStr))
 
 	case 2:
@@ -259,7 +271,11 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 			testStr = "Not tested"
 		}
 		b.WriteString(fmt.Sprintf("Egress IP:   %s\n", testStr))
-		b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to lo (TProxy)\n")
+		if gw.EffectiveMode() == "tun" {
+			b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to proxya-tun\n")
+		} else {
+			b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to lo (TProxy)\n")
+		}
 		b.WriteString("Bypass:      SSH (port 22) and local subnet are excluded to prevent lockout\n")
 
 	case 3:

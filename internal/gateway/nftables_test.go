@@ -170,6 +170,29 @@ func TestBuildNFT_Proxy_LANOnly_GeneratesPreroutingOnly(t *testing.T) {
 	}
 }
 
+func TestBuildNFT_Proxy_TunMode(t *testing.T) {
+	cfg := testGatewayConfig(true, true)
+	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.State = "proxy"
+	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
+
+	if !strings.Contains(rules, "chain prerouting") {
+		t.Error("rules must contain prerouting chain")
+	}
+	if !strings.Contains(rules, "chain output") {
+		t.Error("rules must contain output chain")
+	}
+	if strings.Contains(rules, "tproxy to :") {
+		t.Error("tun mode rules must NOT contain tproxy to :<port>")
+	}
+	if !strings.Contains(rules, "meta l4proto { tcp, udp } meta mark set 1\n") {
+		t.Error("tun mode rules must contain meta mark set 1")
+	}
+	if strings.Contains(rules, "fib daddr type local return") {
+		t.Error("tun mode rules should not return on fib daddr type local")
+	}
+}
+
 func TestBuildNFTProtectsSSHSourcePortOnly(t *testing.T) {
 	rules := buildNFT(testGatewayConfig(true, false), "ens18", "192.168.50.0/24", "")
 	for _, port := range getSSHPorts() {

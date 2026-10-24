@@ -371,6 +371,81 @@ func TestGenerateXrayJSONGatewayTProxySettings(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONGatewayTunSettings(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role:        config.RoleGateway,
+		APIInbound:  10085,
+		TestInbound: 10086,
+		Gateway: config.GatewayConfig{
+			LocalEnabled: true,
+			LANEnabled:   true,
+			Mode:         "tun",
+			State:        "proxy",
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-a",
+				Enabled: true,
+				Config: map[string]interface{}{
+					"protocol": "freedom",
+					"settings": map[string]interface{}{},
+				},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds := parsed["inbounds"].([]interface{})
+	var tunInbound map[string]interface{}
+	for _, rawInbound := range inbounds {
+		inbound := rawInbound.(map[string]interface{})
+		if inbound["tag"] == "tun-in" {
+			tunInbound = inbound
+			break
+		}
+	}
+	if tunInbound == nil {
+		t.Fatal("expected tun-in inbound to be generated for active tun gateway")
+	}
+
+	if tunInbound["protocol"] != "tun" {
+		t.Errorf("tun-in protocol = %v, want tun", tunInbound["protocol"])
+	}
+
+	settings, ok := tunInbound["settings"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("tun-in settings missing or invalid type: %T", tunInbound["settings"])
+	}
+
+	if settings["name"] != "proxya-tun" {
+		t.Errorf("tun-in name = %v, want proxya-tun", settings["name"])
+	}
+	if settings["mtu"] != float64(1500) && settings["mtu"] != 1500 {
+		t.Errorf("tun-in mtu = %v, want 1500", settings["mtu"])
+	}
+
+	gatewaysRaw, ok := settings["gateway"].([]interface{})
+	if !ok {
+		t.Fatalf("tun-in gateway missing or invalid type: %T", settings["gateway"])
+	}
+	expectedGateways := []string{"172.16.255.1/30", "fd00:eea:ff::1/126"}
+	if len(gatewaysRaw) != len(expectedGateways) {
+		t.Fatalf("tun-in gateway count = %d, want %d", len(gatewaysRaw), len(expectedGateways))
+	}
+	for i, g := range gatewaysRaw {
+		if g.(string) != expectedGateways[i] {
+			t.Errorf("tun-in gateway[%d] = %v, want %v", i, g, expectedGateways[i])
+		}
+	}
+
+	// Verify routing rules route tun-in to relay-a
+	rules := parsed["routing"].(map[string]interface{})["rules"].([]interface{})
+	if !containsInboundRule(rules, "tun-in", "outbound-relay-a") {
+		t.Fatal("tun-in inbound is not routed to outbound-relay-a")
+	}
+}
+
 func TestGenerateXrayJSONUsesConfiguredTestInboundPort(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role:        config.RoleServer,
@@ -870,7 +945,7 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
-			Mode:            "tun",
+			Mode:            "tproxy",
 			State:           "proxy",
 			LocalEnabled:    true,
 			RelayAlias:      "us-relay",
@@ -944,6 +1019,73 @@ func TestGenerateXrayJSONBypassCountries(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestGenerateXrayJSONBypassCountries_Tun(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:            "tun",
+			State:           "proxy",
+			LocalEnabled:    true,
+			RelayAlias:      "us-relay",
+			BypassCountries: []string{"CN", "US"},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "us-relay", Enabled: true, UserUUID: "some-uuid"},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	routing := getMap(t, parsed, "routing")
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		t.Fatalf("routing.rules has type %T, want []interface{}", routing["rules"])
+	}
+
+	foundDomainRule := false
+	foundIPRule := false
+	for _, ruleRaw := range rules {
+		rule, ok := ruleRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		outbound, _ := rule["outboundTag"].(string)
+		if outbound != "direct" {
+			continue
+		}
+		inboundsRaw, _ := rule["inboundTag"].([]interface{})
+		if len(inboundsRaw) != 1 || inboundsRaw[0] != "tun-in" {
+			continue
+		}
+
+		if domainsRaw, ok := rule["domain"].([]interface{}); ok {
+			domains := make([]string, 0, len(domainsRaw))
+			for _, d := range domainsRaw {
+				domains = append(domains, d.(string))
+			}
+			if len(domains) == 1 && domains[0] == "geosite:cn" {
+				foundDomainRule = true
+			}
+		}
+
+		if ipsRaw, ok := rule["ip"].([]interface{}); ok {
+			ips := make([]string, 0, len(ipsRaw))
+			for _, ip := range ipsRaw {
+				ips = append(ips, ip.(string))
+			}
+			if len(ips) == 2 && ips[0] == "geoip:cn" && ips[1] == "geoip:us" {
+				foundIPRule = true
+			}
+		}
+	}
+
+	if !foundDomainRule {
+		t.Errorf("expected bypass domain routing rule not found or incorrect")
+	}
+	if !foundIPRule {
+		t.Errorf("expected bypass ip routing rule not found or incorrect")
 	}
 }
 

@@ -437,40 +437,23 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	if gatewayTunEnabled {
-		basePort := userCfg.Gateway.EffectiveTProxyPort()
-		tproxyPort := getPort("tproxy-in", basePort)
-		inbounds = append(inbounds, map[string]interface{}{
-			"tag":      "tproxy-in",
-			"port":     tproxyPort,
-			"listen":   "::",
-			"protocol": "dokodemo-door",
-			"settings": map[string]interface{}{
-				"network":        "tcp,udp",
-				"followRedirect": true,
-			},
-			"streamSettings": map[string]interface{}{
-				"sockopt": map[string]interface{}{
-					"tproxy": "tproxy",
-					"mark":   255,
-				},
-			},
-			"sniffing": buildSniffingConfig(userCfg),
-		})
-
-		tproxyPorts := config.GatewayTProxyPorts(userCfg)
-		var extraAliases []string
-		for alias, port := range tproxyPorts {
-			if port != basePort {
-				extraAliases = append(extraAliases, alias)
-			}
-		}
-		sort.Strings(extraAliases)
-		for _, alias := range extraAliases {
-			port := tproxyPorts[alias]
-			inboundTag := "tproxy-in-" + sanitizeTagComponent(alias)
+		if userCfg.Gateway.EffectiveMode() == "tun" {
 			inbounds = append(inbounds, map[string]interface{}{
-				"tag":      inboundTag,
-				"port":     getPort(inboundTag, port),
+				"tag":      "tun-in",
+				"protocol": "tun",
+				"settings": map[string]interface{}{
+					"name":    "proxya-tun",
+					"mtu":     1500,
+					"gateway": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
+				},
+				"sniffing": buildSniffingConfig(userCfg),
+			})
+		} else {
+			basePort := userCfg.Gateway.EffectiveTProxyPort()
+			tproxyPort := getPort("tproxy-in", basePort)
+			inbounds = append(inbounds, map[string]interface{}{
+				"tag":      "tproxy-in",
+				"port":     tproxyPort,
 				"listen":   "::",
 				"protocol": "dokodemo-door",
 				"settings": map[string]interface{}{
@@ -485,6 +468,36 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				},
 				"sniffing": buildSniffingConfig(userCfg),
 			})
+
+			tproxyPorts := config.GatewayTProxyPorts(userCfg)
+			var extraAliases []string
+			for alias, port := range tproxyPorts {
+				if port != basePort {
+					extraAliases = append(extraAliases, alias)
+				}
+			}
+			sort.Strings(extraAliases)
+			for _, alias := range extraAliases {
+				port := tproxyPorts[alias]
+				inboundTag := "tproxy-in-" + sanitizeTagComponent(alias)
+				inbounds = append(inbounds, map[string]interface{}{
+					"tag":      inboundTag,
+					"port":     getPort(inboundTag, port),
+					"listen":   "::",
+					"protocol": "dokodemo-door",
+					"settings": map[string]interface{}{
+						"network":        "tcp,udp",
+						"followRedirect": true,
+					},
+					"streamSettings": map[string]interface{}{
+						"sockopt": map[string]interface{}{
+							"tproxy": "tproxy",
+							"mark":   255,
+						},
+					},
+					"sniffing": buildSniffingConfig(userCfg),
+				})
+			}
 		}
 	}
 	if err := validateInboundsPortConflicts(inbounds); err != nil {
@@ -597,32 +610,39 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 	var tproxyRoutes []tproxyRoute
 	if gatewayTunEnabled {
-		basePort := userCfg.Gateway.EffectiveTProxyPort()
-		tproxyPorts := config.GatewayTProxyPorts(userCfg)
-		mainAlias := userCfg.Gateway.RelayAlias
-		if mainAlias == "" || mainAlias == "direct" || mainAlias == "block" {
-			for alias, p := range tproxyPorts {
-				if p == basePort {
-					mainAlias = alias
-					break
+		if userCfg.Gateway.EffectiveMode() == "tun" {
+			mainAlias := userCfg.Gateway.RelayAlias
+			if mainAlias != "" && mainAlias != "direct" && mainAlias != "block" {
+				tproxyRoutes = append(tproxyRoutes, tproxyRoute{alias: mainAlias, inboundTag: "tun-in"})
+			}
+		} else {
+			basePort := userCfg.Gateway.EffectiveTProxyPort()
+			tproxyPorts := config.GatewayTProxyPorts(userCfg)
+			mainAlias := userCfg.Gateway.RelayAlias
+			if mainAlias == "" || mainAlias == "direct" || mainAlias == "block" {
+				for alias, p := range tproxyPorts {
+					if p == basePort {
+						mainAlias = alias
+						break
+					}
 				}
 			}
-		}
-		if mainAlias != "" && mainAlias != "direct" && mainAlias != "block" {
-			tproxyRoutes = append(tproxyRoutes, tproxyRoute{alias: mainAlias, inboundTag: "tproxy-in"})
-		}
-		var extraAliases []string
-		for alias, p := range tproxyPorts {
-			if p != basePort {
-				extraAliases = append(extraAliases, alias)
+			if mainAlias != "" && mainAlias != "direct" && mainAlias != "block" {
+				tproxyRoutes = append(tproxyRoutes, tproxyRoute{alias: mainAlias, inboundTag: "tproxy-in"})
 			}
-		}
-		sort.Strings(extraAliases)
-		for _, alias := range extraAliases {
-			tproxyRoutes = append(tproxyRoutes, tproxyRoute{
-				alias:      alias,
-				inboundTag: "tproxy-in-" + sanitizeTagComponent(alias),
-			})
+			var extraAliases []string
+			for alias, p := range tproxyPorts {
+				if p != basePort {
+					extraAliases = append(extraAliases, alias)
+				}
+			}
+			sort.Strings(extraAliases)
+			for _, alias := range extraAliases {
+				tproxyRoutes = append(tproxyRoutes, tproxyRoute{
+					alias:      alias,
+					inboundTag: "tproxy-in-" + sanitizeTagComponent(alias),
+				})
+			}
 		}
 	}
 

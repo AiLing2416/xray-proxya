@@ -95,15 +95,22 @@ If `relay test` fails, fix the upstream first before enabling transparent gatewa
 
 ## Configure Transparent Gateway
 
-Set the transparent upstream and LAN interface:
+Set the transparent upstream and LAN interface (uses `tproxy` by default; optional `--mode tun` is available for legacy TUN setups):
 
 ```bash
 xray-proxya gateway set --relay remote-v029 --lan eth0
+# Or select TUN compatibility mode:
+# xray-proxya gateway set --mode tun
 xray-proxya gateway enable
 xray-proxya apply
 ```
 
-`apply` commits the staged configuration and synchronizes Gateway runtime when a Gateway setting changed. For a `proxy` state it restarts Xray with the TUN inbound, waits for it, and then applies the managed routing and firewall rules.
+`apply` commits the staged configuration and synchronizes Gateway runtime when a Gateway setting changed. For a `proxy` state it restarts Xray and applies the managed routing and firewall rules.
+
+## Interception Modes (Mode)
+
+- `tproxy` (default): Primary interception mode. Uses Linux `nftables` socket TProxy redirect and policy routing `table 100 dev lo`. Delivers high performance and supports multi-relay per-MAC and per-interface routing rules.
+- `tun` (optional compatibility mode): Intercepts traffic via the `proxya-tun` network device (IP `172.16.255.1/30`, policy route `table 100 dev proxya-tun`). Preserved for compatibility with legacy environments or complex external user infrastructure expecting `proxya-tun`. Routes to the default relay without adjusting client routing rules.
 
 ## State Semantics
 

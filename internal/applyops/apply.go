@@ -55,6 +55,9 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	}
 
 	if cfg.Role == config.RoleGateway {
+		if err := config.ValidateGatewayMode(cfg); err != nil {
+			return nil, err
+		}
 		if err := config.ValidateGatewayRuleTargets(cfg); err != nil {
 			return nil, err
 		}

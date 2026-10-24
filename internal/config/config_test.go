@@ -122,7 +122,7 @@ func TestBackfillDefaultsGatewayMode(t *testing.T) {
 	}
 }
 
-func TestBackfillDefaultsGatewayMigratesTunMode(t *testing.T) {
+func TestBackfillDefaultsGatewayPreservesTunMode(t *testing.T) {
 	cfg := &UserConfig{
 		Role: RoleGateway,
 		Gateway: GatewayConfig{
@@ -132,11 +132,40 @@ func TestBackfillDefaultsGatewayMigratesTunMode(t *testing.T) {
 
 	cfg.BackfillDefaults()
 
-	if cfg.Gateway.Mode != "tproxy" {
-		t.Fatalf("Gateway.Mode = %q, want tproxy", cfg.Gateway.Mode)
+	if cfg.Gateway.Mode != "tun" {
+		t.Fatalf("Gateway.Mode = %q, want tun", cfg.Gateway.Mode)
+	}
+	if cfg.Gateway.EffectiveMode() != "tun" {
+		t.Fatalf("EffectiveMode() = %q, want tun", cfg.Gateway.EffectiveMode())
 	}
 	if cfg.Gateway.TProxyPort != DefaultTProxyPort {
 		t.Fatalf("Gateway.TProxyPort = %d, want %d", cfg.Gateway.TProxyPort, DefaultTProxyPort)
+	}
+}
+
+func TestValidateGatewayMode(t *testing.T) {
+	cases := []struct {
+		mode    string
+		wantErr bool
+	}{
+		{"", false},
+		{"tproxy", false},
+		{"TPROXY", false},
+		{"tun", false},
+		{"TUN", false},
+		{"invalid", true},
+	}
+	for _, tc := range cases {
+		cfg := &UserConfig{
+			Role: RoleGateway,
+			Gateway: GatewayConfig{
+				Mode: tc.mode,
+			},
+		}
+		err := ValidateGatewayMode(cfg)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ValidateGatewayMode(%q) err = %v, wantErr = %v", tc.mode, err, tc.wantErr)
+		}
 	}
 }
 

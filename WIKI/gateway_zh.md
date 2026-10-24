@@ -95,15 +95,22 @@ DNS: OK
 
 ## 配置透明网关
 
-设置透明上游和 LAN 接口：
+设置透明上游和 LAN 接口（默认使用主力 `tproxy` 模式；若需兼容旧版 TUN 基础设施，可加 `--mode tun`）：
 
 ```bash
 xray-proxya gateway set --relay remote-v029 --lan eth0
+# 或选择 TUN 兼容模式：
+# xray-proxya gateway set --mode tun
 xray-proxya gateway enable
 xray-proxya apply
 ```
 
-`apply` 会提交暂存配置；当 Gateway 设置发生变化时，它还会同步 Gateway 运行态。对于 `proxy` 状态，它会重启带 TUN 入站的 Xray、等待 TUN 就绪，然后应用受管路由和防火墙规则。
+`apply` 会提交暂存配置；当 Gateway 设置发生变化时，它还会同步 Gateway 运行态。对于 `proxy` 状态，它会重启 Xray 并应用受管路由和防火墙规则。
+
+## 拦截模式说明 (Mode)
+
+- `tproxy`（默认）：主力拦截模式。基于 Linux `nftables` 的 `tproxy` 机制与策略路由 `table 100 dev lo` 进行透明重定向，性能优异且支持完整的按客户端 MAC / 按接口的分流规则与多 Relay 分发。
+- `tun`（可选兼容模式）：通过创建 `proxya-tun` 设备（IP `172.16.255.1/30`，策略路由 `table 100 dev proxya-tun`）进行流量拦截。主要为了兼容旧版本或用户外部依赖 `proxya-tun` 接口的复杂网络基础设施。此模式下保持简洁的全局默认 Relay 分流，不调整或强求按客户端规则分流。
 
 ## 状态语义
 

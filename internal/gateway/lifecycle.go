@@ -55,16 +55,13 @@ func WantsTunnel(cfg *config.UserConfig) bool {
 	if state == "" {
 		state = "proxy"
 	}
-	mode := ""
+	mode := "tproxy"
 	if cfg != nil {
-		mode = cfg.Gateway.Mode
-	}
-	if mode == "" || mode == "tun" {
-		mode = "tproxy"
+		mode = cfg.Gateway.EffectiveMode()
 	}
 	return cfg != nil &&
 		cfg.Role == config.RoleGateway &&
-		mode == "tproxy" &&
+		(mode == "tproxy" || mode == "tun") &&
 		state == "proxy" &&
 		(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled)
 }
@@ -100,27 +97,41 @@ func restartWithTunDisabled(disabled bool) error {
 	if err := xray.RestartXrayServiceWithoutHook(); err != nil {
 		return fmt.Errorf("restart Xray service: %w", err)
 	}
+	var cfg *config.UserConfig
+	if loaded, err := config.LoadConfig(); err == nil && loaded != nil {
+		cfg = loaded
+	}
+	isTun := cfg != nil && cfg.Gateway.EffectiveMode() == "tun"
 	if !disabled {
-		port := config.DefaultTProxyPort
-		var cfg *config.UserConfig
-		if loaded, err := config.LoadConfig(); err == nil && loaded != nil {
-			cfg = loaded
-			port = cfg.Gateway.EffectiveTProxyPort()
-		}
-		if err := waitForTProxyListener(port); err != nil {
-			return err
-		}
-		if cfg != nil {
-			for alias, p := range config.GatewayTProxyPorts(cfg) {
-				if p != port {
-					if err := waitForTProxyListener(p); err != nil {
-						return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
+		if isTun {
+			if err := waitForInterface(tunName, true); err != nil {
+				return err
+			}
+		} else {
+			port := config.DefaultTProxyPort
+			if cfg != nil {
+				port = cfg.Gateway.EffectiveTProxyPort()
+			}
+			if err := waitForTProxyListener(port); err != nil {
+				return err
+			}
+			if cfg != nil {
+				for alias, p := range config.GatewayTProxyPorts(cfg) {
+					if p != port {
+						if err := waitForTProxyListener(p); err != nil {
+							return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
+						}
 					}
 				}
 			}
 		}
 	}
 	if disabled {
+		if isTun {
+			if err := waitForInterface(tunName, false); err != nil {
+				return err
+			}
+		}
 		return waitForInterface(pathTunName, false)
 	}
 	return nil
@@ -142,7 +153,7 @@ func convergeDownLocked() error {
 	}
 	if markerReady {
 		if err := xray.RestartXrayServiceWithoutHook(); err != nil {
-			errs = append(errs, fmt.Errorf("restart Xray service without TProxy: %w", err))
+			errs = append(errs, fmt.Errorf("restart Xray service without gateway: %w", err))
 			if stopErr := xray.StopXrayService(); stopErr != nil {
 				errs = append(errs, fmt.Errorf("stop Xray service after failed restart: %w", stopErr))
 			}
@@ -151,6 +162,9 @@ func convergeDownLocked() error {
 		if stopErr := xray.StopXrayService(); stopErr != nil {
 			errs = append(errs, fmt.Errorf("stop Xray service after failed state update: %w", stopErr))
 		}
+	}
+	if err := waitForInterface(tunName, false); err != nil {
+		errs = append(errs, err)
 	}
 	if err := waitForInterface(pathTunName, false); err != nil {
 		errs = append(errs, err)
@@ -203,6 +217,11 @@ func restoreTunStateLocked(cfg *config.UserConfig) error {
 	if len(Verify(cfg)) == 0 {
 		return nil
 	}
+	if cfg.Gateway.EffectiveMode() == "tun" {
+		if err := waitForInterface(tunName, true); err != nil {
+			return err
+		}
+	}
 	if pathTunnelEnabled(cfg) {
 		if err := waitForInterface(pathTunName, true); err != nil {
 			return err
@@ -247,7 +266,7 @@ func upLocked(cfg *config.UserConfig) error {
 		return fmt.Errorf("gateway up requires root")
 	}
 	if !WantsTunnel(cfg) {
-		return fmt.Errorf("gateway TProxy is not enabled in active config; set state=proxy and enable local or LAN first")
+		return fmt.Errorf("gateway proxy is not enabled in active config; set state=proxy and enable local or LAN first")
 	}
 	// Clean up existing kernel firewall/routing rules before restarting Xray
 	// once with TProxy enabled. Avoid calling convergeDownLocked() here so we
