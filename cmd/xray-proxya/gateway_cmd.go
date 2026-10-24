@@ -467,10 +467,8 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 			if trimmed == "" {
 				continue
 			}
-			for _, r := range trimmed {
-				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
-					return fmt.Errorf("❌ Invalid interface name: %s", trimmed)
-				}
+			if err := config.ValidateInterfaceName(trimmed); err != nil {
+				return fmt.Errorf("❌ %w", err)
 			}
 			if !seen[trimmed] {
 				seen[trimmed] = true
@@ -490,10 +488,8 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 		if wanTrimmed == "" || strings.EqualFold(wanTrimmed, "auto") {
 			cfg.Gateway.WANInterface = ""
 		} else {
-			for _, r := range wanTrimmed {
-				if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
-					return fmt.Errorf("❌ Invalid WAN interface name: %s", wanTrimmed)
-				}
+			if err := config.ValidateInterfaceName(wanTrimmed); err != nil {
+				return fmt.Errorf("❌ WAN %w", err)
 			}
 			cfg.Gateway.WANInterface = wanTrimmed
 		}

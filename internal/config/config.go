@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -756,6 +757,11 @@ func ValidateGatewayRule(rule GatewayRule) (GatewayRule, error) {
 	if norm.MAC == "" && norm.Interface == "" {
 		return rule, errors.New("gateway rule must specify at least one of MAC or Interface")
 	}
+	if norm.Interface != "" {
+		if err := ValidateInterfaceName(norm.Interface); err != nil {
+			return rule, err
+		}
+	}
 
 	target := strings.TrimSpace(rule.Target)
 	if target == "" {
@@ -769,6 +775,128 @@ func ValidateGatewayRule(rule GatewayRule) (GatewayRule, error) {
 		norm.Target = target
 	}
 	return norm, nil
+}
+
+// ValidateInterfaceName checks that name is a safe Linux network interface
+// name: 1-15 characters from [A-Za-z0-9._-], and not "." or "..". Names are
+// embedded in nftables scripts, so anything else is rejected.
+func ValidateInterfaceName(name string) error {
+	if name == "" || len(name) > 15 || name == "." || name == ".." {
+		return fmt.Errorf("invalid interface name %q: must be 1-15 characters and not '.' or '..'", name)
+	}
+	for _, r := range name {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_') {
+			return fmt.Errorf("invalid interface name %q: only letters, digits, '.', '-' and '_' are allowed", name)
+		}
+	}
+	return nil
+}
+
+// ValidateGatewayInterfaces validates every interface name referenced by the
+// gateway configuration (LAN, WAN and per-rule interfaces).
+func ValidateGatewayInterfaces(userCfg *UserConfig) error {
+	if userCfg == nil {
+		return nil
+	}
+	for _, name := range userCfg.Gateway.EffectiveLANInterfaces() {
+		if err := ValidateInterfaceName(name); err != nil {
+			return fmt.Errorf("gateway LAN interface: %w", err)
+		}
+	}
+	if wan := strings.TrimSpace(userCfg.Gateway.WANInterface); wan != "" && !strings.EqualFold(wan, "auto") {
+		if err := ValidateInterfaceName(wan); err != nil {
+			return fmt.Errorf("gateway WAN interface: %w", err)
+		}
+	}
+	for _, rule := range userCfg.Gateway.Rules {
+		if rule.Interface != "" {
+			if err := ValidateInterfaceName(rule.Interface); err != nil {
+				return fmt.Errorf("gateway rule interface: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// ValidateGatewayPorts verifies that the TProxy listener ports (the base port
+// plus one per extra relay target) are valid and do not collide with each
+// other or with any other port configured by Xray-Proxya.
+func ValidateGatewayPorts(userCfg *UserConfig) error {
+	if userCfg == nil || userCfg.Role != RoleGateway {
+		return nil
+	}
+	owners := map[int]string{}
+	var conflict error
+	// Ports of other components are only recorded (they may legitimately
+	// coexist among themselves); the TProxy ports are checked against them.
+	claim := func(port int, owner string) {
+		if port > 0 {
+			if _, ok := owners[port]; !ok {
+				owners[port] = owner
+			}
+		}
+	}
+	tproxyOwners := map[int]string{}
+	claimTProxy := func(port int, owner string) {
+		if conflict != nil {
+			return
+		}
+		if port <= 0 || port > 65535 {
+			conflict = fmt.Errorf("%s port %d is out of range", owner, port)
+			return
+		}
+		if prev, ok := owners[port]; ok {
+			conflict = fmt.Errorf("port %d is used by both %s and %s", port, prev, owner)
+			return
+		}
+		if prev, ok := tproxyOwners[port]; ok && prev != owner {
+			conflict = fmt.Errorf("port %d is used by both %s and %s", port, prev, owner)
+			return
+		}
+		tproxyOwners[port] = owner
+	}
+	// Ports owned by other components are claimed first.
+	claim(userCfg.APIInbound, "api inbound")
+	claim(userCfg.TestInbound, "test inbound")
+	claim(userCfg.SubPort, "subscription")
+	claim(userCfg.GuestSubPort, "guest subscription")
+	claim(userCfg.SkinPort, "skin")
+	if userCfg.Gateway.DNSListen != "" {
+		if _, dnsPort, _, err := ParseDNSListen(userCfg.Gateway.DNSListen); err == nil {
+			claim(dnsPort, "gateway dns listener")
+		}
+	}
+	for _, m := range userCfg.Presets {
+		if m.Enabled {
+			claim(m.Port, fmt.Sprintf("preset %s", m.Mode))
+		}
+	}
+	for i := range userCfg.CustomOutbounds {
+		co := &userCfg.CustomOutbounds[i]
+		claim(co.InternalProxyPort, "relay "+co.Alias+" proxy")
+		claim(co.InternalHttpPort, "relay "+co.Alias+" http")
+	}
+	var aliases []string
+	for alias := range GatewayTProxyPorts(userCfg) {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	ports := GatewayTProxyPorts(userCfg)
+	// The base port is shared with the relay that owns it; claim it explicitly
+	// only when no relay does (e.g. a gateway with no relay yet).
+	baseOwned := false
+	for _, p := range ports {
+		if p == userCfg.Gateway.EffectiveTProxyPort() {
+			baseOwned = true
+		}
+	}
+	if !baseOwned {
+		claimTProxy(userCfg.Gateway.EffectiveTProxyPort(), "tproxy base port")
+	}
+	for _, alias := range aliases {
+		claimTProxy(ports[alias], "tproxy relay "+alias)
+	}
+	return conflict
 }
 
 // ValidateGatewayRuleTargets verifies that every relay target referenced by a

@@ -231,6 +231,16 @@ xray-proxya apply
 xray-proxya gateway down
 ```
 
+## Per-Client Rules, NAT And Isolation Notes
+
+- **Rule precedence follows specificity**: `interface+MAC` > `MAC only` > `interface only`. A broader `block` rule yields to a more specific non-block rule (for example `block` a MAC that has its own `direct`/relay rule on one interface).
+- **Block means full isolation**: a blocked client or interface can neither be forwarded nor reach the gateway itself (including SSH, DNS and DHCP). Do not block the interface or device you manage the gateway from. Block rules are also installed in the `forward-only` state and when both Local and LAN are off (block only, no transparent proxy).
+- **Rule targets must be valid**: `apply` rejects rules whose relay was deleted or disabled; a dangling rule found at runtime is dropped (fail-closed) instead of falling back to the default relay.
+- **Interface names**: 1-15 characters from letters, digits, `.`, `-`, `_`.
+- **Port conflicts**: `apply` checks TProxy ports (base port and one per extra relay) against the API, test, DNS listener, preset and relay internal ports.
+- **WAN and NAT**: the WAN interface is resolved once at `apply`; without `--wan` and without a default route a warning is printed and managed NAT is skipped. Managed masquerade lives in an `inet` table and therefore applies to IPv4 and IPv6 (NAT66). LANs are not isolated from each other (forward policy is accept). Protecting inbound WAN traffic is the operator's responsibility.
+- **IPv6**: every non link-local prefix on an interface (for example ULA and GUA) is included in the source guard and bypass rules.
+
 ## Troubleshooting
 
 ### `gateway check` Reports That `proxya-tun` Is Missing

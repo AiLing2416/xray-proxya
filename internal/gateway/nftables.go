@@ -66,6 +66,9 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return CleanupFirewall()
 	}
 
+	if err := config.ValidateGatewayInterfaces(cfg); err != nil {
+		return err
+	}
 	lanIfaces := cfg.Gateway.EffectiveLANInterfaces()
 	if len(lanIfaces) == 0 {
 		return fmt.Errorf("gateway LAN interface is not configured; run 'gateway set --lan <iface>'")
@@ -75,35 +78,42 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		if err := CleanupFirewall(); err != nil {
 			return err
 		}
+		var setupErr error
 		if !cfg.Gateway.LANEnabled {
-			return setupLANForwardingBlock(lanIfaces...)
+			setupErr = setupLANForwardingBlock(lanIfaces...)
+		} else {
+			setupErr = setupDirectLANForwarding(lanIfaces...)
 		}
-		return setupDirectLANForwarding(lanIfaces...)
+		if setupErr == nil {
+			setupErr = installBlockFilterRules(cfg)
+		}
+		if setupErr != nil {
+			return errors.Join(setupErr, CleanupFirewall())
+		}
+		return nil
 	}
 
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
-		return CleanupFirewall()
+		if err := CleanupFirewall(); err != nil {
+			return err
+		}
+		if err := installBlockFilterRules(cfg); err != nil {
+			return errors.Join(err, CleanupFirewall())
+		}
+		return nil
 	}
 	if config.GatewayTunDisabled() {
 		return fmt.Errorf("gateway runtime is down; run 'xray-proxya gateway up' first")
 	}
 
-	var lanCIDRs, lanIPv6CIDRs []string
-	for _, iface := range lanIfaces {
-		c4, err := getInterfaceCIDR(iface)
-		if err != nil {
-			if cfg.Gateway.LANEnabled {
-				return fmt.Errorf("detect LAN subnet for %s: %w", iface, err)
-			}
-		} else {
-			lanCIDRs = append(lanCIDRs, c4)
-		}
-		c6, _ := getInterfaceIPv6CIDR(iface)
-		if c6 != "" {
-			lanIPv6CIDRs = append(lanIPv6CIDRs, c6)
-		}
+	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, cfg.Gateway.LANEnabled)
+	if err != nil {
+		return err
 	}
 	wanIface := resolveWANInterface(cfg)
+	if wanIface == "" && !cfg.Gateway.NATDisabled && cfg.Gateway.LANEnabled {
+		fmt.Println("⚠️ WAN interface could not be detected (no default route) and none is configured; managed NAT is skipped. Run 'gateway set --wan <iface>' or re-apply once the default route is up.")
+	}
 	rules := buildNFTMulti(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
 	configDir := filepath.Dir(config.GetConfigPathEx(false))
 	_ = os.MkdirAll(configDir, 0700)
@@ -245,16 +255,8 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		}
 		if wanDistinct || cfg.Gateway.WANInterface != "" {
 			managedNATInstalled = true
-			for _, rule := range cfg.Gateway.Rules {
-				if strings.EqualFold(rule.Target, "block") {
-					if rule.Interface != "" && rule.MAC != "" {
-						forwardRules = append(forwardRules, []string{"iifname", rule.Interface, "ether", "saddr", rule.MAC, "drop"})
-					} else if rule.MAC != "" {
-						forwardRules = append(forwardRules, []string{"ether", "saddr", rule.MAC, "drop"})
-					} else if rule.Interface != "" {
-						forwardRules = append(forwardRules, []string{"iifname", rule.Interface, "drop"})
-					}
-				}
+			for _, tk := range blockRuleTokens(cfg) {
+				forwardRules = append(forwardRules, filterRuleArgs(tk, "drop"))
 			}
 		}
 	}
@@ -471,7 +473,7 @@ func policyRulesMulti(cfg *config.UserConfig, lanCIDRs, lanIPv6CIDRs []string, i
 		rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"fwmark", pathTunMark, "table", pathPolicyTable, "pref", prefPathTun}})
 	}
 	rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}})
-	for i, cidr := range lanIPv6CIDRs {
+	for i, cidr := range flattenCIDRs(lanIPv6CIDRs) {
 		if cidr != "" {
 			pref := fmt.Sprintf("%d", 10010+i)
 			rules = append(rules, policyRuleSpec{IPv6: true, Args: []string{"to", cidr, "table", "main", "pref", pref}})
@@ -644,17 +646,9 @@ func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
 	if len(lanIfaces) == 0 {
 		return "", fmt.Errorf("gateway LAN interface is not configured")
 	}
-	var lanCIDRs, lanIPv6CIDRs []string
-	for _, iface := range lanIfaces {
-		c4, err := getInterfaceCIDR(iface)
-		if err != nil {
-			return "", err
-		}
-		lanCIDRs = append(lanCIDRs, c4)
-		c6, _ := getInterfaceIPv6CIDR(iface)
-		if c6 != "" {
-			lanIPv6CIDRs = append(lanIPv6CIDRs, c6)
-		}
+	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, true)
+	if err != nil {
+		return "", err
 	}
 	wanIface := resolveWANInterface(cfg)
 	return buildNFTMulti(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface), nil
@@ -787,8 +781,8 @@ func Verify(cfg *config.UserConfig) []string {
 		if c4, err := getInterfaceCIDR(iface); err == nil {
 			lanCIDRs = append(lanCIDRs, c4)
 		}
-		if c6, err := getInterfaceIPv6CIDR(iface); err == nil && c6 != "" {
-			lanIPv6CIDRs = append(lanIPv6CIDRs, c6)
+		if c6s, err := getInterfaceIPv6CIDRs(iface); err == nil {
+			lanIPv6CIDRs = append(lanIPv6CIDRs, strings.Join(c6s, ","))
 		}
 	}
 	if len(lanCIDRs) == 0 && cfg.Gateway.LANEnabled {
@@ -1129,16 +1123,8 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		} else {
 			b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport { " + strings.Join(portStrs, ", ") + " } drop\n")
 		}
-		for _, rule := range cfg.Gateway.Rules {
-			if strings.EqualFold(rule.Target, "block") {
-				if rule.Interface != "" && rule.MAC != "" {
-					b.WriteString("        iifname \"" + rule.Interface + "\" ether saddr " + rule.MAC + " drop\n")
-				} else if rule.MAC != "" {
-					b.WriteString("        ether saddr " + rule.MAC + " drop\n")
-				} else if rule.Interface != "" {
-					b.WriteString("        iifname \"" + rule.Interface + "\" drop\n")
-				}
-			}
+		for _, tk := range blockRuleTokens(cfg) {
+			b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
 		}
 		if cfg.Gateway.DNSListen != "" {
 			if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
@@ -1159,20 +1145,10 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("        meta mark " + xrayMark + " return\n")
 		b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
 
-		// Block rules: first MAC block rules, then interface block rules
-		for _, rule := range cfg.Gateway.Rules {
-			if strings.EqualFold(rule.Target, "block") && rule.MAC != "" {
-				if rule.Interface != "" {
-					b.WriteString("        iifname \"" + rule.Interface + "\" ether saddr " + rule.MAC + " drop\n")
-				} else {
-					b.WriteString("        ether saddr " + rule.MAC + " drop\n")
-				}
-			}
-		}
-		for _, rule := range cfg.Gateway.Rules {
-			if strings.EqualFold(rule.Target, "block") && rule.MAC == "" && rule.Interface != "" {
-				b.WriteString("        iifname \"" + rule.Interface + "\" drop\n")
-			}
+		// Block rules (most specific selector first; less specific blocks
+		// yield to more specific non-block rules).
+		for _, tk := range blockRuleTokens(cfg) {
+			b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
 		}
 
 		// Interface & source subnet guards
@@ -1195,7 +1171,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 					b.WriteString("        iifname \"" + iface + "\" ip saddr != " + cidr + " return\n")
 				}
 				if ipv6Cidr != "" {
-					b.WriteString("        iifname \"" + iface + "\" ip6 saddr != " + ipv6Cidr + " return\n")
+					b.WriteString("        iifname \"" + iface + "\" ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
 				} else {
 					b.WriteString("        iifname \"" + iface + "\" ip6 saddr ::/0 return\n")
 				}
@@ -1214,7 +1190,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 					b.WriteString("        ip saddr != " + cidr + " return\n")
 				}
 				if ipv6Cidr != "" {
-					b.WriteString("        iifname \"" + lanIfaces[0] + "\" ip6 saddr != " + ipv6Cidr + " return\n")
+					b.WriteString("        iifname \"" + lanIfaces[0] + "\" ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
 				} else {
 					b.WriteString("        iifname \"" + lanIfaces[0] + "\" ip6 saddr ::/0 return\n")
 				}
@@ -1236,7 +1212,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 						b.WriteString("        iifname \"" + iface + "\" ip saddr != " + cidr + " return\n")
 					}
 					if ipv6Cidr != "" {
-						b.WriteString("        iifname \"" + iface + "\" ip6 saddr != " + ipv6Cidr + " return\n")
+						b.WriteString("        iifname \"" + iface + "\" ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
 					} else {
 						b.WriteString("        iifname \"" + iface + "\" ip6 saddr ::/0 return\n")
 					}
@@ -1263,7 +1239,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		} else {
 			b.WriteString("        ip6 daddr { ::1/128, fe80::/10, ff00::/8 } return\n")
 		}
-		for _, cidr := range lanIPv6CIDRs {
+		for _, cidr := range flattenCIDRs(lanIPv6CIDRs) {
 			if cidr != "" {
 				b.WriteString("        ip6 daddr " + cidr + " return\n")
 			}
@@ -1282,49 +1258,21 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 			}
 		}
 
-		// MAC rules (non-block)
-		for _, rule := range cfg.Gateway.Rules {
-			if rule.MAC != "" && !strings.EqualFold(rule.Target, "block") {
-				target := strings.TrimSpace(rule.Target)
-				if strings.EqualFold(target, "direct") {
-					if rule.Interface != "" {
-						b.WriteString("        iifname \"" + rule.Interface + "\" ether saddr " + rule.MAC + " return\n")
-					} else {
-						b.WriteString("        ether saddr " + rule.MAC + " return\n")
-					}
-				} else {
-					port := tproxyPorts[target]
-					pStr := strconv.Itoa(port)
-					match := "ether saddr " + rule.MAC
-					if rule.Interface != "" {
-						match = "iifname \"" + rule.Interface + "\" " + match
-					}
-					if port <= 0 || !config.GatewayRelayActive(cfg, target) {
-						// Fail closed: never silently fall back to the default relay.
-						b.WriteString("        " + match + " drop\n")
-					} else {
-						b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy to :" + pStr + " meta mark set " + tunMark + " accept\n")
-					}
-				}
+		// Per-client rules ordered by specificity: interface+MAC, MAC, interface.
+		for _, rule := range sortedGatewayRules(cfg, false) {
+			match := strings.Join(matchTokens(rule), " ")
+			target := strings.TrimSpace(rule.Target)
+			if strings.EqualFold(target, "direct") {
+				b.WriteString("        " + match + " return\n")
+				continue
 			}
-		}
-
-		// Interface rules (non-block, rule.MAC == "")
-		for _, rule := range cfg.Gateway.Rules {
-			if rule.MAC == "" && rule.Interface != "" && !strings.EqualFold(rule.Target, "block") {
-				target := strings.TrimSpace(rule.Target)
-				if strings.EqualFold(target, "direct") {
-					b.WriteString("        iifname \"" + rule.Interface + "\" return\n")
-				} else {
-					port := tproxyPorts[target]
-					if port <= 0 || !config.GatewayRelayActive(cfg, target) {
-						// Fail closed: never silently fall back to the default relay.
-						b.WriteString("        iifname \"" + rule.Interface + "\" drop\n")
-					} else {
-						b.WriteString("        iifname \"" + rule.Interface + "\" meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
-					}
-				}
+			port := tproxyPorts[target]
+			if port <= 0 || !config.GatewayRelayActive(cfg, target) {
+				// Fail closed: never silently fall back to the default relay.
+				b.WriteString("        " + match + " drop\n")
+				continue
 			}
+			b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
 		}
 
 		// Default Gateway Policy
@@ -1359,7 +1307,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		} else {
 			b.WriteString("        ip6 daddr { ::1/128, fe80::/10, ff00::/8 } return\n")
 		}
-		for _, cidr := range lanIPv6CIDRs {
+		for _, cidr := range flattenCIDRs(lanIPv6CIDRs) {
 			if cidr != "" {
 				b.WriteString("        ip6 daddr " + cidr + " return\n")
 			}
@@ -1415,16 +1363,8 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 
 			b.WriteString("    chain forward {\n")
 			b.WriteString("        type filter hook forward priority filter; policy accept;\n")
-			for _, rule := range cfg.Gateway.Rules {
-				if strings.EqualFold(rule.Target, "block") {
-					if rule.Interface != "" && rule.MAC != "" {
-						b.WriteString("        iifname \"" + rule.Interface + "\" ether saddr " + rule.MAC + " drop\n")
-					} else if rule.MAC != "" {
-						b.WriteString("        ether saddr " + rule.MAC + " drop\n")
-					} else if rule.Interface != "" {
-						b.WriteString("        iifname \"" + rule.Interface + "\" drop\n")
-					}
-				}
+			for _, tk := range blockRuleTokens(cfg) {
+				b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
 			}
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" accept\n")
 			b.WriteString("        iifname \"" + wanIface + "\" oifname " + lanMatch + " ct state established,related accept\n")

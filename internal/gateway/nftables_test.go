@@ -859,8 +859,8 @@ func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
 	if !strings.Contains(rules, `th dport { 12345, 12346 } drop`) {
 		t.Errorf("expected multi-port tproxy guard in input chain, got:\n%s", rules)
 	}
-	if !strings.Contains(rules, `iifname "eth2" drop`) {
-		t.Errorf("expected interface eth2 block in input chain, got:\n%s", rules)
+	if !strings.Contains(rules, `iifname "eth2" ether saddr != 52:54:00:83:00:12 ether saddr != 52:54:00:83:00:13 drop`) {
+		t.Errorf("expected interface eth2 block (yielding to more specific MAC rules) in input chain, got:\n%s", rules)
 	}
 	if !strings.Contains(rules, `ether saddr 52:54:00:83:00:11 drop`) {
 		t.Errorf("expected MAC block in input chain, got:\n%s", rules)
@@ -1012,5 +1012,103 @@ func TestInsertFilterRulesPreservesOrder(t *testing.T) {
 	}
 	if len(calls) != 2 || !strings.Contains(calls[0], "accept2") || !strings.Contains(calls[1], "drop1") || !strings.HasPrefix(calls[0], "insert rule inet filter forward") {
 		t.Fatalf("rules must be inserted in reverse so first ends on top: %v", calls)
+	}
+}
+
+func TestRuleSpecificityOrdering(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.RelayAlias = "main"
+	cfg.CustomOutbounds = []config.CustomOutbound{{Alias: "main", Enabled: true}, {Alias: "x", Enabled: true}}
+	const mac = "aa:bb:cc:dd:ee:01"
+	cfg.Gateway.Rules = []config.GatewayRule{
+		{Interface: "eth1", Target: "direct"},
+		{MAC: mac, Target: "block"},
+		{MAC: mac, Interface: "eth1", Target: "x"},
+	}
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.1.0/24"}, nil, "")
+	idxSpecific := strings.Index(out, `iifname "eth1" ether saddr `+mac+` meta l4proto`)
+	idxIface := strings.Index(out, `iifname "eth1" return`)
+	if idxSpecific < 0 || idxIface < 0 || idxSpecific > idxIface {
+		t.Fatalf("interface+MAC rule must precede interface-only rule:\n%s", out)
+	}
+	if !strings.Contains(out, `ether saddr `+mac+` iifname != "eth1" drop`) {
+		t.Fatalf("MAC-only block must yield to the interface+MAC relay rule:\n%s", out)
+	}
+}
+
+func TestBuildNFTMulti_MultiPrefixIPv6(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.RelayAlias = "main"
+	cfg.CustomOutbounds = []config.CustomOutbound{{Alias: "main", Enabled: true}}
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.1.0/24"}, []string{"fd00:1::/64,2001:db8:1::/64"}, "")
+	if !strings.Contains(out, `ip6 saddr != { fd00:1::/64, 2001:db8:1::/64 } return`) {
+		t.Fatalf("all IPv6 prefixes must be in the source guard:\n%s", out)
+	}
+	if !strings.Contains(out, "ip6 daddr fd00:1::/64 return") || !strings.Contains(out, "ip6 daddr 2001:db8:1::/64 return") {
+		t.Fatalf("all IPv6 prefixes must bypass:\n%s", out)
+	}
+	rules := policyRulesMulti(cfg, nil, []string{"fd00:1::/64,2001:db8:1::/64"}, true)
+	n := 0
+	for _, r := range rules {
+		if r.IPv6 && len(r.Args) > 0 && r.Args[0] == "to" && r.Args[1] != "::1/128" {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Fatalf("expected a policy rule per IPv6 prefix, got %d", n)
+	}
+}
+
+func TestInstallBlockFilterRules(t *testing.T) {
+	var calls []string
+	orig := runCommand
+	runCommand = func(name string, args ...string) error {
+		calls = append(calls, strings.Join(args, " "))
+		return nil
+	}
+	defer func() { runCommand = orig }()
+	cfg := &config.UserConfig{}
+	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth2", Target: "block"}, {Interface: "eth1", Target: "direct"}}
+	if err := installBlockFilterRules(cfg); err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(calls, "\n")
+	if !strings.Contains(joined, `insert rule inet filter forward iifname "eth2" drop`) || !strings.Contains(joined, `insert rule inet filter input iifname "eth2" drop`) {
+		t.Fatalf("block rules must be installed in forward and input:\n%s", joined)
+	}
+	calls = nil
+	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth1", Target: "direct"}}
+	_ = installBlockFilterRules(cfg)
+	if len(calls) != 0 {
+		t.Fatalf("no block rules means no nft calls: %v", calls)
+	}
+}
+
+func TestValidateInterfaceNameAndPorts(t *testing.T) {
+	for _, bad := range []string{"", "a b", `e"th`, "eth0;", "averyveryverylongname", "..", "a\nb"} {
+		if config.ValidateInterfaceName(bad) == nil {
+			t.Errorf("%q must be rejected", bad)
+		}
+	}
+	for _, ok := range []string{"eth0", "br-lan", "eth0.10", "wg_0"} {
+		if err := config.ValidateInterfaceName(ok); err != nil {
+			t.Errorf("%q must be accepted: %v", ok, err)
+		}
+	}
+	if _, err := config.ValidateGatewayRule(config.GatewayRule{Interface: `e"th`, Target: "direct"}); err == nil {
+		t.Error("rule with unsafe interface must be rejected")
+	}
+	cfg := &config.UserConfig{Role: config.RoleGateway, APIInbound: 12346}
+	cfg.Gateway.RelayAlias = "a"
+	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth1", Target: "b"}}
+	cfg.CustomOutbounds = []config.CustomOutbound{{Alias: "a", Enabled: true}, {Alias: "b", Enabled: true}}
+	if err := config.ValidateGatewayPorts(cfg); err == nil {
+		t.Error("tproxy relay port colliding with api inbound must be rejected")
+	}
+	cfg.APIInbound = 20000
+	if err := config.ValidateGatewayPorts(cfg); err != nil {
+		t.Errorf("non-conflicting ports rejected: %v", err)
 	}
 }

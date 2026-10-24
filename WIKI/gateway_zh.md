@@ -231,6 +231,16 @@ xray-proxya apply
 xray-proxya gateway down
 ```
 
+## 按客户端规则、NAT 与隔离说明
+
+- **规则优先级按特异性**：`接口+MAC` > `仅 MAC` > `仅接口`。较宽泛的 `block` 规则会让位于更具体的非 block 规则（例如 `block` 某 MAC，但该 MAC 在某接口上另有 `direct`/relay 规则）。
+- **block 是完全隔离**：被 block 的客户端或接口不仅不能转发，也无法访问网关自身（包括 SSH、DNS、DHCP）。请勿对你正在用于管理的接口或设备设置 block。`forward-only` 状态或本机/LAN 开关都关闭时，block 规则同样会安装（仅 block，不做透明代理）。
+- **规则目标必须有效**：规则指向的 relay 被删除或禁用时，`apply` 会拒绝；运行时遗留的失效规则会被丢弃（fail-closed），不会回退到默认 relay。
+- **接口名**：仅允许 1-15 个字符的字母、数字、`.`、`-`、`_`。
+- **端口冲突**：`apply` 会检查 TProxy 端口（基础端口与每个额外 relay 的端口）是否与 API、测试、DNS 监听、预设、relay 内部端口冲突。
+- **WAN 与 NAT**：WAN 接口在 `apply` 时解析一次；未配置 `--wan` 且检测不到默认路由时会打印警告并跳过受管 NAT。受管 NAT 的 masquerade 使用 `inet` 表，同时作用于 IPv4 与 IPv6（即 NAT66）。多个 LAN 之间不做隔离，转发策略为 accept。保护 WAN 侧入站由用户自行负责。
+- **IPv6**：接口上的所有非链路本地前缀（如 ULA 与 GUA）都会纳入源地址守卫与旁路。
+
 ## 常见问题
 
 ### `gateway check` 提示 `proxya-tun` 不存在
