@@ -1,4 +1,4 @@
-policy_module(xray_proxya, 2.1.3)
+policy_module(xray_proxya, 2.1.4)
 
 ########################################
 # Dedicated domain for the root-managed Xray-Proxya service.  This policy is
@@ -53,9 +53,9 @@ files_search_home(xray_proxya_t)
 gen_require(`
 	type config_home_t, data_home_t, gconf_home_t;
 ')
-allow xray_proxya_t config_home_t:dir search;
-allow xray_proxya_t data_home_t:dir search;
-allow xray_proxya_t gconf_home_t:dir search;
+allow xray_proxya_t config_home_t:dir { getattr open search };
+allow xray_proxya_t data_home_t:dir { getattr open search };
+allow xray_proxya_t gconf_home_t:dir { getattr open search };
 manage_dirs_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 manage_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
 manage_lnk_files_pattern(xray_proxya_t, xray_proxya_config_t, xray_proxya_config_t)
@@ -91,9 +91,9 @@ allow xray_proxya_t xray_proxya_data_t:file { execute execute_no_trans getattr m
 # PathLink stream on loopback and sends raw ICMP to caller-selected public
 # targets; it cannot modify host networking or application state.
 files_search_home(xray_proxya_pathd_t)
-allow xray_proxya_pathd_t config_home_t:dir search;
-allow xray_proxya_pathd_t data_home_t:dir search;
-allow xray_proxya_pathd_t gconf_home_t:dir search;
+allow xray_proxya_pathd_t config_home_t:dir { getattr open search };
+allow xray_proxya_pathd_t data_home_t:dir { getattr open search };
+allow xray_proxya_pathd_t gconf_home_t:dir { getattr open search };
 read_files_pattern(xray_proxya_pathd_t, xray_proxya_config_t, xray_proxya_config_t)
 corenet_tcp_bind_all_unreserved_ports(xray_proxya_pathd_t)
 corenet_tcp_bind_generic_node(xray_proxya_pathd_t)

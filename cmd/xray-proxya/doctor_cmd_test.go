@@ -117,3 +117,12 @@ func TestSELinuxPolicyAllowsSystemdGatewayRestoreTransition(t *testing.T) {
 		}
 	}
 }
+
+func TestSELinuxPolicyAllowsParentDirAttributes(t *testing.T) {
+	for _, domain := range []string{"xray_proxya_t", "xray_proxya_gateway_t", "xray_proxya_pathd_t"} {
+		want := "allow " + domain + " config_home_t:dir { getattr open search };"
+		if !strings.Contains(proxyaSELinux.PolicySource, want) {
+			t.Fatalf("%s missing permission %q for evaluating parent config directory", domain, want)
+		}
+	}
+}

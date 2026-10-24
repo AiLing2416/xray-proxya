@@ -100,8 +100,10 @@ func installSELinuxPolicy() error {
 		}
 	}
 	for _, path := range []string{"/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.config/xray-proxya"} {
-		if out, err := exec.Command("restorecon", "-RF", path).CombinedOutput(); err != nil {
-			return fmt.Errorf("restore context on %s: %w (%s)", path, err, out)
+		if _, err := os.Stat(path); err == nil {
+			if out, err := exec.Command("restorecon", "-RF", path).CombinedOutput(); err != nil {
+				return fmt.Errorf("restore context on %s: %w (%s)", path, err, out)
+			}
 		}
 	}
 	return nil
