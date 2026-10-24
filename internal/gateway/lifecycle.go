@@ -249,8 +249,10 @@ func upLocked(cfg *config.UserConfig) error {
 	if !WantsTunnel(cfg) {
 		return fmt.Errorf("gateway TProxy is not enabled in active config; set state=proxy and enable local or LAN first")
 	}
-	// Start every explicit transition from a verified clean state.
-	if err := convergeDownLocked(); err != nil {
+	// Clean up existing kernel firewall/routing rules before restarting Xray
+	// once with TProxy enabled. Avoid calling convergeDownLocked() here so we
+	// do not trigger two back-to-back service restarts within milliseconds.
+	if err := CleanupFirewall(); err != nil {
 		return fmt.Errorf("prepare clean gateway state: %w", err)
 	}
 	if err := restartWithTunDisabled(false); err != nil {
@@ -328,10 +330,7 @@ func syncDesiredLocked(cfg *config.UserConfig) error {
 	if err := convergeDownLocked(); err != nil {
 		return err
 	}
-	if cfg.Gateway.State == "forward-only" {
-		return ApplyFirewall(cfg)
-	}
-	return nil
+	return ApplyFirewall(cfg)
 }
 
 // ensureManagementDomain re-executes Gateway mutations in the short-lived

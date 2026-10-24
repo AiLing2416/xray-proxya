@@ -4,7 +4,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
+)
+
+var (
+	inProcessLockMu    sync.Mutex
+	inProcessLockOwner int
 )
 
 // LifecycleLock serializes operations that change the Xray process together
@@ -39,10 +45,30 @@ func (lock *LifecycleLock) Release() error {
 }
 
 func WithLifecycleLock(fn func() error) error {
+	inProcessLockMu.Lock()
+	if inProcessLockOwner > 0 {
+		inProcessLockOwner++
+		inProcessLockMu.Unlock()
+		defer func() {
+			inProcessLockMu.Lock()
+			inProcessLockOwner--
+			inProcessLockMu.Unlock()
+		}()
+		return fn()
+	}
 	lock, err := AcquireLifecycleLock()
 	if err != nil {
+		inProcessLockMu.Unlock()
 		return err
 	}
-	defer lock.Release()
+	inProcessLockOwner = 1
+	inProcessLockMu.Unlock()
+
+	defer func() {
+		inProcessLockMu.Lock()
+		inProcessLockOwner--
+		_ = lock.Release()
+		inProcessLockMu.Unlock()
+	}()
 	return fn()
 }

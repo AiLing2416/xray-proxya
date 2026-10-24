@@ -178,15 +178,18 @@ func (m *Manager) ExecuteAction(action, unitInput string, now bool) error {
 		}
 
 		if (action == "start" || (action == "enable" && now)) && os.Geteuid() == 0 {
-			cfg, err := config.LoadConfig()
-			if err != nil {
-				return fmt.Errorf("load active config after service start: %w", err)
-			}
-			if cfg.Role == config.RoleGateway {
-				if err := gateway.RestoreTunState(cfg); err != nil {
-					return fmt.Errorf("restore gateway runtime after service start: %w", err)
+			return config.WithLifecycleLock(func() error {
+				cfg, err := config.LoadConfig()
+				if err != nil {
+					return fmt.Errorf("load active config after service start: %w", err)
 				}
-			}
+				if cfg.Role == config.RoleGateway {
+					if err := gateway.RestoreTunStateLocked(cfg); err != nil {
+						return fmt.Errorf("restore gateway runtime after service start: %w", err)
+					}
+				}
+				return nil
+			})
 		}
 		return nil
 	}

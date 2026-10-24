@@ -580,11 +580,11 @@ func TestBackfillDefaultsNormalizesGuestAlias(t *testing.T) {
 
 func TestParseDNSListen(t *testing.T) {
 	tests := []struct {
-		input       string
-		wantHost    string
-		wantPort    int
-		wantNorm    string
-		wantErr     bool
+		input    string
+		wantHost string
+		wantPort int
+		wantNorm string
+		wantErr  bool
 	}{
 		{"127.0.0.1:5353", "127.0.0.1", 5353, "127.0.0.1:5353", false},
 		{"5353", "127.0.0.1", 5353, "127.0.0.1:5353", false},
@@ -764,8 +764,8 @@ func TestNormalizeMAC(t *testing.T) {
 		{"  52:54:00:AB:CD:EF  ", "52:54:00:ab:cd:ef", false},
 		{"", "", true},
 		{"invalid", "", true},
-		{"52:54:00:83:00", "", true},                                   // 5 bytes
-		{"52:54:00:83:00:11:22:33", "", true},                         // 8 bytes (EUI-64)
+		{"52:54:00:83:00", "", true},          // 5 bytes
+		{"52:54:00:83:00:11:22:33", "", true}, // 8 bytes (EUI-64)
 	}
 
 	for _, tc := range tests {
@@ -942,3 +942,19 @@ func TestBackfillDefaultsGatewayRouter(t *testing.T) {
 	}
 }
 
+func TestWithLifecycleLockReentrant(t *testing.T) {
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", t.TempDir())
+	innerCalled := false
+	err := WithLifecycleLock(func() error {
+		return WithLifecycleLock(func() error {
+			innerCalled = true
+			return nil
+		})
+	})
+	if err != nil {
+		t.Fatalf("unexpected error in reentrant WithLifecycleLock: %v", err)
+	}
+	if !innerCalled {
+		t.Fatal("expected inner callback to be executed")
+	}
+}
