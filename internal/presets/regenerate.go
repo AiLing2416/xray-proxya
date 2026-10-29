@@ -60,6 +60,20 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 
 		case config.ModeShadowsocksTCP:
 			mode.Settings.Password = utils.GenerateRandomString(16)
+
+		case config.ModeHysteria2:
+			sni := mode.SNI
+			if sni == "" {
+				sni = "www.bing.com"
+			}
+			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(sni)
+			if err != nil {
+				return err
+			}
+			mode.Settings.CertPEM = certPEM
+			mode.Settings.PrivateKey = keyPEM
+			mode.Settings.PublicKey = pubHash
+			mode.Settings.Password = utils.GenerateRandomString(16)
 		}
 
 		mode.RegenFlag = false

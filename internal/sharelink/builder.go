@@ -77,6 +77,12 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 			if n.ALPN != "" {
 				tlsSettings["alpn"] = strings.Split(n.ALPN, ",")
 			}
+			if n.PinnedPeerCertSha256 != "" {
+				tlsSettings["pinnedPeerCertSha256"] = NormalizeCertHashHex(n.PinnedPeerCertSha256)
+			}
+			if n.VerifyPeerCertByName != "" {
+				tlsSettings["verifyPeerCertByName"] = n.VerifyPeerCertByName
+			}
 			stream[n.Security+"Settings"] = tlsSettings
 		}
 
@@ -275,6 +281,64 @@ func (n *NodeSpec) ToOutbound() map[string]interface{} {
 		}
 		return out
 
+	case ProtoHysteria2, "hysteria":
+		auth := n.Password
+		if auth == "" {
+			auth = n.UUID
+		}
+		alpn := []string{"h3"}
+		if n.ALPN != "" {
+			alpn = strings.Split(n.ALPN, ",")
+		}
+		tlsSettings := map[string]interface{}{
+			"alpn": alpn,
+		}
+		if n.SNI != "" {
+			tlsSettings["serverName"] = n.SNI
+		}
+		if n.PinnedPeerCertSha256 != "" {
+			tlsSettings["pinnedPeerCertSha256"] = NormalizeCertHashHex(n.PinnedPeerCertSha256)
+			vcn := n.VerifyPeerCertByName
+			if vcn == "" {
+				vcn = n.SNI
+			}
+			if vcn != "" {
+				tlsSettings["verifyPeerCertByName"] = vcn
+			}
+		} else if n.Insecure {
+			tlsSettings["allowInsecure"] = true
+		}
+		stream := map[string]interface{}{
+			"network":  "hysteria",
+			"security": "tls",
+			"tlsSettings": tlsSettings,
+			"hysteriaSettings": map[string]interface{}{
+				"version": 2,
+				"auth":    auth,
+			},
+		}
+		if strings.EqualFold(n.ObfsType, "salamander") && n.ObfsPassword != "" {
+			stream["finalmask"] = map[string]interface{}{
+				"udp": []interface{}{
+					map[string]interface{}{
+						"type": "salamander",
+						"settings": map[string]interface{}{
+							"password": n.ObfsPassword,
+						},
+					},
+				},
+			}
+		}
+		return map[string]interface{}{
+			"protocol": "hysteria",
+			"settings": map[string]interface{}{
+				"version": 2,
+				"address": n.Address,
+				"port":    n.Port,
+			},
+			"streamSettings": stream,
+		}
+
 	default:
 		return nil
 	}
@@ -298,7 +362,8 @@ func RewriteRemark(link string, remark string) string {
 	switch {
 	case strings.HasPrefix(link, "vmess://"):
 		return rewriteVMessRemark(link, remark)
-	case strings.HasPrefix(link, "vless://"), strings.HasPrefix(link, "ss://"), strings.HasPrefix(link, "socks://"), strings.HasPrefix(link, "http://"):
+	case strings.HasPrefix(link, "vless://"), strings.HasPrefix(link, "ss://"), strings.HasPrefix(link, "socks://"), strings.HasPrefix(link, "http://"),
+		strings.HasPrefix(link, "hysteria2://"), strings.HasPrefix(link, "hy2://"):
 		return rewriteFragmentRemark(link, remark)
 	default:
 		return link

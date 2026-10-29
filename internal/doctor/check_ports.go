@@ -18,6 +18,7 @@ import (
 type portBinding struct {
 	Port        int
 	Description string
+	Protocol    string
 }
 
 // CheckPortConflicts inspects whether the ports defined in the user config
@@ -39,13 +40,20 @@ func CheckPortConflicts(ctx context.Context, cfg *config.UserConfig) []CheckResu
 
 	// Collect configured ports to verify
 	var bindings []portBinding
-	seen := make(map[int]bool)
+	seen := make(map[string]bool)
 
-	addPort := func(p int, desc string) {
-		if p > 0 && p <= 65535 && !seen[p] {
-			seen[p] = true
-			bindings = append(bindings, portBinding{Port: p, Description: desc})
+	addPortWithProto := func(p int, desc, proto string) {
+		if proto == "" {
+			proto = "tcp"
 		}
+		key := fmt.Sprintf("%s:%d", proto, p)
+		if p > 0 && p <= 65535 && !seen[key] {
+			seen[key] = true
+			bindings = append(bindings, portBinding{Port: p, Description: desc, Protocol: proto})
+		}
+	}
+	addPort := func(p int, desc string) {
+		addPortWithProto(p, desc, "tcp")
 	}
 
 	if cfg.APIInbound > 0 {
@@ -56,7 +64,11 @@ func CheckPortConflicts(ctx context.Context, cfg *config.UserConfig) []CheckResu
 	}
 	for _, m := range cfg.Presets {
 		if m.Enabled && m.Port > 0 {
-			addPort(m.Port, fmt.Sprintf("Preset Port (%s)", m.Mode))
+			if m.Mode == config.ModeHysteria2 {
+				addPortWithProto(m.Port, fmt.Sprintf("Preset UDP Port (%s)", m.Mode), "udp")
+			} else {
+				addPort(m.Port, fmt.Sprintf("Preset Port (%s)", m.Mode))
+			}
 		}
 	}
 	if cfg.SkinPort > 0 {
@@ -104,6 +116,52 @@ func CheckPortConflicts(ctx context.Context, cfg *config.UserConfig) []CheckResu
 
 	for _, b := range bindings {
 		itemStart := time.Now()
+		if b.Protocol == "udp" {
+			conn, err := net.ListenPacket("udp", fmt.Sprintf(":%d", b.Port))
+			if err == nil {
+				conn.Close()
+				results = append(results, CheckResult{
+					Category:   "Port Bindings",
+					Name:       fmt.Sprintf("%s (%d)", b.Description, b.Port),
+					Status:     StatusPass,
+					Detail:     "Port is available",
+					DurationMs: time.Since(itemStart).Milliseconds(),
+				})
+				continue
+			}
+
+			// Port is in use, identify the owning process
+			owner, pid, isOurProcess := identifyUDPPortOwner(b.Port)
+			if isOurProcess {
+				results = append(results, CheckResult{
+					Category:   "Port Bindings",
+					Name:       fmt.Sprintf("%s (%d)", b.Description, b.Port),
+					Status:     StatusPass,
+					Detail:     fmt.Sprintf("Active (owned by %s, PID: %d)", owner, pid),
+					DurationMs: time.Since(itemStart).Milliseconds(),
+				})
+			} else if pid > 0 {
+				results = append(results, CheckResult{
+					Category:    "Port Bindings",
+					Name:        fmt.Sprintf("%s (%d)", b.Description, b.Port),
+					Status:      StatusFail,
+					Detail:      fmt.Sprintf("Port occupied by external process: %s (PID: %d)", owner, pid),
+					Remediation: fmt.Sprintf("Stop or reconfigure %s to release port %d", owner, b.Port),
+					DurationMs:  time.Since(itemStart).Milliseconds(),
+				})
+			} else {
+				results = append(results, CheckResult{
+					Category:    "Port Bindings",
+					Name:        fmt.Sprintf("%s (%d)", b.Description, b.Port),
+					Status:      StatusFail,
+					Detail:      fmt.Sprintf("Port is in use by another process: %v", err),
+					Remediation: fmt.Sprintf("Ensure no conflicting daemon is listening on port %d", b.Port),
+					DurationMs:  time.Since(itemStart).Milliseconds(),
+				})
+			}
+			continue
+		}
+
 		// Test listening on TCP
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", b.Port))
 		if err == nil {
@@ -153,9 +211,7 @@ func CheckPortConflicts(ctx context.Context, cfg *config.UserConfig) []CheckResu
 	return results
 }
 
-// identifyPortOwner attempts to find the process name and PID listening on the given TCP port.
-func identifyPortOwner(port int) (string, int, bool) {
-	inodes := findTCPPortInodes(port)
+func findProcessByInodes(inodes []uint64) (string, int, bool) {
 	if len(inodes) == 0 {
 		return "unknown", 0, false
 	}
@@ -206,6 +262,56 @@ func identifyPortOwner(port int) (string, int, bool) {
 	}
 
 	return "unknown", 0, false
+}
+
+// identifyPortOwner attempts to find the process name and PID listening on the given TCP port.
+func identifyPortOwner(port int) (string, int, bool) {
+	return findProcessByInodes(findTCPPortInodes(port))
+}
+
+// identifyUDPPortOwner attempts to find the process name and PID listening on the given UDP port.
+func identifyUDPPortOwner(port int) (string, int, bool) {
+	return findProcessByInodes(findUDPPortInodes(port))
+}
+
+func findUDPPortInodes(targetPort int) []uint64 {
+	var inodes []uint64
+	for _, procFile := range []string{"/proc/net/udp", "/proc/net/udp6"} {
+		file, err := os.Open(procFile)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		// Skip header line
+		if scanner.Scan() {
+			for scanner.Scan() {
+				fields := strings.Fields(scanner.Text())
+				if len(fields) < 10 {
+					continue
+				}
+				// Local address field e.g. 0100007F:0050 (127.0.0.1:80)
+				localAddr := fields[1]
+				parts := strings.Split(localAddr, ":")
+				if len(parts) != 2 {
+					continue
+				}
+				portHex := parts[1]
+				portNum, err := strconv.ParseInt(portHex, 16, 64)
+				if err != nil {
+					continue
+				}
+				// Match any non-zero inode on int(portNum) == targetPort
+				if int(portNum) == targetPort {
+					inode, err := strconv.ParseUint(fields[9], 10, 64)
+					if err == nil && inode > 0 {
+						inodes = append(inodes, inode)
+					}
+				}
+			}
+		}
+		file.Close()
+	}
+	return inodes
 }
 
 func isXrayProxyaProcess(comm, exe string) bool {

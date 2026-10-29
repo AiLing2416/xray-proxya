@@ -156,3 +156,33 @@ func TestCheckModernProtocols_NonServer(t *testing.T) {
 		t.Errorf("expected Modern Protocols check to be SKIP on Gateway role, got %s", result.Status)
 	}
 }
+
+func TestCheckPortConflicts_Hysteria2AndTCP443(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Port: 443, Enabled: true},
+			{Mode: config.ModeHysteria2, Port: 443, Enabled: true},
+		},
+	}
+	results := CheckPortConflicts(context.Background(), cfg)
+	if len(results) != 2 {
+		t.Fatalf("expected 2 port check results (TCP:443 and UDP:443), got %d: %+v", len(results), results)
+	}
+	foundTCP := false
+	foundUDP := false
+	for _, r := range results {
+		if strings.Contains(r.Name, "Preset Port (vless-vision-reality-tcp) (443)") {
+			foundTCP = true
+		}
+		if strings.Contains(r.Name, "Preset UDP Port (hysteria2) (443)") {
+			foundUDP = true
+		}
+	}
+	if !foundTCP {
+		t.Errorf("missing TCP 443 check in results: %+v", results)
+	}
+	if !foundUDP {
+		t.Errorf("missing UDP 443 check in results: %+v", results)
+	}
+}

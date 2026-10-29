@@ -336,3 +336,58 @@ func TestInitForceShorthandFlag(t *testing.T) {
 	}
 }
 
+func TestServerInitInitializesHysteria2Preset(t *testing.T) {
+	setupTestConfigDir(t)
+
+	origSelector := realityTargetSelector
+	origCleanup := prepareFreshInitFunc
+	origEnsure := ensureXrayBinaryFunc
+	t.Cleanup(func() {
+		realityTargetSelector = origSelector
+		prepareFreshInitFunc = origCleanup
+		ensureXrayBinaryFunc = origEnsure
+	})
+
+	realityTargetSelector = func() (string, string, error) {
+		return "selected.test.domain", "selected.test.domain:443", nil
+	}
+	prepareFreshInitFunc = func() {}
+	ensureXrayBinaryFunc = func() error { return nil }
+
+	forceInit = true
+	roleStr = "server"
+
+	if err := runInit(nil, nil); err != nil {
+		t.Fatalf("runInit failed: %v", err)
+	}
+
+	cfg, err := config.LoadConfigEx(false)
+	if err != nil {
+		t.Fatalf("LoadConfigEx failed: %v", err)
+	}
+
+	if len(cfg.Presets) != 6 {
+		t.Fatalf("expected 6 presets, got %d", len(cfg.Presets))
+	}
+
+	h2 := cfg.Presets[5]
+	if h2.Mode != config.ModeHysteria2 {
+		t.Fatalf("preset 6 mode = %s, want %s", h2.Mode, config.ModeHysteria2)
+	}
+	if h2.SNI != "selected.test.domain" {
+		t.Errorf("h2.SNI = %q, want selected.test.domain", h2.SNI)
+	}
+	if h2.Dest != "selected.test.domain:443" {
+		t.Errorf("h2.Dest = %q, want selected.test.domain:443", h2.Dest)
+	}
+	if h2.Settings.CertPEM == "" || h2.Settings.PrivateKey == "" {
+		t.Errorf("h2 missing CertPEM or PrivateKey")
+	}
+	if len(h2.Settings.PublicKey) != 64 {
+		t.Errorf("h2.Settings.PublicKey len = %d, want 64", len(h2.Settings.PublicKey))
+	}
+	if len(h2.Settings.Password) != 32 {
+		t.Errorf("h2.Settings.Password len = %d, want 32", len(h2.Settings.Password))
+	}
+}
+

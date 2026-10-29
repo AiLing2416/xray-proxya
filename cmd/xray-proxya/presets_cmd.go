@@ -54,8 +54,12 @@ func supportsReality(m config.PresetMode) bool {
 	return m == config.ModeVLESSVision || m == config.ModeVLESSReality
 }
 
+func supportsSNI(m config.PresetMode) bool {
+	return m == config.ModeVLESSVision || m == config.ModeVLESSReality || m == config.ModeHysteria2
+}
+
 func supportsSkin(m config.PresetMode) bool {
-	return m == config.ModeVLESSVision || m == config.ModeVLESSReality
+	return m == config.ModeVLESSVision || m == config.ModeVLESSReality || m == config.ModeHysteria2
 }
 
 var checkTargetAvailability = func(target string) error {
@@ -234,7 +238,7 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 	}
 
 	hasRealityReq := presetSNICheck || selectors > 0 || presetDest != ""
-	if hasRealityReq && !supportsReality(m.Mode) {
+	if hasRealityReq && !supportsSNI(m.Mode) {
 		return fmt.Errorf("❌ Error: Mode [%s] does not support REALITY target/SNI configuration (requires VLESS Reality or Vision).", m.Mode)
 	}
 
@@ -295,6 +299,15 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		}
 		m.SNI = normHost
 		m.Dest = dest
+		if m.Mode == config.ModeHysteria2 {
+			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(m.SNI)
+			if err != nil {
+				return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", m.SNI, err)
+			}
+			m.Settings.CertPEM = certPEM
+			m.Settings.PrivateKey = keyPEM
+			m.Settings.PublicKey = pubHash
+		}
 		fmt.Printf("🎯 Validated manual REALITY target: %s (%s)\n", normHost, dest)
 	} else if selectors > 0 {
 		// 2. Specific Cloud Vendor Pool
@@ -322,6 +335,15 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		}
 		m.SNI = bestDomain
 		m.Dest = net.JoinHostPort(bestDomain, "443")
+		if m.Mode == config.ModeHysteria2 {
+			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(m.SNI)
+			if err != nil {
+				return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", m.SNI, err)
+			}
+			m.Settings.CertPEM = certPEM
+			m.Settings.PrivateKey = keyPEM
+			m.Settings.PublicKey = pubHash
+		}
 		fmt.Printf("🎯 Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
 	} else if presetDest != "" {
 		// 3. Adjust dest port only for existing SNI
@@ -409,6 +431,8 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 					effectiveDomain = m.SkinDomain
 				} else if m.SNI != "" {
 					effectiveDomain = m.SNI
+				} else if m.Mode == config.ModeHysteria2 {
+					effectiveDomain = "www.bing.com"
 				}
 			}
 			effectiveDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(effectiveDomain)), ".")
@@ -416,7 +440,7 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("❌ Error: Setting --skin requires a valid domain. Please specify --skin-domain <domain> or run 'xray-proxya cert add <domain>' first.")
 			}
 			cert := cfg.FindCert(effectiveDomain)
-			if cert == nil {
+			if cert == nil && m.Mode != config.ModeHysteria2 {
 				return fmt.Errorf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
 			}
 			m.Skin = st
@@ -425,24 +449,69 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			if supportsReality(m.Mode) {
 				m.SNI = effectiveDomain
 				m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
+			} else if m.Mode == config.ModeHysteria2 {
+				if m.SNI != effectiveDomain || m.Settings.CertPEM == "" {
+					certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(effectiveDomain)
+					if err != nil {
+						return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", effectiveDomain, err)
+					}
+					m.Settings.CertPEM = certPEM
+					m.Settings.PrivateKey = keyPEM
+					m.Settings.PublicKey = pubHash
+				}
+				m.SNI = effectiveDomain
+				m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
 			}
-			fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
-				m.Skin, m.SkinDomain, skinPort, cert.ExpiresAt.Format("2006-01-02"))
+			if m.Mode == config.ModeHysteria2 && cert == nil {
+				pubKeyPin := m.Settings.PublicKey
+				if len(pubKeyPin) > 16 {
+					pubKeyPin = pubKeyPin[:16]
+				}
+				fmt.Printf("🎨 Configured Web Skin [%s] for Hysteria2 on 127.0.0.1:%d using self-signed certificate (SNI: %s, pinSHA256: %s...).\n",
+					m.Skin, skinPort, m.SNI, pubKeyPin)
+			} else {
+				certExpiry := ""
+				if cert != nil {
+					certExpiry = cert.ExpiresAt.Format("2006-01-02")
+				}
+				fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
+					m.Skin, m.SkinDomain, skinPort, certExpiry)
+			}
 		}
 	} else if cmd.Flags().Changed("skin-domain") {
 		if m.Skin == "" {
 			return fmt.Errorf("❌ Error: Cannot set --skin-domain without setting --skin.")
 		}
 		effectiveDomain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSkinDomain)), ".")
+		if effectiveDomain == "" {
+			return fmt.Errorf("❌ Error: --skin-domain cannot be empty.")
+		}
 		cert := cfg.FindCert(effectiveDomain)
-		if cert == nil {
+		if cert == nil && m.Mode != config.ModeHysteria2 {
 			return fmt.Errorf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
 		}
 		m.SkinDomain = effectiveDomain
 		if supportsReality(m.Mode) {
 			m.SNI = effectiveDomain
+		} else if m.Mode == config.ModeHysteria2 {
+			m.SNI = effectiveDomain
+			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(effectiveDomain)
+			if err != nil {
+				return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", effectiveDomain, err)
+			}
+			m.Settings.CertPEM = certPEM
+			m.Settings.PrivateKey = keyPEM
+			m.Settings.PublicKey = pubHash
 		}
-		fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+		if cert != nil {
+			fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+		} else {
+			pubKeyPin := m.Settings.PublicKey
+			if len(pubKeyPin) > 16 {
+				pubKeyPin = pubKeyPin[:16]
+			}
+			fmt.Printf("🎨 Updated Web Skin domain to %s using self-signed certificate (pinSHA256: %s...).\n", m.SkinDomain, pubKeyPin)
+		}
 	}
 
 	if cmd.Flags().Changed("min-ver") {

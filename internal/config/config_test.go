@@ -1,8 +1,14 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 )
@@ -986,4 +992,267 @@ func TestWithLifecycleLockReentrant(t *testing.T) {
 	if !innerCalled {
 		t.Fatal("expected inner callback to be executed")
 	}
+}
+
+func TestGenerateSelfSignedCert(t *testing.T) {
+	tests := []struct {
+		name    string
+		domain  string
+		wantCN  string
+		wantDNS string
+		isIP    bool
+	}{
+		{
+			name:    "standard domain",
+			domain:  "EXAMPLE.com.",
+			wantCN:  "example.com",
+			wantDNS: "example.com",
+		},
+		{
+			name:    "empty domain defaults to bing",
+			domain:  "   ",
+			wantCN:  "www.bing.com",
+			wantDNS: "www.bing.com",
+		},
+		{
+			name:    "ip address",
+			domain:  "192.168.1.100",
+			wantCN:  "192.168.1.100",
+			wantDNS: "192.168.1.100",
+			isIP:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			certPEM, keyPEM, sha256Hex, err := GenerateSelfSignedCert(tc.domain)
+			if err != nil {
+				t.Fatalf("GenerateSelfSignedCert failed: %v", err)
+			}
+
+			// Validate cert PEM
+			block, rest := pem.Decode([]byte(certPEM))
+			if block == nil || block.Type != "CERTIFICATE" {
+				t.Fatalf("invalid cert PEM block: %v", block)
+			}
+			if len(rest) > 0 && strings.TrimSpace(string(rest)) != "" {
+				t.Errorf("unexpected trailing data in cert PEM: %q", string(rest))
+			}
+
+			cert, err := x509.ParseCertificate(block.Bytes)
+			if err != nil {
+				t.Fatalf("x509.ParseCertificate failed: %v", err)
+			}
+
+			if cert.Subject.CommonName != tc.wantCN {
+				t.Errorf("CommonName = %q, want %q", cert.Subject.CommonName, tc.wantCN)
+			}
+			if len(cert.Subject.Organization) != 1 || cert.Subject.Organization[0] != "Xray Inc" {
+				t.Errorf("Organization = %v, want [Xray Inc]", cert.Subject.Organization)
+			}
+			if len(cert.DNSNames) != 1 || cert.DNSNames[0] != tc.wantDNS {
+				t.Errorf("DNSNames = %v, want [%s]", cert.DNSNames, tc.wantDNS)
+			}
+			if tc.isIP {
+				if len(cert.IPAddresses) != 1 || cert.IPAddresses[0].String() != tc.wantCN {
+					t.Errorf("IPAddresses = %v, want [%s]", cert.IPAddresses, tc.wantCN)
+				}
+			}
+			if cert.KeyUsage&(x509.KeyUsageKeyEncipherment|x509.KeyUsageDigitalSignature) != (x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature) {
+				t.Errorf("unexpected KeyUsage: %v", cert.KeyUsage)
+			}
+			if len(cert.ExtKeyUsage) != 1 || cert.ExtKeyUsage[0] != x509.ExtKeyUsageServerAuth {
+				t.Errorf("unexpected ExtKeyUsage: %v", cert.ExtKeyUsage)
+			}
+			if !cert.BasicConstraintsValid {
+				t.Errorf("BasicConstraintsValid is false")
+			}
+			if cert.SerialNumber == nil || cert.SerialNumber.Sign() <= 0 {
+				t.Errorf("SerialNumber is invalid or not positive: %v", cert.SerialNumber)
+			}
+
+			// Validate SHA-256 fingerprint
+			if len(sha256Hex) != 64 {
+				t.Errorf("sha256Hex length = %d, want 64", len(sha256Hex))
+			}
+			sum := sha256.Sum256(block.Bytes)
+			expectedHex := hex.EncodeToString(sum[:])
+			if sha256Hex != expectedHex {
+				t.Errorf("sha256Hex = %q, want %q", sha256Hex, expectedHex)
+			}
+
+			// Validate key PEM
+			kBlock, kRest := pem.Decode([]byte(keyPEM))
+			if kBlock == nil || kBlock.Type != "EC PRIVATE KEY" {
+				t.Fatalf("invalid key PEM block: %v", kBlock)
+			}
+			if len(kRest) > 0 && strings.TrimSpace(string(kRest)) != "" {
+				t.Errorf("unexpected trailing data in key PEM: %q", string(kRest))
+			}
+			ecPriv, err := x509.ParseECPrivateKey(kBlock.Bytes)
+			if err != nil {
+				t.Fatalf("x509.ParseECPrivateKey failed: %v", err)
+			}
+			pubKey, ok := cert.PublicKey.(*ecdsa.PublicKey)
+			if !ok {
+				t.Fatalf("cert PublicKey is not *ecdsa.PublicKey: %T", cert.PublicKey)
+			}
+			if !ecPriv.PublicKey.Equal(pubKey) {
+				t.Errorf("private key does not match certificate public key")
+			}
+		})
+	}
+}
+
+func TestNormalizeHysteria2Preset(t *testing.T) {
+	cfg := &UserConfig{
+		Role: RoleServer,
+	}
+	cfg.Normalize()
+
+	if len(cfg.Presets) != len(PresetOrder) {
+		t.Fatalf("len(Presets) = %d, want %d", len(cfg.Presets), len(PresetOrder))
+	}
+
+	var found *ModeInfo
+	for i := range cfg.Presets {
+		if cfg.Presets[i].Mode == ModeHysteria2 {
+			found = &cfg.Presets[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("ModeHysteria2 preset not found after Normalize()")
+	}
+	if found.Enabled {
+		t.Errorf("ModeHysteria2 Enabled = true, want false")
+	}
+	if found.Port != 443 {
+		t.Errorf("ModeHysteria2 Port = %d, want 443", found.Port)
+	}
+}
+
+func TestBackfillDefaultsHysteria2(t *testing.T) {
+	t.Run("server empty presets backfills ModeHysteria2 completely", func(t *testing.T) {
+		cfg := &UserConfig{
+			Role: RoleServer,
+		}
+		changes := cfg.BackfillDefaults()
+		if len(changes) == 0 {
+			t.Fatal("expected changes from BackfillDefaults")
+		}
+
+		var hy2 *ModeInfo
+		for i := range cfg.Presets {
+			if cfg.Presets[i].Mode == ModeHysteria2 {
+				hy2 = &cfg.Presets[i]
+				break
+			}
+		}
+		if hy2 == nil {
+			t.Fatal("ModeHysteria2 preset missing after BackfillDefaults")
+		}
+		if hy2.Port != 443 && (os.Geteuid() == 0 || hy2.Port != 10443) {
+			t.Errorf("unexpected Port = %d", hy2.Port)
+		}
+		if hy2.SNI != "www.bing.com" {
+			t.Errorf("SNI = %q, want www.bing.com", hy2.SNI)
+		}
+		if hy2.Dest != "www.bing.com:443" {
+			t.Errorf("Dest = %q, want www.bing.com:443", hy2.Dest)
+		}
+		if len(hy2.Settings.Password) != 16 {
+			t.Errorf("Password length = %d, want 16 hex chars", len(hy2.Settings.Password))
+		}
+		if hy2.Settings.CertPEM == "" {
+			t.Errorf("CertPEM is empty")
+		}
+		if hy2.Settings.PrivateKey == "" {
+			t.Errorf("PrivateKey is empty")
+		}
+		if len(hy2.Settings.PublicKey) != 64 {
+			t.Errorf("PublicKey length = %d, want 64", len(hy2.Settings.PublicKey))
+		}
+
+		// Verify PublicKey matches CertPEM DER SHA-256
+		block, _ := pem.Decode([]byte(hy2.Settings.CertPEM))
+		if block == nil {
+			t.Fatal("failed to decode CertPEM")
+		}
+		sum := sha256.Sum256(block.Bytes)
+		if hex.EncodeToString(sum[:]) != hy2.Settings.PublicKey {
+			t.Errorf("PublicKey = %q does not match CertPEM SHA-256 %q", hy2.Settings.PublicKey, hex.EncodeToString(sum[:]))
+		}
+	})
+
+	t.Run("inherits SNI from ModeVLESSVision", func(t *testing.T) {
+		cfg := &UserConfig{
+			Role: RoleServer,
+			Presets: []ModeInfo{
+				{
+					Mode:    ModeVLESSVision,
+					Enabled: true,
+					SNI:     "custom.vision-domain.com",
+				},
+			},
+		}
+		cfg.BackfillDefaults()
+
+		var hy2 *ModeInfo
+		for i := range cfg.Presets {
+			if cfg.Presets[i].Mode == ModeHysteria2 {
+				hy2 = &cfg.Presets[i]
+				break
+			}
+		}
+		if hy2 == nil {
+			t.Fatal("ModeHysteria2 preset missing")
+		}
+		if hy2.SNI != "custom.vision-domain.com" {
+			t.Errorf("SNI = %q, want custom.vision-domain.com", hy2.SNI)
+		}
+		if hy2.Dest != "custom.vision-domain.com:443" {
+			t.Errorf("Dest = %q, want custom.vision-domain.com:443", hy2.Dest)
+		}
+	})
+
+	t.Run("skin support with default skin domain and skin port dest", func(t *testing.T) {
+		cfg := &UserConfig{
+			Role: RoleServer,
+			Presets: []ModeInfo{
+				{
+					Mode:       ModeHysteria2,
+					Enabled:    true,
+					Skin:       "nextcloud",
+					SkinDomain: "",
+					SNI:        "my-hy2.org",
+				},
+			},
+		}
+		cfg.BackfillDefaults()
+
+		var hy2 *ModeInfo
+		for i := range cfg.Presets {
+			if cfg.Presets[i].Mode == ModeHysteria2 {
+				hy2 = &cfg.Presets[i]
+				break
+			}
+		}
+		if hy2 == nil {
+			t.Fatal("ModeHysteria2 preset missing")
+		}
+		if hy2.Skin != "nextcloud" {
+			t.Errorf("Skin was cleared: %q", hy2.Skin)
+		}
+		if hy2.SkinDomain != "my-hy2.org" {
+			t.Errorf("SkinDomain = %q, want my-hy2.org", hy2.SkinDomain)
+		}
+		if cfg.SkinPort <= 0 {
+			t.Errorf("SkinPort not allocated: %d", cfg.SkinPort)
+		}
+		expectedDest := fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
+		if hy2.Dest != expectedDest {
+			t.Errorf("Dest = %q, want %q", hy2.Dest, expectedDest)
+		}
+	})
 }

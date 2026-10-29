@@ -86,6 +86,10 @@ func TestGetSecurityName(t *testing.T) {
 			mode:     config.ModeInfo{Mode: config.ModeShadowsocksTCP, Settings: config.Settings{Cipher: "chacha20-poly1305"}},
 			expected: "chacha20-poly1305",
 		},
+		{
+			mode:     config.ModeInfo{Mode: config.ModeHysteria2},
+			expected: "TLS-Pin+Obfs",
+		},
 	}
 
 	for _, tc := range tests {
@@ -93,5 +97,9 @@ func TestGetSecurityName(t *testing.T) {
 		if got != tc.expected {
 			t.Errorf("getSecurityName for mode %s with cipher %q: got %q, want %q", tc.mode.Mode, tc.mode.Settings.Cipher, got, tc.expected)
 		}
+	}
+
+	if netName := getNetworkName(config.ModeHysteria2); netName != "UDP" {
+		t.Errorf("getNetworkName(ModeHysteria2) = %q, want UDP", netName)
 	}
 }

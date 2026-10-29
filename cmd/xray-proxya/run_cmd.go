@@ -294,14 +294,20 @@ var runCmd = &cobra.Command{
 			if !alreadyMapped {
 				cert := cfg.FindCert(domain)
 				certPath, keyPath := "", ""
+				certPEM, keyPEM := "", ""
 				if cert != nil {
 					certPath, keyPath = cert.CertPath, cert.KeyPath
+				} else if m.Mode == config.ModeHysteria2 {
+					certPEM = m.Settings.CertPEM
+					keyPEM = m.Settings.PrivateKey
 				}
 				skinMappings = append(skinMappings, skin.DomainSkinMapping{
 					Domain:   domain,
 					SkinType: m.Skin,
 					CertPath: certPath,
 					KeyPath:  keyPath,
+					CertPEM:  certPEM,
+					KeyPEM:   keyPEM,
 				})
 			}
 		}
@@ -323,27 +329,37 @@ var runCmd = &cobra.Command{
 				fmt.Printf("⚠️  Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
 			}
 
-			// Start port 80 HTTP -> HTTPS redirect server with ACME challenge delegation
-			httpRedirectServer := &http.Server{
-				Addr: ":80",
-				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if certmanager.HandleChallenge(w, r) {
-						return
-					}
-					host := r.Host
-					if h, _, err := net.SplitHostPort(host); err == nil {
-						host = h
-					}
-					target := "https://" + host + r.URL.RequestURI()
-					http.Redirect(w, r, target, http.StatusMovedPermanently)
-				}),
+			hasFileCert := false
+			for _, sm := range skinMappings {
+				if sm.CertPath != "" {
+					hasFileCert = true
+					break
+				}
 			}
-			if ln, err := net.Listen("tcp", ":80"); err == nil {
-				skinServers = append(skinServers, httpRedirectServer)
-				go func() { _ = httpRedirectServer.Serve(ln) }()
-				fmt.Println("🌐 Port 80 HTTP -> HTTPS redirect listener started")
-			} else {
-				fmt.Printf("⚠️  Port 80 redirect listener not started: %v\n", err)
+
+			// Start port 80 HTTP -> HTTPS redirect server with ACME challenge delegation
+			if hasFileCert {
+				httpRedirectServer := &http.Server{
+					Addr: ":80",
+					Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if certmanager.HandleChallenge(w, r) {
+							return
+						}
+						host := r.Host
+						if h, _, err := net.SplitHostPort(host); err == nil {
+							host = h
+						}
+						target := "https://" + host + r.URL.RequestURI()
+						http.Redirect(w, r, target, http.StatusMovedPermanently)
+					}),
+				}
+				if ln, err := net.Listen("tcp", ":80"); err == nil {
+					skinServers = append(skinServers, httpRedirectServer)
+					go func() { _ = httpRedirectServer.Serve(ln) }()
+					fmt.Println("🌐 Port 80 HTTP -> HTTPS redirect listener started")
+				} else {
+					fmt.Printf("⚠️  Port 80 redirect listener not started: %v\n", err)
+				}
 			}
 		}
 

@@ -63,7 +63,7 @@ func ListenAddressesOverlap(addr1, addr2 string) bool {
 	return false
 }
 
-// GetFreePorts allocates 'count' distinct, collision-free TCP ports by keeping all listeners
+// GetFreePorts allocates 'count' distinct, collision-free TCP and UDP ports by keeping all listeners
 // open simultaneously until the full batch has been assigned.
 func GetFreePorts(count int) ([]int, error) {
 	if count <= 0 {
@@ -73,21 +73,32 @@ func GetFreePorts(count int) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	listeners := make([]*net.TCPListener, 0, count)
+	tcpListeners := make([]*net.TCPListener, 0, count)
+	udpListeners := make([]*net.UDPConn, 0, count)
 	defer func() {
-		for _, l := range listeners {
+		for _, l := range tcpListeners {
 			_ = l.Close()
+		}
+		for _, u := range udpListeners {
+			_ = u.Close()
 		}
 	}()
 
-	ports := make([]int, count)
-	for i := 0; i < count; i++ {
+	ports := make([]int, 0, count)
+	for len(ports) < count {
 		l, err := net.ListenTCP("tcp", addr)
 		if err != nil {
 			return nil, err
 		}
-		listeners = append(listeners, l)
-		ports[i] = l.Addr().(*net.TCPAddr).Port
+		port := l.Addr().(*net.TCPAddr).Port
+		u, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+		if err != nil {
+			_ = l.Close()
+			continue
+		}
+		tcpListeners = append(tcpListeners, l)
+		udpListeners = append(udpListeners, u)
+		ports = append(ports, port)
 	}
 	return ports, nil
 }

@@ -1,6 +1,9 @@
 package presets
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/pem"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -86,5 +89,94 @@ func TestRegenerateMarkedModesPreservesRealitySNIAndDest(t *testing.T) {
 	}
 	if !config.IsAllowedRealityFingerprint(r.Fingerprint) {
 		t.Errorf("Reality Fingerprint %q not in allowlist", r.Fingerprint)
+	}
+}
+
+func TestRegenerateMarkedModesHysteria2(t *testing.T) {
+	origSNI := "hy2.example.com"
+	origDest := "hy2.example.com:443"
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{
+				Mode:      config.ModeHysteria2,
+				Enabled:   true,
+				SNI:       origSNI,
+				Dest:      origDest,
+				RegenFlag: true,
+				Settings: config.Settings{
+					CertPEM:    "old-cert",
+					PrivateKey: "old-priv",
+					PublicKey:  "old-pub",
+					Password:   "old-pass",
+				},
+			},
+		},
+	}
+
+	if err := RegenerateMarkedModes(cfg); err != nil {
+		t.Fatalf("RegenerateMarkedModes failed: %v", err)
+	}
+
+	h := cfg.Presets[0]
+	if h.RegenFlag {
+		t.Errorf("RegenFlag was not cleared")
+	}
+	if h.SNI != origSNI {
+		t.Errorf("SNI = %q, want %q", h.SNI, origSNI)
+	}
+	if h.Dest != origDest {
+		t.Errorf("Dest = %q, want %q", h.Dest, origDest)
+	}
+	if h.Settings.Password == "old-pass" || len(h.Settings.Password) != 32 {
+		t.Errorf("Password was not rotated properly: %q", h.Settings.Password)
+	}
+	if h.Settings.CertPEM == "old-cert" || h.Settings.CertPEM == "" {
+		t.Errorf("CertPEM was not rotated")
+	}
+	if h.Settings.PrivateKey == "old-priv" || h.Settings.PrivateKey == "" {
+		t.Errorf("PrivateKey was not rotated")
+	}
+	if h.Settings.PublicKey == "old-pub" || len(h.Settings.PublicKey) != 64 {
+		t.Errorf("PublicKey was not rotated properly: %q", h.Settings.PublicKey)
+	}
+
+	// Verify PublicKey matches the SHA-256 fingerprint of CertPEM DER bytes
+	block, _ := pem.Decode([]byte(h.Settings.CertPEM))
+	if block == nil || block.Type != "CERTIFICATE" {
+		t.Fatalf("invalid CertPEM block: %v", block)
+	}
+	sum := sha256.Sum256(block.Bytes)
+	expectedHex := hex.EncodeToString(sum[:])
+	if h.Settings.PublicKey != expectedHex {
+		t.Errorf("PublicKey = %q, want %q", h.Settings.PublicKey, expectedHex)
+	}
+}
+
+func TestRegenerateMarkedModesHysteria2EmptySNIDefaultsToBing(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{
+				Mode:      config.ModeHysteria2,
+				Enabled:   true,
+				SNI:       "",
+				Dest:      "127.0.0.1:443",
+				RegenFlag: true,
+			},
+		},
+	}
+
+	if err := RegenerateMarkedModes(cfg); err != nil {
+		t.Fatalf("RegenerateMarkedModes failed: %v", err)
+	}
+
+	h := cfg.Presets[0]
+	if h.RegenFlag {
+		t.Errorf("RegenFlag was not cleared")
+	}
+	if h.Settings.CertPEM == "" || h.Settings.PrivateKey == "" || len(h.Settings.PublicKey) != 64 {
+		t.Fatalf("Credentials were not generated: %+v", h.Settings)
 	}
 }

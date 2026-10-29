@@ -40,10 +40,12 @@ func ParseSubscription(providerName string, body []byte) (nodes []ParsedNode, sk
 	nodes = make([]ParsedNode, 0, len(lines))
 
 	for idx, line := range lines {
-		// Only support vless, vmess, ss
+		// Only support vless, vmess, ss, hysteria2
 		if !strings.HasPrefix(line, "vless://") &&
 			!strings.HasPrefix(line, "vmess://") &&
-			!strings.HasPrefix(line, "ss://") {
+			!strings.HasPrefix(line, "ss://") &&
+			!strings.HasPrefix(line, "hysteria2://") &&
+			!strings.HasPrefix(line, "hy2://") {
 			skippedCount++
 			continue
 		}

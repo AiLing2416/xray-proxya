@@ -13,6 +13,7 @@ const (
 	ProtoSocks       = "socks"
 	ProtoHTTP        = "http"
 	ProtoFreedom     = "freedom"
+	ProtoHysteria2   = "hysteria2"
 )
 
 // NodeSpec represents a strongly-typed proxy node specification
@@ -37,9 +38,14 @@ type NodeSpec struct {
 	Host        string `json:"host"`         // Host header override
 	Mode        string `json:"mode"`         // Transport mode (e.g. "auto", "multi", "packet-up")
 	ALPN        string `json:"alpn"`         // Application-Layer Protocol Negotiation (e.g. "h2,http/1.1")
-	ServiceName string `json:"service_name"` // gRPC serviceName override
-	Remark      string `json:"remark"`       // Node name / remark / ps / fragment
-	RawLink     string `json:"raw_link"`     // Original raw link
+	ServiceName          string `json:"service_name"`                     // gRPC serviceName override
+	Remark               string `json:"remark"`                           // Node name / remark / ps / fragment
+	RawLink              string `json:"raw_link"`                         // Original raw link
+	PinnedPeerCertSha256 string `json:"pinned_peer_cert_sha256,omitempty"` // Hex SHA256 for TLS cert pinning (pinSHA256 / pcs)
+	VerifyPeerCertByName string `json:"verify_peer_cert_by_name,omitempty"` // Cert name verification override (vcn)
+	ObfsType             string `json:"obfs_type,omitempty"`               // e.g. "salamander"
+	ObfsPassword         string `json:"obfs_password,omitempty"`           // Salamander obfs password
+	Insecure             bool   `json:"insecure,omitempty"`                // allowInsecure (insecure=1)
 }
 
 // ServerSpec returns a friendly "host:port" or interface identifier.
@@ -89,6 +95,8 @@ func (n *NodeSpec) TransportSummary() string {
 		switch n.Protocol {
 		case ProtoShadowsocks, ProtoSocks, ProtoHTTP, ProtoFreedom:
 			transport = "tcp"
+		case ProtoHysteria2:
+			transport = "udp"
 		}
 	}
 	if transport != "" {
@@ -111,6 +119,12 @@ func (n *NodeSpec) TransportSummary() string {
 	}
 	if n.Fingerprint != "" {
 		parts = append(parts, "fp="+n.Fingerprint)
+	}
+	if n.ObfsType != "" {
+		parts = append(parts, "obfs="+n.ObfsType)
+	}
+	if n.PinnedPeerCertSha256 != "" {
+		parts = append(parts, "pin=sha256")
 	}
 	if len(parts) == 0 {
 		return "-"

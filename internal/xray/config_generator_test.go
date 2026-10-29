@@ -1480,3 +1480,146 @@ func TestMultiRelayTProxyInboundsAndAllowPrivateTargets(t *testing.T) {
 		t.Errorf("idxGeoIPPrivate (%d) should be BEFORE idxPublicRelay (%d)", idxGeoIPPrivate, idxPublicRelay)
 	}
 }
+
+func TestGenerateXrayJSON_Hysteria2AndVisionCoexist(t *testing.T) {
+	cfg := &config.UserConfig{
+		UUID: "11111111-2222-3333-4444-555555555555",
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeVLESSVision,
+				Enabled: true,
+				Port:    443,
+				SNI:     "www.microsoft.com",
+				Dest:    "www.microsoft.com:443",
+				Settings: config.Settings{
+					PublicKey:  "pubkey-vision",
+					PrivateKey: "privkey-vision",
+					ShortID:    "abcd1234",
+				},
+			},
+			{
+				Mode:    config.ModeHysteria2,
+				Enabled: true,
+				Port:    443,
+				SNI:     "hy2.example.com",
+				Dest:    "hy2.example.com:443",
+				Settings: config.Settings{
+					CertPEM:    "---BEGIN CERTIFICATE---\nfakecert\n---END CERTIFICATE---",
+					PrivateKey: "---BEGIN PRIVATE KEY---\nfakekey\n---END PRIVATE KEY---",
+					Password:   "obfs-pass-123",
+				},
+			},
+		},
+	}
+
+	// 1. Both vision (443 TCP) and hysteria2 (443 UDP) should coexist without conflict
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	inbounds, ok := parsed["inbounds"].([]interface{})
+	if !ok {
+		t.Fatalf("expected inbounds slice, got: %v", parsed["inbounds"])
+	}
+
+	var hyInbound map[string]interface{}
+	var visionInbound map[string]interface{}
+	for _, in := range inbounds {
+		inb := in.(map[string]interface{})
+		if inb["tag"] == string(config.ModeHysteria2) {
+			hyInbound = inb
+		}
+		if inb["tag"] == string(config.ModeVLESSVision) {
+			visionInbound = inb
+		}
+	}
+
+	if visionInbound == nil {
+		t.Fatal("missing vless-vision-reality-tcp inbound")
+	}
+	if hyInbound == nil {
+		t.Fatal("missing hysteria2 inbound")
+	}
+
+	if hyInbound["protocol"] != "hysteria" {
+		t.Errorf("hyInbound protocol = %v, want hysteria", hyInbound["protocol"])
+	}
+	if int(hyInbound["port"].(float64)) != 443 {
+		t.Errorf("hyInbound port = %v, want 443", hyInbound["port"])
+	}
+
+	hySettings := hyInbound["settings"].(map[string]interface{})
+	if int(hySettings["version"].(float64)) != 2 {
+		t.Errorf("hySettings version = %v, want 2", hySettings["version"])
+	}
+	clients := hySettings["clients"].([]interface{})
+	if len(clients) == 0 || clients[0].(map[string]interface{})["auth"] != cfg.UUID {
+		t.Errorf("hySettings clients = %v, want auth=%s", clients, cfg.UUID)
+	}
+
+	stream := hyInbound["streamSettings"].(map[string]interface{})
+	if stream["network"] != "hysteria" || stream["security"] != "tls" {
+		t.Errorf("hyInbound streamSettings network/security mismatch: %v", stream)
+	}
+
+	streamHy := stream["hysteriaSettings"].(map[string]interface{})
+	masq := streamHy["masquerade"].(map[string]interface{})
+	if masq["type"] != "proxy" || masq["url"] != "https://hy2.example.com" || masq["rewriteHost"] != true {
+		t.Errorf("masquerade without skin = %v", masq)
+	}
+
+	finalmask := stream["finalmask"].(map[string]interface{})
+	udp := finalmask["udp"].([]interface{})
+	salamander := udp[0].(map[string]interface{})
+	if salamander["type"] != "salamander" {
+		t.Errorf("finalmask type = %v, want salamander", salamander["type"])
+	}
+	salamanderSettings := salamander["settings"].(map[string]interface{})
+	if salamanderSettings["password"] != "obfs-pass-123" {
+		t.Errorf("salamander password = %v, want obfs-pass-123", salamanderSettings["password"])
+	}
+
+	// 2. Test with Skin
+	cfg.Presets[1].Skin = "filebrowser"
+	parsedWithSkin := generateAndDecodeXrayConfig(t, cfg, "")
+	for _, in := range parsedWithSkin["inbounds"].([]interface{}) {
+		inb := in.(map[string]interface{})
+		if inb["tag"] == string(config.ModeHysteria2) {
+			s := inb["streamSettings"].(map[string]interface{})
+			sh := s["hysteriaSettings"].(map[string]interface{})
+			m := sh["masquerade"].(map[string]interface{})
+			if m["type"] != "proxy" || m["url"] != "https://127.0.0.1:9443" || m["insecure"] != true {
+				t.Errorf("masquerade with skin = %v", m)
+			}
+		}
+	}
+
+	// 3. Test self-signed cert generation when CertPEM is empty
+	cfg.Presets[1].Settings.CertPEM = ""
+	cfg.Presets[1].Settings.PrivateKey = ""
+	parsedSelfSigned := generateAndDecodeXrayConfig(t, cfg, "")
+	for _, in := range parsedSelfSigned["inbounds"].([]interface{}) {
+		inb := in.(map[string]interface{})
+		if inb["tag"] == string(config.ModeHysteria2) {
+			s := inb["streamSettings"].(map[string]interface{})
+			tlsMap := s["tlsSettings"].(map[string]interface{})
+			certs := tlsMap["certificates"].([]interface{})
+			if len(certs) == 0 {
+				t.Fatal("expected certificates in tlsSettings")
+			}
+			certObj := certs[0].(map[string]interface{})
+			certLines := certObj["certificate"].([]interface{})
+			keyLines := certObj["key"].([]interface{})
+			if len(certLines) == 0 || len(keyLines) == 0 {
+				t.Errorf("expected non-empty cert and key lines")
+			}
+		}
+	}
+
+	// 4. Test UDP conflict: Two Hysteria inbounds on port 443 should conflict
+	inboundsConflict := []interface{}{
+		map[string]interface{}{"tag": "h1", "protocol": "hysteria", "port": 443, "listen": "0.0.0.0"},
+		map[string]interface{}{"tag": "h2", "protocol": "hysteria", "port": 443, "listen": "0.0.0.0"},
+	}
+	if err := validateInboundsPortConflicts(inboundsConflict); err == nil {
+		t.Errorf("expected port conflict between two hysteria listeners on 443, got nil")
+	}
+}

@@ -1,9 +1,15 @@
 package config
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"math"
@@ -39,6 +45,7 @@ const (
 	ModeVLESSXHTTP     PresetMode = "vless-xhttp-kem768"
 	ModeVMessWS        PresetMode = "vmess-ws"
 	ModeShadowsocksTCP PresetMode = "shadowsocks-tcp"
+	ModeHysteria2      PresetMode = "hysteria2"
 )
 
 const (
@@ -128,6 +135,7 @@ var PresetOrder = []PresetMode{
 	ModeVLESSXHTTP,
 	ModeVMessWS,
 	ModeShadowsocksTCP,
+	ModeHysteria2,
 }
 
 type EndpointType string
@@ -1081,9 +1089,78 @@ func (m *ModeInfo) UnmarshalJSON(data []byte) error {
 type Settings struct {
 	PrivateKey string `json:"privateKey,omitempty"`
 	PublicKey  string `json:"publicKey,omitempty"`
+	CertPEM    string `json:"certPem,omitempty"`
 	ShortID    string `json:"shortId,omitempty"`
 	Password   string `json:"password,omitempty"`
 	Cipher     string `json:"cipher,omitempty"`
+}
+
+// GenerateSelfSignedCert generates an ECDSA P-256 self-signed certificate and private key for domain,
+// along with the lowercase 64-character SHA-256 hex digest of the raw DER certificate.
+func GenerateSelfSignedCert(domain string) (certPEM string, keyPEM string, sha256Hex string, err error) {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		domain = "www.bing.com"
+	}
+	domain = strings.TrimSuffix(strings.ToLower(domain), ".")
+	if domain == "" {
+		domain = "www.bing.com"
+	}
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to generate ecdsa key: %w", err)
+	}
+
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serialNumber, err := rand.Int(rand.Reader, serialLimit)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to generate serial number: %w", err)
+	}
+	if serialNumber.Sign() <= 0 {
+		serialNumber = big.NewInt(1)
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber: serialNumber,
+		Subject: pkix.Name{
+			Organization: []string{"Xray Inc"},
+			CommonName:   domain,
+		},
+		NotBefore:             time.Now().Add(-1 * time.Hour),
+		NotAfter:              time.Now().Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{domain},
+	}
+	if ip := net.ParseIP(domain); ip != nil {
+		tmpl.IPAddresses = []net.IP{ip}
+	}
+
+	derBytes, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to create certificate: %w", err)
+	}
+
+	sum := sha256.Sum256(derBytes)
+	sha256Hex = hex.EncodeToString(sum[:])
+
+	certPEM = string(pem.EncodeToMemory(&pem.Block{
+		Type:  "CERTIFICATE",
+		Bytes: derBytes,
+	}))
+
+	ecDER, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return "", "", "", fmt.Errorf("failed to marshal ec private key: %w", err)
+	}
+	keyPEM = string(pem.EncodeToMemory(&pem.Block{
+		Type:  "EC PRIVATE KEY",
+		Bytes: ecDER,
+	}))
+
+	return certPEM, keyPEM, sha256Hex, nil
 }
 
 func (cfg *UserConfig) FindCert(domain string) *ManagedCert {
@@ -1191,7 +1268,11 @@ func (cfg *UserConfig) Normalize() {
 			}
 		}
 		if !found {
-			newModes = append(newModes, ModeInfo{Mode: target, Enabled: false})
+			if target == ModeHysteria2 {
+				newModes = append(newModes, ModeInfo{Mode: target, Enabled: false, Port: 443})
+			} else {
+				newModes = append(newModes, ModeInfo{Mode: target, Enabled: false})
+			}
 		}
 	}
 	cfg.Presets = newModes
@@ -1614,12 +1695,19 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 			m.SkinDomain = ""
 			changes = append(changes, "cleared invalid skin for preset "+string(m.Mode))
 		}
+		if m.Mode == ModeHysteria2 && m.Skin != "" && m.SkinDomain == "" {
+			if m.SNI != "" {
+				m.SkinDomain = m.SNI
+			} else {
+				m.SkinDomain = "www.bing.com"
+			}
+		}
 		if m.Skin != "" && m.SkinDomain == "" {
 			// If skin is set but domain is missing, skin cannot be active
 			m.Skin = ""
 			changes = append(changes, "cleared skin without domain for preset "+string(m.Mode))
 		}
-		if m.Skin != "" && m.Mode != ModeVLESSVision && m.Mode != ModeVLESSReality {
+		if m.Skin != "" && m.Mode != ModeVLESSVision && m.Mode != ModeVLESSReality && m.Mode != ModeHysteria2 {
 			m.Skin = ""
 			m.SkinDomain = ""
 			changes = append(changes, "cleared unsupported skin for preset "+string(m.Mode))
@@ -1691,6 +1779,9 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 				}
 			}
 		}
+		if m.Mode == ModeHysteria2 {
+			changes = append(changes, cfg.backfillHysteria2(m)...)
+		}
 	}
 
 	beforeModes := len(cfg.Presets)
@@ -1698,7 +1789,73 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	if cfg.Role == RoleServer && len(cfg.Presets) != beforeModes {
 		changes = append(changes, "completed presets to current preset set")
 	}
+	for i := range cfg.Presets {
+		if cfg.Presets[i].Mode == ModeHysteria2 {
+			changes = append(changes, cfg.backfillHysteria2(&cfg.Presets[i])...)
+		}
+	}
 
+	return changes
+}
+
+func (cfg *UserConfig) backfillHysteria2(m *ModeInfo) []string {
+	var changes []string
+	if m.Port <= 0 {
+		if os.Geteuid() != 0 {
+			m.Port = 10443
+		} else {
+			m.Port = 443
+		}
+		changes = append(changes, fmt.Sprintf("backfilled port %d for preset %s", m.Port, m.Mode))
+	}
+	if strings.TrimSpace(m.SNI) == "" {
+		var visionSNI string
+		for _, p := range cfg.Presets {
+			if p.Mode == ModeVLESSVision && strings.TrimSpace(p.SNI) != "" {
+				visionSNI = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(p.SNI)), ".")
+				break
+			}
+		}
+		if visionSNI != "" {
+			m.SNI = visionSNI
+		} else {
+			m.SNI = "www.bing.com"
+		}
+		changes = append(changes, "backfilled default SNI for preset "+string(m.Mode))
+	} else {
+		normSNI := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), ".")
+		if normSNI == "" {
+			normSNI = "www.bing.com"
+		}
+		if normSNI != m.SNI {
+			m.SNI = normSNI
+			changes = append(changes, "normalized SNI for preset "+string(m.Mode))
+		}
+	}
+	if m.Skin != "" {
+		cfg.EnsureSkinPort()
+		skinDest := fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
+		if m.Dest != skinDest {
+			m.Dest = skinDest
+			changes = append(changes, fmt.Sprintf("set skin dest to 127.0.0.1:%d for preset %s", cfg.SkinPort, m.Mode))
+		}
+	} else if m.Dest == "" {
+		m.Dest = net.JoinHostPort(m.SNI, "443")
+		changes = append(changes, "backfilled default dest for preset "+string(m.Mode))
+	}
+	if m.Settings.Password == "" {
+		m.Settings.Password = randomHexString(16)
+		changes = append(changes, "backfilled password for preset "+string(m.Mode))
+	}
+	if m.Settings.CertPEM == "" || m.Settings.PrivateKey == "" || m.Settings.PublicKey == "" {
+		certPEM, keyPEM, sha256Hex, err := GenerateSelfSignedCert(m.SNI)
+		if err == nil {
+			m.Settings.CertPEM = certPEM
+			m.Settings.PrivateKey = keyPEM
+			m.Settings.PublicKey = sha256Hex
+			changes = append(changes, "generated self-signed cert for preset "+string(m.Mode))
+		}
+	}
 	return changes
 }
 

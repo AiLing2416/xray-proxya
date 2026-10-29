@@ -154,16 +154,29 @@ func runInit(cmd *cobra.Command, args []string) error {
 		{config.ModeVLESSXHTTP, 8080},
 		{config.ModeVMessWS, 8081},
 		{config.ModeShadowsocksTCP, 8082},
+		{config.ModeHysteria2, 443},
 	}
 
 	for _, s := range specs {
 		actualPort := s.base + offset
-		if !utils.IsPortFree(actualPort) {
-			for {
-				p, _ := xray.GetFreePort()
-				if p >= 10000 {
-					actualPort = p
-					break
+		if s.mode == config.ModeHysteria2 {
+			if !utils.IsUDPPortFree(actualPort) {
+				for {
+					p, _ := xray.GetFreePort()
+					if p >= 10000 && utils.IsUDPPortFree(p) {
+						actualPort = p
+						break
+					}
+				}
+			}
+		} else {
+			if !utils.IsPortFree(actualPort) {
+				for {
+					p, _ := xray.GetFreePort()
+					if p >= 10000 {
+						actualPort = p
+						break
+					}
 				}
 			}
 		}
@@ -204,6 +217,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 			m.Path = "/" + utils.GenerateRandomString(8)
 		case config.ModeShadowsocksTCP:
 			m.Settings.Cipher, m.Settings.Password = "aes-256-gcm", utils.GenerateRandomString(16)
+		case config.ModeHysteria2:
+			m.SNI = selectedSNI
+			m.Dest = selectedDest
+			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(selectedSNI)
+			if err != nil {
+				return fmt.Errorf("generate hysteria2 self-signed cert: %w", err)
+			}
+			m.Settings.CertPEM = certPEM
+			m.Settings.PrivateKey = keyPEM
+			m.Settings.PublicKey = pubHash
+			m.Settings.Password = utils.GenerateRandomString(16)
 		}
 		cfg.Presets = append(cfg.Presets, m)
 	}

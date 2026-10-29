@@ -188,6 +188,29 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 				auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", mode.Settings.Cipher, mode.Settings.Password)))
 				link = fmt.Sprintf("ss://%s@%s:%d#%s", auth, formattedIP, mode.Port, url.PathEscape(ps))
 			}
+
+		case config.ModeHysteria2:
+			sni := mode.SNI
+			if sni == "" {
+				sni = "www.bing.com"
+			}
+			ps := fmt.Sprintf("Hysteria2-%d%s", mode.Port, psSuffix)
+			params := []string{
+				"sni=" + url.QueryEscape(sni),
+				"alpn=h3",
+			}
+			if mode.Settings.Password != "" {
+				params = append(params,
+					"obfs=salamander",
+					"obfs-password="+url.QueryEscape(mode.Settings.Password),
+				)
+			}
+			if mode.Settings.PublicKey != "" {
+				params = append(params, "pinSHA256="+url.QueryEscape(mode.Settings.PublicKey))
+			}
+			params = append(params, "insecure=0")
+			link = fmt.Sprintf("hysteria2://%s@%s:%d?%s#%s",
+				url.PathEscape(userUUID), formattedIP, mode.Port, strings.Join(params, "&"), url.PathEscape(ps))
 		}
 		if link != "" {
 			links = append(links, link)
@@ -197,7 +220,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 }
 
 func rewritePrimaryRemark(link string, remark string) (string, bool) {
-	if strings.HasPrefix(link, "vmess://") || strings.HasPrefix(link, "vless://") || strings.HasPrefix(link, "ss://") {
+	if strings.HasPrefix(link, "vmess://") || strings.HasPrefix(link, "vless://") || strings.HasPrefix(link, "ss://") || strings.HasPrefix(link, "hysteria2://") || strings.HasPrefix(link, "hy2://") {
 		return sharelink.RewriteRemark(link, remark), true
 	}
 	return link, false

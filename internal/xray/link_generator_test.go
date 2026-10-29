@@ -202,3 +202,93 @@ func TestGenerateLinksWithTargets_Remarks(t *testing.T) {
 	}
 }
 
+func TestGenerateHysteria2Links(t *testing.T) {
+	pinHex := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	cfg := &config.UserConfig{
+		UUID: "11111111-2222-3333-4444-555555555555",
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeHysteria2,
+				Enabled: true,
+				Port:    8443,
+				SNI:     "hy2.example.com",
+				Settings: config.Settings{
+					PublicKey: pinHex,
+					Password:  "salamander-secret",
+				},
+			},
+		},
+	}
+
+	// 1. GenerateLinks
+	links := GenerateLinks(cfg, "203.0.113.1")
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+	link := links[0]
+	if !strings.HasPrefix(link, "hysteria2://") {
+		t.Fatalf("expected hysteria2:// prefix, got %q", link)
+	}
+	if !strings.Contains(link, "hy2.example.com") {
+		t.Errorf("missing SNI: %q", link)
+	}
+	if !strings.Contains(link, "alpn=h3") {
+		t.Errorf("missing alpn=h3: %q", link)
+	}
+	if !strings.Contains(link, "obfs=salamander") || !strings.Contains(link, "obfs-password=salamander-secret") {
+		t.Errorf("missing obfs parameters: %q", link)
+	}
+	if !strings.Contains(link, "pinSHA256="+pinHex) {
+		t.Errorf("missing pinSHA256: %q", link)
+	}
+	if !strings.Contains(link, "insecure=0") {
+		t.Errorf("missing insecure=0: %q", link)
+	}
+	if !strings.Contains(link, "#Hysteria2-8443") {
+		t.Errorf("missing #Hysteria2-8443: %q", link)
+	}
+
+	// 2. GenerateGuestLinks
+	guestLinks := GenerateGuestLinks(cfg, "203.0.113.1", "22222222-2222-2222-2222-222222222222", "guestA")
+	if len(guestLinks) != 1 {
+		t.Fatalf("expected 1 guest link, got %d", len(guestLinks))
+	}
+	if !strings.Contains(guestLinks[0], "22222222-2222-2222-2222-222222222222@") {
+		t.Errorf("guest link should use guest UUID: %q", guestLinks[0])
+	}
+	if !strings.Contains(guestLinks[0], "#Hysteria2-8443-Guest-guestA") {
+		t.Errorf("guest link remark mismatch: %q", guestLinks[0])
+	}
+
+	// 3. GenerateRelayLinks
+	relay := config.CustomOutbound{
+		Alias:    "relay-hk",
+		UserUUID: "33333333-3333-3333-3333-333333333333",
+	}
+	relayLinks := GenerateRelayLinks(cfg, "203.0.113.1", relay)
+	if len(relayLinks) != 1 {
+		t.Fatalf("expected 1 relay link, got %d", len(relayLinks))
+	}
+	if !strings.Contains(relayLinks[0], "33333333-3333-3333-3333-333333333333@") {
+		t.Errorf("relay link should use relay UserUUID: %q", relayLinks[0])
+	}
+	if !strings.Contains(relayLinks[0], "#Hysteria2-8443-Relay-relay-hk") {
+		t.Errorf("relay link remark mismatch: %q", relayLinks[0])
+	}
+
+	// 4. GenerateLinksWithTargets
+	targets := []TargetNode{
+		{Address: "198.51.100.1", Alias: "target-1"},
+	}
+	targetLinks := GenerateLinksWithTargets(cfg, targets)
+	if len(targetLinks) != 1 || !strings.Contains(targetLinks[0], "#Hysteria2-8443-target-1") {
+		t.Errorf("target link remark mismatch: %v", targetLinks)
+	}
+
+	// 5. WithPrimaryRemark
+	renamed := WithPrimaryRemark(links, "RenamedHysteria2")
+	if !strings.Contains(renamed[0], "#RenamedHysteria2") {
+		t.Errorf("WithPrimaryRemark failed: %q", renamed[0])
+	}
+}
+

@@ -59,6 +59,11 @@ func FromOutbound(outbound map[string]interface{}) *NodeSpec {
 		if sendThrough, ok := outbound["sendThrough"].(string); ok {
 			spec.Host = sendThrough
 		}
+
+	case "hysteria", ProtoHysteria2:
+		spec.Protocol = ProtoHysteria2
+		spec.Address = stringValue(settings["address"])
+		spec.Port = intValue(settings["port"])
 	}
 
 	if stream != nil {
@@ -79,6 +84,15 @@ func FromOutbound(outbound map[string]interface{}) *NodeSpec {
 			}
 			if alpnList := getSliceStrings(tls["alpn"]); len(alpnList) > 0 {
 				spec.ALPN = strings.Join(alpnList, ",")
+			}
+			if pin := stringValue(tls["pinnedPeerCertSha256"]); pin != "" {
+				spec.PinnedPeerCertSha256 = pin
+			}
+			if vcn := stringValue(tls["verifyPeerCertByName"]); vcn != "" {
+				spec.VerifyPeerCertByName = vcn
+			}
+			if insecure, ok := tls["allowInsecure"].(bool); ok && insecure {
+				spec.Insecure = true
 			}
 		}
 
@@ -116,6 +130,22 @@ func FromOutbound(outbound map[string]interface{}) *NodeSpec {
 
 		if httpSet, ok := stream["httpSettings"].(map[string]interface{}); ok {
 			spec.Path = stringValue(httpSet["path"])
+		}
+
+		if hy, ok := stream["hysteriaSettings"].(map[string]interface{}); ok {
+			if auth := stringValue(hy["auth"]); auth != "" {
+				spec.Password = auth
+			}
+		}
+
+		if fm, ok := stream["finalmask"].(map[string]interface{}); ok {
+			udp := getMapSlice(fm, "udp")
+			if len(udp) > 0 && stringValue(udp[0]["type"]) == "salamander" {
+				spec.ObfsType = "salamander"
+				if s, ok := udp[0]["settings"].(map[string]interface{}); ok {
+					spec.ObfsPassword = stringValue(s["password"])
+				}
+			}
 		}
 	}
 

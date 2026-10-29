@@ -1,6 +1,7 @@
 package sharelink
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -57,6 +58,8 @@ func Parse(link string) (*NodeSpec, error) {
 		return parseSocks(trimmed)
 	case strings.HasPrefix(trimmed, "http://"), strings.HasPrefix(trimmed, "https://"):
 		return parseHTTP(trimmed)
+	case strings.HasPrefix(trimmed, "hysteria2://"), strings.HasPrefix(trimmed, "hy2://"):
+		return parseHysteria2(trimmed)
 	default:
 		return nil, fmt.Errorf("unsupported or malformed proxy link")
 	}
@@ -149,6 +152,13 @@ func parseVLESS(link string) (*NodeSpec, error) {
 		spec.SpiderX = query.Get("spx")
 	} else if security == "tls" || security == "xtls" {
 		spec.SNI = query.Get("sni")
+	}
+
+	if pcs := query.Get("pcs"); pcs != "" {
+		spec.PinnedPeerCertSha256 = NormalizeCertHashHex(pcs)
+	}
+	if vcn := query.Get("vcn"); vcn != "" {
+		spec.VerifyPeerCertByName = vcn
 	}
 
 	if h := query.Get("host"); h != "" {
@@ -375,4 +385,124 @@ func parseHTTP(link string) (*NodeSpec, error) {
 		Remark:    remark,
 		RawLink:   link,
 	}, nil
+}
+
+// NormalizeCertHashHex normalizes various certificate hash formats (hex with/without colons, base64) to a 64-char lowercase hex string.
+func NormalizeCertHashHex(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	clean := strings.ReplaceAll(trimmed, ":", "")
+	clean = strings.ReplaceAll(clean, " ", "")
+	clean = strings.ToLower(clean)
+	if len(clean) == 64 {
+		if _, err := hex.DecodeString(clean); err == nil {
+			return clean
+		}
+	}
+	if decoded, err := DecodeBase64Flexible(trimmed); err == nil && len(decoded) == 32 {
+		return hex.EncodeToString(decoded)
+	}
+	return strings.ToLower(trimmed)
+}
+
+func parseHysteria2(link string) (*NodeSpec, error) {
+	u, err := url.Parse(link)
+	if err != nil {
+		return nil, err
+	}
+
+	var raw string
+	if strings.HasPrefix(link, "hysteria2://") {
+		raw = strings.TrimPrefix(link, "hysteria2://")
+	} else if strings.HasPrefix(link, "hy2://") {
+		raw = strings.TrimPrefix(link, "hy2://")
+	} else {
+		return nil, fmt.Errorf("invalid hysteria2 link prefix")
+	}
+
+	atIdx := strings.Index(raw, "@")
+	if atIdx == -1 {
+		return nil, fmt.Errorf("invalid hysteria2 link: missing @")
+	}
+	auth := raw[:atIdx]
+	if unescaped, err := url.QueryUnescape(auth); err == nil && unescaped != "" {
+		auth = unescaped
+	}
+	if auth == "" {
+		return nil, fmt.Errorf("invalid hysteria2 link: missing auth")
+	}
+
+	rest := raw[atIdx+1:]
+	qIdx := strings.Index(rest, "?")
+	var hostPortStr string
+	if qIdx == -1 {
+		hostPortStr = rest
+		if hashIdx := strings.Index(hostPortStr, "#"); hashIdx != -1 {
+			hostPortStr = hostPortStr[:hashIdx]
+		}
+	} else {
+		hostPortStr = rest[:qIdx]
+	}
+
+	host, portStr, err := net.SplitHostPort(hostPortStr)
+	if err != nil {
+		host = strings.Trim(hostPortStr, "[]")
+		portStr = "443"
+	}
+	port, _ := strconv.Atoi(portStr)
+	if port <= 0 {
+		port = 443
+	}
+
+	remark := u.Fragment
+	if remark == "" {
+		if hashIdx := strings.Index(link, "#"); hashIdx != -1 {
+			remark = link[hashIdx+1:]
+		}
+	}
+	if unescaped, err := url.QueryUnescape(remark); err == nil && unescaped != "" {
+		remark = unescaped
+	}
+
+	query := u.Query()
+	sni := query.Get("sni")
+	if sni == "" {
+		sni = query.Get("peer")
+	}
+
+	alpn := query.Get("alpn")
+	if alpn == "" {
+		alpn = "h3"
+	}
+
+	spec := &NodeSpec{
+		Protocol:     ProtoHysteria2,
+		Address:      host,
+		Port:         port,
+		Password:     auth,
+		Security:     "tls",
+		Transport:    "hysteria",
+		SNI:          sni,
+		ALPN:         alpn,
+		ObfsType:     query.Get("obfs"),
+		ObfsPassword: query.Get("obfs-password"),
+		Remark:       remark,
+		RawLink:      link,
+	}
+
+	if pin := query.Get("pinSHA256"); pin != "" {
+		spec.PinnedPeerCertSha256 = NormalizeCertHashHex(pin)
+		if spec.PinnedPeerCertSha256 != "" && spec.SNI != "" {
+			spec.VerifyPeerCertByName = spec.SNI
+		}
+	}
+
+	insecureStr := query.Get("insecure")
+	if insecureStr == "1" || strings.EqualFold(insecureStr, "true") {
+		spec.Insecure = true
+	}
+
+	return spec, nil
 }

@@ -432,6 +432,99 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		case config.ModeShadowsocksTCP:
 			in["protocol"] = "shadowsocks"
 			in["settings"] = map[string]interface{}{"method": m.Settings.Cipher, "password": m.Settings.Password, "email": "service-user"}
+		case config.ModeHysteria2:
+			in["protocol"] = "hysteria"
+			hyClients := make([]interface{}, 0, len(clients))
+			for _, rawClient := range clients {
+				cm := rawClient.(map[string]interface{})
+				hyClients = append(hyClients, map[string]interface{}{
+					"auth":  cm["id"],
+					"email": cm["email"],
+				})
+			}
+			in["settings"] = map[string]interface{}{
+				"version": 2,
+				"clients": hyClients,
+			}
+
+			sni := strings.TrimSpace(m.SNI)
+			if sni == "" {
+				sni = "www.bing.com"
+			}
+
+			certPEM := strings.TrimSpace(m.Settings.CertPEM)
+			keyPEM := strings.TrimSpace(m.Settings.PrivateKey)
+			if certPEM == "" || keyPEM == "" {
+				var genErr error
+				certPEM, keyPEM, _, genErr = config.GenerateSelfSignedCert(sni)
+				if genErr != nil {
+					return nil, fmt.Errorf("failed to generate self-signed cert for hysteria2: %w", genErr)
+				}
+			}
+
+			certLines := strings.Split(strings.ReplaceAll(certPEM, "\r\n", "\n"), "\n")
+			keyLines := strings.Split(strings.ReplaceAll(keyPEM, "\r\n", "\n"), "\n")
+
+			var masq map[string]interface{}
+			if m.Skin != "" {
+				skinPort := userCfg.GetSkinPort()
+				if skinPort <= 0 {
+					skinPort = 9443
+				}
+				masq = map[string]interface{}{
+					"type":        "proxy",
+					"url":         fmt.Sprintf("https://127.0.0.1:%d", skinPort),
+					"rewriteHost": true,
+					"insecure":    true,
+				}
+			} else {
+				masqHost := sni
+				if m.Dest != "" && !strings.HasPrefix(m.Dest, "127.0.0.1:") && !strings.HasPrefix(m.Dest, "localhost:") {
+					if h, p, err := net.SplitHostPort(m.Dest); err == nil && h != "" {
+						if p != "" && p != "443" {
+							masqHost = net.JoinHostPort(h, p)
+						} else {
+							masqHost = h
+						}
+					}
+				}
+				masq = map[string]interface{}{
+					"type":        "proxy",
+					"url":         "https://" + masqHost,
+					"rewriteHost": true,
+				}
+			}
+
+			streamSettings := map[string]interface{}{
+				"network":  "hysteria",
+				"security": "tls",
+				"tlsSettings": map[string]interface{}{
+					"alpn": []string{"h3"},
+					"certificates": []interface{}{
+						map[string]interface{}{
+							"certificate": certLines,
+							"key":         keyLines,
+						},
+					},
+				},
+				"hysteriaSettings": map[string]interface{}{
+					"version":    2,
+					"masquerade": masq,
+				},
+			}
+			if m.Settings.Password != "" {
+				streamSettings["finalmask"] = map[string]interface{}{
+					"udp": []interface{}{
+						map[string]interface{}{
+							"type": "salamander",
+							"settings": map[string]interface{}{
+								"password": m.Settings.Password,
+							},
+						},
+					},
+				}
+			}
+			in["streamSettings"] = streamSettings
 		}
 		inbounds = append(inbounds, in)
 	}
@@ -890,7 +983,10 @@ func validateInboundsPortConflicts(inbounds []interface{}) error {
 
 		hasTCP := true
 		hasUDP := false
-		if proto == "socks" {
+		if proto == "hysteria" {
+			hasTCP = false
+			hasUDP = true
+		} else if proto == "socks" {
 			if settings, ok := inb["settings"].(map[string]interface{}); ok {
 				if udp, ok := settings["udp"].(bool); ok && udp {
 					hasUDP = true

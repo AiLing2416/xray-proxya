@@ -118,6 +118,8 @@ type DomainSkinMapping struct {
 	SkinType string
 	CertPath string
 	KeyPath  string
+	CertPEM  string
+	KeyPEM   string
 }
 
 type certHolder struct {
@@ -130,6 +132,11 @@ type certHolder struct {
 
 func (ch *certHolder) getCertificate() (*tls.Certificate, error) {
 	ch.mu.RLock()
+	if ch.certPath == "" && ch.cert != nil {
+		cert := ch.cert
+		ch.mu.RUnlock()
+		return cert, nil
+	}
 	if ch.cert != nil {
 		if fi, err := os.Stat(ch.certPath); err == nil && !fi.ModTime().After(ch.modTime) {
 			cert := ch.cert
@@ -141,6 +148,10 @@ func (ch *certHolder) getCertificate() (*tls.Certificate, error) {
 
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
+
+	if ch.certPath == "" && ch.cert != nil {
+		return ch.cert, nil
+	}
 
 	fi, err := os.Stat(ch.certPath)
 	if err != nil {
@@ -195,6 +206,15 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 					firstHolder = holder
 				}
 			}
+		} else if domain != "" && m.CertPath == "" && m.CertPEM != "" && m.KeyPEM != "" {
+			pair, err := tls.X509KeyPair([]byte(m.CertPEM), []byte(m.KeyPEM))
+			if err == nil {
+				holder := &certHolder{cert: &pair}
+				certHolders[domain] = holder
+				if firstHolder == nil {
+					firstHolder = holder
+				}
+			}
 		}
 	}
 
@@ -216,6 +236,10 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 			h.ServeHTTP(w, r)
 			return
 		}
+		if (host == "127.0.0.1" || host == "localhost" || host == "::1") && firstHandler != nil {
+			firstHandler.ServeHTTP(w, r)
+			return
+		}
 		if defaultSkin == config.SkinFilebrowser {
 			serveFilebrowser404(w, r)
 			return
@@ -234,6 +258,9 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 				serverName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hello.ServerName), "."))
 				if holder, ok := certHolders[serverName]; ok {
 					return holder.getCertificate()
+				}
+				if firstHolder != nil && (serverName == "" || serverName == "127.0.0.1" || serverName == "localhost") {
+					return firstHolder.getCertificate()
 				}
 				return nil, fmt.Errorf("no certificate found for SNI %q", hello.ServerName)
 			},

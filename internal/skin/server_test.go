@@ -1,12 +1,21 @@
 package skin
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 	"xray-proxya/internal/config"
 )
 
@@ -695,6 +704,79 @@ func TestStartMultiSkinServer(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown host code = %d, want 404", rec.Code)
+	}
+}
+
+func generateTestCert(domain string) (string, string, error) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return "", "", err
+	}
+	template := x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: domain},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		DNSNames:     []string{domain},
+	}
+	derBytes, err := x509.CreateCertificate(rand.Reader, &template, &template, &priv.PublicKey, priv)
+	if err != nil {
+		return "", "", err
+	}
+	certBuf := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: derBytes})
+	privBytes, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		return "", "", err
+	}
+	keyBuf := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privBytes})
+	return string(certBuf), string(keyBuf), nil
+}
+
+func TestStartMultiSkinServerWithInlineCert(t *testing.T) {
+	certPEM, keyPEM, err := generateTestCert("example.com")
+	if err != nil {
+		t.Fatalf("generateTestCert failed: %v", err)
+	}
+
+	mappings := []DomainSkinMapping{
+		{
+			Domain:   "example.com",
+			SkinType: config.SkinNextcloud,
+			CertPEM:  certPEM,
+			KeyPEM:   keyPEM,
+		},
+	}
+
+	srv, err := StartMultiSkinServer("127.0.0.1:0", mappings, config.SkinNextcloud)
+	if err != nil {
+		t.Fatalf("StartMultiSkinServer failed: %v", err)
+	}
+
+	if srv.TLSConfig == nil || srv.TLSConfig.GetCertificate == nil {
+		t.Fatalf("expected TLSConfig.GetCertificate to be set")
+	}
+
+	// 1. SNI match
+	cert, err := srv.TLSConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: "example.com"})
+	if err != nil || cert == nil {
+		t.Errorf("GetCertificate for example.com failed: %v", err)
+	}
+
+	// 2. Fallback for 127.0.0.1 / localhost / empty
+	for _, sni := range []string{"", "127.0.0.1", "localhost"} {
+		cert, err = srv.TLSConfig.GetCertificate(&tls.ClientHelloInfo{ServerName: sni})
+		if err != nil || cert == nil {
+			t.Errorf("GetCertificate for %q failed: %v", sni, err)
+		}
+	}
+
+	// 3. HTTP Request with Host: 127.0.0.1:9443 routes to firstHandler
+	req := httptest.NewRequest("GET", "/status.php", nil)
+	req.Host = "127.0.0.1:9443"
+	rec := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Nextcloud") {
+		t.Errorf("127.0.0.1:9443 /status.php failed: %d, body: %s", rec.Code, rec.Body.String())
 	}
 }
 

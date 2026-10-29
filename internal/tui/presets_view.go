@@ -101,6 +101,8 @@ func getSecurityName(m config.ModeInfo) string {
 			return m.Settings.Cipher
 		}
 		return "aes-256-gcm"
+	case config.ModeHysteria2:
+		return "TLS-Pin+Obfs"
 	}
 	return "-"
 }
@@ -113,6 +115,8 @@ func getNetworkName(m config.PresetMode) string {
 		return "XHTTP"
 	case config.ModeVMessWS:
 		return "WS"
+	case config.ModeHysteria2:
+		return "UDP"
 	}
 	return "TCP"
 }

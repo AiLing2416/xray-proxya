@@ -55,12 +55,31 @@ func TestSupportsRealityAndSkin(t *testing.T) {
 	if supportsReality(config.ModeShadowsocksTCP) {
 		t.Errorf("expected ModeShadowsocksTCP not to support reality")
 	}
+	if supportsReality(config.ModeHysteria2) {
+		t.Errorf("expected ModeHysteria2 not to support reality")
+	}
+
+	if !supportsSNI(config.ModeVLESSVision) {
+		t.Errorf("expected ModeVLESSVision to support SNI")
+	}
+	if !supportsSNI(config.ModeVLESSReality) {
+		t.Errorf("expected ModeVLESSReality to support SNI")
+	}
+	if !supportsSNI(config.ModeHysteria2) {
+		t.Errorf("expected ModeHysteria2 to support SNI")
+	}
+	if supportsSNI(config.ModeVLESSXHTTP) {
+		t.Errorf("expected ModeVLESSXHTTP not to support SNI")
+	}
 
 	if !supportsSkin(config.ModeVLESSVision) {
 		t.Errorf("expected ModeVLESSVision to support skin")
 	}
 	if !supportsSkin(config.ModeVLESSReality) {
 		t.Errorf("expected ModeVLESSReality to support skin")
+	}
+	if !supportsSkin(config.ModeHysteria2) {
+		t.Errorf("expected ModeHysteria2 to support skin")
 	}
 	if supportsSkin(config.ModeVLESSXHTTP) {
 		t.Errorf("expected ModeVLESSXHTTP not to support skin")
@@ -384,6 +403,15 @@ func TestPresetsSetOnOffConflict(t *testing.T) {
 		t.Fatalf("SaveEx error: %v", err)
 	}
 
+	t.Cleanup(func() {
+		presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+		presetOn = false
+		presetOff = false
+	})
+
 	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
 		_ = f.Value.Set(f.DefValue)
 		f.Changed = false
@@ -398,5 +426,151 @@ func TestPresetsSetOnOffConflict(t *testing.T) {
 	err := presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 	if err == nil || !strings.Contains(err.Error(), "Cannot specify both --on and --off") {
 		t.Fatalf("expected conflict error, got %v", err)
+	}
+}
+
+func TestPresetsSetHysteria2ManualSNI(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeHysteria2, Enabled: true, Port: 443, SNI: "old.example.com", Dest: "old.example.com:443"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	origPrompt := promptConfirmFunc
+	origChecker := checkTargetAvailability
+	t.Cleanup(func() {
+		promptConfirmFunc = origPrompt
+		checkTargetAvailability = origChecker
+		presetSNIManual = ""
+		presetSNI = ""
+		presetDest = ""
+		presetSNIForce = false
+		presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+		presetOn = false
+		presetOff = false
+	})
+
+	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	presetOn = false
+	presetOff = false
+
+	checkTargetAvailability = func(string) error { return nil }
+
+	if err := presetsSetCmd.ParseFlags([]string{"--sni", "myh2.test.com"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := presetsSetCmd.RunE(presetsSetCmd, []string{"6"}); err != nil {
+		t.Fatalf("runPresetsSet failed: %v", err)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	h2 := loaded.Presets[5]
+	if h2.SNI != "myh2.test.com" {
+		t.Errorf("SNI = %q, want myh2.test.com", h2.SNI)
+	}
+	if h2.Dest != "myh2.test.com:443" {
+		t.Errorf("Dest = %q, want myh2.test.com:443", h2.Dest)
+	}
+	if h2.Settings.CertPEM == "" || h2.Settings.PrivateKey == "" {
+		t.Errorf("CertPEM or PrivateKey empty after updating SNI")
+	}
+	if len(h2.Settings.PublicKey) != 64 {
+		t.Errorf("PublicKey len = %d, want 64", len(h2.Settings.PublicKey))
+	}
+}
+
+func TestPresetsSetHysteria2SkinWithSelfSigned(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeHysteria2, Enabled: true, Port: 443, SNI: "www.bing.com", Dest: "www.bing.com:443"},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	t.Cleanup(func() {
+		presetSkin = ""
+		presetSkinDomain = ""
+		presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+		presetOn = false
+		presetOff = false
+	})
+
+	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	presetOn = false
+	presetOff = false
+
+	// 1. Configure skin on Hysteria2 without pre-existing cert in cfg.Certs -> succeeds!
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := presetsSetCmd.RunE(presetsSetCmd, []string{"6"}); err != nil {
+		t.Fatalf("runPresetsSet failed: %v", err)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	h2 := loaded.Presets[5]
+	if h2.Skin != "seafile" {
+		t.Errorf("Skin = %q, want seafile", h2.Skin)
+	}
+	if h2.SkinDomain != "www.bing.com" {
+		t.Errorf("SkinDomain = %q, want www.bing.com", h2.SkinDomain)
+	}
+	if h2.SNI != "www.bing.com" {
+		t.Errorf("SNI = %q, want www.bing.com", h2.SNI)
+	}
+	expectedDest := fmt.Sprintf("127.0.0.1:%d", loaded.SkinPort)
+	if h2.Dest != expectedDest {
+		t.Errorf("Dest = %q, want %s", h2.Dest, expectedDest)
+	}
+	if h2.Settings.CertPEM == "" || len(h2.Settings.PublicKey) != 64 {
+		t.Errorf("missing self-signed cert on Hysteria2 skin configuration")
+	}
+
+	// 2. Update skin-domain to another domain without cert -> succeeds and rotates self-signed cert
+	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	presetSkin = ""
+	presetSkinDomain = ""
+	presetOn = false
+	presetOff = false
+
+	if err := presetsSetCmd.ParseFlags([]string{"--skin-domain", "custom.selfsigned.domain"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := presetsSetCmd.RunE(presetsSetCmd, []string{"6"}); err != nil {
+		t.Fatalf("runPresetsSet failed: %v", err)
+	}
+
+	loaded, _ = config.LoadConfigEx(true)
+	h2 = loaded.Presets[5]
+	if h2.SkinDomain != "custom.selfsigned.domain" {
+		t.Errorf("SkinDomain = %q, want custom.selfsigned.domain", h2.SkinDomain)
+	}
+	if h2.SNI != "custom.selfsigned.domain" {
+		t.Errorf("SNI = %q, want custom.selfsigned.domain", h2.SNI)
+	}
+	if h2.Settings.CertPEM == "" || len(h2.Settings.PublicKey) != 64 {
+		t.Errorf("missing self-signed cert after skin-domain update")
 	}
 }
