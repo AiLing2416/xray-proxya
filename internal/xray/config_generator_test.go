@@ -1623,3 +1623,149 @@ func TestGenerateXrayJSON_Hysteria2AndVisionCoexist(t *testing.T) {
 		t.Errorf("expected port conflict between two hysteria listeners on 443, got nil")
 	}
 }
+
+func containsInboundPortRule(rules []interface{}, inboundTag string, port string, outboundTag string) bool {
+	for _, rawRule := range rules {
+		rule, ok := rawRule.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if rule["outboundTag"] != outboundTag {
+			continue
+		}
+		if rule["port"] != port {
+			continue
+		}
+		tags, ok := rule["inboundTag"].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, tag := range tags {
+			if tag == inboundTag {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestGenerateXrayJSON_MultiRelayDNSRouting(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LANEnabled:   true,
+			LocalEnabled: true,
+			TProxyPort:   12345,
+			RelayAlias:   "relay-default",
+			Rules: []config.GatewayRule{
+				{Interface: "eth1", Target: "relay-jp"},
+				{MAC: "52:54:00:11:22:33", Target: "relay-us"},
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-default",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:   "relay-jp",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+			{
+				Alias:   "relay-us",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	routing := getMap(t, parsed, "routing")
+	rules, ok := routing["rules"].([]interface{})
+	if !ok {
+		t.Fatalf("routing.rules has type %T, want []interface{}", routing["rules"])
+	}
+
+	// 1. Verify specific relay inbounds route DNS to their respective relay outbounds
+	if !containsInboundPortRule(rules, "tproxy-in-relay-jp", "53", "outbound-relay-jp") {
+		t.Fatalf("port 53 routing rule from tproxy-in-relay-jp to outbound-relay-jp not found")
+	}
+	if !containsInboundPortRule(rules, "tproxy-in-relay-us", "53", "outbound-relay-us") {
+		t.Fatalf("port 53 routing rule from tproxy-in-relay-us to outbound-relay-us not found")
+	}
+
+	// 2. Verify fallback port 53 rule to dns-out is present
+	if !containsPortRule(rules, "53", "dns-out") {
+		t.Fatalf("fallback port 53 routing rule to dns-out not found")
+	}
+
+	// 3. Verify order: per-inbound DNS rules must precede fallback dns-out rule
+	idxJP := -1
+	idxUS := -1
+	idxFallback := -1
+	for i, rawRule := range rules {
+		rule, ok := rawRule.(map[string]interface{})
+		if !ok || rule["port"] != "53" {
+			continue
+		}
+		outTag, _ := rule["outboundTag"].(string)
+		inTags, _ := rule["inboundTag"].([]interface{})
+		if outTag == "outbound-relay-jp" && len(inTags) == 1 && inTags[0] == "tproxy-in-relay-jp" {
+			idxJP = i
+		}
+		if outTag == "outbound-relay-us" && len(inTags) == 1 && inTags[0] == "tproxy-in-relay-us" {
+			idxUS = i
+		}
+		if outTag == "dns-out" && len(inTags) == 0 {
+			idxFallback = i
+		}
+	}
+
+	if idxJP == -1 || idxUS == -1 || idxFallback == -1 {
+		t.Fatalf("missing DNS rules: idxJP=%d, idxUS=%d, idxFallback=%d", idxJP, idxUS, idxFallback)
+	}
+	if idxJP >= idxFallback {
+		t.Errorf("idxJP (%d) should precede idxFallback (%d)", idxJP, idxFallback)
+	}
+	if idxUS >= idxFallback {
+		t.Errorf("idxUS (%d) should precede idxFallback (%d)", idxUS, idxFallback)
+	}
+
+	// 4. Single-relay scenario: verify no per-inbound extra DNS rules are created
+	singleCfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LANEnabled:   true,
+			LocalEnabled: true,
+			TProxyPort:   12345,
+			RelayAlias:   "relay-default",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-default",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	singleParsed := generateAndDecodeXrayConfig(t, singleCfg, "")
+	singleRouting := getMap(t, singleParsed, "routing")
+	singleRules, _ := singleRouting["rules"].([]interface{})
+
+	var port53Count int
+	for _, rawRule := range singleRules {
+		rule, ok := rawRule.(map[string]interface{})
+		if ok && rule["port"] == "53" {
+			port53Count++
+		}
+	}
+	if port53Count != 1 {
+		t.Errorf("expected exactly 1 port 53 rule (fallback to dns-out) in single-relay mode, got %d", port53Count)
+	}
+}

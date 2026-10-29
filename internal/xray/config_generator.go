@@ -675,43 +675,23 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	// explicit test target route above this guard, but never let the later
 	// catch-all rules turn it into an open proxy.
 	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"test-socks"}, "outboundTag": "blocked"})
-	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
-	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
-	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
-
-	// Explicit loopback protection before AllowPrivateTargets rules
-	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"127.0.0.0/8", "::1/128"}, "outboundTag": "direct"})
-
-	// Only an outbound explicitly opted into private targets may route its
-	// relay user before the private-IP guard. This supports chained relays to
-	// a next-hop loopback service (such as remote pathd) without exposing a
-	// next-hop private network to every relay link by default.
-	for _, co := range userCfg.CustomOutbounds {
-		if !co.Enabled || !co.AllowPrivateTargets {
-			continue
-		}
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"user":        []string{relayUserEmail(co.Alias)},
-			"outboundTag": "outbound-" + co.Alias,
-		})
-	}
 
 	type tproxyRoute struct {
 		alias      string
 		inboundTag string
 	}
 	var tproxyRoutes []tproxyRoute
+	var mainAlias string
 	if gatewayTunEnabled {
 		if userCfg.Gateway.EffectiveMode() == "tun" {
-			mainAlias := userCfg.Gateway.RelayAlias
+			mainAlias = userCfg.Gateway.RelayAlias
 			if mainAlias != "" && mainAlias != "direct" && mainAlias != "block" {
 				tproxyRoutes = append(tproxyRoutes, tproxyRoute{alias: mainAlias, inboundTag: "tun-in"})
 			}
 		} else {
 			basePort := userCfg.Gateway.EffectiveTProxyPort()
 			tproxyPorts := config.GatewayTProxyPorts(userCfg)
-			mainAlias := userCfg.Gateway.RelayAlias
+			mainAlias = userCfg.Gateway.RelayAlias
 			if mainAlias == "" || mainAlias == "direct" || mainAlias == "block" {
 				for alias, p := range tproxyPorts {
 					if p == basePort {
@@ -737,6 +717,42 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 				})
 			}
 		}
+	}
+
+	// Route port 53 traffic:
+	// For each traversed relay inbound (e.g. tproxy-in-<alias>), route port 53 queries
+	// to its corresponding relay outbound so DNS requests traverse the exact proxy node as the client.
+	for _, tr := range tproxyRoutes {
+		if tr.alias != "" && tr.alias != mainAlias && tr.alias != "direct" && tr.alias != "block" {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  []string{tr.inboundTag},
+				"port":        "53",
+				"outboundTag": "outbound-" + tr.alias,
+			})
+		}
+	}
+
+	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
+	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
+	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
+
+	// Explicit loopback protection before AllowPrivateTargets rules
+	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"127.0.0.0/8", "::1/128"}, "outboundTag": "direct"})
+
+	// Only an outbound explicitly opted into private targets may route its
+	// relay user before the private-IP guard. This supports chained relays to
+	// a next-hop loopback service (such as remote pathd) without exposing a
+	// next-hop private network to every relay link by default.
+	for _, co := range userCfg.CustomOutbounds {
+		if !co.Enabled || !co.AllowPrivateTargets {
+			continue
+		}
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"user":        []string{relayUserEmail(co.Alias)},
+			"outboundTag": "outbound-" + co.Alias,
+		})
 	}
 
 	allowPrivateByAlias := make(map[string]bool)
