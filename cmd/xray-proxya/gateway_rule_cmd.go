@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
 	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
@@ -19,9 +21,15 @@ var (
 	ruleSetInterface string
 	ruleSetTo        string
 	ruleSetTarget    string
+	ruleSetForce     bool
 
 	ruleDelMAC       string
 	ruleDelInterface string
+)
+
+var (
+	lookupInterfaceByIP = utils.GetInterfaceByIP
+	lookupMACByIP       = utils.LookupMACByIP
 )
 
 var gatewayRuleCmd = &cobra.Command{
@@ -142,7 +150,111 @@ var gatewayRuleSetCmd = &cobra.Command{
 	RunE:    runGatewayRuleSet,
 }
 
+func detectLockoutRisk(targetRule config.GatewayRule) (bool, string) {
+	if !strings.EqualFold(targetRule.Target, "block") {
+		return false, ""
+	}
+
+	sshConn := strings.TrimSpace(os.Getenv("SSH_CONNECTION"))
+	sshClient := strings.TrimSpace(os.Getenv("SSH_CLIENT"))
+
+	var clientIP, serverIP string
+	if sshConn != "" {
+		fields := strings.Fields(sshConn)
+		if len(fields) >= 4 {
+			clientIP = fields[0]
+			serverIP = fields[2]
+		}
+	}
+	if clientIP == "" && sshClient != "" {
+		fields := strings.Fields(sshClient)
+		if len(fields) >= 1 {
+			clientIP = fields[0]
+		}
+	}
+
+	ruleMAC := strings.TrimSpace(targetRule.MAC)
+	if ruleMAC != "" {
+		if norm, err := config.NormalizeMAC(ruleMAC); err == nil {
+			ruleMAC = norm
+		}
+	}
+	ruleIface := strings.TrimSpace(targetRule.Interface)
+
+	// No SSH session detected
+	if clientIP == "" && serverIP == "" {
+		// c) Without SSH env, whole-interface block is a potential lockout risk
+		if ruleIface != "" && ruleMAC == "" {
+			return true, fmt.Sprintf("Blocking entire interface %q without MAC filtering will drop all traffic on this interface, which poses a severe lockout risk.", ruleIface)
+		}
+		return false, ""
+	}
+
+	// SSH session detected: find inbound interface and client MAC
+	var sshIface string
+	if serverIP != "" {
+		if iface, err := lookupInterfaceByIP(serverIP); err == nil && iface != "" {
+			sshIface = iface
+		}
+	}
+	if sshIface == "" && clientIP != "" {
+		if iface, err := lookupInterfaceByIP(clientIP); err == nil && iface != "" {
+			sshIface = iface
+		}
+	}
+
+	var clientMAC string
+	if clientIP != "" {
+		if mac, err := lookupMACByIP(clientIP); err == nil && mac != "" {
+			if norm, err := config.NormalizeMAC(mac); err == nil {
+				clientMAC = norm
+			} else {
+				clientMAC = strings.ToUpper(mac)
+			}
+		}
+	}
+
+	// a) If targetRule.Interface matches current SSH inbound interface
+	if sshIface != "" && ruleIface == sshIface {
+		if ruleMAC == "" {
+			return true, fmt.Sprintf("Blocking entire interface %q matches your active SSH inbound interface (server IP: %s, client IP: %s).", ruleIface, serverIP, clientIP)
+		}
+		if clientMAC != "" && strings.EqualFold(ruleMAC, clientMAC) {
+			return true, fmt.Sprintf("Rule targets interface %q and MAC %q, matching your active SSH connection (client IP: %s, client MAC: %s).", ruleIface, ruleMAC, clientIP, clientMAC)
+		}
+		if clientMAC == "" {
+			return true, fmt.Sprintf("Rule targets active SSH interface %q with MAC %q (client MAC could not be verified for %s).", ruleIface, ruleMAC, clientIP)
+		}
+	}
+
+	// b) If targetRule.MAC matches current SSH client MAC
+	if ruleMAC != "" && clientMAC != "" && strings.EqualFold(ruleMAC, clientMAC) {
+		return true, fmt.Sprintf("Rule targets MAC %q, matching your active SSH client MAC (client IP: %s).", ruleMAC, clientIP)
+	}
+
+	// c fallback: If SSH is detected but inbound interface could not be resolved,
+	// blocking an entire interface might be the SSH interface
+	if sshIface == "" && ruleIface != "" && ruleMAC == "" {
+		return true, fmt.Sprintf("Blocking entire interface %q without MAC filtering poses a severe lockout risk while an active SSH session is present.", ruleIface)
+	}
+
+	return false, ""
+}
+
 func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
+	force := ruleSetForce
+	if cmd != nil && cmd.Flags() != nil {
+		if f, err := cmd.Flags().GetBool("force"); err == nil && f {
+			force = true
+		}
+	}
+	defer func() {
+		ruleSetForce = false
+		if cmd != nil && cmd.Flags() != nil && cmd.Flags().Lookup("force") != nil {
+			_ = cmd.Flags().Set("force", "false")
+		}
+	}()
+
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
 		return fmt.Errorf("❌ Failed to load staging config: %v", err)
@@ -179,6 +291,29 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 		}
 		if !found {
 			return fmt.Errorf("❌ Target relay %q not found in custom outbounds (allowed: direct, block, or an existing relay alias)", normRule.Target)
+		}
+	}
+
+	// High-risk lockout risk detection
+	hasRisk, warningMsg := detectLockoutRisk(normRule)
+	if hasRisk {
+		if force {
+			fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule forced (--force specified): %s\n", warningMsg)
+		} else {
+			fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule detected!\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "   %s\n", warningMsg)
+			fmt.Fprintf(cmd.OutOrStdout(), "   Applying this rule may immediately sever your active SSH session and cause permanent management lockout.\n")
+			fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to proceed? [N/y]: ")
+
+			reader := bufio.NewReader(cmd.InOrStdin())
+			input, err := reader.ReadString('\n')
+			if err != nil && len(input) == 0 {
+				return fmt.Errorf("❌ Operation cancelled: failed to read confirmation (use --force to bypass)")
+			}
+			answer := strings.TrimSpace(input)
+			if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+				return fmt.Errorf("❌ Operation cancelled by user (lockout protection)")
+			}
 		}
 	}
 
@@ -368,6 +503,7 @@ func init() {
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetInterface, "interface", "i", "", "LAN interface name (e.g. eth1)")
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetTo, "to", "t", "", "Target destination ('direct', 'block', or relay alias)")
 	gatewayRuleSetCmd.Flags().StringVar(&ruleSetTarget, "target", "", "Alias for --to")
+	gatewayRuleSetCmd.Flags().BoolVarP(&ruleSetForce, "force", "f", false, "Force setting the rule even if it poses a lockout risk")
 
 	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("to", completeRuleTargets)
 	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("target", completeRuleTargets)

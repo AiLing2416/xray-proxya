@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -254,5 +255,340 @@ func TestGatewaySetRouterFlags(t *testing.T) {
 	}
 	if stg.Gateway.NATDisabled {
 		t.Errorf("NATDisabled = %v, want false after --nat", stg.Gateway.NATDisabled)
+	}
+
+	// Test WAN and LAN collision validation
+	resetCmdFlags(cmd)
+	_ = cmd.Flags().Set("interface", "eth1,eth2")
+	_ = cmd.Flags().Set("wan", "eth1")
+	err = runGatewaySet(cmd, []string{})
+	if err == nil {
+		t.Fatal("expected runGatewaySet to fail when WAN is configured as a LAN interface")
+	}
+	if !strings.Contains(err.Error(), `cannot also be configured as a LAN interface`) {
+		t.Fatalf("unexpected error message: %v", err)
+	}
+}
+
+func TestDetectLockoutRisk_NonBlock(t *testing.T) {
+	rule := config.GatewayRule{
+		Interface: "eth0",
+		Target:    "direct",
+	}
+	hasRisk, msg := detectLockoutRisk(rule)
+	if hasRisk {
+		t.Errorf("expected no risk for non-block target, got true (%s)", msg)
+	}
+
+	ruleRelay := config.GatewayRule{
+		Interface: "eth0",
+		Target:    "relay-us",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleRelay)
+	if hasRisk {
+		t.Errorf("expected no risk for relay target, got true (%s)", msg)
+	}
+}
+
+func TestDetectLockoutRisk_NoSSH(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "")
+	t.Setenv("SSH_CLIENT", "")
+
+	// 1. Whole interface block without MAC -> risk
+	rule1 := config.GatewayRule{
+		Interface: "eth1",
+		Target:    "block",
+	}
+	hasRisk, msg := detectLockoutRisk(rule1)
+	if !hasRisk || !strings.Contains(msg, "without MAC filtering") {
+		t.Errorf("expected risk for whole interface block without SSH, got %v (%s)", hasRisk, msg)
+	}
+
+	// 2. Specific MAC block without SSH -> no risk
+	rule2 := config.GatewayRule{
+		MAC:    "52:54:00:83:00:11",
+		Target: "block",
+	}
+	hasRisk, msg = detectLockoutRisk(rule2)
+	if hasRisk {
+		t.Errorf("expected no risk for specific MAC without SSH, got true (%s)", msg)
+	}
+}
+
+func TestDetectLockoutRisk_WithSSH(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "10.0.82.100 50000 10.0.82.21 22")
+	t.Setenv("SSH_CLIENT", "10.0.82.100 50000 22")
+
+	origLookupIface := lookupInterfaceByIP
+	origLookupMAC := lookupMACByIP
+	defer func() {
+		lookupInterfaceByIP = origLookupIface
+		lookupMACByIP = origLookupMAC
+	}()
+
+	lookupInterfaceByIP = func(ip string) (string, error) {
+		if ip == "10.0.82.21" {
+			return "eth0", nil
+		}
+		return "", fmt.Errorf("interface not found")
+	}
+	lookupMACByIP = func(ip string) (string, error) {
+		if ip == "10.0.82.100" {
+			return "52:54:00:82:00:99", nil
+		}
+		return "", fmt.Errorf("mac not found")
+	}
+
+	// a1. Block entire inbound interface (eth0) -> risk
+	ruleA1 := config.GatewayRule{
+		Interface: "eth0",
+		Target:    "block",
+	}
+	hasRisk, msg := detectLockoutRisk(ruleA1)
+	if !hasRisk || !strings.Contains(msg, "active SSH inbound interface") {
+		t.Errorf("expected risk for blocking inbound interface eth0, got %v (%s)", hasRisk, msg)
+	}
+
+	// a2. Block inbound interface with matching client MAC -> risk
+	ruleA2 := config.GatewayRule{
+		Interface: "eth0",
+		MAC:       "52:54:00:82:00:99",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleA2)
+	if !hasRisk || !strings.Contains(msg, "matching your active SSH connection") {
+		t.Errorf("expected risk for blocking inbound interface with client MAC, got %v (%s)", hasRisk, msg)
+	}
+
+	// a3. Block inbound interface with unknown client MAC -> risk
+	lookupMACByIP = func(ip string) (string, error) {
+		return "", fmt.Errorf("not found in arp")
+	}
+	ruleA3 := config.GatewayRule{
+		Interface: "eth0",
+		MAC:       "52:54:00:82:00:55",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleA3)
+	if !hasRisk || !strings.Contains(msg, "client MAC could not be verified") {
+		t.Errorf("expected risk when inbound interface matches and client MAC cannot be verified, got %v (%s)", hasRisk, msg)
+	}
+
+	// Reset lookupMACByIP for remaining tests
+	lookupMACByIP = func(ip string) (string, error) {
+		if ip == "10.0.82.100" {
+			return "52:54:00:82:00:99", nil
+		}
+		return "", fmt.Errorf("mac not found")
+	}
+
+	// b. Block client MAC across any interface -> risk
+	ruleB := config.GatewayRule{
+		MAC:    "52:54:00:82:00:99",
+		Target: "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleB)
+	if !hasRisk || !strings.Contains(msg, "matching your active SSH client MAC") {
+		t.Errorf("expected risk for blocking active SSH client MAC, got %v (%s)", hasRisk, msg)
+	}
+
+	// c. Block different interface with different MAC -> no risk
+	ruleC := config.GatewayRule{
+		Interface: "eth1",
+		MAC:       "52:54:00:83:00:11",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleC)
+	if hasRisk {
+		t.Errorf("expected no risk for different interface and different MAC, got true (%s)", msg)
+	}
+
+	// d. Block different interface entirely while SSH inbound interface is known -> no risk to SSH
+	ruleD := config.GatewayRule{
+		Interface: "eth1",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleD)
+	if hasRisk {
+		t.Errorf("expected no risk for whole-block on non-SSH interface eth1 when SSH is on eth0, got true (%s)", msg)
+	}
+
+	// e. If SSH inbound interface cannot be resolved, whole interface block is flagged as risk
+	lookupInterfaceByIP = func(ip string) (string, error) {
+		return "", fmt.Errorf("cannot resolve")
+	}
+	ruleE := config.GatewayRule{
+		Interface: "eth1",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleE)
+	if !hasRisk || !strings.Contains(msg, "while an active SSH session is present") {
+		t.Errorf("expected risk for whole-interface block when SSH interface unresolved, got %v (%s)", hasRisk, msg)
+	}
+}
+
+func TestGatewayRuleSet_LockoutRisk_InteractiveAndForce(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:  "tproxy",
+			State: "proxy",
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx(true) failed: %v", err)
+	}
+
+	t.Setenv("SSH_CONNECTION", "10.0.82.100 50000 10.0.82.21 22")
+	origLookupIface := lookupInterfaceByIP
+	origLookupMAC := lookupMACByIP
+	defer func() {
+		lookupInterfaceByIP = origLookupIface
+		lookupMACByIP = origLookupMAC
+		gatewayRuleSetCmd.SetIn(nil)
+		gatewayRuleSetCmd.SetOut(nil)
+	}()
+
+	lookupInterfaceByIP = func(ip string) (string, error) {
+		if ip == "10.0.82.21" {
+			return "eth0", nil
+		}
+		return "", fmt.Errorf("interface not found")
+	}
+	lookupMACByIP = func(ip string) (string, error) {
+		if ip == "10.0.82.100" {
+			return "52:54:00:82:00:99", nil
+		}
+		return "", fmt.Errorf("mac not found")
+	}
+
+	// 1. Interactive 'y': should succeed and save rule
+	var outBuf bytes.Buffer
+	gatewayRuleSetCmd.SetOut(&outBuf)
+	gatewayRuleSetCmd.SetIn(strings.NewReader("y\n"))
+	ruleSetInterface = "eth0"
+	ruleSetMAC = ""
+	ruleSetTo = "block"
+	ruleSetTarget = ""
+	ruleSetForce = false
+
+	err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("expected interactive 'y' to succeed, got: %v", err)
+	}
+	if !strings.Contains(outBuf.String(), "[N/y]:") {
+		t.Errorf("expected prompt [N/y]: in output, got:\n%s", outBuf.String())
+	}
+	stg, _ := config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 1 || stg.Gateway.Rules[0].Interface != "eth0" || stg.Gateway.Rules[0].Target != "block" {
+		t.Fatalf("expected rule saved to staging after 'y', got: %+v", stg.Gateway.Rules)
+	}
+
+	// Clear staging rules
+	stg.Gateway.Rules = nil
+	_ = stg.SaveEx(true)
+
+	// 2. Interactive 'yes' (case-insensitive): should succeed
+	outBuf.Reset()
+	gatewayRuleSetCmd.SetIn(strings.NewReader("YES\n"))
+	ruleSetInterface = "eth0"
+	ruleSetMAC = ""
+	ruleSetTo = "block"
+	ruleSetForce = false
+
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("expected interactive 'YES' to succeed, got: %v", err)
+	}
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 1 {
+		t.Fatalf("expected rule saved after 'YES', got: %+v", stg.Gateway.Rules)
+	}
+
+	// Clear staging rules
+	stg.Gateway.Rules = nil
+	_ = stg.SaveEx(true)
+
+	// 3. Interactive 'n': should cancel with error and NOT save rule
+	outBuf.Reset()
+	gatewayRuleSetCmd.SetIn(strings.NewReader("n\n"))
+	ruleSetInterface = "eth0"
+	ruleSetMAC = ""
+	ruleSetTo = "block"
+	ruleSetForce = false
+
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err == nil || !strings.Contains(err.Error(), "Operation cancelled by user") {
+		t.Fatalf("expected cancellation error for 'n', got: %v", err)
+	}
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 0 {
+		t.Fatalf("expected rules to remain empty after cancellation, got: %+v", stg.Gateway.Rules)
+	}
+
+	// 4. Interactive default (enter key / newline): should cancel with error
+	outBuf.Reset()
+	gatewayRuleSetCmd.SetIn(strings.NewReader("\n"))
+	ruleSetInterface = "eth0"
+	ruleSetMAC = ""
+	ruleSetTo = "block"
+	ruleSetForce = false
+
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err == nil || !strings.Contains(err.Error(), "Operation cancelled by user") {
+		t.Fatalf("expected cancellation error for newline, got: %v", err)
+	}
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 0 {
+		t.Fatalf("expected rules to remain empty after newline, got: %+v", stg.Gateway.Rules)
+	}
+
+	// 5. Non-interactive EOF: should cancel with error
+	outBuf.Reset()
+	gatewayRuleSetCmd.SetIn(strings.NewReader(""))
+	ruleSetInterface = "eth0"
+	ruleSetMAC = ""
+	ruleSetTo = "block"
+	ruleSetForce = false
+
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err == nil || !strings.Contains(err.Error(), "failed to read confirmation") {
+		t.Fatalf("expected cancellation error for EOF, got: %v", err)
+	}
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 0 {
+		t.Fatalf("expected rules to remain empty after EOF, got: %+v", stg.Gateway.Rules)
+	}
+
+	// 6. With --force flag: should succeed without prompting
+	outBuf.Reset()
+	gatewayRuleSetCmd.SetIn(strings.NewReader("")) // EOF in stdin would fail if prompted
+	ruleSetInterface = "eth0"
+	ruleSetMAC = ""
+	ruleSetTo = "block"
+	ruleSetForce = true
+
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("expected --force to succeed, got: %v", err)
+	}
+	if !strings.Contains(outBuf.String(), "⚠️  WARNING: High-risk block rule forced (--force specified):") {
+		t.Errorf("expected force warning in output, got:\n%s", outBuf.String())
+	}
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 1 || stg.Gateway.Rules[0].Interface != "eth0" || stg.Gateway.Rules[0].Target != "block" {
+		t.Fatalf("expected rule saved to staging with force, got: %+v", stg.Gateway.Rules)
+	}
+}
+
+func TestGatewayRuleSetForceFlag(t *testing.T) {
+	flag := gatewayRuleSetCmd.Flags().Lookup("force")
+	if flag == nil {
+		t.Fatalf("expected --force flag on gateway rule set")
+	}
+	if flag.Shorthand != "f" {
+		t.Errorf("expected shorthand 'f', got %q", flag.Shorthand)
 	}
 }

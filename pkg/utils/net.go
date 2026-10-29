@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -308,4 +309,139 @@ func IsPublicIP(ip net.IP) bool {
 
 func FormatBytes(b int64) string {
 	return units.FormatIEC(b)
+}
+
+// GetInterfaceByIP finds the network interface name that has the given IP assigned,
+// or whose subnet contains the given IP.
+func GetInterfaceByIP(ipStr string) (string, error) {
+	ipStr = strings.TrimSpace(ipStr)
+	if host, _, err := net.SplitHostPort(ipStr); err == nil {
+		ipStr = host
+	}
+	targetIP := net.ParseIP(ipStr)
+	if targetIP == nil {
+		return "", fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+
+	// 1. Direct match on interface assigned IP
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+			if ip != nil && ip.Equal(targetIP) {
+				return iface.Name, nil
+			}
+		}
+	}
+
+	// 2. Subnet match (interface whose subnet contains targetIP, non-loopback)
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			if ipnet, ok := addr.(*net.IPNet); ok {
+				if !ipnet.IP.IsLoopback() && ipnet.Contains(targetIP) {
+					return iface.Name, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no interface found for IP %s", ipStr)
+}
+
+// LookupMACByIP attempts to find the hardware (MAC) address for a given IP address
+// by inspecting the kernel ARP table (/proc/net/arp) or the neighbor table (`ip neigh`).
+func LookupMACByIP(ipStr string) (string, error) {
+	ipStr = strings.TrimSpace(ipStr)
+	if host, _, err := net.SplitHostPort(ipStr); err == nil {
+		ipStr = host
+	}
+	if ipStr == "" {
+		return "", fmt.Errorf("empty IP address")
+	}
+
+	// 1. Try reading /proc/net/arp
+	if data, err := os.ReadFile("/proc/net/arp"); err == nil {
+		if mac, err := ParseARPTable(string(data), ipStr); err == nil && mac != "" {
+			return mac, nil
+		}
+	}
+
+	// 2. Try `ip neigh show <ip>`
+	return LookupMACFromNeigh(ipStr)
+}
+
+// ParseARPTable parses the contents of /proc/net/arp and looks up the MAC for targetIP.
+func ParseARPTable(content, targetIP string) (string, error) {
+	targetIP = strings.TrimSpace(targetIP)
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if i == 0 {
+			continue // skip header
+		}
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			ip := fields[0]
+			hwAddr := fields[3]
+			if ip == targetIP && hwAddr != "00:00:00:00:00:00" && hwAddr != "" {
+				hw, err := net.ParseMAC(hwAddr)
+				if err == nil {
+					return hw.String(), nil
+				}
+				return hwAddr, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("MAC not found in ARP table for %s", targetIP)
+}
+
+// LookupMACFromNeigh runs `ip neigh show <targetIP>` to find the MAC address.
+func LookupMACFromNeigh(targetIP string) (string, error) {
+	targetIP = strings.TrimSpace(targetIP)
+	if targetIP == "" {
+		return "", fmt.Errorf("empty IP address")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "ip", "neigh", "show", targetIP).Output()
+	if err != nil {
+		return "", err
+	}
+	return ParseNeighOutput(string(out))
+}
+
+// ParseNeighOutput parses the output of `ip neigh show` to extract the MAC address.
+func ParseNeighOutput(output string) (string, error) {
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		for i, field := range fields {
+			if field == "lladdr" && i+1 < len(fields) {
+				mac := fields[i+1]
+				hw, err := net.ParseMAC(mac)
+				if err == nil {
+					return hw.String(), nil
+				}
+				return mac, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("MAC not found in neighbor output")
 }
