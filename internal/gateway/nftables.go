@@ -1473,6 +1473,15 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 			b.WriteString("        iifname \"" + wanIface + "\" oifname " + lanMatch + " ct state established,related accept\n")
 			b.WriteString("    }\n")
 
+			// Note: Masquerade in the inet family table applies dual-stack NAT (NAT44 for IPv4
+			// and NAT66 for IPv6). In a gateway environment, applying NAT66 to forwarded LAN
+			// traffic is an intentional architectural and security design:
+			// 1. Privacy Protection: Hides internal LAN client global IPv6 addresses (e.g. SLAAC
+			//    EUI-64 addresses containing hardware MAC addresses) behind the gateway WAN address.
+			// 2. Leak Prevention: Prevents internal client IPv6 identifiers from leaking to
+			//    upstream networks or bypassing destination targets.
+			// 3. Topology Consistency: Ensures uniform egress address behavior for all direct or
+			//    forwarded LAN traffic leaving via the WAN interface.
 			b.WriteString("    chain postrouting {\n")
 			b.WriteString("        type nat hook postrouting priority srcnat; policy accept;\n")
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" masquerade\n")
@@ -1733,6 +1742,9 @@ func installDirectLANForwardRules(lanIfaces ...string) error {
 			[]string{"iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept"}); err != nil {
 			return fmt.Errorf("allow LAN/WAN forwarding: %w", err)
 		}
+		// In the inet table, masquerade performs dual-stack NAT (NAT44 and NAT66).
+		// NAT66 is intentionally utilized here for LAN client privacy protection and
+		// IPv6 address leak prevention when direct forwarding is active.
 		if err := run("nft", "add", "rule", "inet", "filter", "postrouting", "iifname", lanIface, "oifname", wanIface, "masquerade", "comment", "\"xray-proxya\""); err != nil {
 			return fmt.Errorf("enable direct LAN NAT masquerade: %w", err)
 		}
