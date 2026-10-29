@@ -788,6 +788,83 @@ func TestBuildNFTWithDNSListen(t *testing.T) {
 	}
 }
 
+func TestBuildNFT_LocalLANDNSInterception(t *testing.T) {
+	// Case 1: TProxy mode, LANEnabled == true, DNSListen == ""
+	// Should allow local port 53 through prerouting and intercept it before destination bypasses
+	cfgTProxy := testGatewayConfig(true, true)
+	cfgTProxy.Gateway.DNSListen = ""
+	rulesTProxy := buildNFT(cfgTProxy, "ens18", "192.168.50.0/24", "")
+
+	if !strings.Contains(rulesTProxy, `iifname != "lo" fib daddr type local meta l4proto != { tcp, udp } return`) {
+		t.Fatalf("expected non-tcp/udp local fib return in prerouting, got:\n%s", rulesTProxy)
+	}
+	if !strings.Contains(rulesTProxy, `iifname != "lo" fib daddr type local th dport != 53 return`) {
+		t.Fatalf("expected non-53 local fib return in prerouting, got:\n%s", rulesTProxy)
+	}
+	if strings.Contains(rulesTProxy, `iifname != "lo" fib daddr type local return`) {
+		t.Fatalf("did not expect blanket local return in prerouting when DNSListen is empty and LANEnabled is true, got:\n%s", rulesTProxy)
+	}
+	expectedTProxyCapture := `fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :12345 meta mark set 1 accept`
+	if !strings.Contains(rulesTProxy, expectedTProxyCapture) {
+		t.Fatalf("expected local DNS tproxy capture rule %q in prerouting, got:\n%s", expectedTProxyCapture, rulesTProxy)
+	}
+	// Verify capture occurs before LAN subnet return
+	idxCapture := strings.Index(rulesTProxy, expectedTProxyCapture)
+	idxBypass := strings.Index(rulesTProxy, "ip daddr 192.168.50.0/24 return")
+	if idxCapture == -1 || idxBypass == -1 || idxCapture > idxBypass {
+		t.Fatalf("local DNS capture rule must appear before LAN subnet bypass, capture=%d, bypass=%d", idxCapture, idxBypass)
+	}
+
+	// Case 2: Configured DNSListen != ""
+	// Should retain the original direct local return in prerouting, without special tproxy rule
+	cfgDNSListen := testGatewayConfig(true, true)
+	cfgDNSListen.Gateway.DNSListen = ":53"
+	rulesDNSListen := buildNFT(cfgDNSListen, "ens18", "192.168.50.0/24", "")
+
+	if !strings.Contains(rulesDNSListen, `iifname != "lo" fib daddr type local return`) {
+		t.Fatalf("expected blanket local fib return in prerouting when DNSListen is configured, got:\n%s", rulesDNSListen)
+	}
+	if strings.Contains(rulesDNSListen, `fib daddr type local th dport != 53 return`) {
+		t.Fatalf("unexpected non-53 local fib return when DNSListen is configured, got:\n%s", rulesDNSListen)
+	}
+	if strings.Contains(rulesDNSListen, expectedTProxyCapture) {
+		t.Fatalf("unexpected local DNS tproxy capture rule when DNSListen is configured, got:\n%s", rulesDNSListen)
+	}
+
+	// Case 3: TUN mode, LANEnabled == true, DNSListen == ""
+	// Should mark DNS traffic destined to local LAN IP with tunMark
+	cfgTun := testGatewayConfig(true, true)
+	cfgTun.Gateway.Mode = "tun"
+	cfgTun.Gateway.DNSListen = ""
+	rulesTun := buildNFT(cfgTun, "ens18", "192.168.50.0/24", "")
+
+	if strings.Contains(rulesTun, "fib daddr type local return") {
+		t.Fatalf("tun mode should not contain fib daddr type local return, got:\n%s", rulesTun)
+	}
+	expectedTunCapture := "fib daddr type local meta l4proto { tcp, udp } th dport 53 meta mark set 1\n"
+	if !strings.Contains(rulesTun, expectedTunCapture) {
+		t.Fatalf("expected local DNS mark rule in tun mode, got:\n%s", rulesTun)
+	}
+	// TUN mode local DNS rule should appear before LAN subnet return
+	idxTunCapture := strings.Index(rulesTun, expectedTunCapture)
+	idxTunBypass := strings.Index(rulesTun, "ip daddr 192.168.50.0/24 return")
+	if idxTunCapture == -1 || idxTunBypass == -1 || idxTunCapture > idxTunBypass {
+		t.Fatalf("tun mode local DNS capture rule must appear before LAN subnet bypass, capture=%d, bypass=%d", idxTunCapture, idxTunBypass)
+	}
+
+	// Case 4: LANEnabled == false (LocalEnabled only)
+	// Should use standard local return and not capture
+	cfgLocalOnly := testGatewayConfig(true, false)
+	rulesLocalOnly := buildNFT(cfgLocalOnly, "ens18", "192.168.50.0/24", "")
+
+	if !strings.Contains(rulesLocalOnly, `iifname != "lo" fib daddr type local return`) {
+		t.Fatalf("expected standard local fib return in local-only mode, got:\n%s", rulesLocalOnly)
+	}
+	if strings.Contains(rulesLocalOnly, `fib daddr type local meta l4proto { tcp, udp } th dport 53`) {
+		t.Fatalf("unexpected local DNS capture in local-only mode, got:\n%s", rulesLocalOnly)
+	}
+}
+
 func TestVerify_GatewayDNSListening(t *testing.T) {
 	origListening := isTProxyPortListeningFn
 	origForwarding := isIPv4ForwardingEnabledFn
@@ -890,8 +967,12 @@ func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
 	}
 
 	// 2. Prerouting local fib return
-	if !strings.Contains(rules, `iifname != "lo" fib daddr type local return`) {
-		t.Errorf("expected local fib return in prerouting, got:\n%s", rules)
+	if !strings.Contains(rules, `iifname != "lo" fib daddr type local meta l4proto != { tcp, udp } return`) ||
+		!strings.Contains(rules, `iifname != "lo" fib daddr type local th dport != 53 return`) {
+		t.Errorf("expected local fib return for non-DNS in prerouting, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :12345 meta mark set 1 accept`) {
+		t.Errorf("expected local DNS tproxy interception in prerouting, got:\n%s", rules)
 	}
 
 	// 3. Multi-LAN interface guards

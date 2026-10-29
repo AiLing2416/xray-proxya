@@ -1212,7 +1212,12 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
 		if !isTun {
-			b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
+			if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
+				b.WriteString("        iifname != \"lo\" fib daddr type local meta l4proto != { tcp, udp } return\n")
+				b.WriteString("        iifname != \"lo\" fib daddr type local th dport != 53 return\n")
+			} else {
+				b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
+			}
 		}
 
 		// Block rules (most specific selector first; less specific blocks
@@ -1290,6 +1295,14 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 			}
 		} else {
 			b.WriteString("        iifname != \"lo\" return\n")
+		}
+
+		if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
+			if !isTun {
+				b.WriteString("        fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
+			} else {
+				b.WriteString("        fib daddr type local meta l4proto { tcp, udp } th dport 53 meta mark set " + tunMark + "\n")
+			}
 		}
 
 		// Destination bypasses
