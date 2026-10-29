@@ -1330,6 +1330,16 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 
 		// Per-client rules ordered by specificity: interface+MAC, MAC, interface.
 		if isTun {
+			for _, rule := range sortedGatewayRules(cfg, false) {
+				match := strings.Join(matchTokens(rule), " ")
+				target := strings.TrimSpace(rule.Target)
+				if strings.EqualFold(target, "direct") {
+					b.WriteString("        " + match + " return\n")
+					continue
+				}
+				// Fail closed: TUN mode does not support per-client relay routing.
+				b.WriteString("        " + match + " drop\n")
+			}
 			if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
 				b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
 				b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")

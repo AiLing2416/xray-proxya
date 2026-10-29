@@ -970,6 +970,58 @@ func TestValidateGatewayInterfaces(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayRulesForMode(t *testing.T) {
+	// 1. TUN mode with relay target should fail
+	cfg1 := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Mode: "tun",
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{MAC: "52:54:00:12:34:56", Target: "relay-us"},
+			},
+		},
+	}
+	err1 := ValidateGatewayRulesForMode(cfg1)
+	if err1 == nil || !strings.Contains(err1.Error(), "TUN mode does not support per-client relay routing") {
+		t.Fatalf("expected error for relay target in TUN mode, got: %v", err1)
+	}
+
+	// 2. TUN mode with direct and block targets should pass
+	cfg2 := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Mode: "tun",
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{MAC: "52:54:00:12:34:56", Target: "block"},
+			},
+		},
+	}
+	if err := ValidateGatewayRulesForMode(cfg2); err != nil {
+		t.Fatalf("expected direct and block to pass in TUN mode, got: %v", err)
+	}
+
+	// 3. TProxy mode allows relay targets
+	cfg3 := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Mode: "tproxy",
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "relay-us"},
+			},
+		},
+	}
+	if err := ValidateGatewayRulesForMode(cfg3); err != nil {
+		t.Fatalf("expected relay target to pass in TProxy mode, got: %v", err)
+	}
+
+	// 4. ValidateGatewayMode also invokes ValidateGatewayRulesForMode
+	if err := ValidateGatewayMode(cfg1); err == nil {
+		t.Fatal("expected ValidateGatewayMode to fail for TUN mode with relay targets")
+	}
+}
+
 func TestGatewayTProxyPorts(t *testing.T) {
 	cfg := &UserConfig{
 		Gateway: GatewayConfig{

@@ -58,6 +58,9 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		if err := config.ValidateGatewayMode(cfg); err != nil {
 			return nil, err
 		}
+		if err := config.ValidateGatewayRulesForMode(cfg); err != nil {
+			return nil, err
+		}
 		if err := config.ValidateGatewayRuleTargets(cfg); err != nil {
 			return nil, err
 		}

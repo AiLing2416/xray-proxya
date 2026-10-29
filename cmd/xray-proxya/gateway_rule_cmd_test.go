@@ -592,3 +592,45 @@ func TestGatewayRuleSetForceFlag(t *testing.T) {
 		t.Errorf("expected shorthand 'f', got %q", flag.Shorthand)
 	}
 }
+
+func TestGatewayRuleSet_TUNModeDisallowsRelay(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:  "tun",
+			State: "proxy",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-us", Enabled: true},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx(true) failed: %v", err)
+	}
+
+	// 1. Setting a relay target in TUN mode must fail
+	ruleSetInterface = "eth1"
+	ruleSetMAC = ""
+	ruleSetTo = "relay-us"
+	ruleSetForce = false
+	err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err == nil || !strings.Contains(err.Error(), "TUN mode does not support per-client relay routing") {
+		t.Fatalf("expected error setting relay target in TUN mode, got: %v", err)
+	}
+
+	// 2. Setting a direct target in TUN mode must succeed
+	ruleSetTo = "direct"
+	if err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{}); err != nil {
+		t.Fatalf("expected direct target to succeed in TUN mode, got: %v", err)
+	}
+
+	// 3. Setting a block target in TUN mode must succeed
+	ruleSetInterface = ""
+	ruleSetMAC = "52:54:00:12:34:56"
+	ruleSetTo = "block"
+	if err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{}); err != nil {
+		t.Fatalf("expected block target to succeed in TUN mode, got: %v", err)
+	}
+}

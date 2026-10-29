@@ -807,6 +807,25 @@ func ValidateInterfaceName(name string) error {
 	return nil
 }
 
+// ValidateGatewayRulesForMode verifies that gateway rules are compatible with the current gateway mode.
+// In TUN mode, per-client relay routing is unsupported (Xray only binds a single tun device),
+// so only "direct" and "block" rules are allowed.
+func ValidateGatewayRulesForMode(userCfg *UserConfig) error {
+	if userCfg == nil || (userCfg.Role != "" && userCfg.Role != RoleGateway) {
+		return nil
+	}
+	if userCfg.Gateway.EffectiveMode() != "tun" {
+		return nil
+	}
+	for _, rule := range userCfg.Gateway.Rules {
+		target := strings.TrimSpace(rule.Target)
+		if !strings.EqualFold(target, "direct") && !strings.EqualFold(target, "block") {
+			return fmt.Errorf("TUN mode does not support per-client relay routing (rule targets relay %q); use 'tproxy' mode or change target to 'direct' or 'block'", rule.Target)
+		}
+	}
+	return nil
+}
+
 // ValidateGatewayMode verifies that Gateway.Mode is either empty, "tproxy", or "tun".
 func ValidateGatewayMode(userCfg *UserConfig) error {
 	if userCfg == nil || userCfg.Role != RoleGateway {
@@ -816,7 +835,7 @@ func ValidateGatewayMode(userCfg *UserConfig) error {
 	if mode != "" && mode != "tproxy" && mode != "tun" {
 		return fmt.Errorf("invalid gateway mode %q; valid options are 'tproxy' and 'tun'", userCfg.Gateway.Mode)
 	}
-	return nil
+	return ValidateGatewayRulesForMode(userCfg)
 }
 
 // ValidateGatewayInterfaces validates every interface name referenced by the

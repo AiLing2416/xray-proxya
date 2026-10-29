@@ -501,6 +501,9 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("❌ Invalid mode %q; valid options are 'tproxy' and 'tun'", modeVal)
 		}
 		cfg.Gateway.Mode = modeVal
+		if err := config.ValidateGatewayRulesForMode(cfg); err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
 	} else if cfg.Gateway.Mode == "" {
 		cfg.Gateway.Mode = "tproxy"
 	}
@@ -602,6 +605,9 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := config.ValidateGatewayInterfaces(cfg); err != nil {
+		return fmt.Errorf("❌ %w", err)
+	}
+	if err := config.ValidateGatewayRulesForMode(cfg); err != nil {
 		return fmt.Errorf("❌ %w", err)
 	}
 

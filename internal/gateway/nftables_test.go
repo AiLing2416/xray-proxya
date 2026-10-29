@@ -1166,3 +1166,24 @@ func TestValidateInterfaceNameAndPorts(t *testing.T) {
 		t.Errorf("non-conflicting ports rejected: %v", err)
 	}
 }
+
+func TestBuildNFTMulti_TUNModeDirectRules(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.RelayAlias = "main"
+	cfg.Gateway.Rules = []config.GatewayRule{
+		{Interface: "eth1", Target: "direct"},
+		{MAC: "aa:bb:cc:dd:ee:02", Target: "relay-other"},
+	}
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.1.0/24"}, nil, "")
+	if !strings.Contains(out, `iifname "eth1" return`) {
+		t.Fatalf("expected direct rule return in TUN mode, got:\n%s", out)
+	}
+	if !strings.Contains(out, `ether saddr aa:bb:cc:dd:ee:02 drop`) {
+		t.Fatalf("expected fail-closed drop for unsupported relay rule in TUN mode, got:\n%s", out)
+	}
+	if !strings.Contains(out, `meta l4proto { tcp, udp } meta mark set 1`) {
+		t.Fatalf("expected default TUN mark rule in TUN mode, got:\n%s", out)
+	}
+}
