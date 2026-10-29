@@ -1010,6 +1010,37 @@ func TestBuildNFTMulti_DanglingRelayRuleFailsClosed(t *testing.T) {
 	}
 }
 
+func TestBuildNFTMulti_WANOverlapSkipsMasquerade(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			LANEnabled:   true,
+			LANInterface: "eth0",
+			WANInterface: "eth0",
+		},
+	}
+	lanIfaces := []string{"eth0"}
+	wanIface := "eth0"
+
+	rules := buildNFTMulti(cfg, lanIfaces, []string{"192.168.1.0/24"}, nil, wanIface)
+	if strings.Contains(rules, "masquerade") {
+		t.Fatalf("expected masquerade to be skipped when WAN interface overlaps with LAN interface, got:\n%s", rules)
+	}
+	if strings.Contains(rules, "chain postrouting") {
+		t.Fatalf("expected postrouting chain to be skipped when WAN interface overlaps with LAN interface, got:\n%s", rules)
+	}
+
+	// When distinct, masquerade should be present
+	wanDistinct := "eth1"
+	rulesDistinct := buildNFTMulti(cfg, lanIfaces, []string{"192.168.1.0/24"}, nil, wanDistinct)
+	if !strings.Contains(rulesDistinct, "masquerade") {
+		t.Fatalf("expected masquerade to be present when WAN is distinct, got:\n%s", rulesDistinct)
+	}
+	if !strings.Contains(rulesDistinct, `iifname "eth0" oifname "eth1" masquerade`) {
+		t.Fatalf("expected specific masquerade rule, got:\n%s", rulesDistinct)
+	}
+}
+
 func TestValidateGatewayRuleTargets(t *testing.T) {
 	cfg := &config.UserConfig{CustomOutbounds: []config.CustomOutbound{{Alias: "a", Enabled: true}, {Alias: "b"}}}
 	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth1", Target: "a"}, {Interface: "eth2", Target: "direct"}}

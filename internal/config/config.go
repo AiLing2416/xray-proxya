@@ -825,7 +825,8 @@ func ValidateGatewayInterfaces(userCfg *UserConfig) error {
 	if userCfg == nil {
 		return nil
 	}
-	for _, name := range userCfg.Gateway.EffectiveLANInterfaces() {
+	lanIfaces := userCfg.Gateway.EffectiveLANInterfaces()
+	for _, name := range lanIfaces {
 		if err := ValidateInterfaceName(name); err != nil {
 			return fmt.Errorf("gateway LAN interface: %w", err)
 		}
@@ -833,6 +834,11 @@ func ValidateGatewayInterfaces(userCfg *UserConfig) error {
 	if wan := strings.TrimSpace(userCfg.Gateway.WANInterface); wan != "" && !strings.EqualFold(wan, "auto") {
 		if err := ValidateInterfaceName(wan); err != nil {
 			return fmt.Errorf("gateway WAN interface: %w", err)
+		}
+		for _, lan := range lanIfaces {
+			if wan == lan {
+				return fmt.Errorf("WAN interface %q cannot also be configured as a LAN interface", wan)
+			}
 		}
 	}
 	for _, rule := range userCfg.Gateway.Rules {

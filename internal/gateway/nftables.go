@@ -292,7 +292,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 				break
 			}
 		}
-		if wanDistinct || cfg.Gateway.WANInterface != "" {
+		if wanDistinct {
 			managedNATInstalled = true
 			for _, tk := range blockRuleTokens(cfg) {
 				forwardRules = append(forwardRules, filterRuleArgs(tk, "drop"))
@@ -1429,7 +1429,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 				break
 			}
 		}
-		if wanDistinct || cfg.Gateway.WANInterface != "" {
+		if wanDistinct {
 			var lanMatch string
 			if len(lanIfaces) == 1 {
 				lanMatch = `"` + lanIfaces[0] + `"`
@@ -1454,6 +1454,8 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 			b.WriteString("        type nat hook postrouting priority srcnat; policy accept;\n")
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" masquerade\n")
 			b.WriteString("    }\n")
+		} else {
+			fmt.Printf("⚠️ WAN interface %q overlaps with LAN interface; managed masquerade skipped to prevent loop\n", wanIface)
 		}
 	}
 

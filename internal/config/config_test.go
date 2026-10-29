@@ -898,6 +898,78 @@ func TestEffectiveLANInterfaces(t *testing.T) {
 	}
 }
 
+func TestValidateGatewayInterfaces(t *testing.T) {
+	// 1. WAN collision with LANInterface
+	cfg1 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterface: "eth0",
+			WANInterface: "eth0",
+		},
+	}
+	err1 := ValidateGatewayInterfaces(cfg1)
+	if err1 == nil || !strings.Contains(err1.Error(), `WAN interface "eth0" cannot also be configured as a LAN interface`) {
+		t.Fatalf("expected WAN collision error, got: %v", err1)
+	}
+
+	// 2. WAN collision with LANInterfaces (slice)
+	cfg2 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterfaces: []string{"eth1", "eth2"},
+			WANInterface:  "eth2",
+		},
+	}
+	err2 := ValidateGatewayInterfaces(cfg2)
+	if err2 == nil || !strings.Contains(err2.Error(), `WAN interface "eth2" cannot also be configured as a LAN interface`) {
+		t.Fatalf("expected WAN collision error, got: %v", err2)
+	}
+
+	// 3. WAN distinct from LAN
+	cfg3 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterfaces: []string{"eth1", "eth2"},
+			WANInterface:  "eth0",
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg3); err != nil {
+		t.Fatalf("unexpected error for distinct interfaces: %v", err)
+	}
+
+	// 4. WAN set to auto or empty
+	cfg4 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterface: "eth0",
+			WANInterface: "auto",
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg4); err != nil {
+		t.Fatalf("unexpected error for WAN=auto: %v", err)
+	}
+	cfg4.Gateway.WANInterface = ""
+	if err := ValidateGatewayInterfaces(cfg4); err != nil {
+		t.Fatalf("unexpected error for WAN empty: %v", err)
+	}
+
+	// 5. Invalid interface names
+	cfg5 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterface: "invalid;iface",
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg5); err == nil {
+		t.Fatal("expected error for invalid LAN interface name")
+	}
+
+	cfg6 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterface: "eth1",
+			WANInterface: "invalid;wan",
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg6); err == nil {
+		t.Fatal("expected error for invalid WAN interface name")
+	}
+}
+
 func TestGatewayTProxyPorts(t *testing.T) {
 	cfg := &UserConfig{
 		Gateway: GatewayConfig{

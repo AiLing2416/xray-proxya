@@ -601,6 +601,10 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 		cfg.Gateway.BypassCountries = bypassCountries
 	}
 
+	if err := config.ValidateGatewayInterfaces(cfg); err != nil {
+		return fmt.Errorf("❌ %w", err)
+	}
+
 	if err := cfg.SaveEx(true); err != nil {
 		return fmt.Errorf("❌ Failed to save staging config: %w", err)
 	}
