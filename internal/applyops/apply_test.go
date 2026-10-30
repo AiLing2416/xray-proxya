@@ -1,6 +1,8 @@
 package applyops
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -411,5 +413,81 @@ func TestBuildImpactGatewayRouter(t *testing.T) {
 		if !impact.GatewayRuntimeChanged {
 			t.Errorf("Initial apply with Rules: expected GatewayRuntimeChanged true, got: %+v", impact)
 		}
+	}
+}
+
+func TestApplyPending_GatewayConfSync(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+
+	active := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			WANInterface: "eth0",
+			LANInterfaces: []string{"eth1"},
+			LocalEnabled: true,
+			LANEnabled:   true,
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-a", Enabled: true},
+			{Alias: "relay-b", Enabled: true},
+		},
+	}
+	if err := active.SaveEx(false); err != nil {
+		t.Fatalf("failed to save active config: %v", err)
+	}
+
+	// 1. Initial check: clean
+	lines, err := ApplyPending(Options{})
+	if err != nil {
+		t.Fatalf("ApplyPending failed: %v", err)
+	}
+	if len(lines) == 0 || !strings.Contains(lines[0], "clean") {
+		t.Fatalf("expected clean message, got: %v", lines)
+	}
+
+	// 2. Create gateway.conf with a new rule
+	confText := `# Gateway config test
+def zone wan eth0
+def zone lan eth1
+def device test-dev mac=52:54:00:84:00:11
+local -> relay-a
+zone lan -> relay-a
+device test-dev -> relay-b
+`
+	confPath := filepath.Join(tmpDir, "gateway.conf")
+	if err := os.WriteFile(confPath, []byte(confText), 0600); err != nil {
+		t.Fatalf("failed to write gateway.conf: %v", err)
+	}
+
+	// 3. DryRun test: must detect changes without committing
+	dryLines, err := ApplyPending(Options{DryRun: true})
+	if err != nil {
+		t.Fatalf("ApplyPending dry-run failed: %v", err)
+	}
+	fullDry := strings.Join(dryLines, "\n")
+	if !strings.Contains(fullDry, "DRY-RUN: Changes preview") {
+		t.Errorf("expected dry-run preview, got:\n%s", fullDry)
+	}
+
+	// 4. Force apply: commits the gateway.conf to active configuration
+	_, err = ApplyPending(Options{Force: true})
+	if err != nil {
+		t.Fatalf("ApplyPending force failed: %v", err)
+	}
+
+	// 5. Verify active config has the new rule from gateway.conf
+	loaded, err := config.LoadConfigEx(false)
+	if err != nil {
+		t.Fatalf("failed to reload active config: %v", err)
+	}
+	if len(loaded.Gateway.Rules) != 1 {
+		t.Fatalf("expected 1 rule in active config, got %d: %+v", len(loaded.Gateway.Rules), loaded.Gateway.Rules)
+	}
+	rule := loaded.Gateway.Rules[0]
+	if rule.MAC != "52:54:00:84:00:11" || rule.Target != "relay-b" {
+		t.Errorf("expected rule MAC 52:54:00:84:00:11 -> relay-b, got: %+v", rule)
 	}
 }

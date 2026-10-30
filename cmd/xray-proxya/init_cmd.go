@@ -8,6 +8,7 @@ import (
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/gatewayconf"
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
@@ -238,6 +239,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Println("🚀 First-time automatic apply...")
 	config.CommitStaging()
+
+	if role == config.RoleGateway {
+		confPath := config.GetGatewayConfPath()
+		if forceInit || !config.GatewayConfExists() {
+			content := gatewayconf.GenerateFromUserConfig(cfg)
+			if err := os.WriteFile(confPath, []byte(content), 0600); err == nil {
+				fmt.Printf("📝 Created declarative gateway configuration at: %s\n", confPath)
+			}
+		}
+	}
 
 	fmt.Println("✨ Initialization complete. Configuration is ready.")
 	fmt.Println("🚀 Run 'xray-proxya service install' to install systemd units, then 'xray-proxya service start' to run.")

@@ -6,10 +6,12 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
+	"xray-proxya/internal/gatewayconf"
 	proxyaSELinux "xray-proxya/internal/selinux"
 	"xray-proxya/internal/tune"
 	"xray-proxya/pkg/utils"
@@ -680,6 +682,22 @@ var gatewayCheckCmd = &cobra.Command{
 	Short: "Check gateway runtime state",
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
+		if config.GatewayConfExists() {
+			confPath := config.GetGatewayConfPath()
+			data, err := os.ReadFile(confPath)
+			if err != nil {
+				fmt.Printf("⚠️  Failed to read gateway.conf: %v\n", err)
+			} else if ast, parseErr := gatewayconf.Parse(string(data)); parseErr != nil {
+				fmt.Printf("❌ gateway.conf syntax error: %v\n", parseErr)
+			} else {
+				if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(cfg)); compileErr != nil {
+					fmt.Printf("⚠️  gateway.conf semantic warning: %v\n", compileErr)
+				} else {
+					fmt.Println("✅ gateway.conf declarative configuration syntax is valid.")
+				}
+			}
+		}
+
 		problems := gateway.Verify(cfg)
 		if len(problems) == 0 {
 			fmt.Println("✅ Gateway runtime state looks ready.")
@@ -830,6 +848,158 @@ var gatewayTestCmd = &cobra.Command{
 	},
 }
 
+var (
+	gatewayExportWrite bool
+	gatewayExportOut   string
+)
+
+var gatewayExportCmd = &cobra.Command{
+	Use:     "export [file]",
+	Aliases: []string{"dump"},
+	Short:   "Export gateway configuration to declarative gateway.conf format",
+	Args:    cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cfg, err := config.LoadConfigEx(true)
+		if err != nil || cfg == nil {
+			cfg, err = config.LoadConfigEx(false)
+			if err != nil || cfg == nil {
+				return fmt.Errorf("❌ Failed to load gateway configuration")
+			}
+		}
+
+		content := gatewayconf.GenerateFromUserConfig(cfg)
+
+		targetPath := gatewayExportOut
+		if len(args) == 1 {
+			targetPath = args[0]
+		} else if gatewayExportWrite {
+			targetPath = config.GetGatewayConfPath()
+		}
+
+		if targetPath == "" {
+			fmt.Print(content)
+			return nil
+		}
+
+		if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
+			return fmt.Errorf("❌ Failed to create directory: %w", err)
+		}
+		if err := os.WriteFile(targetPath, []byte(content), 0600); err != nil {
+			return fmt.Errorf("❌ Failed to write %s: %w", targetPath, err)
+		}
+		fmt.Printf("✅ Gateway configuration exported to: %s\n", targetPath)
+		return nil
+	},
+}
+
+var gatewayEditCmd = &cobra.Command{
+	Use:   "edit",
+	Short: "Edit gateway.conf interactively with syntax validation",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		confPath := config.GetGatewayConfPath()
+
+		if !config.GatewayConfExists() {
+			cfg, _ := config.LoadConfigEx(true)
+			if cfg == nil {
+				cfg, _ = config.LoadConfigEx(false)
+			}
+			var content string
+			if cfg != nil {
+				content = gatewayconf.GenerateFromUserConfig(cfg)
+			} else {
+				content = gatewayconf.Generate(&config.GatewayConfig{
+					Mode:         "tproxy",
+					LocalEnabled: true,
+					LANEnabled:   true,
+				})
+			}
+			if err := os.MkdirAll(filepath.Dir(confPath), 0700); err != nil {
+				return fmt.Errorf("❌ Failed to create config directory: %w", err)
+			}
+			if err := os.WriteFile(confPath, []byte(content), 0600); err != nil {
+				return fmt.Errorf("❌ Failed to create initial %s: %w", confPath, err)
+			}
+			fmt.Printf("ℹ️  Created initial gateway.conf at %s\n", confPath)
+		}
+
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = os.Getenv("VISUAL")
+		}
+		if editor == "" {
+			for _, candidate := range []string{"nano", "vim", "vi"} {
+				if _, err := exec.LookPath(candidate); err == nil {
+					editor = candidate
+					break
+				}
+			}
+		}
+		if editor == "" {
+			return fmt.Errorf("❌ No editor found. Please set $EDITOR or install nano/vim")
+		}
+
+		isTerm := false
+		if fi, err := os.Stdin.Stat(); err == nil && (fi.Mode()&os.ModeCharDevice) != 0 {
+			isTerm = true
+		}
+
+		for {
+			c := exec.Command(editor, confPath)
+			c.Stdin = os.Stdin
+			c.Stdout = os.Stdout
+			c.Stderr = os.Stderr
+			if err := c.Run(); err != nil {
+				return fmt.Errorf("❌ Editor %q exited with error: %w", editor, err)
+			}
+
+			data, err := os.ReadFile(confPath)
+			if err != nil {
+				return fmt.Errorf("❌ Failed to read %s: %w", confPath, err)
+			}
+
+			ast, parseErr := gatewayconf.Parse(string(data))
+			if parseErr != nil {
+				fmt.Printf("\n❌ Syntax error in gateway.conf:\n   %v\n", parseErr)
+				if !isTerm {
+					return parseErr
+				}
+				fmt.Print("Press 'e' to re-edit, or 'q' to quit (changes kept on disk): ")
+				var answer string
+				fmt.Scanln(&answer)
+				if strings.ToLower(strings.TrimSpace(answer)) == "q" {
+					return parseErr
+				}
+				continue
+			}
+
+			userCfg, _ := config.LoadConfigEx(true)
+			if userCfg == nil {
+				userCfg, _ = config.LoadConfigEx(false)
+			}
+			if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(userCfg)); compileErr != nil {
+				fmt.Printf("\n⚠️  Compilation warning in gateway.conf:\n   %v\n", compileErr)
+				if !isTerm {
+					return compileErr
+				}
+				fmt.Print("Press 'e' to re-edit, or 'q' to keep and exit: ")
+				var answer string
+				fmt.Scanln(&answer)
+				if strings.ToLower(strings.TrimSpace(answer)) != "e" {
+					break
+				}
+				continue
+			}
+
+			fmt.Println("✅ gateway.conf syntax validated successfully.")
+			fmt.Println("ℹ️  Run 'xray-proxya apply' to compile and apply changes.")
+			break
+		}
+
+		return nil
+	},
+}
+
 func init() {
 	gatewayEnableCmd.Flags().BoolVar(&gatewayEnableNow, "now", false, "Immediately commit changes and bring gateway runtime up")
 	gatewayDisableCmd.Flags().BoolVar(&gatewayDisableNow, "now", false, "Immediately commit changes and bring gateway runtime down")
@@ -908,6 +1078,15 @@ func init() {
 		return names, cobra.ShellCompDirectiveNoFileComp
 	})
 
+	gatewayExportCmd.Flags().BoolVarP(&gatewayExportWrite, "write", "w", false, "Write directly to ~/.config/xray-proxya/gateway.conf")
+	gatewayExportCmd.Flags().StringVarP(&gatewayExportOut, "output", "o", "", "Output file path")
+
+	_ = gatewaySetCmd.Flags().MarkHidden("lan-interface")
+	_ = gatewaySetCmd.Flags().MarkHidden("lan-enable")
+	_ = gatewaySetCmd.Flags().MarkHidden("lan-disable")
+	_ = gatewaySetCmd.Flags().MarkHidden("local-enable")
+	_ = gatewaySetCmd.Flags().MarkHidden("local-disable")
+
 	gatewayCmd.AddCommand(
 		gatewayStatusCmd,
 		gatewayEnableCmd,
@@ -922,6 +1101,8 @@ func init() {
 		gatewayCheckCmd,
 		gatewayDiffCmd,
 		gatewayTestCmd,
+		gatewayExportCmd,
+		gatewayEditCmd,
 	)
 	rootCmd.AddCommand(gatewayCmd)
 }

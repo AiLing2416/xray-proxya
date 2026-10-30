@@ -7,6 +7,7 @@ import (
 	"sort"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
+	"xray-proxya/internal/gatewayconf"
 	"xray-proxya/internal/presets"
 	"xray-proxya/internal/service"
 )
@@ -41,7 +42,45 @@ func ApplyPending(opts Options) ([]string, error) {
 }
 
 func applyPendingLocked(opts Options) ([]string, error) {
-	if !config.StagingExists() {
+	var dryRunInMemoryCfg *config.UserConfig
+	if config.GatewayConfExists() {
+		confPath := config.GetGatewayConfPath()
+		activeCfg, _ := config.LoadConfigEx(false)
+		stagingCfg, _ := config.LoadConfigEx(true)
+		baseCfg := stagingCfg
+		if baseCfg == nil && activeCfg != nil {
+			cp := *activeCfg
+			baseCfg = &cp
+		}
+		if baseCfg != nil && baseCfg.Role == config.RoleGateway {
+			data, err := os.ReadFile(confPath)
+			if err != nil {
+				return nil, fmt.Errorf("failed to read %s: %w", confPath, err)
+			}
+			ast, err := gatewayconf.Parse(string(data))
+			if err != nil {
+				return nil, fmt.Errorf("syntax error in %s: %w", confPath, err)
+			}
+			compiledGw, err := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(baseCfg))
+			if err != nil {
+				return nil, fmt.Errorf("compile error in %s: %w", confPath, err)
+			}
+
+			gatewayChanged := activeCfg == nil || !reflect.DeepEqual(activeCfg.Gateway, *compiledGw)
+			if gatewayChanged || config.StagingExists() {
+				baseCfg.Gateway = *compiledGw
+				if opts.DryRun && !config.StagingExists() {
+					dryRunInMemoryCfg = baseCfg
+				} else {
+					if err := baseCfg.SaveEx(true); err != nil {
+						return nil, fmt.Errorf("failed to stage compiled gateway config: %w", err)
+					}
+				}
+			}
+		}
+	}
+
+	if !config.StagingExists() && dryRunInMemoryCfg == nil {
 		return []string{"ℹ️  No pending changes in STAGING (working configuration is clean)."}, nil
 	}
 
@@ -49,9 +88,14 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	if err != nil {
 		activeCfg = nil
 	}
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil {
-		return nil, fmt.Errorf("failed to load STAGING config: %w", err)
+	var cfg *config.UserConfig
+	if dryRunInMemoryCfg != nil {
+		cfg = dryRunInMemoryCfg
+	} else {
+		cfg, err = config.LoadConfigEx(true)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load STAGING config: %w", err)
+		}
 	}
 
 	if cfg.Role == config.RoleGateway {

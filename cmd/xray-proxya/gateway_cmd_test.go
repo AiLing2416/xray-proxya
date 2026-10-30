@@ -694,5 +694,104 @@ func TestGatewaySetModeFlag(t *testing.T) {
 	}
 }
 
+func TestGatewayExportCmd(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			WANInterface:  "eth0",
+			LANInterfaces: []string{"eth1", "eth2"},
+			LocalEnabled:  true,
+			LANEnabled:    true,
+			RelayAlias:    "relay-hk",
+			Rules: []config.GatewayRule{
+				{MAC: "52:54:00:84:00:11", Target: "direct"},
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-hk", Enabled: true},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("save active config: %v", err)
+	}
+
+	// 1. Export with --write
+	gatewayExportCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewayExportCmd.ParseFlags([]string{"--write"}); err != nil {
+		t.Fatalf("ParseFlags --write: %v", err)
+	}
+	if err := gatewayExportCmd.RunE(gatewayExportCmd, nil); err != nil {
+		t.Fatalf("gateway export --write error: %v", err)
+	}
+
+	confPath := config.GetGatewayConfPath()
+	data, err := os.ReadFile(confPath)
+	if err != nil {
+		t.Fatalf("failed to read written gateway.conf: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "def zone wan eth0") || !strings.Contains(content, "52:54:00:84:00:11") {
+		t.Errorf("exported content missing expected lines:\n%s", content)
+	}
+
+	// 2. Export to custom file path argument
+	outFile := filepath.Join(t.TempDir(), "custom_gw.conf")
+	gatewayExportCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewayExportCmd.RunE(gatewayExportCmd, []string{outFile}); err != nil {
+		t.Fatalf("gateway export <file> error: %v", err)
+	}
+	outData, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("failed to read exported file: %v", err)
+	}
+	if !strings.Contains(string(outData), "relay-hk") {
+		t.Errorf("custom exported file missing relay-hk:\n%s", string(outData))
+	}
+}
+
+func TestGatewayEditCmd(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			WANInterface:  "eth0",
+			LANInterfaces: []string{"eth1"},
+			LocalEnabled:  true,
+			LANEnabled:    true,
+			RelayAlias:    "relay-hk",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-hk", Enabled: true},
+		},
+	}
+	if err := cfg.SaveEx(false); err != nil {
+		t.Fatalf("save active config: %v", err)
+	}
+
+	// Use 'true' as a dummy editor that exits 0 immediately without error
+	t.Setenv("EDITOR", "true")
+
+	if err := gatewayEditCmd.RunE(gatewayEditCmd, nil); err != nil {
+		t.Fatalf("gateway edit with dummy editor error: %v", err)
+	}
+
+	// Confirm gateway.conf was created and valid
+	confPath := config.GetGatewayConfPath()
+	if !config.GatewayConfExists() {
+		t.Fatalf("expected %s to exist after edit", confPath)
+	}
+}
+
 
 

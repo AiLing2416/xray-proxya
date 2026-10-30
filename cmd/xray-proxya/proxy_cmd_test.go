@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 )
 
 func TestProxySetAndUnsetCmd(t *testing.T) {
@@ -407,14 +408,23 @@ func TestProxyRunPortLinkageAndValidation(t *testing.T) {
 		t.Fatalf("expected not found error, got %v", err)
 	}
 
-	// 2. Occupy a port to test linkage
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen failed: %v", err)
+	// 2. Occupy a port to test linkage: find a free basePort where basePort+1 is occupied
+	var basePort int
+	var l net.Listener
+	for p := 30000; p < 60000; p++ {
+		if utils.IsPortFree(p) && utils.IsUDPPortFree(p) {
+			if lis, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p+1)); err == nil {
+				l = lis
+				basePort = p
+				break
+			}
+		}
+	}
+	if l == nil {
+		t.Fatal("failed to find test port pair")
 	}
 	defer l.Close()
-	occupiedPort := l.Addr().(*net.TCPAddr).Port
-	basePort := occupiedPort - 1
+	occupiedPort := basePort + 1
 
 	// Test: running with -p basePort should link httpPort to basePort + 1 (occupiedPort)
 	_ = proxyRunCmd.Flags().Set("port", fmt.Sprintf("%d", basePort))
