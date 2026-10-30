@@ -95,6 +95,53 @@ If `relay test` fails, fix the upstream first before enabling transparent gatewa
 
 ## Configure Transparent Gateway
 
+Xray-Proxya provides two approaches to configure a transparent gateway:
+1. **Declarative Configuration Architecture (`gateway.conf`)**: Recommended. Uses a lightweight, crontab-like line syntax to declaratively manage interfaces, zones, device aliases, groups, L3 IP/CIDR routing, and port forwarding. It is easy to understand, text-editable, and ideal for version control and backup.
+2. **Interactive CLI Configuration (`gateway set` / `gateway rule`)**: Suitable for quick ad-hoc adjustments or automation scripts, writing changes directly to the Staging area.
+
+Both paradigms are fully interoperable under the hood; `gateway export -w` can export the active or staged configuration to `gateway.conf` at any time.
+
+### Approach 1: Declarative Configuration via gateway.conf (Recommended)
+
+#### 1. Configuration File Locations
+- **Root Environment (Recommended for Gateway)**: `/root/.config/xray-proxya/gateway.conf`
+- **Standard User Environment**: `~/.config/xray-proxya/gateway.conf`
+
+#### 2. Quickstart Workflow
+1. **Auto-Generate Initial Template**:
+   When initializing the gateway role, the system automatically writes an annotated `gateway.conf` template containing detailed syntax comments and examples:
+   ```bash
+   xray-proxya init gateway
+   ```
+2. **Safe Interactive Editing**:
+   Use the built-in edit command to edit the configuration file with your preferred editor. It respects `$EDITOR` or `$VISUAL` (falling back automatically to `nano`, `vim`, or `vi`):
+   ```bash
+   xray-proxya gateway edit
+   ```
+   > [!TIP]
+   > `gateway edit` features **real-time syntax linting and compilation validation** upon exit. If syntax errors or references to non-existent upstream relays are detected, the editor prompts you to press `e` to continue fixing the file or `q` to safely exit (preserving disk changes) without loading invalid configurations into runtime.
+3. **Export Current Configuration**:
+   Reverse-export active or staged rules into a clean, formatted `gateway.conf`:
+   ```bash
+   # Output directly to stdout
+   xray-proxya gateway export
+
+   # Write back into the default gateway.conf file
+   xray-proxya gateway export -w
+
+   # Export to a custom file path
+   xray-proxya gateway export /etc/xray-proxya/my-gateway.conf
+   ```
+4. **Compile and Apply**:
+   ```bash
+   xray-proxya apply
+   ```
+   `apply` automatically compiles `gateway.conf`, validates outbound targets, port forwards, and interface definitions, commits staged changes, and hot-reloads Xray multi-inbound processes and nftables firewall/policy routing rules.
+
+---
+
+### Approach 2: Interactive CLI Configuration
+
 Set the transparent upstream and LAN interface (uses `tproxy` by default; optional `--mode tun` is available for legacy TUN setups):
 
 ```bash
@@ -106,6 +153,136 @@ xray-proxya apply
 ```
 
 `apply` commits the staged configuration and synchronizes Gateway runtime when a Gateway setting changed. For a `proxy` state it restarts Xray and applies the managed routing and firewall rules.
+
+---
+
+## gateway.conf Syntax Specification And Examples
+
+`gateway.conf` uses a plain-text line-oriented syntax, supporting comments starting with `#`. Directives are organized into five primary categories:
+
+### 1. Zone Definitions (`def zone`)
+Define WAN egress and LAN service interfaces, with support for comma-separated interfaces and optional subnet annotations:
+```text
+# WAN egress interface
+def zone wan eth0
+
+# Standard LAN zone (supports multiple interfaces and optional subnet CIDR)
+def zone lan eth1, vmbr0 subnet=192.168.1.0/24
+```
+
+### 2. Zone Network Isolation (`isolate=true`)
+For guest networks (Guest Wi-Fi) or untrusted IoT subnets, specify `isolate=true` on the zone:
+```text
+# Define an isolated guest zone
+def zone guest vmbr1 isolate=true
+```
+When `isolate=true` is enabled, Xray-Proxya enforces multiple safety defenses in nftables:
+- **Block Inter-LAN Forwarding**: Drops forwarding traffic originating from the isolated interface (`vmbr1`) towards any other LAN interface (`eth1`, `vmbr0`), preventing lateral movement.
+- **Connection Tracking Allowance**: Allows returning packets and established connections via `ct state established,related accept`.
+- **Gateway Host Management Hardening**: Explicitly drops incoming TCP packets destined for port 22 (SSH) on the isolated interface in the input chain, preventing guest devices from probing or accessing gateway administration.
+- **Preserve Essential Services and WAN Access**: Gateway DNS resolution and DHCP allocation remain accessible; guest devices can reach the Internet via the WAN interface or assigned relay outbounds without disruption.
+
+### 3. Device and Group Aliases (`def device` / `def group`)
+Bind human-readable aliases to Layer-2 MAC addresses, and optionally associate them with a zone and static Layer-3 IP:
+```text
+# Device definition: def device <name> mac=<mac> [zone=<zone>] [ip=<ip>]
+def device tv  mac=52:54:00:84:00:11 zone=lan ip=192.168.1.50
+def device pad mac=52:54:00:84:00:12 zone=lan ip=192.168.1.51
+def device nas mac=52:54:00:84:00:20 zone=lan ip=192.168.1.200
+
+# Logical group: def group <name> <device1>, <device2>...
+def group streaming tv, pad
+```
+
+### 4. Outbound Routing Rules
+Specify egress traffic targets using `<subject> -> <target>` (or `=>`). The `<target>` may be `direct` (bypass proxy), `block` (drop traffic), or any active upstream relay alias (e.g., `hk-relay`):
+```text
+# 1. Gateway host local egress
+local -> hk-relay
+
+# 2. Zone-level default policy
+zone lan -> hk-relay
+zone guest -> direct
+
+# 3. Logical group policy (automatically expanded to all group members)
+group streaming -> us-relay
+
+# 4. Device alias policy (overrides zone default)
+device tv -> us-relay
+
+# 5. Client MAC address rule
+mac 52:54:00:84:00:11 -> hk-relay
+
+# 6. Native Layer-3 IP and CIDR subnet rule
+ip 192.168.1.95 -> hk-relay
+ip 10.0.83.0/24 -> direct
+
+# 7. Physical interface default rule
+interface eth1 -> jp-relay
+```
+
+### 5. Port Forwarding Rules (`forward`)
+Forward incoming WAN traffic to internal LAN hosts or device aliases for NAT traversal and service exposure:
+```text
+# Syntax: forward [wan:]<wan_port> -> <target>:<target_port> [proto=tcp|udp]
+
+# Forward to a device alias (resolves device's declared IP, e.g. nas -> 192.168.1.200)
+forward 8443 -> nas:443 proto=tcp
+
+# Forward to an explicit IP address with UDP (e.g. WireGuard VPN service)
+forward 51820 -> 192.168.1.100:51820 proto=udp
+
+# Omit proto (defaults to forwarding both TCP and UDP)
+forward 8080 -> 192.168.1.50:80
+```
+nftables automatically applies DNAT rules in the prerouting chain and allows forwarded flows via `ct status dnat accept`.
+
+---
+
+## Native Layer-3 IP & CIDR Rules
+
+### 1. Why Native L3 Rules Are Necessary
+In typical Layer-2 LANs, gateways identify clients primarily by their MAC addresses. However, MAC addresses become unavailable or ambiguous in several common networking topologies:
+- **Downstream Layer-3 Switches or VLAN Gateways**: When client traffic crosses a Layer-3 switch to reach Xray-Proxya, the source MAC in the Ethernet frame header is rewritten with the switch's interface MAC.
+- **Wireless APs in Router/NAT Mode or Extenders**: Consumer routers or access points operating with NAT or L2 proxying mask client MAC addresses behind a single device MAC.
+- **Container and Virtualized Bridge Networks**: Virtual bridge interfaces frequently strip or rewrite Layer-2 headers across virtual boundaries.
+
+In these environments, MAC-based routing rules fail. Xray-Proxya introduces **native Layer-3 IP and CIDR rule evaluation**, matching packet source IP addresses and subnet masks directly in the kernel network stack.
+
+### 2. Configuration and Usage
+L3 rules can be defined declaratively in `gateway.conf` or interactively via the CLI:
+
+- **Using `ip` Directives in `gateway.conf`**:
+  ```text
+  # Route single client IP through Hong Kong relay
+  ip 192.168.1.95 -> hk-relay
+
+  # Route entire subnet directly to WAN
+  ip 10.0.83.0/24 -> direct
+
+  # IPv6 addresses and subnets are fully supported
+  ip fd00:82::/64 -> hk-relay
+  ```
+
+- **Using CLI `gateway rule set --ip`**:
+  ```bash
+  # Set relay target for a single client IP
+  xray-proxya gateway rule set --ip 192.168.1.95 --to hk-relay
+
+  # Route an entire CIDR subnet directly on physical interface eth1
+  xray-proxya gateway rule set --ip 10.0.83.0/24 --iface eth1 --to direct
+
+  # Block an unauthorized host or subnet
+  xray-proxya gateway rule set --ip 192.168.1.199 --to block
+  ```
+
+- **List Active and Staged Rules**:
+  ```bash
+  xray-proxya gateway rule list
+  ```
+
+- **Underlying Execution**:
+  The system compiles these into nftables `ip saddr` and `ip6 saddr` match sets. The Linux kernel evaluates CIDR prefixes using optimized radix tree lookups with negligible overhead.
 
 ## Interception Modes (Mode)
 
@@ -240,12 +417,21 @@ xray-proxya gateway down
 
 ## Per-Client Rules, NAT And Isolation Notes
 
-- **Rule precedence follows specificity**: `interface+MAC` > `MAC only` > `interface only`. A broader `block` rule yields to a more specific non-block rule (for example `block` a MAC that has its own `direct`/relay rule on one interface).
-- **Block means full isolation**: a blocked client or interface can neither be forwarded nor reach the gateway itself (including SSH, DNS and DHCP). Do not block the interface or device you manage the gateway from. Block rules are also installed in the `forward-only` state and when both Local and LAN are off (block only, no transparent proxy).
+- **Rule precedence follows specificity**: Evaluated in kernel rule matching from highest to lowest specificity:
+  1. `Interface + MAC` (`interface + mac`)
+  2. `MAC only` (`mac only`)
+  3. `Interface + IP` (`interface + ip`)
+  4. `IP / CIDR only` (`ip / cidr only`)
+  5. `Interface only` (`interface only`)
+  6. `Global LAN default`
+  A broader `block` rule yields to a more specific non-block rule (for example, a subnet-wide `block` rule yields to a specific IP or MAC rule configured for `direct` or a relay).
+- **SSH Lockout Protection**:
+  When using `gateway rule set` to add a rule targeting `block`, the command actively inspects the active SSH management session (`SSH_CONNECTION`, `SSH_CLIENT`, current ingress interface, client IP, and client MAC). If the proposed rule would sever the current management session, execution halts with a high-visibility warning, prompting for explicit confirmation (`[N/y]`). Operators using unattended scripts can bypass this with `--force`.
+- **Zone Isolation (`isolate=true`)**: Interfaces marked with `isolate=true` are blocked from forwarding traffic to any other internal LAN interface in the forward chain. The input chain drops TCP port 22 (SSH) on the isolated interface, while preserving local DHCP, DNS, and WAN access.
 - **Rule targets must be valid**: `apply` rejects rules whose relay was deleted or disabled; a dangling rule found at runtime is dropped (fail-closed) instead of falling back to the default relay.
 - **Interface names**: 1-15 characters from letters, digits, `.`, `-`, `_`.
 - **Port conflicts**: `apply` checks TProxy ports (base port and one per extra relay) against the API, test, DNS listener, preset and relay internal ports.
-- **WAN and NAT**: the WAN interface is resolved once at `apply`; without `--wan` and without a default route a warning is printed and managed NAT is skipped. Managed masquerade lives in an `inet` table and therefore applies to IPv4 and IPv6 (NAT66). LANs are not isolated from each other (forward policy is accept). Protecting inbound WAN traffic is the operator's responsibility.
+- **WAN and NAT**: the WAN interface is resolved once at `apply`; without `--wan` and without a default route a warning is printed and managed NAT is skipped. Managed masquerade lives in an `inet` table and therefore applies to IPv4 and IPv6 (NAT66). LANs are not isolated from each other (forward policy is accept), unless marked with `isolate=true`. Protecting inbound WAN traffic is the operator's responsibility.
 - **IPv6**: every non link-local prefix on an interface (for example ULA and GUA) is included in the source guard and bypass rules.
 
 ## Troubleshooting
@@ -288,14 +474,28 @@ journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
 ## Command Summary
 
 ```bash
+# Upstream relay management
 xray-proxya relay add remote-v029 "vless://..."
 xray-proxya relay test remote-v029
 
+# Declarative gateway configuration (Recommended)
+xray-proxya init gateway              # Initialize and generate annotated gateway.conf template
+xray-proxya gateway edit              # Safely edit gateway.conf with real-time lint validation
+xray-proxya gateway export            # Export declarative configuration to stdout
+xray-proxya gateway export -w         # Write active/staged configuration back to gateway.conf
+xray-proxya apply                     # Compile gateway.conf and hot-reload runtime
+
+# Interactive CLI configuration
 xray-proxya gateway set --relay remote-v029 --lan eth0
+xray-proxya gateway rule set --ip 192.168.1.95 --to remote-v029
+xray-proxya gateway rule set --mac 52:54:00:84:00:11 --to direct
+xray-proxya gateway rule list
 xray-proxya gateway enable
 xray-proxya apply
+
+# Runtime control and diagnostics
 xray-proxya gateway up
 xray-proxya gateway check
-
+xray-proxya gateway status
 xray-proxya gateway down
 ```

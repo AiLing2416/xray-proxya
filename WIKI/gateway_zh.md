@@ -95,6 +95,53 @@ DNS: OK
 
 ## 配置透明网关
 
+Xray-Proxya 支持两种透明网关配置方式：
+1. **声明式配置文件体系 (`gateway.conf`)**：推荐方式。采用类似 Crontab 的轻量行语法，统一管理接口、区域、设备别名、群组、L3 IP/CIDR 分流及端口映射，直观清晰且便于版本管理与文本备份。
+2. **CLI 命令行交互配置 (`gateway set` / `gateway rule`)**：适合快速简单配置或自动化脚本，修改直接写入 Staging 暂存区。
+
+两者底层完全互通，`gateway export -w` 可随时将当前配置导出同步为 `gateway.conf`。
+
+### 方式一：通过 gateway.conf 声明式配置（推荐）
+
+#### 1. 配置文件位置
+- **Root 运行环境（网关推荐）**：`/root/.config/xray-proxya/gateway.conf`
+- **非特权用户环境**：`~/.config/xray-proxya/gateway.conf`
+
+#### 2. 快速上手工作流
+1. **自动生成初始模板**：
+   在初始化网关角色时，系统会自动在配置目录生成包含完整英文语法注释和范例的 `gateway.conf`：
+   ```bash
+   xray-proxya init gateway
+   ```
+2. **安全交互式编辑**：
+   使用内置命令安全编辑配置文件。系统将优先调用环境变量 `$EDITOR` 或 `$VISUAL`（未设置时自动依次探测 `nano`、`vim`、`vi`）：
+   ```bash
+   xray-proxya gateway edit
+   ```
+   > [!TIP]
+   > `gateway edit` 具备保存退出时的**实时语法 Linting 与编译校验**机制。若存在语法错误或引用了不存在的上游 Relay，退出编辑器时会自动拦截报错，并提示按 `e` 重新编辑或按 `q` 退出（保留磁盘修改），绝不会将非法配置载入运行态。
+3. **导出当前配置**：
+   可将现有配置或 Staging 暂存规则反向导出为格式化 `gateway.conf` 文本：
+   ```bash
+   # 直接输出到标准输出 (stdout)
+   xray-proxya gateway export
+
+   # 将当前活跃/暂存配置写回默认 gateway.conf 文件
+   xray-proxya gateway export -w
+
+   # 导出到指定文件路径
+   xray-proxya gateway export /etc/xray-proxya/my-gateway.conf
+   ```
+4. **编译与生效**：
+   ```bash
+   xray-proxya apply
+   ```
+   `apply` 会自动检测并编译 `gateway.conf`，校验所有出站目标、端口映射与接口有效性，提交至 Staging，并热重载 Xray 多入站服务及 nftables 防火墙/策略路由规则。
+
+---
+
+### 方式二：通过 CLI 命令行配置
+
 设置透明上游和 LAN 接口（默认使用主力 `tproxy` 模式；若需兼容旧版 TUN 基础设施，可加 `--mode tun`）：
 
 ```bash
@@ -106,6 +153,136 @@ xray-proxya apply
 ```
 
 `apply` 会提交暂存配置；当 Gateway 设置发生变化时，它还会同步 Gateway 运行态。对于 `proxy` 状态，它会重启 Xray 并应用受管路由和防火墙规则。
+
+---
+
+## gateway.conf 语法规范与示例
+
+`gateway.conf` 采用纯文本行语法，支持使用 `#` 添加单行或行尾注释。主要指令涵盖以下五大类别：
+
+### 1. 区域定义 (`def zone`)
+用于定义网络出口（WAN）与内网业务接口（LAN），支持绑定多网卡与关联子网：
+```text
+# WAN 出口接口
+def zone wan eth0
+
+# 普通 LAN 接口（支持逗号分隔多网卡，可选标注所属 subnet CIDR）
+def zone lan eth1, vmbr0 subnet=192.168.1.0/24
+```
+
+### 2. 区域网络隔离 (`isolate=true`)
+对于访客网络（Guest Wi-Fi）或不可信的 IoT 设备网段，可为区域指定 `isolate=true` 参数：
+```text
+# 定义隔离的访客区域
+def zone guest vmbr1 isolate=true
+```
+启用 `isolate=true` 后，Xray-Proxya 将在 nftables 中自动下沉多重安全隔离机制：
+- **阻断跨网段互访**：在 forward 链中下发规则，彻底阻断来自隔离接口（如 `vmbr1`）流向其他任何内网 LAN 接口（如 `eth1`、`vmbr0`）的流量，杜绝横向渗透；
+- **连接追踪放行**：通过 `ct state established,related accept` 放行已建立连接与关联回包；
+- **网关主机管理面加固**：在 input 链针对隔离接口显式丢弃（drop）目标端口为 22（SSH）的 TCP 数据包，禁止访客设备尝试探测或登录网关管理服务；
+- **基础网络服务与外网放行**：依然允许访问网关提供的 DNS 解析与 DHCP 分配；访客设备访问互联网（WAN 出口或分配的 Relay 出站）不受阻断。
+
+### 3. 设备别名与分组 (`def device` / `def group`)
+通过易读别名绑定二层 MAC 地址，并支持关联所属区域与三层固定 IP：
+```text
+# 设备定义：def device <name> mac=<mac> [zone=<zone>] [ip=<ip>]
+def device tv  mac=52:54:00:84:00:11 zone=lan ip=192.168.1.50
+def device pad mac=52:54:00:84:00:12 zone=lan ip=192.168.1.51
+def device nas mac=52:54:00:84:00:20 zone=lan ip=192.168.1.200
+
+# 逻辑分组：def group <name> <device1>, <device2>...
+def group streaming tv, pad
+```
+
+### 4. 规则流向指令 (Routing Rules)
+通过 `<subject> -> <target>`（或 `=>`）指定流量出口。目标 `<target>` 可以为 `direct`（直连出站）、`block`（阻断流量）或已启用的上游 Relay 节点别名（如 `hk-relay`）：
+```text
+# 1. 网关主机本机出站流向
+local -> hk-relay
+
+# 2. 区域默认流向
+zone lan -> hk-relay
+zone guest -> direct
+
+# 3. 逻辑分组流向（自动展开至组内所有成员）
+group streaming -> us-relay
+
+# 4. 指定设备别名流向（覆盖区域默认设置）
+device tv -> us-relay
+
+# 5. 指定客户端 MAC 地址规则
+mac 52:54:00:84:00:11 -> hk-relay
+
+# 6. 原生三层 IP 与 CIDR 子网规则
+ip 192.168.1.95 -> hk-relay
+ip 10.0.83.0/24 -> direct
+
+# 7. 指定物理接口默认规则
+interface eth1 -> jp-relay
+```
+
+### 5. 端口映射与 NAT 转发 (`forward`)
+用于将 WAN 口入站端口映射至局域网内特定主机或设备别名，满足内网穿透与服务暴露需求：
+```text
+# 语法：forward [wan:]<wan_port> -> <target>:<target_port> [proto=tcp|udp]
+
+# 映射到设备别名（自动解析设备绑定的 IP 地址，例如 nas -> 192.168.1.200）
+forward 8443 -> nas:443 proto=tcp
+
+# 映射到指定 IP 地址（指定 UDP 协议，例如 WireGuard 服务）
+forward 51820 -> 192.168.1.100:51820 proto=udp
+
+# 缺省 proto 选项（默认同时映射 TCP 与 UDP）
+forward 8080 -> 192.168.1.50:80
+```
+配置端口映射后，nftables 会自动在 prerouting 链应用 DNAT 规则，并在 forward 链放行 `ct status dnat accept`。
+
+---
+
+## 原生三层 IP/CIDR 规则下沉
+
+### 1. 为什么需要原生 L3 规则？
+在经典二层局域网中，网关主要依赖终端的 MAC 地址识别设备。但在以下实际组网拓扑中，二层 MAC 会因转发节点的解封装而丢失：
+- **下挂三层交换机或 VLAN 汇聚网关**：终端经由三层路由到达网关时，以太网帧头的源 MAC 会被三层交换机替换为自身接口 MAC；
+- **下挂路由/NAT 模式无线 AP 或中继器**：部分商用 AP 或家庭路由器将无线客户端统一做 SNAT 或二层代理，使得网关看到的 MAC 全部同质化；
+- **容器与虚拟化网桥网络**：虚拟网络设备在跨 host 转发时通常剥离或重写原始 MAC。
+
+此时，基于 MAC 的分流规则无法准确识别具体设备或网段。Xray-Proxya 引入**原生三层 IP 与 CIDR 规则下沉**，直接在内核 IP 层执行源地址与子网匹配。
+
+### 2. 配置与使用方式
+既可以在 `gateway.conf` 中声明，也可以通过 CLI 命令行即时操作：
+
+- **在 `gateway.conf` 中使用 `ip` 指令**：
+  ```text
+  # 单个终端 IP 走香港节点
+  ip 192.168.1.95 -> hk-relay
+
+  # 整个子网段直连
+  ip 10.0.83.0/24 -> direct
+
+  # IPv6 地址或网段同样支持
+  ip fd00:82::/64 -> hk-relay
+  ```
+
+- **通过 CLI 命令 `gateway rule set --ip` 操作**：
+  ```bash
+  # 为指定 IP 设定出口 Relay
+  xray-proxya gateway rule set --ip 192.168.1.95 --to hk-relay
+
+  # 为整段子网设定直连，并限定来自 eth1 物理网卡
+  xray-proxya gateway rule set --ip 10.0.83.0/24 --iface eth1 --to direct
+
+  # 阻断特定恶意 IP 或未授权网段
+  xray-proxya gateway rule set --ip 192.168.1.199 --to block
+  ```
+
+- **查看规则列表**：
+  ```bash
+  xray-proxya gateway rule list
+  ```
+
+- **底层执行机制**：
+  系统在 nftables 中动态生成针对 `ip saddr` 或 `ip6 saddr` 的匹配规则，高效利用内核哈希树结构完成 CIDR 前缀匹配，性能开销极低。
 
 ## 拦截模式说明 (Mode)
 
@@ -240,12 +417,21 @@ xray-proxya gateway down
 
 ## 按客户端规则、NAT 与隔离说明
 
-- **规则优先级按特异性**：`接口+MAC` > `仅 MAC` > `仅接口`。较宽泛的 `block` 规则会让位于更具体的非 block 规则（例如 `block` 某 MAC，但该 MAC 在某接口上另有 `direct`/relay 规则）。
-- **block 是完全隔离**：被 block 的客户端或接口不仅不能转发，也无法访问网关自身（包括 SSH、DNS、DHCP）。请勿对你正在用于管理的接口或设备设置 block。`forward-only` 状态或本机/LAN 开关都关闭时，block 规则同样会安装（仅 block，不做透明代理）。
+- **规则优先级按特异性**：内核规则匹配时遵循特异性从高到低原则：
+  1. `接口 + MAC` (`interface + mac`)
+  2. `独立 MAC` (`mac only`)
+  3. `接口 + IP` (`interface + ip`)
+  4. `独立 IP / CIDR` (`ip / cidr only`)
+  5. `独立接口` (`interface only`)
+  6. `全局 LAN 默认`
+  较宽泛的 `block` 规则会让位于更具体的非 block 规则（例如全局 block 某网段，但该网段内某特定 IP/MAC 另有 `direct` 或 relay 规则）。
+- **管理员 SSH 防锁死保护 (Lockout Protection)**：
+  当通过 `gateway rule set` 尝试添加包含 `block` 目标的规则时，系统会自动探测当前活跃的 SSH 管理会话（分析 `SSH_CONNECTION`、`SSH_CLIENT`、当前管理网卡接口、客户端 IP 及 MAC）。若检测到该规则可能切断当前连接导致无法管理，系统会立即拦截并弹出红色高危警示，提示锁死风险，要求管理员显式确认 `[N/y]`；若在自动化运维脚本中确认需要操作，可传入 `--force` 强制应用。
+- **访客区域隔离 (`isolate=true`)**：被标记为 isolated 的区域在 forward 链中禁止流向其他任何内网 LAN 接口，同时 input 链丢弃针对网关宿主机 22 端口（SSH）的连接，放行 DHCP/DNS 与 WAN 互联网访问。
 - **规则目标必须有效**：规则指向的 relay 被删除或禁用时，`apply` 会拒绝；运行时遗留的失效规则会被丢弃（fail-closed），不会回退到默认 relay。
-- **接口名**：仅允许 1-15 个字符的字母、数字、`.`、`-`、`_`。
+- **接口名规范**：仅允许 1-15 个字符的字母、数字、`.`、`-`、`_`。
 - **端口冲突**：`apply` 会检查 TProxy 端口（基础端口与每个额外 relay 的端口）是否与 API、测试、DNS 监听、预设、relay 内部端口冲突。
-- **WAN 与 NAT**：WAN 接口在 `apply` 时解析一次；未配置 `--wan` 且检测不到默认路由时会打印警告并跳过受管 NAT。受管 NAT 的 masquerade 使用 `inet` 表，同时作用于 IPv4 与 IPv6（即 NAT66）。多个 LAN 之间不做隔离，转发策略为 accept。保护 WAN 侧入站由用户自行负责。
+- **WAN 与 NAT**：WAN 接口在 `apply` 时解析一次；未配置 `--wan` 且检测不到默认路由时会打印警告并跳过受管 NAT。受管 NAT 的 masquerade 使用 `inet` 表，同时作用于 IPv4 与 IPv6（即 NAT66）。不同普通 LAN 之间默认不做隔离（forward 策略为 accept），除非接口被标记为 `isolate=true`。保护 WAN 侧入站由用户自行负责。
 - **IPv6**：接口上的所有非链路本地前缀（如 ULA 与 GUA）都会纳入源地址守卫与旁路。
 
 ## 常见问题
@@ -288,14 +474,28 @@ journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
 ## 命令速查
 
 ```bash
+# 上游节点管理
 xray-proxya relay add remote-v029 "vless://..."
 xray-proxya relay test remote-v029
 
+# 声明式网关配置（推荐）
+xray-proxya init gateway              # 初始化并生成带有注释的 gateway.conf 模板
+xray-proxya gateway edit              # 安全交互式编辑 gateway.conf（保存时实时 Lint 校验）
+xray-proxya gateway export            # 导出声明式配置至控制台 (stdout)
+xray-proxya gateway export -w         # 将当前活跃/暂存配置写回 gateway.conf 文件
+xray-proxya apply                     # 自动编译 gateway.conf 并热重载运行态
+
+# CLI 命令行交互配置
 xray-proxya gateway set --relay remote-v029 --lan eth0
+xray-proxya gateway rule set --ip 192.168.1.95 --to remote-v029
+xray-proxya gateway rule set --mac 52:54:00:84:00:11 --to direct
+xray-proxya gateway rule list
 xray-proxya gateway enable
 xray-proxya apply
+
+# 运行态控制与诊断
 xray-proxya gateway up
 xray-proxya gateway check
-
+xray-proxya gateway status
 xray-proxya gateway down
 ```
