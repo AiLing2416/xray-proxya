@@ -18,6 +18,8 @@ func TestGenerate_Basic(t *testing.T) {
 			{MAC: "52:54:00:84:00:11", Target: "direct"},
 			{Interface: "eth2", Target: "block"},
 			{MAC: "52:54:00:84:00:22", Interface: "eth1", Target: "relay-us"},
+			{IP: "192.168.1.95", Target: "direct"},
+			{IP: "10.0.0.0/24", Interface: "eth1", Target: "relay-us"},
 		},
 	}
 
@@ -121,6 +123,8 @@ func TestRoundTrip_GatewayConfigConsistency(t *testing.T) {
 			{MAC: "52:54:00:84:00:11", Target: "direct"},
 			{Interface: "eth2", Target: "block"},
 			{MAC: "52:54:00:84:00:22", Interface: "eth1", Target: "relay-us"},
+			{IP: "192.168.1.95", Target: "direct"},
+			{IP: "10.0.0.0/24", Interface: "eth1", Target: "relay-us"},
 		},
 	}
 

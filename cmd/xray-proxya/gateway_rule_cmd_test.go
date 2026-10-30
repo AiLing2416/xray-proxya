@@ -21,6 +21,7 @@ func TestGatewayRuleListTextAndJSON(t *testing.T) {
 			Rules: []config.GatewayRule{
 				{Interface: "eth1", Target: "direct"},
 				{MAC: "52:54:00:83:00:11", Target: "block"},
+				{IP: "192.168.1.95", Target: "direct"},
 			},
 		},
 	}
@@ -56,8 +57,14 @@ func TestGatewayRuleListTextAndJSON(t *testing.T) {
 	if !strings.Contains(textOutput, "52:54:00:83:00:11") {
 		t.Errorf("expected MAC rule in output, got:\n%s", textOutput)
 	}
+	if !strings.Contains(textOutput, "192.168.1.95") {
+		t.Errorf("expected IP rule in output, got:\n%s", textOutput)
+	}
 	if !strings.Contains(textOutput, "eth1") {
 		t.Errorf("expected interface rule in output, got:\n%s", textOutput)
+	}
+	if !strings.Contains(textOutput, "IP / CIDR") {
+		t.Errorf("expected IP / CIDR header in output, got:\n%s", textOutput)
 	}
 
 	// 2. JSON output
@@ -79,8 +86,8 @@ func TestGatewayRuleListTextAndJSON(t *testing.T) {
 	_, _ = io.Copy(&buf, r)
 	jsonOutput := buf.String()
 
-	if !strings.Contains(jsonOutput, `"mac": "52:54:00:83:00:11"`) || !strings.Contains(jsonOutput, `"interface": "eth1"`) {
-		t.Errorf("expected JSON output with MAC and interface, got:\n%s", jsonOutput)
+	if !strings.Contains(jsonOutput, `"mac": "52:54:00:83:00:11"`) || !strings.Contains(jsonOutput, `"interface": "eth1"`) || !strings.Contains(jsonOutput, `"ip": "192.168.1.95"`) {
+		t.Errorf("expected JSON output with MAC, interface, and IP, got:\n%s", jsonOutput)
 	}
 }
 
@@ -632,5 +639,161 @@ func TestGatewayRuleSet_TUNModeDisallowsRelay(t *testing.T) {
 	ruleSetTo = "block"
 	if err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{}); err != nil {
 		t.Fatalf("expected block target to succeed in TUN mode, got: %v", err)
+	}
+}
+
+func TestGatewayRuleSetAndDel_IP(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:  "tproxy",
+			State: "proxy",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-hk", Enabled: true},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx(true) failed: %v", err)
+	}
+
+	// 1. Add rule with single IP
+	ruleSetMAC = ""
+	ruleSetIP = "192.168.1.95"
+	ruleSetInterface = ""
+	ruleSetTo = "relay-hk"
+	err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("failed to set IP rule: %v", err)
+	}
+
+	stg, _ := config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 1 || stg.Gateway.Rules[0].IP != "192.168.1.95" || stg.Gateway.Rules[0].Target != "relay-hk" {
+		t.Fatalf("unexpected rule in staging: %+v", stg.Gateway.Rules)
+	}
+
+	// 2. Add rule with CIDR (and host bit normalization)
+	ruleSetIP = "10.0.0.5/24"
+	ruleSetTo = "direct"
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("failed to set CIDR rule: %v", err)
+	}
+
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 2 || stg.Gateway.Rules[1].IP != "10.0.0.0/24" || stg.Gateway.Rules[1].Target != "direct" {
+		t.Fatalf("unexpected rule in staging: %+v", stg.Gateway.Rules)
+	}
+
+	// 3. Update IP rule in-place
+	ruleSetIP = "192.168.1.95"
+	ruleSetTo = "block"
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("failed to update IP rule: %v", err)
+	}
+
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 2 || stg.Gateway.Rules[0].Target != "block" {
+		t.Fatalf("expected rule 0 updated to block, got: %+v", stg.Gateway.Rules)
+	}
+
+	// 4. Delete rule by IP flag
+	ruleDelIP = "192.168.1.95"
+	ruleDelMAC = ""
+	ruleDelInterface = ""
+	gatewayRuleDelCmd.Flags().Lookup("ip").Changed = true
+	err = gatewayRuleDelCmd.RunE(gatewayRuleDelCmd, []string{})
+	gatewayRuleDelCmd.Flags().Lookup("ip").Changed = false
+	ruleDelIP = ""
+	if err != nil {
+		t.Fatalf("failed to delete by IP: %v", err)
+	}
+
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 1 || stg.Gateway.Rules[0].IP != "10.0.0.0/24" {
+		t.Fatalf("expected remaining CIDR rule, got: %+v", stg.Gateway.Rules)
+	}
+
+	// Cleanup
+	ruleSetIP = ""
+	ruleSetMAC = ""
+	ruleSetInterface = ""
+	ruleSetTo = ""
+}
+
+func TestDetectLockoutRisk_WithIP(t *testing.T) {
+	t.Setenv("SSH_CONNECTION", "10.0.82.100 50000 10.0.82.21 22")
+	t.Setenv("SSH_CLIENT", "10.0.82.100 50000 22")
+
+	origLookupIface := lookupInterfaceByIP
+	origLookupMAC := lookupMACByIP
+	defer func() {
+		lookupInterfaceByIP = origLookupIface
+		lookupMACByIP = origLookupMAC
+	}()
+
+	lookupInterfaceByIP = func(ip string) (string, error) {
+		if ip == "10.0.82.21" {
+			return "eth0", nil
+		}
+		return "", fmt.Errorf("interface not found")
+	}
+	lookupMACByIP = func(ip string) (string, error) {
+		return "52:54:00:82:00:99", nil
+	}
+
+	// 1. Block client IP matching active SSH connection -> risk
+	ruleClientIP := config.GatewayRule{
+		IP:     "10.0.82.100",
+		Target: "block",
+	}
+	hasRisk, msg := detectLockoutRisk(ruleClientIP)
+	if !hasRisk || !strings.Contains(msg, "matching your active SSH client IP") {
+		t.Errorf("expected risk for blocking active SSH client IP, got %v (%s)", hasRisk, msg)
+	}
+
+	// 2. Block CIDR subnet containing client IP -> risk
+	ruleCIDR := config.GatewayRule{
+		IP:     "10.0.82.0/24",
+		Target: "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleCIDR)
+	if !hasRisk || !strings.Contains(msg, "contains your active SSH client IP") {
+		t.Errorf("expected risk for blocking CIDR containing SSH client IP, got %v (%s)", hasRisk, msg)
+	}
+
+	// 3. Block different IP -> no risk
+	ruleOtherIP := config.GatewayRule{
+		IP:     "10.0.82.200",
+		Target: "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleOtherIP)
+	if hasRisk {
+		t.Errorf("expected no risk for different IP, got true (%s)", msg)
+	}
+
+	// 4. Block client IP on active SSH interface -> risk
+	ruleIfaceAndIP := config.GatewayRule{
+		Interface: "eth0",
+		IP:        "10.0.82.100",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleIfaceAndIP)
+	if !hasRisk || !strings.Contains(msg, "eth0") {
+		t.Errorf("expected risk for blocking client IP on SSH interface eth0, got %v (%s)", hasRisk, msg)
+	}
+
+	// 5. Block client IP on different interface (eth1) -> no risk to active SSH on eth0
+	ruleOtherIface := config.GatewayRule{
+		Interface: "eth1",
+		IP:        "10.0.82.100",
+		Target:    "block",
+	}
+	hasRisk, msg = detectLockoutRisk(ruleOtherIface)
+	if hasRisk {
+		t.Errorf("expected no risk for client IP on different interface, got true (%s)", msg)
 	}
 }

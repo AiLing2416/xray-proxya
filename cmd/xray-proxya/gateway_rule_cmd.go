@@ -18,12 +18,14 @@ var (
 	gatewayRuleListJSON bool
 
 	ruleSetMAC       string
+	ruleSetIP        string
 	ruleSetInterface string
 	ruleSetTo        string
 	ruleSetTarget    string
 	ruleSetForce     bool
 
 	ruleDelMAC       string
+	ruleDelIP        string
 	ruleDelInterface string
 )
 
@@ -48,6 +50,7 @@ var gatewayRuleCmd = &cobra.Command{
 type GatewayRuleItemJSON struct {
 	Index     int    `json:"index"`
 	MAC       string `json:"mac,omitempty"`
+	IP        string `json:"ip,omitempty"`
 	Interface string `json:"interface,omitempty"`
 	Target    string `json:"target"`
 }
@@ -71,6 +74,7 @@ func toRuleItemsJSON(rules []config.GatewayRule) []GatewayRuleItemJSON {
 		items[i] = GatewayRuleItemJSON{
 			Index:     i + 1,
 			MAC:       r.MAC,
+			IP:        r.IP,
 			Interface: r.Interface,
 			Target:    r.Target,
 		}
@@ -84,18 +88,22 @@ func printRulesTable(header string, rules []config.GatewayRule) {
 		fmt.Println("  (no rules configured)")
 		return
 	}
-	fmt.Printf("  %-5s  %-19s  %-12s  %s\n", "INDEX", "MAC ADDRESS", "INTERFACE", "TARGET")
-	fmt.Printf("  %-5s  %-19s  %-12s  %s\n", "-----", "-------------------", "------------", "------")
+	fmt.Printf("  %-5s  %-19s  %-20s  %-12s  %s\n", "INDEX", "MAC ADDRESS", "IP / CIDR", "INTERFACE", "TARGET")
+	fmt.Printf("  %-5s  %-19s  %-20s  %-12s  %s\n", "-----", "-------------------", "--------------------", "------------", "------")
 	for i, r := range rules {
 		mac := r.MAC
 		if mac == "" {
 			mac = "(any)"
 		}
+		ip := r.IP
+		if ip == "" {
+			ip = "(any)"
+		}
 		iface := r.Interface
 		if iface == "" {
 			iface = "(any)"
 		}
-		fmt.Printf("  #%-4d  %-19s  %-12s  %s\n", i+1, mac, iface, r.Target)
+		fmt.Printf("  #%-4d  %-19s  %-20s  %-12s  %s\n", i+1, mac, ip, iface, r.Target)
 	}
 }
 
@@ -179,12 +187,33 @@ func detectLockoutRisk(targetRule config.GatewayRule) (bool, string) {
 			ruleMAC = norm
 		}
 	}
+	ruleIP := strings.TrimSpace(targetRule.IP)
+	if ruleIP != "" {
+		if norm, err := config.NormalizeIPOrCIDR(ruleIP); err == nil {
+			ruleIP = norm
+		}
+	}
 	ruleIface := strings.TrimSpace(targetRule.Interface)
+
+	matchesClientIP := func(rIP, cIP string) (bool, string) {
+		if rIP == "" || cIP == "" {
+			return false, ""
+		}
+		if strings.EqualFold(rIP, cIP) {
+			return true, fmt.Sprintf("Rule targets IP %q, matching your active SSH client IP (%s).", rIP, cIP)
+		}
+		if _, ipNet, err := net.ParseCIDR(rIP); err == nil {
+			if parsedClient := net.ParseIP(cIP); parsedClient != nil && ipNet.Contains(parsedClient) {
+				return true, fmt.Sprintf("Rule targets CIDR subnet %q which contains your active SSH client IP (%s).", rIP, cIP)
+			}
+		}
+		return false, ""
+	}
 
 	// No SSH session detected
 	if clientIP == "" && serverIP == "" {
 		// c) Without SSH env, whole-interface block is a potential lockout risk
-		if ruleIface != "" && ruleMAC == "" {
+		if ruleIface != "" && ruleMAC == "" && ruleIP == "" {
 			return true, fmt.Sprintf("Blocking entire interface %q without MAC filtering will drop all traffic on this interface, which poses a severe lockout risk.", ruleIface)
 		}
 		return false, ""
@@ -216,25 +245,37 @@ func detectLockoutRisk(targetRule config.GatewayRule) (bool, string) {
 
 	// a) If targetRule.Interface matches current SSH inbound interface
 	if sshIface != "" && ruleIface == sshIface {
-		if ruleMAC == "" {
+		if ruleMAC == "" && ruleIP == "" {
 			return true, fmt.Sprintf("Blocking entire interface %q matches your active SSH inbound interface (server IP: %s, client IP: %s).", ruleIface, serverIP, clientIP)
 		}
 		if clientMAC != "" && strings.EqualFold(ruleMAC, clientMAC) {
 			return true, fmt.Sprintf("Rule targets interface %q and MAC %q, matching your active SSH connection (client IP: %s, client MAC: %s).", ruleIface, ruleMAC, clientIP, clientMAC)
 		}
-		if clientMAC == "" {
+		if ipMatch, desc := matchesClientIP(ruleIP, clientIP); ipMatch {
+			return true, fmt.Sprintf("Rule targets interface %q and %s", ruleIface, desc)
+		}
+		if ruleMAC != "" && clientMAC == "" {
 			return true, fmt.Sprintf("Rule targets active SSH interface %q with MAC %q (client MAC could not be verified for %s).", ruleIface, ruleMAC, clientIP)
 		}
 	}
 
 	// b) If targetRule.MAC matches current SSH client MAC
 	if ruleMAC != "" && clientMAC != "" && strings.EqualFold(ruleMAC, clientMAC) {
-		return true, fmt.Sprintf("Rule targets MAC %q, matching your active SSH client MAC (client IP: %s).", ruleMAC, clientIP)
+		if ruleIface == "" || sshIface == "" || ruleIface == sshIface {
+			return true, fmt.Sprintf("Rule targets MAC %q, matching your active SSH client MAC (client IP: %s).", ruleMAC, clientIP)
+		}
 	}
 
-	// c fallback: If SSH is detected but inbound interface could not be resolved,
+	// c) If targetRule.IP matches current SSH client IP
+	if ipMatch, desc := matchesClientIP(ruleIP, clientIP); ipMatch {
+		if ruleIface == "" || sshIface == "" || ruleIface == sshIface {
+			return true, desc
+		}
+	}
+
+	// d fallback: If SSH is detected but inbound interface could not be resolved,
 	// blocking an entire interface might be the SSH interface
-	if sshIface == "" && ruleIface != "" && ruleMAC == "" {
+	if sshIface == "" && ruleIface != "" && ruleMAC == "" && ruleIP == "" {
 		return true, fmt.Sprintf("Blocking entire interface %q without MAC filtering poses a severe lockout risk while an active SSH session is present.", ruleIface)
 	}
 
@@ -271,6 +312,7 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 
 	rawRule := config.GatewayRule{
 		MAC:       ruleSetMAC,
+		IP:        ruleSetIP,
 		Interface: ruleSetInterface,
 		Target:    target,
 	}
@@ -320,10 +362,10 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Update in-place if matching (MAC, Interface) exists
+	// Update in-place if matching (MAC, IP, Interface) exists
 	updated := false
 	for i, r := range cfg.Gateway.Rules {
-		if r.MAC == normRule.MAC && r.Interface == normRule.Interface {
+		if r.MAC == normRule.MAC && r.IP == normRule.IP && r.Interface == normRule.Interface {
 			cfg.Gateway.Rules[i].Target = normRule.Target
 			updated = true
 			break
@@ -341,14 +383,18 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 	if macDesc == "" {
 		macDesc = "(any)"
 	}
+	ipDesc := normRule.IP
+	if ipDesc == "" {
+		ipDesc = "(any)"
+	}
 	ifaceDesc := normRule.Interface
 	if ifaceDesc == "" {
 		ifaceDesc = "(any)"
 	}
 	if updated {
-		fmt.Printf("✅ Updated existing gateway rule in STAGING: MAC=%s, Interface=%s -> %s\n", macDesc, ifaceDesc, normRule.Target)
+		fmt.Printf("✅ Updated existing gateway rule in STAGING: MAC=%s, IP=%s, Interface=%s -> %s\n", macDesc, ipDesc, ifaceDesc, normRule.Target)
 	} else {
-		fmt.Printf("✅ Added new gateway rule in STAGING: MAC=%s, Interface=%s -> %s\n", macDesc, ifaceDesc, normRule.Target)
+		fmt.Printf("✅ Added new gateway rule in STAGING: MAC=%s, IP=%s, Interface=%s -> %s\n", macDesc, ipDesc, ifaceDesc, normRule.Target)
 	}
 	fmt.Println("ℹ️  Run 'xray-proxya apply' to commit changes.")
 	return nil
@@ -383,15 +429,28 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 		if err := cfg.SaveEx(true); err != nil {
 			return fmt.Errorf("❌ Failed to save staging config: %w", err)
 		}
-		fmt.Printf("✅ Deleted rule #%d (MAC=%s, Interface=%s -> %s) from STAGING.\n", idx, deleted.MAC, deleted.Interface, deleted.Target)
+		macDesc := deleted.MAC
+		if macDesc == "" {
+			macDesc = "(any)"
+		}
+		ipDesc := deleted.IP
+		if ipDesc == "" {
+			ipDesc = "(any)"
+		}
+		ifaceDesc := deleted.Interface
+		if ifaceDesc == "" {
+			ifaceDesc = "(any)"
+		}
+		fmt.Printf("✅ Deleted rule #%d (MAC=%s, IP=%s, Interface=%s -> %s) from STAGING.\n", idx, macDesc, ipDesc, ifaceDesc, deleted.Target)
 		fmt.Println("ℹ️  Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
 
 	hasMAC := cmd.Flags().Changed("mac")
+	hasIP := cmd.Flags().Changed("ip")
 	hasIface := cmd.Flags().Changed("interface")
-	if !hasMAC && !hasIface {
-		return fmt.Errorf("❌ Must specify either a 1-based rule index (e.g. 'gateway rule del 1') or --mac / --interface flags")
+	if !hasMAC && !hasIP && !hasIface {
+		return fmt.Errorf("❌ Must specify either a 1-based rule index (e.g. 'gateway rule del 1') or --mac / --ip / --interface flags")
 	}
 
 	targetMAC := strings.TrimSpace(ruleDelMAC)
@@ -402,6 +461,14 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 		}
 		targetMAC = normMAC
 	}
+	targetIP := strings.TrimSpace(ruleDelIP)
+	if hasIP && targetIP != "" {
+		normIP, err := config.NormalizeIPOrCIDR(targetIP)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		targetIP = normIP
+	}
 	targetIface := strings.TrimSpace(ruleDelInterface)
 
 	var filtered []config.GatewayRule
@@ -409,6 +476,9 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 	for _, r := range cfg.Gateway.Rules {
 		match := true
 		if hasMAC && r.MAC != targetMAC {
+			match = false
+		}
+		if hasIP && r.IP != targetIP {
 			match = false
 		}
 		if hasIface && r.Interface != targetIface {
@@ -422,7 +492,7 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 	}
 
 	if deletedCount == 0 {
-		return fmt.Errorf("❌ No rule matched criteria (MAC=%q, Interface=%q)", targetMAC, targetIface)
+		return fmt.Errorf("❌ No rule matched criteria (MAC=%q, IP=%q, Interface=%q)", targetMAC, targetIP, targetIface)
 	}
 
 	cfg.Gateway.Rules = filtered
@@ -464,7 +534,19 @@ func completeRuleIndicesArg(cmd *cobra.Command, args []string, toComplete string
 	}
 	var completions []string
 	for i, r := range cfg.Gateway.Rules {
-		desc := fmt.Sprintf("%d\tMAC=%s Iface=%s -> %s", i+1, r.MAC, r.Interface, r.Target)
+		mac := r.MAC
+		if mac == "" {
+			mac = "(any)"
+		}
+		ip := r.IP
+		if ip == "" {
+			ip = "(any)"
+		}
+		iface := r.Interface
+		if iface == "" {
+			iface = "(any)"
+		}
+		desc := fmt.Sprintf("%d\tMAC=%s IP=%s Iface=%s -> %s", i+1, mac, ip, iface, r.Target)
 		completions = append(completions, desc)
 	}
 	return completions, cobra.ShellCompDirectiveNoFileComp
@@ -503,6 +585,7 @@ func init() {
 	gatewayRuleListCmd.Flags().BoolVar(&gatewayRuleListJSON, "json", false, "Output in JSON format")
 
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetMAC, "mac", "m", "", "Client MAC address (e.g. 52:54:00:83:00:11)")
+	gatewayRuleSetCmd.Flags().StringVar(&ruleSetIP, "ip", "", "Client IP address or CIDR subnet (e.g. 192.168.1.95 or 10.0.0.0/24)")
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetInterface, "interface", "i", "", "LAN interface name (e.g. eth1)")
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetTo, "to", "t", "", "Target destination ('direct', 'block', or relay alias)")
 	gatewayRuleSetCmd.Flags().StringVar(&ruleSetTarget, "target", "", "Alias for --to")
@@ -513,6 +596,7 @@ func init() {
 	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
 
 	gatewayRuleDelCmd.Flags().StringVarP(&ruleDelMAC, "mac", "m", "", "Client MAC address to match")
+	gatewayRuleDelCmd.Flags().StringVar(&ruleDelIP, "ip", "", "Client IP address or CIDR subnet to match")
 	gatewayRuleDelCmd.Flags().StringVarP(&ruleDelInterface, "interface", "i", "", "LAN interface name to match")
 
 	_ = gatewayRuleDelCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)

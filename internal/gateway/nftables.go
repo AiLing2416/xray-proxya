@@ -1372,7 +1372,15 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 					b.WriteString("        " + match + " drop\n")
 					continue
 				}
-				b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
+				tproxyFamily := ""
+				if rule.IP != "" {
+					if isIPv6(rule.IP) {
+						tproxyFamily = "ip6 "
+					} else {
+						tproxyFamily = "ip "
+					}
+				}
+				b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
 			}
 
 			// Default Gateway Policy

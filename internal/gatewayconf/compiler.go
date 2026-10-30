@@ -381,7 +381,15 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				}
 			}
 
-			return nil, &CompileError{Line: r.Line, Msg: fmt.Sprintf("cannot resolve IP or CIDR %q to any defined device or zone subnet", ipStr)}
+			// 4. Native L3 IP or CIDR rule (not bound to any device MAC)
+			ruleIface, _ := r.Option("interface")
+			if ruleIface == "" {
+				ruleIface, _ = r.Option("iface")
+			}
+			if err := addRule(config.GatewayRule{IP: ipStr, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+				return nil, err
+			}
+			continue
 
 		default:
 			return nil, &CompileError{Line: r.Line, Msg: fmt.Sprintf("unsupported rule kind %q", r.Kind)}

@@ -15,6 +15,7 @@ import (
 	"math"
 	"math/big"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -503,6 +504,7 @@ func CleanGuestAlias(raw string) (string, error) {
 
 type GatewayRule struct {
 	MAC       string `json:"mac,omitempty"`       // normalized lowercase MAC e.g. "52:54:00:83:00:11"
+	IP        string `json:"ip,omitempty"`        // normalized IP or CIDR e.g. "192.168.1.95" or "10.0.0.0/24"
 	Interface string `json:"interface,omitempty"` // LAN interface e.g. "eth1"
 	Target    string `json:"target"`              // "direct", "block", or relay alias
 }
@@ -755,9 +757,38 @@ func NormalizeMAC(raw string) (string, error) {
 	return strings.ToLower(hw.String()), nil
 }
 
+// NormalizeIPOrCIDR parses and normalizes an IP address or CIDR notation.
+// Single IPv4/IPv6 addresses are returned in standard canonical form.
+// CIDR prefixes are returned in canonical masked prefix form (e.g. "192.168.1.5/24" -> "192.168.1.0/24").
+func NormalizeIPOrCIDR(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", errors.New("IP or CIDR cannot be empty")
+	}
+	if strings.Contains(trimmed, "/") {
+		prefix, err := netip.ParsePrefix(trimmed)
+		if err != nil {
+			return "", fmt.Errorf("invalid CIDR %q: %w", raw, err)
+		}
+		if prefix.Addr().Is4In6() {
+			unmapped := prefix.Addr().Unmap()
+			bits := prefix.Bits() - 96
+			if bits >= 0 && bits <= 32 {
+				prefix = netip.PrefixFrom(unmapped, bits)
+			}
+		}
+		return prefix.Masked().String(), nil
+	}
+	addr, err := netip.ParseAddr(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("invalid IP address %q: %w", raw, err)
+	}
+	return addr.Unmap().String(), nil
+}
+
 // ValidateGatewayRule validates and normalizes a GatewayRule.
-// It requires at least one of MAC or Interface to be non-empty,
-// normalizes MAC if set, trims Interface, and normalizes Target.
+// It requires at least one of MAC, IP, or Interface to be non-empty,
+// normalizes MAC and IP if set, trims Interface, and normalizes Target.
 func ValidateGatewayRule(rule GatewayRule) (GatewayRule, error) {
 	norm := GatewayRule{
 		Interface: strings.TrimSpace(rule.Interface),
@@ -769,8 +800,15 @@ func ValidateGatewayRule(rule GatewayRule) (GatewayRule, error) {
 		}
 		norm.MAC = mac
 	}
-	if norm.MAC == "" && norm.Interface == "" {
-		return rule, errors.New("gateway rule must specify at least one of MAC or Interface")
+	if strings.TrimSpace(rule.IP) != "" {
+		ipNorm, err := NormalizeIPOrCIDR(rule.IP)
+		if err != nil {
+			return rule, err
+		}
+		norm.IP = ipNorm
+	}
+	if norm.MAC == "" && norm.IP == "" && norm.Interface == "" {
+		return rule, errors.New("gateway rule must specify at least one of MAC, IP, or Interface")
 	}
 	if norm.Interface != "" {
 		if err := ValidateInterfaceName(norm.Interface); err != nil {
@@ -966,7 +1004,7 @@ func ValidateGatewayRuleTargets(userCfg *UserConfig) error {
 			continue
 		}
 		if !GatewayRelayActive(userCfg, target) {
-			return fmt.Errorf("gateway rule (MAC=%q, Interface=%q) targets relay %q which does not exist or is disabled; delete or update the rule first", rule.MAC, rule.Interface, target)
+			return fmt.Errorf("gateway rule (MAC=%q, IP=%q, Interface=%q) targets relay %q which does not exist or is disabled; delete or update the rule first", rule.MAC, rule.IP, rule.Interface, target)
 		}
 	}
 	return nil

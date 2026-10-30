@@ -264,6 +264,12 @@ def device printer mac=52:54:00:84:00:22 ip=192.168.2.80
 ip 192.168.1.50 -> relay-jp
 # 2. IP matches zone iot subnet
 ip 192.168.2.0/24 -> block
+# 3. Native L3 IP rule (unbound to device/zone)
+ip 192.168.1.95 -> direct
+# 4. Native L3 CIDR rule
+ip 10.0.0.0/24 -> relay-hk
+# 5. Native L3 IP rule with interface
+ip 192.168.1.96 -> direct interface=eth1
 `
 	ast, err := Parse(input)
 	if err != nil {
@@ -275,8 +281,8 @@ ip 192.168.2.0/24 -> block
 		t.Fatalf("compile error: %v", err)
 	}
 
-	if len(cfg.Rules) != 2 {
-		t.Fatalf("expected 2 rules, got %d", len(cfg.Rules))
+	if len(cfg.Rules) != 5 {
+		t.Fatalf("expected 5 rules, got %d", len(cfg.Rules))
 	}
 
 	if cfg.Rules[0].MAC != "52:54:00:84:00:11" || cfg.Rules[0].Target != "relay-jp" {
@@ -284,6 +290,15 @@ ip 192.168.2.0/24 -> block
 	}
 	if cfg.Rules[1].Interface != "eth2" || cfg.Rules[1].Target != "block" {
 		t.Errorf("rule[1] = %+v, want eth2 from iot subnet", cfg.Rules[1])
+	}
+	if cfg.Rules[2].IP != "192.168.1.95" || cfg.Rules[2].Target != "direct" {
+		t.Errorf("rule[2] = %+v, want pure IP direct", cfg.Rules[2])
+	}
+	if cfg.Rules[3].IP != "10.0.0.0/24" || cfg.Rules[3].Target != "relay-hk" {
+		t.Errorf("rule[3] = %+v, want pure CIDR relay-hk", cfg.Rules[3])
+	}
+	if cfg.Rules[4].IP != "192.168.1.96" || cfg.Rules[4].Interface != "eth1" || cfg.Rules[4].Target != "direct" {
+		t.Errorf("rule[4] = %+v, want IP+Interface direct", cfg.Rules[4])
 	}
 }
 
@@ -356,12 +371,12 @@ zone wan -> direct
 			errContains: "cannot apply gateway routing rule to WAN zone",
 		},
 		{
-			name: "unresolvable IP",
+			name: "invalid interface on IP rule",
 			input: `
 def zone lan eth1
-ip 10.99.99.99 -> direct
+ip 10.99.99.99 -> direct interface=inv@lid
 `,
-			errContains: "cannot resolve IP or CIDR \"10.99.99.99\"",
+			errContains: "invalid interface name",
 		},
 	}
 

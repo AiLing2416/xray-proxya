@@ -161,4 +161,23 @@ func TestDiffUserConfigGatewayRouter(t *testing.T) {
 	if !strings.Contains(joined, `Gateway Rules: 1 rule(s) -> 2 rule(s)`) {
 		t.Errorf("expected Gateway Rules diff, got: %s", joined)
 	}
+
+	// Gateway rules diff when only IP changes
+	activeIP := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{{IP: "192.168.1.95", Target: "direct"}},
+		},
+	}
+	stagingIP := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{{IP: "192.168.1.96", Target: "direct"}},
+		},
+	}
+	diffsIP := DiffUserConfig(activeIP, stagingIP)
+	joinedIP := strings.Join(diffsIP, "\n")
+	if !strings.Contains(joinedIP, "Gateway Rules") {
+		t.Errorf("expected Gateway Rules diff for IP change, got: %s", joinedIP)
+	}
 }

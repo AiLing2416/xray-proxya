@@ -870,6 +870,75 @@ func TestValidateGatewayRule(t *testing.T) {
 	if ruleRelay.Target != "relay-jp" {
 		t.Errorf("Target = %q, want relay-jp", ruleRelay.Target)
 	}
+
+	// Valid pure IPv4 rule
+	ruleIPv4, err := ValidateGatewayRule(GatewayRule{
+		IP:     "192.168.1.95",
+		Target: "direct",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for pure IPv4: %v", err)
+	}
+	if ruleIPv4.IP != "192.168.1.95" {
+		t.Errorf("IP = %q, want 192.168.1.95", ruleIPv4.IP)
+	}
+
+	// Valid pure IPv4 CIDR rule (with host bit normalization)
+	ruleCIDR, err := ValidateGatewayRule(GatewayRule{
+		IP:     "10.0.82.55/24",
+		Target: "relay-hk",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for CIDR: %v", err)
+	}
+	if ruleCIDR.IP != "10.0.82.0/24" {
+		t.Errorf("IP = %q, want 10.0.82.0/24", ruleCIDR.IP)
+	}
+
+	// Valid IPv6 address
+	ruleIPv6, err := ValidateGatewayRule(GatewayRule{
+		IP:     "fd00:82::1",
+		Target: "direct",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for IPv6: %v", err)
+	}
+	if ruleIPv6.IP != "fd00:82::1" {
+		t.Errorf("IP = %q, want fd00:82::1", ruleIPv6.IP)
+	}
+
+	// Valid IPv6 CIDR
+	ruleIPv6CIDR, err := ValidateGatewayRule(GatewayRule{
+		IP:     "fd00:82::1/64",
+		Target: "direct",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for IPv6 CIDR: %v", err)
+	}
+	if ruleIPv6CIDR.IP != "fd00:82::/64" {
+		t.Errorf("IP = %q, want fd00:82::/64", ruleIPv6CIDR.IP)
+	}
+
+	// Valid IP + Interface rule
+	ruleIPIface, err := ValidateGatewayRule(GatewayRule{
+		IP:        "192.168.1.95",
+		Interface: "eth1",
+		Target:    "direct",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error for IP+Interface: %v", err)
+	}
+	if ruleIPIface.IP != "192.168.1.95" || ruleIPIface.Interface != "eth1" {
+		t.Errorf("IP+Interface rule mismatch: %+v", ruleIPIface)
+	}
+
+	// Invalid IP / CIDR format
+	if _, err := ValidateGatewayRule(GatewayRule{IP: "invalid-ip", Target: "direct"}); err == nil {
+		t.Error("expected error for invalid IP")
+	}
+	if _, err := ValidateGatewayRule(GatewayRule{IP: "192.168.1.300/24", Target: "direct"}); err == nil {
+		t.Error("expected error for out of range IP in CIDR")
+	}
 }
 
 func TestEffectiveLANInterfaces(t *testing.T) {

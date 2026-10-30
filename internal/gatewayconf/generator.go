@@ -99,6 +99,10 @@ func Generate(gw *config.GatewayConfig) string {
 				b.WriteString(fmt.Sprintf("mac %s -> %s interface=%s\n", rule.MAC, target, rule.Interface))
 			} else if rule.MAC != "" {
 				b.WriteString(fmt.Sprintf("mac %s -> %s\n", rule.MAC, target))
+			} else if rule.IP != "" && rule.Interface != "" {
+				b.WriteString(fmt.Sprintf("ip %s -> %s interface=%s\n", rule.IP, target, rule.Interface))
+			} else if rule.IP != "" {
+				b.WriteString(fmt.Sprintf("ip %s -> %s\n", rule.IP, target))
 			} else if rule.Interface != "" {
 				b.WriteString(fmt.Sprintf("interface %s -> %s\n", rule.Interface, target))
 			}

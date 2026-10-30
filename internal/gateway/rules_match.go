@@ -3,6 +3,7 @@ package gateway
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strings"
 
@@ -15,13 +16,25 @@ func isBlockRule(r config.GatewayRule) bool {
 	return strings.EqualFold(strings.TrimSpace(r.Target), "block")
 }
 
-// ruleSpecificity ranks gateway rules: interface+MAC (0) beats MAC-only (1)
-// beats interface-only (2). Lower values are evaluated first.
+func isIPv6(ipOrCIDR string) bool {
+	if strings.Contains(ipOrCIDR, "/") {
+		if prefix, err := netip.ParsePrefix(ipOrCIDR); err == nil {
+			return prefix.Addr().Is6()
+		}
+	}
+	if addr, err := netip.ParseAddr(ipOrCIDR); err == nil {
+		return addr.Is6()
+	}
+	return strings.Contains(ipOrCIDR, ":")
+}
+
+// ruleSpecificity ranks gateway rules: interface+MAC / interface+IP (0) beats
+// MAC-only / IP-only (1) beats interface-only (2). Lower values are evaluated first.
 func ruleSpecificity(r config.GatewayRule) int {
 	switch {
-	case r.MAC != "" && r.Interface != "":
+	case (r.MAC != "" || r.IP != "") && r.Interface != "":
 		return 0
-	case r.MAC != "":
+	case r.MAC != "" || r.IP != "":
 		return 1
 	default:
 		return 2
@@ -33,7 +46,7 @@ func ruleSpecificity(r config.GatewayRule) int {
 func sortedGatewayRules(cfg *config.UserConfig, block bool) []config.GatewayRule {
 	var out []config.GatewayRule
 	for _, r := range cfg.Gateway.Rules {
-		if (r.MAC == "" && r.Interface == "") || isBlockRule(r) != block {
+		if (r.MAC == "" && r.Interface == "" && r.IP == "") || isBlockRule(r) != block {
 			continue
 		}
 		out = append(out, r)
@@ -51,6 +64,13 @@ func matchTokens(r config.GatewayRule) []string {
 	if r.MAC != "" {
 		t = append(t, "ether", "saddr", r.MAC)
 	}
+	if r.IP != "" {
+		if isIPv6(r.IP) {
+			t = append(t, "ip6", "saddr", r.IP)
+		} else {
+			t = append(t, "ip", "saddr", r.IP)
+		}
+	}
 	return t
 }
 
@@ -60,17 +80,27 @@ func matchTokens(r config.GatewayRule) []string {
 func blockMatchTokens(cfg *config.UserConfig, r config.GatewayRule) []string {
 	t := matchTokens(r)
 	for _, o := range cfg.Gateway.Rules {
-		if isBlockRule(o) || (o.MAC == "" && o.Interface == "") {
+		if isBlockRule(o) || (o.MAC == "" && o.Interface == "" && o.IP == "") {
 			continue
 		}
 		switch ruleSpecificity(r) {
-		case 1: // MAC-only block yields to interface+MAC rules of the same MAC.
-			if o.MAC == r.MAC && o.Interface != "" {
+		case 1: // MAC/IP-only block yields to interface+MAC/IP rules of the same MAC/IP.
+			if r.MAC != "" && o.MAC == r.MAC && o.Interface != "" {
 				t = append(t, "iifname", "!=", quoteIface(o.Interface))
 			}
-		case 2: // interface-only block yields to rules naming a MAC on it.
+			if r.IP != "" && o.IP == r.IP && o.Interface != "" {
+				t = append(t, "iifname", "!=", quoteIface(o.Interface))
+			}
+		case 2: // interface-only block yields to rules naming a MAC or IP on it.
 			if o.MAC != "" && (o.Interface == "" || o.Interface == r.Interface) {
 				t = append(t, "ether", "saddr", "!=", o.MAC)
+			}
+			if o.IP != "" && (o.Interface == "" || o.Interface == r.Interface) {
+				if isIPv6(o.IP) {
+					t = append(t, "ip6", "saddr", "!=", o.IP)
+				} else {
+					t = append(t, "ip", "saddr", "!=", o.IP)
+				}
 			}
 		}
 	}
