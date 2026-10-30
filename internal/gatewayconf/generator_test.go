@@ -21,6 +21,10 @@ func TestGenerate_Basic(t *testing.T) {
 			{IP: "192.168.1.95", Target: "direct"},
 			{IP: "10.0.0.0/24", Interface: "eth1", Target: "relay-us"},
 		},
+		PortForwards: []config.PortForwardRule{
+			{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+			{WANPort: 5353, TargetIP: "192.168.1.53", TargetPort: 53, Proto: "tcp,udp"},
+		},
 	}
 
 	text := Generate(gw)
@@ -34,6 +38,9 @@ func TestGenerate_Basic(t *testing.T) {
 		"mac 52:54:00:84:00:11 -> direct",
 		"interface eth2 -> block",
 		"mac 52:54:00:84:00:22 -> relay-us interface=eth1",
+		"# Port Forwarding Rules",
+		"forward 8080 -> 192.168.1.100:80 proto=tcp",
+		"forward 5353 -> 192.168.1.53:53 proto=tcp,udp",
 	}
 
 	for _, s := range expectedSubstrings {
@@ -91,6 +98,9 @@ func TestGenerateFromAST(t *testing.T) {
 			{Kind: SubjectLocal, Target: "relay-main", Options: []RuleOption{{Key: "dns", Value: "relay"}}, Line: 5},
 			{Kind: SubjectDevice, SubjectValue: "tv", Target: "relay-jp", Line: 6},
 		},
+		Forwards: []ForwardAST{
+			{WANPort: 8080, Target: "tv", TargetPort: 80, Proto: "tcp", Line: 7},
+		},
 	}
 
 	text := GenerateFromAST(ast)
@@ -102,6 +112,8 @@ func TestGenerateFromAST(t *testing.T) {
 		"def group streaming tv, pad",
 		"local -> relay-main dns=relay",
 		"device tv -> relay-jp",
+		"# --- Port Forwarding Rules ---",
+		"forward 8080 -> tv:80 proto=tcp",
 	}
 
 	for _, s := range expected {
@@ -125,6 +137,10 @@ func TestRoundTrip_GatewayConfigConsistency(t *testing.T) {
 			{MAC: "52:54:00:84:00:22", Interface: "eth1", Target: "relay-us"},
 			{IP: "192.168.1.95", Target: "direct"},
 			{IP: "10.0.0.0/24", Interface: "eth1", Target: "relay-us"},
+		},
+		PortForwards: []config.PortForwardRule{
+			{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+			{WANPort: 9090, TargetIP: "192.168.1.200", TargetPort: 90, Proto: "udp"},
 		},
 	}
 
@@ -170,6 +186,17 @@ func TestRoundTrip_GatewayConfigConsistency(t *testing.T) {
 			t.Errorf("Rule[%d] = %+v, want %+v", i, rGot, rWant)
 		}
 	}
+
+	if len(recompiled.PortForwards) != len(original.PortForwards) {
+		t.Fatalf("PortForwards length = %d, want %d", len(recompiled.PortForwards), len(original.PortForwards))
+	}
+	for i := range original.PortForwards {
+		pfWant := original.PortForwards[i]
+		pfGot := recompiled.PortForwards[i]
+		if pfGot != pfWant {
+			t.Errorf("PortForward[%d] = %+v, want %+v", i, pfGot, pfWant)
+		}
+	}
 }
 
 func TestRoundTrip_ASTConsistency(t *testing.T) {
@@ -193,6 +220,10 @@ func TestRoundTrip_ASTConsistency(t *testing.T) {
 			{Kind: SubjectMAC, SubjectValue: "52:54:00:12:34:56", Target: "direct"},
 			{Kind: SubjectInterface, SubjectValue: "eth1", Target: "block"},
 			{Kind: SubjectIP, SubjectValue: "192.168.1.50", Target: "relay-jp"},
+		},
+		Forwards: []ForwardAST{
+			{WANPort: 8080, Target: "tv", TargetPort: 80, Proto: "tcp"},
+			{WANPort: 9090, Target: "192.168.1.200", TargetPort: 90, Proto: "udp"},
 		},
 	}
 
@@ -253,6 +284,18 @@ func TestRoundTrip_ASTConsistency(t *testing.T) {
 		}
 		if len(rGot.Options) != len(rWant.Options) {
 			t.Errorf("Rule[%d] options len = %d, want %d", i, len(rGot.Options), len(rWant.Options))
+		}
+	}
+
+	// 7. Compare Forwards
+	if len(reparsed.Forwards) != len(origAST.Forwards) {
+		t.Fatalf("Forwards count = %d, want %d", len(reparsed.Forwards), len(origAST.Forwards))
+	}
+	for i := range origAST.Forwards {
+		fWant := origAST.Forwards[i]
+		fGot := reparsed.Forwards[i]
+		if fGot.WANPort != fWant.WANPort || fGot.Target != fWant.Target || fGot.TargetPort != fWant.TargetPort || fGot.Proto != fWant.Proto {
+			t.Errorf("Forward[%d] = %+v, want %+v", i, fGot, fWant)
 		}
 	}
 }

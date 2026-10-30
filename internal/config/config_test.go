@@ -1449,3 +1449,171 @@ func TestBackfillDefaultsHysteria2(t *testing.T) {
 		}
 	})
 }
+
+func TestValidatePortForwardRule(t *testing.T) {
+	tests := []struct {
+		name    string
+		rule    PortForwardRule
+		wantErr bool
+	}{
+		{
+			name:    "valid tcp",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+			wantErr: false,
+		},
+		{
+			name:    "valid udp",
+			rule:    PortForwardRule{WANPort: 5353, TargetIP: "192.168.1.100", TargetPort: 53, Proto: "udp"},
+			wantErr: false,
+		},
+		{
+			name:    "valid default proto (empty)",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80},
+			wantErr: false,
+		},
+		{
+			name:    "valid tcp,udp",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp,udp"},
+			wantErr: false,
+		},
+		{
+			name:    "valid ipv6 target",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "fd00::100", TargetPort: 80, Proto: "tcp"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid wan port zero",
+			rule:    PortForwardRule{WANPort: 0, TargetIP: "192.168.1.100", TargetPort: 80},
+			wantErr: true,
+		},
+		{
+			name:    "invalid wan port too high",
+			rule:    PortForwardRule{WANPort: 70000, TargetIP: "192.168.1.100", TargetPort: 80},
+			wantErr: true,
+		},
+		{
+			name:    "invalid target port zero",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 0},
+			wantErr: true,
+		},
+		{
+			name:    "invalid target port too high",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 65536},
+			wantErr: true,
+		},
+		{
+			name:    "empty target ip",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "", TargetPort: 80},
+			wantErr: true,
+		},
+		{
+			name:    "invalid target ip hostname",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "nas.local", TargetPort: 80},
+			wantErr: true,
+		},
+		{
+			name:    "invalid target ip cidr",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.0/24", TargetPort: 80},
+			wantErr: true,
+		},
+		{
+			name:    "invalid proto",
+			rule:    PortForwardRule{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "sctp"},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePortForwardRule(tc.rule)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("ValidatePortForwardRule() error = %v, wantErr %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestValidateGatewayPorts_PortForward(t *testing.T) {
+	baseCfg := func() *UserConfig {
+		return &UserConfig{
+			Role:       RoleGateway,
+			APIInbound: 10085,
+			Gateway: GatewayConfig{
+				Mode:       "tun",
+				TProxyPort: 12345,
+			},
+		}
+	}
+
+	t.Run("no port forwards", func(t *testing.T) {
+		cfg := baseCfg()
+		if err := ValidateGatewayPorts(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("valid port forwards", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Gateway.PortForwards = []PortForwardRule{
+			{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+			{WANPort: 9090, TargetIP: "192.168.1.100", TargetPort: 90, Proto: "udp"},
+		}
+		if err := ValidateGatewayPorts(cfg); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("same wan port disjoint proto", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Gateway.PortForwards = []PortForwardRule{
+			{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+			{WANPort: 8080, TargetIP: "192.168.1.200", TargetPort: 80, Proto: "udp"},
+		}
+		if err := ValidateGatewayPorts(cfg); err != nil {
+			t.Errorf("expected disjoint proto on same port to succeed, got: %v", err)
+		}
+	})
+
+	t.Run("conflict with api inbound", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Gateway.PortForwards = []PortForwardRule{
+			{WANPort: 10085, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+		}
+		if err := ValidateGatewayPorts(cfg); err == nil {
+			t.Error("expected conflict with api inbound port 10085, got nil")
+		}
+	})
+
+	t.Run("conflict with tproxy port in tproxy mode", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Gateway.Mode = "tproxy"
+		cfg.Gateway.PortForwards = []PortForwardRule{
+			{WANPort: 12345, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+		}
+		if err := ValidateGatewayPorts(cfg); err == nil {
+			t.Error("expected conflict with tproxy base port 12345, got nil")
+		}
+	})
+
+	t.Run("conflict between port forwards same proto", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Gateway.PortForwards = []PortForwardRule{
+			{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+			{WANPort: 8080, TargetIP: "192.168.1.200", TargetPort: 8080, Proto: "tcp"},
+		}
+		if err := ValidateGatewayPorts(cfg); err == nil {
+			t.Error("expected duplicate port forward conflict, got nil")
+		}
+	})
+
+	t.Run("conflict between port forwards overlapping proto", func(t *testing.T) {
+		cfg := baseCfg()
+		cfg.Gateway.PortForwards = []PortForwardRule{
+			{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp,udp"},
+			{WANPort: 8080, TargetIP: "192.168.1.200", TargetPort: 8080, Proto: "tcp"},
+		}
+		if err := ValidateGatewayPorts(cfg); err == nil {
+			t.Error("expected overlapping proto conflict, got nil")
+		}
+	})
+}

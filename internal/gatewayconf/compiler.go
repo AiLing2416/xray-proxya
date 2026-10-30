@@ -398,11 +398,68 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 
 	gwConfig.Rules = rules
 
+	// 5. Process Port Forwarding Rules
+	var portForwards []config.PortForwardRule
+	for _, f := range ast.Forwards {
+		var targetIP string
+		// 1. Check if target is a defined device
+		if d, ok := devMap[strings.ToLower(f.Target)]; ok {
+			if strings.TrimSpace(d.IP) == "" {
+				return nil, &CompileError{Line: f.Line, Msg: fmt.Sprintf("device %q referenced in port forward has no ip configured (add ip=<address> to def device)", d.Name)}
+			}
+			parsedIP := net.ParseIP(strings.TrimSpace(d.IP))
+			if parsedIP == nil {
+				return nil, &CompileError{Line: f.Line, Msg: fmt.Sprintf("device %q has invalid ip %q", d.Name, d.IP)}
+			}
+			targetIP = parsedIP.String()
+		} else {
+			// 2. Target must be a valid single IP
+			parsedIP := net.ParseIP(strings.TrimSpace(f.Target))
+			if parsedIP == nil {
+				return nil, &CompileError{Line: f.Line, Msg: fmt.Sprintf("port forward target %q is neither a defined device nor a valid IP address", f.Target)}
+			}
+			targetIP = parsedIP.String()
+		}
+
+		if f.WANPort < 1 || f.WANPort > 65535 {
+			return nil, &CompileError{Line: f.Line, Msg: fmt.Sprintf("invalid WAN port %d: must be between 1 and 65535", f.WANPort)}
+		}
+		if f.TargetPort < 1 || f.TargetPort > 65535 {
+			return nil, &CompileError{Line: f.Line, Msg: fmt.Sprintf("invalid target port %d: must be between 1 and 65535", f.TargetPort)}
+		}
+
+		proto, err := config.NormalizePortForwardProto(f.Proto)
+		if err != nil {
+			return nil, &CompileError{Line: f.Line, Msg: err.Error()}
+		}
+
+		// Check for duplicate WAN port + proto conflict
+		for _, prev := range portForwards {
+			if prev.WANPort == f.WANPort && config.PortForwardProtoOverlap(prev.Proto, proto) {
+				return nil, &CompileError{
+					Line: f.Line,
+					Msg:  fmt.Sprintf("duplicate port forward on WAN port %d with conflicting proto (%s vs %s)", f.WANPort, proto, prev.Proto),
+				}
+			}
+		}
+
+		portForwards = append(portForwards, config.PortForwardRule{
+			WANPort:    f.WANPort,
+			TargetIP:   targetIP,
+			TargetPort: f.TargetPort,
+			Proto:      proto,
+		})
+	}
+	gwConfig.PortForwards = portForwards
+
 	// Final verification if UserConfig was provided
 	if options.UserConfig != nil {
 		testUserCfg := *options.UserConfig
 		testUserCfg.Gateway = *gwConfig
 		if err := config.ValidateGatewayRulesForMode(&testUserCfg); err != nil {
+			return nil, err
+		}
+		if err := config.ValidateGatewayPorts(&testUserCfg); err != nil {
 			return nil, err
 		}
 	}

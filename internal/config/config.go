@@ -527,6 +527,54 @@ type GatewayConfig struct {
 	DNSStrategy     string              `json:"dns_strategy,omitempty"`
 	DNSServers      []string            `json:"dns_servers,omitempty"`
 	DNSRecords      map[string][]string `json:"dns_records,omitempty"`
+	PortForwards    []PortForwardRule   `json:"port_forwards,omitempty"`
+}
+
+type PortForwardRule struct {
+	WANPort    int    `json:"wan_port"`
+	TargetIP   string `json:"target_ip"`
+	TargetPort int    `json:"target_port"`
+	Proto      string `json:"proto,omitempty"` // "tcp", "udp", or "tcp,udp" (default)
+}
+
+func NormalizePortForwardProto(proto string) (string, error) {
+	p := strings.ToLower(strings.TrimSpace(proto))
+	if p == "" || p == "tcp,udp" || p == "udp,tcp" || p == "all" {
+		return "tcp,udp", nil
+	}
+	if p == "tcp" || p == "udp" {
+		return p, nil
+	}
+	return "", fmt.Errorf("invalid proto %q: must be tcp, udp, or tcp,udp", proto)
+}
+
+func PortForwardProtoOverlap(p1, p2 string) bool {
+	norm1, _ := NormalizePortForwardProto(p1)
+	norm2, _ := NormalizePortForwardProto(p2)
+	if norm1 == "tcp,udp" || norm2 == "tcp,udp" {
+		return true
+	}
+	return norm1 == norm2
+}
+
+func ValidatePortForwardRule(pf PortForwardRule) error {
+	if pf.WANPort < 1 || pf.WANPort > 65535 {
+		return fmt.Errorf("invalid wan port %d: must be between 1 and 65535", pf.WANPort)
+	}
+	if pf.TargetPort < 1 || pf.TargetPort > 65535 {
+		return fmt.Errorf("invalid target port %d: must be between 1 and 65535", pf.TargetPort)
+	}
+	ipStr := strings.TrimSpace(pf.TargetIP)
+	if ipStr == "" {
+		return fmt.Errorf("target ip cannot be empty")
+	}
+	if net.ParseIP(ipStr) == nil {
+		return fmt.Errorf("invalid target ip %q: must be a valid IPv4 or IPv6 address", pf.TargetIP)
+	}
+	if _, err := NormalizePortForwardProto(pf.Proto); err != nil {
+		return err
+	}
+	return nil
 }
 
 var allowedDNSServerSchemes = map[string]bool{
@@ -986,6 +1034,31 @@ func ValidateGatewayPorts(userCfg *UserConfig) error {
 		}
 		for _, alias := range aliases {
 			claimTProxy(ports[alias], "tproxy relay "+alias)
+		}
+	}
+	for i, pf := range userCfg.Gateway.PortForwards {
+		if conflict != nil {
+			break
+		}
+		if pf.WANPort <= 0 || pf.WANPort > 65535 {
+			conflict = fmt.Errorf("port forward wan port %d is out of range", pf.WANPort)
+			break
+		}
+		owner := fmt.Sprintf("port forward wan:%d", pf.WANPort)
+		if prev, ok := owners[pf.WANPort]; ok {
+			conflict = fmt.Errorf("port %d is used by both %s and %s", pf.WANPort, prev, owner)
+			break
+		}
+		if prev, ok := tproxyOwners[pf.WANPort]; ok {
+			conflict = fmt.Errorf("port %d is used by both %s and %s", pf.WANPort, prev, owner)
+			break
+		}
+		for j := 0; j < i; j++ {
+			prev := userCfg.Gateway.PortForwards[j]
+			if prev.WANPort == pf.WANPort && PortForwardProtoOverlap(prev.Proto, pf.Proto) {
+				conflict = fmt.Errorf("port %d is used by both %s and %s", pf.WANPort, fmt.Sprintf("port forward (proto %s)", prev.Proto), owner)
+				break
+			}
 		}
 	}
 	return conflict

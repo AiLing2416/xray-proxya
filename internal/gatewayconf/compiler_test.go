@@ -378,6 +378,29 @@ ip 10.99.99.99 -> direct interface=inv@lid
 `,
 			errContains: "invalid interface name",
 		},
+		{
+			name: "device in port forward without ip",
+			input: `
+def device nas mac=52:54:00:84:00:11
+forward 8080 -> nas:80
+`,
+			errContains: "has no ip configured (add ip=<address> to def device)",
+		},
+		{
+			name: "target neither device nor valid ip",
+			input: `
+forward 8080 -> unknown-nas:80
+`,
+			errContains: "neither a defined device nor a valid IP address",
+		},
+		{
+			name: "duplicate wan port and proto conflict",
+			input: `
+forward 8080 -> 192.168.1.100:80 proto=tcp
+forward 8080 -> 192.168.1.200:80 proto=tcp
+`,
+			errContains: "duplicate port forward on WAN port 8080 with conflicting proto",
+		},
 	}
 
 	for _, tc := range tests {
@@ -394,5 +417,78 @@ ip 10.99.99.99 -> direct interface=inv@lid
 				t.Errorf("error %q does not contain %q", err.Error(), tc.errContains)
 			}
 		})
+	}
+}
+
+func TestCompile_PortForwarding(t *testing.T) {
+	input := `
+def zone wan eth0
+def zone lan eth1
+def device nas mac=52:54:00:84:00:11 ip=192.168.1.100
+
+forward 80 -> nas:80 proto=tcp
+forward 80 -> 192.168.1.200:80 proto=udp
+forward 53 -> 192.168.1.53:53
+forward wan:2222 -> 10.0.0.2:22 proto=tcp
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	if len(cfg.PortForwards) != 4 {
+		t.Fatalf("expected 4 port forwards, got %d", len(cfg.PortForwards))
+	}
+
+	pf0 := cfg.PortForwards[0]
+	if pf0.WANPort != 80 || pf0.TargetIP != "192.168.1.100" || pf0.TargetPort != 80 || pf0.Proto != "tcp" {
+		t.Errorf("pf0 mismatch: %+v", pf0)
+	}
+
+	pf1 := cfg.PortForwards[1]
+	if pf1.WANPort != 80 || pf1.TargetIP != "192.168.1.200" || pf1.TargetPort != 80 || pf1.Proto != "udp" {
+		t.Errorf("pf1 mismatch: %+v", pf1)
+	}
+
+	pf2 := cfg.PortForwards[2]
+	if pf2.WANPort != 53 || pf2.TargetIP != "192.168.1.53" || pf2.TargetPort != 53 || pf2.Proto != "tcp,udp" {
+		t.Errorf("pf2 mismatch: %+v", pf2)
+	}
+
+	pf3 := cfg.PortForwards[3]
+	if pf3.WANPort != 2222 || pf3.TargetIP != "10.0.0.2" || pf3.TargetPort != 22 || pf3.Proto != "tcp" {
+		t.Errorf("pf3 mismatch: %+v", pf3)
+	}
+}
+
+func TestCompile_PortForwarding_UserConfigPortCollision(t *testing.T) {
+	input := `
+def zone wan eth0
+forward 10085 -> 192.168.1.100:80 proto=tcp
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	userCfg := &config.UserConfig{
+		Role:       config.RoleGateway,
+		APIInbound: 10085,
+		Gateway: config.GatewayConfig{
+			Mode: "tun",
+		},
+	}
+
+	_, err = Compile(ast, WithUserConfig(userCfg))
+	if err == nil {
+		t.Fatal("expected collision error with APIInbound 10085, got nil")
+	}
+	if !strings.Contains(err.Error(), "port 10085 is used by both") {
+		t.Errorf("expected collision message, got: %v", err)
 	}
 }

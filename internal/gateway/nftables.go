@@ -1451,16 +1451,55 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("    }\n")
 	}
 
-	// Managed WAN NAT Masquerade & Forwarding
-	if !cfg.Gateway.NATDisabled && wanIface != "" && len(lanIfaces) > 0 {
-		wanDistinct := true
+	// Managed WAN NAT Masquerade, Port Forwarding & Forwarding
+	hasPortForwards := wanIface != "" && len(cfg.Gateway.PortForwards) > 0
+	hasManagedNAT := !cfg.Gateway.NATDisabled && wanIface != "" && len(lanIfaces) > 0
+
+	wanDistinct := true
+	if hasManagedNAT {
 		for _, liface := range lanIfaces {
 			if liface == wanIface {
 				wanDistinct = false
 				break
 			}
 		}
-		if wanDistinct {
+		if !wanDistinct {
+			fmt.Printf("⚠️ WAN interface %q overlaps with LAN interface; managed masquerade skipped to prevent loop\n", wanIface)
+			hasManagedNAT = false
+		}
+	}
+
+	if hasPortForwards {
+		b.WriteString("    chain nat_prerouting {\n")
+		b.WriteString("        type nat hook prerouting priority dstnat; policy accept;\n")
+		for _, pf := range cfg.Gateway.PortForwards {
+			target := fmt.Sprintf("%s:%d", pf.TargetIP, pf.TargetPort)
+			if strings.Contains(pf.TargetIP, ":") {
+				target = fmt.Sprintf("[%s]:%d", pf.TargetIP, pf.TargetPort)
+			}
+			proto := strings.ToLower(strings.TrimSpace(pf.Proto))
+			switch proto {
+			case "tcp":
+				b.WriteString(fmt.Sprintf("        iifname %q tcp dport %d dnat to %s\n", wanIface, pf.WANPort, target))
+			case "udp":
+				b.WriteString(fmt.Sprintf("        iifname %q udp dport %d dnat to %s\n", wanIface, pf.WANPort, target))
+			default:
+				b.WriteString(fmt.Sprintf("        iifname %q meta l4proto { tcp, udp } th dport %d dnat to %s\n", wanIface, pf.WANPort, target))
+			}
+		}
+		b.WriteString("    }\n")
+	}
+
+	if hasManagedNAT || hasPortForwards {
+		b.WriteString("    chain forward {\n")
+		b.WriteString("        type filter hook forward priority filter; policy accept;\n")
+		for _, tk := range blockRuleTokens(cfg) {
+			b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
+		}
+		if hasPortForwards {
+			b.WriteString("        ct status dnat accept\n")
+		}
+		if hasManagedNAT {
 			var lanMatch string
 			if len(lanIfaces) == 1 {
 				lanMatch = `"` + lanIfaces[0] + `"`
@@ -1471,31 +1510,26 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 				}
 				lanMatch = `{ ` + strings.Join(quoted, ", ") + ` }`
 			}
-
-			b.WriteString("    chain forward {\n")
-			b.WriteString("        type filter hook forward priority filter; policy accept;\n")
-			for _, tk := range blockRuleTokens(cfg) {
-				b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
-			}
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" accept\n")
 			b.WriteString("        iifname \"" + wanIface + "\" oifname " + lanMatch + " ct state established,related accept\n")
-			b.WriteString("    }\n")
+		}
+		b.WriteString("    }\n")
 
-			// Note: Masquerade in the inet family table applies dual-stack NAT (NAT44 for IPv4
-			// and NAT66 for IPv6). In a gateway environment, applying NAT66 to forwarded LAN
-			// traffic is an intentional architectural and security design:
-			// 1. Privacy Protection: Hides internal LAN client global IPv6 addresses (e.g. SLAAC
-			//    EUI-64 addresses containing hardware MAC addresses) behind the gateway WAN address.
-			// 2. Leak Prevention: Prevents internal client IPv6 identifiers from leaking to
-			//    upstream networks or bypassing destination targets.
-			// 3. Topology Consistency: Ensures uniform egress address behavior for all direct or
-			//    forwarded LAN traffic leaving via the WAN interface.
+		if hasManagedNAT {
+			var lanMatch string
+			if len(lanIfaces) == 1 {
+				lanMatch = `"` + lanIfaces[0] + `"`
+			} else {
+				var quoted []string
+				for _, l := range lanIfaces {
+					quoted = append(quoted, `"`+l+`"`)
+				}
+				lanMatch = `{ ` + strings.Join(quoted, ", ") + ` }`
+			}
 			b.WriteString("    chain postrouting {\n")
 			b.WriteString("        type nat hook postrouting priority srcnat; policy accept;\n")
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" masquerade\n")
 			b.WriteString("    }\n")
-		} else {
-			fmt.Printf("⚠️ WAN interface %q overlaps with LAN interface; managed masquerade skipped to prevent loop\n", wanIface)
 		}
 	}
 

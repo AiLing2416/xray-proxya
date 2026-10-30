@@ -282,6 +282,54 @@ func TestParse_SyntaxErrors(t *testing.T) {
 			errContains: "missing target after arrow",
 			errLine:     1,
 		},
+		{
+			name:        "forward missing wan port",
+			input:       "forward -> 192.168.1.100:80",
+			errContains: "forward directive requires WAN port",
+			errLine:     1,
+		},
+		{
+			name:        "forward invalid wan port",
+			input:       "forward abc -> 192.168.1.100:80",
+			errContains: "invalid WAN port",
+			errLine:     1,
+		},
+		{
+			name:        "forward wan port 0",
+			input:       "forward 0 -> 192.168.1.100:80",
+			errContains: "invalid WAN port 0",
+			errLine:     1,
+		},
+		{
+			name:        "forward missing target",
+			input:       "forward 80 ->",
+			errContains: "missing target after arrow",
+			errLine:     1,
+		},
+		{
+			name:        "forward missing target port",
+			input:       "forward 80 -> 192.168.1.100",
+			errContains: "invalid target",
+			errLine:     1,
+		},
+		{
+			name:        "forward invalid target port",
+			input:       "forward 80 -> 192.168.1.100:abc",
+			errContains: "invalid target port",
+			errLine:     1,
+		},
+		{
+			name:        "forward invalid proto",
+			input:       "forward 80 -> 192.168.1.100:80 proto=sctp",
+			errContains: "invalid proto",
+			errLine:     1,
+		},
+		{
+			name:        "forward unknown option",
+			input:       "forward 80 -> 192.168.1.100:80 extra=123",
+			errContains: "unknown option",
+			errLine:     1,
+		},
 	}
 
 	for _, tc := range tests {
@@ -301,5 +349,49 @@ func TestParse_SyntaxErrors(t *testing.T) {
 				t.Errorf("error %q does not contain %q", pe.Error(), tc.errContains)
 			}
 		})
+	}
+}
+
+func TestParse_PortForwarding(t *testing.T) {
+	input := `
+# Port forwarding rules
+forward 80 -> 192.168.1.100:80
+forward 8080 -> nas:80 proto=tcp
+forward wan:443 -> 192.168.1.200:443 proto=udp
+forward wan:2222 => 10.0.0.5:22 proto=tcp,udp
+forward 53 -> [fd00::1]:53 proto=udp
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	if len(ast.Forwards) != 5 {
+		t.Fatalf("expected 5 forward rules, got %d", len(ast.Forwards))
+	}
+
+	f0 := ast.Forwards[0]
+	if f0.WANPort != 80 || f0.Target != "192.168.1.100" || f0.TargetPort != 80 || f0.Proto != "tcp,udp" || f0.Line != 3 {
+		t.Errorf("f0 mismatch: %+v", f0)
+	}
+
+	f1 := ast.Forwards[1]
+	if f1.WANPort != 8080 || f1.Target != "nas" || f1.TargetPort != 80 || f1.Proto != "tcp" || f1.Line != 4 {
+		t.Errorf("f1 mismatch: %+v", f1)
+	}
+
+	f2 := ast.Forwards[2]
+	if f2.WANPort != 443 || f2.Target != "192.168.1.200" || f2.TargetPort != 443 || f2.Proto != "udp" || f2.Line != 5 {
+		t.Errorf("f2 mismatch: %+v", f2)
+	}
+
+	f3 := ast.Forwards[3]
+	if f3.WANPort != 2222 || f3.Target != "10.0.0.5" || f3.TargetPort != 22 || f3.Proto != "tcp,udp" || f3.Line != 6 {
+		t.Errorf("f3 mismatch: %+v", f3)
+	}
+
+	f4 := ast.Forwards[4]
+	if f4.WANPort != 53 || f4.Target != "fd00::1" || f4.TargetPort != 53 || f4.Proto != "udp" || f4.Line != 7 {
+		t.Errorf("f4 mismatch: %+v", f4)
 	}
 }

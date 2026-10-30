@@ -1268,3 +1268,72 @@ func TestBuildNFTMulti_TUNModeDirectRules(t *testing.T) {
 		t.Fatalf("expected default TUN mark rule in TUN mode, got:\n%s", out)
 	}
 }
+
+func TestBuildNFTMulti_PortForwarding(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.PortForwards = []config.PortForwardRule{
+		{WANPort: 80, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+		{WANPort: 53, TargetIP: "192.168.1.100", TargetPort: 53, Proto: "udp"},
+		{WANPort: 8080, TargetIP: "192.168.1.100", TargetPort: 8080, Proto: "tcp,udp"},
+		{WANPort: 8443, TargetIP: "fd00::100", TargetPort: 8443, Proto: "tcp"},
+	}
+
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"192.168.1.0/24"}, nil, "eth0")
+
+	// 1. Verify nat_prerouting chain
+	if !strings.Contains(out, "chain nat_prerouting {") {
+		t.Fatalf("expected nat_prerouting chain in nftables rules, got:\n%s", out)
+	}
+	if !strings.Contains(out, "type nat hook prerouting priority dstnat; policy accept;") {
+		t.Fatalf("expected nat prerouting hook definition, got:\n%s", out)
+	}
+
+	// 2. Verify TCP rule
+	expectedTCP := `iifname "eth0" tcp dport 80 dnat to 192.168.1.100:80`
+	if !strings.Contains(out, expectedTCP) {
+		t.Errorf("expected TCP DNAT rule %q, got:\n%s", expectedTCP, out)
+	}
+
+	// 3. Verify UDP rule
+	expectedUDP := `iifname "eth0" udp dport 53 dnat to 192.168.1.100:53`
+	if !strings.Contains(out, expectedUDP) {
+		t.Errorf("expected UDP DNAT rule %q, got:\n%s", expectedUDP, out)
+	}
+
+	// 4. Verify TCP,UDP rule
+	expectedBoth := `iifname "eth0" meta l4proto { tcp, udp } th dport 8080 dnat to 192.168.1.100:8080`
+	if !strings.Contains(out, expectedBoth) {
+		t.Errorf("expected TCP,UDP DNAT rule %q, got:\n%s", expectedBoth, out)
+	}
+
+	// 5. Verify IPv6 target
+	expectedIPv6 := `iifname "eth0" tcp dport 8443 dnat to [fd00::100]:8443`
+	if !strings.Contains(out, expectedIPv6) {
+		t.Errorf("expected IPv6 DNAT rule %q, got:\n%s", expectedIPv6, out)
+	}
+
+	// 6. Verify forward chain放行 DNAT 流量
+	if !strings.Contains(out, "ct status dnat accept") {
+		t.Errorf("expected forward chain to accept dnat status, got:\n%s", out)
+	}
+}
+
+func TestBuildNFTMulti_PortForwarding_NoWAN(t *testing.T) {
+	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.LANEnabled = true
+	cfg.Gateway.PortForwards = []config.PortForwardRule{
+		{WANPort: 80, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+	}
+
+	// wanIface is empty
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"192.168.1.0/24"}, nil, "")
+	if strings.Contains(out, "chain nat_prerouting") {
+		t.Errorf("did not expect nat_prerouting chain when wan interface is empty, got:\n%s", out)
+	}
+	if strings.Contains(out, "ct status dnat accept") {
+		t.Errorf("did not expect ct status dnat accept when wan interface is empty, got:\n%s", out)
+	}
+}

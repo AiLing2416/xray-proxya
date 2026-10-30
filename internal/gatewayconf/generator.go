@@ -36,7 +36,11 @@ func Generate(gw *config.GatewayConfig) string {
 	b.WriteString("#    ip <ip/cidr>       -> <target>               # Single IP or subnet rule\n")
 	b.WriteString("#    * <target> can be 'direct', 'block', or an active relay alias.\n")
 	b.WriteString("#\n")
-	b.WriteString("# 4. Apply & Verify:\n")
+	b.WriteString("# 4. Port Forwarding Rules:\n")
+	b.WriteString("#    forward <wan_port> -> <target>:<port> [proto=tcp|udp]\n")
+	b.WriteString("#    forward wan:<wan_port> -> <target>:<port> [proto=tcp|udp]\n")
+	b.WriteString("#\n")
+	b.WriteString("# 5. Apply & Verify:\n")
 	b.WriteString("#    After editing, run 'xray-proxya apply' to compile and apply changes.\n")
 	b.WriteString("#    Run 'xray-proxya gateway check' to inspect active runtime rules.\n")
 	b.WriteString("# ==============================================================================\n\n")
@@ -106,6 +110,24 @@ func Generate(gw *config.GatewayConfig) string {
 			} else if rule.Interface != "" {
 				b.WriteString(fmt.Sprintf("interface %s -> %s\n", rule.Interface, target))
 			}
+		}
+	}
+
+	// 4. Port Forwarding Rules
+	if len(gw.PortForwards) > 0 {
+		b.WriteString("\n# ------------------------------------------------------------------------------\n")
+		b.WriteString("# Port Forwarding Rules\n")
+		b.WriteString("# ------------------------------------------------------------------------------\n")
+		for _, pf := range gw.PortForwards {
+			proto := pf.Proto
+			if proto == "" {
+				proto = "tcp,udp"
+			}
+			target := fmt.Sprintf("%s:%d", pf.TargetIP, pf.TargetPort)
+			if strings.Contains(pf.TargetIP, ":") {
+				target = fmt.Sprintf("[%s]:%d", pf.TargetIP, pf.TargetPort)
+			}
+			b.WriteString(fmt.Sprintf("forward %d -> %s proto=%s\n", pf.WANPort, target, proto))
 		}
 	}
 
@@ -223,6 +245,22 @@ func GenerateFromAST(ast *ConfigAST) string {
 				b.WriteString(fmt.Sprintf(" %s=%s", opt.Key, opt.Value))
 			}
 			b.WriteString("\n")
+		}
+		b.WriteString("\n")
+	}
+
+	if len(ast.Forwards) > 0 {
+		b.WriteString("# --- Port Forwarding Rules ---\n")
+		for _, f := range ast.Forwards {
+			proto := f.Proto
+			if proto == "" {
+				proto = "tcp,udp"
+			}
+			target := fmt.Sprintf("%s:%d", f.Target, f.TargetPort)
+			if strings.Contains(f.Target, ":") {
+				target = fmt.Sprintf("[%s]:%d", f.Target, f.TargetPort)
+			}
+			b.WriteString(fmt.Sprintf("forward %d -> %s proto=%s\n", f.WANPort, target, proto))
 		}
 	}
 

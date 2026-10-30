@@ -232,6 +232,9 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 	if !reflect.DeepEqual(active.Gateway.Rules, staging.Gateway.Rules) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Gateway Rules: %d rule(s) -> %d rule(s)", len(active.Gateway.Rules), len(staging.Gateway.Rules)))
 	}
+	if !reflect.DeepEqual(active.Gateway.PortForwards, staging.Gateway.PortForwards) {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Port Forwarding: %d rule(s) -> %d rule(s)", len(active.Gateway.PortForwards), len(staging.Gateway.PortForwards)))
+	}
 	if !reflect.DeepEqual(active.Gateway.BypassCountries, staging.Gateway.BypassCountries) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Bypass Countries: %v -> %v", active.Gateway.BypassCountries, staging.Gateway.BypassCountries))
 	}

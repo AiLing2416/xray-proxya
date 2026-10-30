@@ -54,8 +54,9 @@ type GatewayConfigJSON struct {
 	State         string               `json:"state"`
 	DNSListen     string               `json:"dns_listen,omitempty"`
 	DNSStrategy   string               `json:"dns_strategy,omitempty"`
-	DNSServers    []string             `json:"dns_servers,omitempty"`
-	DNSRecords    map[string][]string  `json:"dns_records,omitempty"`
+	DNSServers    []string                 `json:"dns_servers,omitempty"`
+	DNSRecords    map[string][]string      `json:"dns_records,omitempty"`
+	PortForwards  []config.PortForwardRule `json:"port_forwards,omitempty"`
 }
 
 type GatewayRuntimeJSON struct {
@@ -99,6 +100,7 @@ func toGatewayConfigJSON(cfg *config.UserConfig) *GatewayConfigJSON {
 		DNSStrategy:   cfg.Gateway.DNSStrategy,
 		DNSServers:    cfg.Gateway.DNSServers,
 		DNSRecords:    cfg.Gateway.DNSRecords,
+		PortForwards:  cfg.Gateway.PortForwards,
 	}
 }
 

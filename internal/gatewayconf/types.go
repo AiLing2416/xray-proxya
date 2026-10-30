@@ -80,12 +80,23 @@ func (r *RuleAST) OptionsMap() map[string]string {
 	return m
 }
 
+// ForwardAST represents a parsed port forwarding directive.
+// Syntax: forward [wan:]<wan_port> -> <target>:<target_port> [proto=tcp|udp]
+type ForwardAST struct {
+	WANPort    int    `json:"wan_port"`
+	Target     string `json:"target"`
+	TargetPort int    `json:"target_port"`
+	Proto      string `json:"proto,omitempty"`
+	Line       int    `json:"line"`
+}
+
 // ConfigAST represents the root abstract syntax tree of a parsed gateway.conf.
 type ConfigAST struct {
-	Zones   []ZoneDef   `json:"zones,omitempty"`
-	Devices []DeviceDef `json:"devices,omitempty"`
-	Groups  []GroupDef  `json:"groups,omitempty"`
-	Rules   []RuleAST   `json:"rules,omitempty"`
+	Zones    []ZoneDef    `json:"zones,omitempty"`
+	Devices  []DeviceDef  `json:"devices,omitempty"`
+	Groups   []GroupDef   `json:"groups,omitempty"`
+	Forwards []ForwardAST `json:"forwards,omitempty"`
+	Rules    []RuleAST    `json:"rules,omitempty"`
 }
 
 // FindZone returns the ZoneDef with the given name, or nil if not found.

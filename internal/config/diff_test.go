@@ -180,4 +180,26 @@ func TestDiffUserConfigGatewayRouter(t *testing.T) {
 	if !strings.Contains(joinedIP, "Gateway Rules") {
 		t.Errorf("expected Gateway Rules diff for IP change, got: %s", joinedIP)
 	}
+
+	// Port forward rules diff
+	activePF := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			PortForwards: []PortForwardRule{{WANPort: 80, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"}},
+		},
+	}
+	stagingPF := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			PortForwards: []PortForwardRule{
+				{WANPort: 80, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+				{WANPort: 443, TargetIP: "192.168.1.100", TargetPort: 443, Proto: "tcp"},
+			},
+		},
+	}
+	diffsPF := DiffUserConfig(activePF, stagingPF)
+	joinedPF := strings.Join(diffsPF, "\n")
+	if !strings.Contains(joinedPF, "Port Forwarding: 1 rule(s) -> 2 rule(s)") {
+		t.Errorf("expected Port Forwarding diff, got: %s", joinedPF)
+	}
 }

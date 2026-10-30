@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -42,7 +43,16 @@ func ParseReader(r io.Reader) (*ConfigAST, error) {
 			continue
 		}
 
-		// 3. Otherwise it must be a rule directive (... -> ... or ... => ...)
+		// 3. Check if this is a port forwarding directive (forward ...)
+		lowerLine := strings.ToLower(line)
+		if lowerLine == "forward" || strings.HasPrefix(lowerLine, "forward ") || strings.HasPrefix(lowerLine, "forward\t") {
+			if err := parseForward(line, lineNum, ast); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// 4. Otherwise it must be a rule directive (... -> ... or ... => ...)
 		if err := parseRule(line, lineNum, ast); err != nil {
 			return nil, err
 		}
@@ -388,4 +398,93 @@ func normalizeKeyValueTokens(tokens []string) []string {
 		}
 	}
 	return result
+}
+
+func parseForward(line string, lineNum int, ast *ConfigAST) error {
+	arrowIdx := strings.Index(line, "->")
+	arrowLen := 2
+	if arrowIdx < 0 {
+		arrowIdx = strings.Index(line, "=>")
+	}
+	if arrowIdx < 0 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unrecognized directive or missing '->' in %q", line)}
+	}
+
+	left := strings.TrimSpace(line[:arrowIdx])
+	right := strings.TrimSpace(line[arrowIdx+arrowLen:])
+
+	leftTokens := strings.Fields(left)
+	if len(leftTokens) < 2 {
+		return &ParseError{Line: lineNum, Msg: "forward directive requires WAN port before arrow, e.g. 'forward 80 -> ...' or 'forward wan:80 -> ...'"}
+	}
+	if len(leftTokens) > 2 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unexpected tokens in forward directive: %q", strings.Join(leftTokens[2:], " "))}
+	}
+
+	wanPortStr := leftTokens[1]
+	if strings.HasPrefix(strings.ToLower(wanPortStr), "wan:") {
+		wanPortStr = wanPortStr[len("wan:"):]
+	}
+	wanPort, err := strconv.Atoi(wanPortStr)
+	if err != nil {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid WAN port %q: must be a number", leftTokens[1])}
+	}
+	if wanPort < 1 || wanPort > 65535 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid WAN port %d: must be between 1 and 65535", wanPort)}
+	}
+
+	rightTokens := strings.Fields(right)
+	if len(rightTokens) == 0 {
+		return &ParseError{Line: lineNum, Msg: "missing target after arrow in forward directive"}
+	}
+
+	targetToken := rightTokens[0]
+	targetHost, targetPortStr, splitErr := net.SplitHostPort(targetToken)
+	if splitErr != nil {
+		idx := strings.LastIndex(targetToken, ":")
+		if idx <= 0 || idx == len(targetToken)-1 {
+			return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid target %q: must be in format <target>:<port>", targetToken)}
+		}
+		targetHost = targetToken[:idx]
+		targetPortStr = targetToken[idx+1:]
+	}
+	targetHost = strings.Trim(strings.TrimSpace(targetHost), "[]")
+	if targetHost == "" {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid target %q: target cannot be empty", targetToken)}
+	}
+	targetPort, err := strconv.Atoi(targetPortStr)
+	if err != nil {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid target port %q: must be a number", targetPortStr)}
+	}
+	if targetPort < 1 || targetPort > 65535 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid target port %d: must be between 1 and 65535", targetPort)}
+	}
+
+	proto := "tcp,udp"
+	normalizedOpts := normalizeKeyValueTokens(rightTokens[1:])
+	for _, optToken := range normalizedOpts {
+		parts := strings.SplitN(optToken, "=", 2)
+		k := strings.ToLower(strings.TrimSpace(parts[0]))
+		if k == "proto" {
+			if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+				return &ParseError{Line: lineNum, Msg: "empty proto value in forward directive"}
+			}
+			normProto, pErr := config.NormalizePortForwardProto(parts[1])
+			if pErr != nil {
+				return &ParseError{Line: lineNum, Msg: pErr.Error()}
+			}
+			proto = normProto
+		} else {
+			return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unknown option %q in forward directive (expected proto=...)", optToken)}
+		}
+	}
+
+	ast.Forwards = append(ast.Forwards, ForwardAST{
+		WANPort:    wanPort,
+		Target:     targetHost,
+		TargetPort: targetPort,
+		Proto:      proto,
+		Line:       lineNum,
+	})
+	return nil
 }
