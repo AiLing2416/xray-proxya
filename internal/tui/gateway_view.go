@@ -10,7 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tun, fwd bool, localIP, lanIP string) string {
+func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tproxy, tun, fwd bool, localIP, lanIP string) string {
 	var b strings.Builder
 
 	if staging == nil {
@@ -29,14 +29,16 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		case 0:
 			return active.Gateway.State != staging.Gateway.State
 		case 1:
-			return active.Gateway.LocalEnabled != staging.Gateway.LocalEnabled
+			return active.Gateway.EffectiveTUNEnabled() != staging.Gateway.EffectiveTUNEnabled()
 		case 2:
-			return active.Gateway.LANEnabled != staging.Gateway.LANEnabled
+			return active.Gateway.LocalEnabled != staging.Gateway.LocalEnabled
 		case 3:
-			return active.Gateway.LANInterface != staging.Gateway.LANInterface
+			return active.Gateway.LANEnabled != staging.Gateway.LANEnabled
 		case 4:
-			return active.Gateway.RelayAlias != staging.Gateway.RelayAlias
+			return active.Gateway.LANInterface != staging.Gateway.LANInterface
 		case 5:
+			return active.Gateway.RelayAlias != staging.Gateway.RelayAlias
+		case 6:
 			return !sliceEqual(active.Gateway.BypassCountries, staging.Gateway.BypassCountries)
 		}
 		return false
@@ -49,15 +51,41 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		return " "
 	}
 
-	// Local Proxy (Bool)
+	// Gateway State (Non-Bool) - Row 0
+	stateInfo := strings.ToUpper(staging.Gateway.State)
+	if stateInfo == "" {
+		stateInfo = "DISABLED"
+	}
+	stateStatus := "READY"
+	if stateInfo == "DISABLED" {
+		stateStatus = "NON READY"
+	}
+
+	// TProxy Rules (Bool) - Row 1
+	isActiveRules := nft && tproxy && fwd
+	rulesInfo := getBoolText(isActiveRules)
+	rulesStatus := getBoolStatus(isActiveRules)
+
+	// TUN Adapter (Bool) - Row 2 (Pure adapter without nftables rules)
+	tunInfo := getBoolText(staging.Gateway.EffectiveTUNEnabled())
+	tunStatus := "DISABLED"
+	if staging.Gateway.EffectiveTUNEnabled() {
+		if tun {
+			tunStatus = "READY (UP)"
+		} else {
+			tunStatus = "PENDING"
+		}
+	}
+
+	// Local Proxy (Bool) - Row 3
 	localInfo := getBoolText(staging.Gateway.LocalEnabled)
 	localStatus := getBoolStatus(staging.Gateway.LocalEnabled)
 
-	// LAN Gateway (Bool)
+	// LAN Gateway (Bool) - Row 4
 	lanInfo := getBoolText(staging.Gateway.LANEnabled)
 	lanStatus := getBoolStatus(staging.Gateway.LANEnabled)
 
-	// LAN Interface (Non-Bool)
+	// LAN Interface (Non-Bool) - Row 5
 	ifaceInfo := staging.Gateway.LANInterface
 	if ifaceInfo == "" {
 		ifaceInfo = "none"
@@ -73,7 +101,7 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		ifaceStatus = "READY"
 	}
 
-	// Outbound Relay (Non-Bool)
+	// Outbound Relay (Non-Bool) - Row 6
 	relayInfo := staging.Gateway.RelayAlias
 	if relayInfo == "" {
 		relayInfo = "none"
@@ -90,22 +118,7 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 		}
 	}
 
-	// Gateway Rules (Bool)
-	isActiveRules := nft && tun && fwd
-	rulesInfo := getBoolText(isActiveRules)
-	rulesStatus := getBoolStatus(isActiveRules)
-
-	// Gateway State (Non-Bool)
-	stateInfo := strings.ToUpper(staging.Gateway.State)
-	if stateInfo == "" {
-		stateInfo = "DISABLED"
-	}
-	stateStatus := "READY"
-	if stateInfo == "DISABLED" {
-		stateStatus = "NON READY"
-	}
-
-	// Bypass Countries (Non-Bool)
+	// Bypass Countries (Non-Bool) - Row 7
 	bypassInfo := strings.Join(staging.Gateway.BypassCountries, ", ")
 	if bypassInfo == "" {
 		bypassInfo = "none"
@@ -114,20 +127,21 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 
 	rows := [][]string{
 		{getIndicator(0), "Gateway State", stateInfo, stateStatus, ""},
-		{" ", "Gateway Rules", rulesInfo, rulesStatus, ""},
-		{getIndicator(1), "Local Proxy", localInfo, localStatus, localIP},
-		{getIndicator(2), "LAN Gateway", lanInfo, lanStatus, lanIP},
-		{getIndicator(3), "LAN Interface", ifaceInfo, ifaceStatus, ""},
-		{getIndicator(4), "Outbound Relay", relayInfo, relayStatus, ""},
-		{getIndicator(5), "Bypass Geo", bypassInfo, bypassStatus, ""},
+		{" ", "TProxy Rules", rulesInfo, rulesStatus, ""},
+		{getIndicator(1), "TUN Adapter", tunInfo, tunStatus, ""},
+		{getIndicator(2), "Local Proxy", localInfo, localStatus, localIP},
+		{getIndicator(3), "LAN Gateway", lanInfo, lanStatus, lanIP},
+		{getIndicator(4), "LAN Interface", ifaceInfo, ifaceStatus, ""},
+		{getIndicator(5), "Outbound Relay", relayInfo, relayStatus, ""},
+		{getIndicator(6), "Bypass Geo", bypassInfo, bypassStatus, ""},
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)
 
 	// Combine headers and status tags on the same line (right-aligned)
 	res := renderRow(headers, widths, false)
-	statusLine := fmt.Sprintf("%sNFTABLES   %sTUN   %sFORWARD",
-		getStatusEmoji(nft), getStatusEmoji(tun), getStatusEmoji(fwd))
+	statusLine := fmt.Sprintf("%sNFTABLES   %sTPROXY   %sTUN   %sFORWARD",
+		getStatusEmoji(nft), getStatusEmoji(tproxy), getStatusEmoji(tun), getStatusEmoji(fwd))
 
 	spacing := width - lipgloss.Width(res) - lipgloss.Width(statusLine) - 2
 	if spacing < 2 {
@@ -193,6 +207,7 @@ func HasGatewayStagedChanges(active, staging *config.UserConfig) bool {
 		return true
 	}
 	return active.Gateway.State != staging.Gateway.State ||
+		active.Gateway.EffectiveTUNEnabled() != staging.Gateway.EffectiveTUNEnabled() ||
 		active.Gateway.LocalEnabled != staging.Gateway.LocalEnabled ||
 		active.Gateway.LANEnabled != staging.Gateway.LANEnabled ||
 		active.Gateway.LANInterface != staging.Gateway.LANInterface ||
@@ -201,7 +216,7 @@ func HasGatewayStagedChanges(active, staging *config.UserConfig) bool {
 }
 
 // BuildGatewayReport generates a structured detail report for the currently selected gateway row.
-func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun, fwd bool, localIP, lanIP string) string {
+func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tproxy, tun, fwd bool, localIP, lanIP string) string {
 	if staging == nil {
 		return "No configuration loaded."
 	}
@@ -214,11 +229,7 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		b.WriteString(fmt.Sprintf("Option:      Gateway State (%s)\n", strings.ToUpper(gw.State)))
 		switch gw.State {
 		case "proxy":
-			if gw.EffectiveMode() == "tun" {
-				b.WriteString("Mode:        Full transparent proxying (TUN + nftables redirect to Xray)\n")
-			} else {
-				b.WriteString("Mode:        Full transparent proxying (TProxy + nftables redirect to Xray)\n")
-			}
+			b.WriteString("Mode:        Full transparent proxying (TProxy + Table 100 dev lo redirect to Xray)\n")
 		case "forward-only":
 			b.WriteString("Mode:        Direct kernel IP forwarding (bypasses Xray proxy)\n")
 		case "disabled":
@@ -232,35 +243,42 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 
 	case 1:
 		rulesStatus := "DOWN"
-		if nft && tun && fwd {
+		if nft && tproxy && fwd {
 			rulesStatus = "UP (Active)"
 		}
-		b.WriteString(fmt.Sprintf("Option:      Gateway Rules (%s)\n", rulesStatus))
+		b.WriteString(fmt.Sprintf("Option:      TProxy Rules (%s)\n", rulesStatus))
 		nftStr := "Inactive"
 		if nft {
-			nftStr = "Active (proxya_prerouting, proxya_output)"
+			nftStr = "Active (table inet xray_proxya)"
 		}
-		devStr := "Down"
-		if tun {
-			if gw.EffectiveMode() == "tun" {
-				devStr = "Active (proxya-tun)"
-			} else {
-				devStr = "Active (lo table 100)"
-			}
+		tproxyStr := "Down"
+		if tproxy {
+			tproxyStr = "Active (lo table 100)"
 		}
 		fwdStr := "Disabled"
 		if fwd {
 			fwdStr = "Enabled (net.ipv4.ip_forward = 1)"
 		}
 		b.WriteString(fmt.Sprintf("NFTables:    %s\n", nftStr))
-		if gw.EffectiveMode() == "tun" {
-			b.WriteString(fmt.Sprintf("TUN Adapter: %s\n", devStr))
-		} else {
-			b.WriteString(fmt.Sprintf("TProxy:      %s\n", devStr))
-		}
+		b.WriteString(fmt.Sprintf("TProxy:      %s\n", tproxyStr))
 		b.WriteString(fmt.Sprintf("IP Forward:  %s\n", fwdStr))
+		b.WriteString("Scope:       Primary transparent gateway mechanism for local and LAN traffic\n")
 
 	case 2:
+		tunEnabled := gw.EffectiveTUNEnabled()
+		statusStr := "Disabled"
+		if tunEnabled {
+			statusStr = "Enabled"
+		}
+		b.WriteString(fmt.Sprintf("Option:      TUN Adapter (%s)\n", statusStr))
+		b.WriteString("Interface:   proxya-tun (172.16.255.1/30 & fd00:eea:ff::1/126)\n")
+		b.WriteString("Type:        Pure virtual TUN adapter without nftables/fwmark interception\n")
+		b.WriteString("Purpose:     Supplementary compatibility adapter; external routing/scripts can direct traffic to proxya-tun\n")
+		if active != nil && active.Gateway.EffectiveTUNEnabled() != tunEnabled {
+			b.WriteString(fmt.Sprintf("Staged:      Pending apply (Active: %v => Staging: %v)\n", active.Gateway.EffectiveTUNEnabled(), tunEnabled))
+		}
+
+	case 3:
 		statusStr := "Disabled"
 		if gw.LocalEnabled {
 			statusStr = "Enabled"
@@ -271,14 +289,10 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 			testStr = "Not tested"
 		}
 		b.WriteString(fmt.Sprintf("Egress IP:   %s\n", testStr))
-		if gw.EffectiveMode() == "tun" {
-			b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to proxya-tun\n")
-		} else {
-			b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to lo (TProxy)\n")
-		}
+		b.WriteString("Routing:     Table 100 with FWMARK 0x1 routes local egress to lo (TProxy)\n")
 		b.WriteString("Bypass:      SSH (port 22) and local subnet are excluded to prevent lockout\n")
 
-	case 3:
+	case 4:
 		statusStr := "Disabled"
 		if gw.LANEnabled {
 			statusStr = "Enabled"
@@ -296,7 +310,7 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 		b.WriteString(fmt.Sprintf("Interface:   %s\n", ifaceStr))
 		b.WriteString("DNS Intercept: UDP/TCP port 53 redirected to Xray Dokodemo DNS inbound\n")
 
-	case 4:
+	case 5:
 		ifaceStr := gw.LANInterface
 		if ifaceStr == "" {
 			ifaceStr = "none"
@@ -314,7 +328,7 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 			b.WriteString("Status:      No interface selected (LAN gateway will not forward clients)\n")
 		}
 
-	case 5:
+	case 6:
 		relayStr := gw.RelayAlias
 		if relayStr == "" {
 			relayStr = "direct"
@@ -345,7 +359,7 @@ func BuildGatewayReport(active, staging *config.UserConfig, cursor int, nft, tun
 			b.WriteString("Routing:     Direct local network egress (no upstream relay)\n")
 		}
 
-	case 6:
+	case 7:
 		geoStr := strings.Join(gw.BypassCountries, ", ")
 		if geoStr == "" {
 			geoStr = "none"

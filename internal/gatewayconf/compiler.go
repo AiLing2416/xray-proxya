@@ -87,6 +87,7 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 	}
 	if options.UserConfig != nil {
 		orig := options.UserConfig.Gateway
+		gwConfig.TUNEnabled = orig.TUNEnabled
 		gwConfig.TProxyPort = orig.TProxyPort
 		gwConfig.BypassDNS = orig.BypassDNS
 		gwConfig.DNSListen = orig.DNSListen

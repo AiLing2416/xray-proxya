@@ -220,6 +220,7 @@ type Model struct {
 
 	// Gateway runtime flags
 	gwNftables         bool
+	gwTProxy           bool
 	gwTun              bool
 	gwForward          bool
 	gwLocalTestIP      string
@@ -447,7 +448,7 @@ func InitialModel() Model {
 	ti := textinput.New()
 	ti.Focus()
 
-	nft, tun, fwd := checkGatewayStatus()
+	nft, tproxy, tun, fwd := checkGatewayStatus()
 	services := QueryManagedServices(active)
 	locIP := utils.GetLocalIP()
 
@@ -467,6 +468,7 @@ func InitialModel() Model {
 		cachedIP:        locIP,
 		localIP:         locIP,
 		gwNftables:      nft,
+		gwTProxy:        tproxy,
 		gwTun:           tun,
 		gwForward:       fwd,
 		flash:           NewFlashManager(),
@@ -624,13 +626,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.serviceState = xray.GetServiceState()
 			m.managedServices = QueryManagedServices(m.active)
-			m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+			m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward = checkGatewayStatus()
 			flashCmd := m.getFlash().Trigger("apply", FlashSuccess, 1*time.Second)
 			return m, tea.Batch(cmd, flashCmd)
 		}
 
 	case gatewayActionResultMsg:
-		m.gwNftables, m.gwTun, m.gwForward = checkGatewayStatus()
+		m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward = checkGatewayStatus()
 		var cmd tea.Cmd
 		if msg.err != nil {
 			m.setOverride(fmt.Sprintf("Gateway %s Error (exit != 0):\n%v", msg.action, msg.err))
@@ -1413,7 +1415,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "down", "j":
-				if m.cursor < 6 {
+				if m.cursor < 7 {
 					m.cursor++
 					m.overrideMsg = ""
 				}
@@ -1421,7 +1423,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case " ":
 				if m.cursor == 1 {
-					isActive := m.gwNftables && m.gwTun && m.gwForward
+					isActive := m.gwNftables && m.gwTProxy && m.gwForward
 					if isActive {
 						noticeCmd := m.setNotice("Applying 'gateway down' runtime rules...")
 						return m, tea.Batch(runGatewayDown(), noticeCmd)
@@ -1430,11 +1432,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						return m, tea.Batch(runGatewayUp(m.active), noticeCmd)
 					}
 				} else if m.cursor == 2 && m.staging != nil {
-					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
+					m.staging.Gateway.TUNEnabled = !m.staging.Gateway.EffectiveTUNEnabled()
+					m.staging.Gateway.Mode = ""
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
 					return m, nil
 				} else if m.cursor == 3 && m.staging != nil {
+					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, nil
+				} else if m.cursor == 4 && m.staging != nil {
 					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
@@ -1457,7 +1465,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-				} else if m.cursor == 4 && m.staging != nil {
+				} else if m.cursor == 5 && m.staging != nil {
 					ifaces, _ := net.Interfaces()
 					choices := []string{"none"}
 					for _, iface := range ifaces {
@@ -1477,7 +1485,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-				} else if m.cursor == 5 && m.staging != nil {
+				} else if m.cursor == 6 && m.staging != nil {
 					choices := []string{"direct"}
 					for _, co := range m.staging.CustomOutbounds {
 						choices = append(choices, co.Alias)
@@ -1494,18 +1502,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-				} else if m.cursor == 6 && m.staging != nil {
+				} else if m.cursor == 7 && m.staging != nil {
 					m.startInput(inputBypassCountries, "Bypass Countries (comma separated, e.g. CN)", strings.Join(m.staging.Gateway.BypassCountries, ", "))
 				}
 				return m, nil
 
 			case "t", "T":
-				if m.cursor == 2 {
+				if m.cursor == 3 {
 					m.gwLocalTestIP = "testing..."
 					noticeCmd := m.setNotice("Testing local proxy IP...")
 					return m, tea.Batch(testLocalProxy(m.active), noticeCmd)
 				}
-				if m.cursor == 3 {
+				if m.cursor == 4 {
 					m.gwLANTestIP = "testing..."
 					noticeCmd := m.setNotice("Testing simulated LAN IP...")
 					return m, tea.Batch(testLANGateway(m.active), noticeCmd)
@@ -1933,7 +1941,7 @@ func (m Model) View() string {
 	case tabGuests:
 		content = RenderGuests(m.active, m.staging, m.cursor, cWidth)
 	case tabGateway:
-		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
+		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
 	}
 
 	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, lipgloss.NewStyle().Height(mainHeight).MaxHeight(mainHeight).Render(content))
@@ -2126,8 +2134,8 @@ func (m Model) getSelectedDetailContent() string {
 		}
 		return strings.TrimSpace(b.String())
 	}
-	if m.currentTab == tabGateway && m.staging != nil && m.cursor >= 0 && m.cursor <= 6 {
-		return BuildGatewayReport(m.active, m.staging, m.cursor, m.gwNftables, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
+	if m.currentTab == tabGateway && m.staging != nil && m.cursor >= 0 && m.cursor <= 7 {
+		return BuildGatewayReport(m.active, m.staging, m.cursor, m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
 	}
 	return ""
 }
@@ -2415,7 +2423,9 @@ func (m Model) renderFooter() string {
 		case tabGateway:
 			if m.cursor == 1 {
 				badges = append(badges, "[Space] Toggle Rules")
-			} else if m.cursor == 2 || m.cursor == 3 {
+			} else if m.cursor == 2 {
+				badges = append(badges, "[Space] Toggle TUN")
+			} else if m.cursor == 3 || m.cursor == 4 {
 				badges = append(badges, "[Space] Toggle", "[T] Test Route")
 			} else {
 				badges = append(badges, "[Enter] Edit")
@@ -2555,11 +2565,14 @@ func (m Model) performApply() tea.Cmd {
 	}
 }
 
-func checkGatewayStatus() (nft bool, tun bool, fwd bool) {
+func checkGatewayStatus() (nft bool, tproxy bool, tun bool, fwd bool) {
 	if out, err := exec.Command("ip", "route", "show", "table", "100").Output(); err == nil {
 		if strings.Contains(string(out), "local default dev lo") || strings.Contains(string(out), "default") {
-			tun = true
+			tproxy = true
 		}
+	}
+	if iface, err := net.InterfaceByName("proxya-tun"); err == nil && (iface.Flags&net.FlagUp != 0) {
+		tun = true
 	}
 	cmd := exec.Command("nft", "list", "table", "inet", "xray_proxya")
 	if err := cmd.Run(); err == nil {

@@ -324,9 +324,6 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 
 	// Validate target against CustomOutbounds if not "direct" or "block"
 	if normRule.Target != "direct" && normRule.Target != "block" {
-		if cfg.Gateway.EffectiveMode() == "tun" {
-			return fmt.Errorf("❌ TUN mode does not support per-client relay routing (rule targets relay %q); use 'tproxy' mode or change target to 'direct' or 'block'", normRule.Target)
-		}
 		found := false
 		for _, co := range cfg.CustomOutbounds {
 			if co.Alias == normRule.Target {

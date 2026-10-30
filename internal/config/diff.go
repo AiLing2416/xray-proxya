@@ -201,6 +201,9 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 	if active.Gateway.Mode != staging.Gateway.Mode {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Mode: %s -> %s", active.Gateway.Mode, staging.Gateway.Mode))
 	}
+	if active.Gateway.EffectiveTUNEnabled() != staging.Gateway.EffectiveTUNEnabled() {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ TUN Adapter: %v -> %v", active.Gateway.EffectiveTUNEnabled(), staging.Gateway.EffectiveTUNEnabled()))
+	}
 	if active.Gateway.RelayAlias != staging.Gateway.RelayAlias {
 		actR := active.Gateway.RelayAlias
 		if actR == "" {

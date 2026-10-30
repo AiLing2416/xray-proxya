@@ -43,6 +43,7 @@ var gatewayCmd = &cobra.Command{
 
 type GatewayConfigJSON struct {
 	Mode          string               `json:"mode,omitempty"`
+	TUNEnabled    bool                 `json:"tun_enabled"`
 	LocalEnabled  bool                 `json:"local_enabled"`
 	LANEnabled    bool                 `json:"lan_enabled"`
 	Relay         string               `json:"relay"`
@@ -87,6 +88,7 @@ func toGatewayConfigJSON(cfg *config.UserConfig) *GatewayConfigJSON {
 	}
 	return &GatewayConfigJSON{
 		Mode:          cfg.Gateway.EffectiveMode(),
+		TUNEnabled:    cfg.Gateway.EffectiveTUNEnabled(),
 		LocalEnabled:  cfg.Gateway.LocalEnabled,
 		LANEnabled:    cfg.Gateway.LANEnabled,
 		Relay:         cfg.Gateway.RelayAlias,
@@ -134,13 +136,6 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Failed to load gateway configuration")
 	}
 
-	mode := "tproxy"
-	if activeCfg != nil {
-		mode = activeCfg.Gateway.EffectiveMode()
-	} else if stagingCfg != nil {
-		mode = stagingCfg.Gateway.EffectiveMode()
-	}
-
 	iface, err := net.InterfaceByName("proxya-tun")
 	tunPresentReal := (err == nil)
 	tunUpReal := tunPresentReal && (iface.Flags&net.FlagUp != 0)
@@ -158,23 +153,13 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 
 	hasRoute := false
 	if out, err := exec.Command("ip", "route", "show", "table", "100").Output(); err == nil {
-		if mode == "tun" {
-			if strings.Contains(string(out), "dev proxya-tun") {
-				hasRoute = true
-			}
-		} else {
-			if strings.Contains(string(out), "local default dev lo") || strings.Contains(string(out), "default") {
-				hasRoute = true
-			}
+		if strings.Contains(string(out), "local default dev lo") || strings.Contains(string(out), "default") {
+			hasRoute = true
 		}
 	}
 	tproxyActive := nftActive && (hasRoute || len(problems) == 0)
-	tunPresent := tproxyActive
-	tunUp := tproxyActive
-	if mode == "tun" {
-		tunPresent = tunPresentReal
-		tunUp = tunUpReal
-	}
+	tunPresent := tunPresentReal
+	tunUp := tunUpReal
 	ipForward := tune.IsIPv4ForwardingEnabled()
 
 	if gatewayStatusJSON {
@@ -279,54 +264,49 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("\n🛰️ RUNTIME STATE")
 	fmt.Println("--------------------------------------------------")
-	if mode == "tun" {
-		tunStatus := "NOT FOUND"
+	tproxyPort := config.DefaultTProxyPort
+	if activeCfg != nil {
+		tproxyPort = activeCfg.Gateway.EffectiveTProxyPort()
+	} else if stagingCfg != nil {
+		tproxyPort = stagingCfg.Gateway.EffectiveTProxyPort()
+	}
+
+	tproxyStatus := "INACTIVE"
+	if tproxyActive {
+		tproxyStatus = fmt.Sprintf(":%d (ACTIVE)", tproxyPort)
+	}
+	fmt.Printf("TProxy Port:   %s\n", tproxyStatus)
+
+	nftStatus := "INACTIVE"
+	if nftActive {
+		nftStatus = "ACTIVE (table inet xray_proxya)"
+	}
+	fmt.Printf("nftables:      %s\n", nftStatus)
+
+	routeStatus := "INACTIVE"
+	if tproxyActive {
+		routeStatus = "ACTIVE (lo table 100)"
+	}
+	fmt.Printf("TProxy Routing: %s\n", routeStatus)
+
+	tunStatus := "DISABLED"
+	tunEnabled := false
+	if activeCfg != nil && activeCfg.Gateway.EffectiveTUNEnabled() {
+		tunEnabled = true
+	} else if stagingCfg != nil && stagingCfg.Gateway.EffectiveTUNEnabled() {
+		tunEnabled = true
+	}
+	if tunEnabled || tunPresentReal {
+		tunStatus = "NOT FOUND"
 		if tunPresentReal {
 			if tunUpReal {
-				tunStatus = "UP"
+				tunStatus = "UP (172.16.255.1)"
 			} else {
 				tunStatus = "DOWN"
 			}
 		}
-		fmt.Printf("TUN Interface: proxya-tun (%s)\n", tunStatus)
-
-		nftStatus := "INACTIVE"
-		if nftActive {
-			nftStatus = "ACTIVE (table inet xray_proxya)"
-		}
-		fmt.Printf("nftables:      %s\n", nftStatus)
-
-		routeStatus := "INACTIVE"
-		if hasRoute {
-			routeStatus = "ACTIVE (dev proxya-tun table 100)"
-		}
-		fmt.Printf("TUN Routing:   %s\n", routeStatus)
-	} else {
-		tproxyPort := config.DefaultTProxyPort
-		if activeCfg != nil {
-			tproxyPort = activeCfg.Gateway.EffectiveTProxyPort()
-		} else if stagingCfg != nil {
-			tproxyPort = stagingCfg.Gateway.EffectiveTProxyPort()
-		}
-
-		tproxyStatus := "INACTIVE"
-		if tproxyActive {
-			tproxyStatus = fmt.Sprintf(":%d (ACTIVE)", tproxyPort)
-		}
-		fmt.Printf("TProxy Port:   %s\n", tproxyStatus)
-
-		nftStatus := "INACTIVE"
-		if nftActive {
-			nftStatus = "ACTIVE (table inet xray_proxya)"
-		}
-		fmt.Printf("nftables:      %s\n", nftStatus)
-
-		routeStatus := "INACTIVE"
-		if tproxyActive {
-			routeStatus = "ACTIVE (lo table 100)"
-		}
-		fmt.Printf("TProxy Routing: %s\n", routeStatus)
 	}
+	fmt.Printf("TUN Adapter:   proxya-tun (%s)\n", tunStatus)
 
 	forwardStatus := "DISABLED"
 	if ipForward {
@@ -498,11 +478,28 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Failed to load staging config: %v", err)
 	}
 
+	if cmd.Flags().Changed("tun") {
+		tunVal, _ := cmd.Flags().GetBool("tun")
+		cfg.Gateway.TUNEnabled = tunVal
+		if tunVal {
+			cfg.Gateway.Mode = ""
+		}
+	}
+	if cmd.Flags().Changed("no-tun") {
+		cfg.Gateway.TUNEnabled = false
+		cfg.Gateway.Mode = ""
+	}
+
 	if cmd.Flags().Changed("mode") {
 		modeVal, _ := cmd.Flags().GetString("mode")
 		modeVal = strings.ToLower(strings.TrimSpace(modeVal))
 		if modeVal != "tproxy" && modeVal != "tun" {
 			return fmt.Errorf("❌ Invalid mode %q; valid options are 'tproxy' and 'tun'", modeVal)
+		}
+		if modeVal == "tun" {
+			cfg.Gateway.TUNEnabled = true
+		} else {
+			cfg.Gateway.TUNEnabled = false
 		}
 		cfg.Gateway.Mode = modeVal
 		if err := config.ValidateGatewayRulesForMode(cfg); err != nil {
@@ -1007,6 +1004,8 @@ func init() {
 	gatewayDisableCmd.Flags().BoolVar(&gatewayDisableNow, "now", false, "Immediately commit changes and bring gateway runtime down")
 	gatewayStatusCmd.Flags().BoolVar(&gatewayStatusJSON, "json", false, "Output in JSON format")
 
+	gatewaySetCmd.Flags().Bool("tun", false, "Enable standalone pure TUN adapter (proxya-tun) in staging")
+	gatewaySetCmd.Flags().Bool("no-tun", false, "Disable standalone pure TUN adapter in staging")
 	gatewaySetCmd.Flags().StringP("mode", "m", "", "Interception mode: 'tproxy' (default) or 'tun'")
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name (supports comma-separated multiple interfaces)")

@@ -52,11 +52,6 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	if cfg == nil || cfg.Role != config.RoleGateway {
 		return nil
 	}
-	mode := cfg.Gateway.EffectiveMode()
-	if mode != "tproxy" && mode != "tun" {
-		return nil
-	}
-	isTun := mode == "tun"
 
 	state := cfg.Gateway.State
 	if state == "" {
@@ -150,20 +145,22 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
 
-	if isTun {
-		if err := waitForInterface(tunName, true); err != nil {
-			return fmt.Errorf("tun interface %s was not created in time by Xray core. (Hint: Is the 'xray-proxya' service running? Try 'xray-proxya service status' or 'service start')", tunName)
-		}
-	} else {
-		if err := waitForTProxyListener(cfg.Gateway.EffectiveTProxyPort()); err != nil {
-			return err
-		}
-		for alias, p := range config.GatewayTProxyPorts(cfg) {
-			if p != cfg.Gateway.EffectiveTProxyPort() {
-				if err := waitForTProxyListener(p); err != nil {
-					return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
-				}
+	// 1. Primary TProxy Listeners
+	if err := waitForTProxyListener(cfg.Gateway.EffectiveTProxyPort()); err != nil {
+		return err
+	}
+	for alias, p := range config.GatewayTProxyPorts(cfg) {
+		if p != cfg.Gateway.EffectiveTProxyPort() {
+			if err := waitForTProxyListener(p); err != nil {
+				return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
 			}
+		}
+	}
+
+	// 2. Pure TUN Adapter (if enabled)
+	if cfg.Gateway.EffectiveTUNEnabled() {
+		if err := waitForInterface(tunName, true); err != nil {
+			return fmt.Errorf("tun interface %s was not created in time by Xray core: %w", tunName, err)
 		}
 	}
 	if cfg.Gateway.DNSListen != "" {
@@ -192,7 +189,8 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 
 	ipv6Supported := ipv6Available()
 
-	if isTun {
+	// Pure TUN Interface Addressing (operates purely as an addressable virtual adapter without policy routes)
+	if cfg.Gateway.EffectiveTUNEnabled() {
 		if err := run("ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
 			return err
 		}
@@ -200,6 +198,9 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			if err := run("ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName); err != nil {
 				ipv6Supported = false
 			}
+		}
+		if err := run("ip", "link", "set", "dev", tunName, "up"); err != nil {
+			return err
 		}
 	}
 
@@ -212,6 +213,21 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			return errors.Join(err, CleanupFirewall())
 		}
 	}
+
+	// Table 100 default destination is always local dev lo for primary TProxy socket redirection
+	if err := run("ip", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
+		return errors.Join(err, CleanupFirewall())
+	}
+	if ipv6Supported {
+		if err := run("ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
+			return errors.Join(err, CleanupFirewall())
+		}
+	}
+
+	/*
+	RESERVED AS FALLBACK: Standalone TUN Table 100 routing takeover
+	Preserved as reference if TUN is ever required to intercept table 100 directly without TProxy:
+
 	if isTun {
 		if err := run("ip", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
 			return errors.Join(err, CleanupFirewall())
@@ -221,16 +237,8 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 				return errors.Join(err, CleanupFirewall())
 			}
 		}
-	} else {
-		if err := run("ip", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
-			return errors.Join(err, CleanupFirewall())
-		}
-		if ipv6Supported {
-			if err := run("ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
-				return errors.Join(err, CleanupFirewall())
-			}
-		}
 	}
+	*/
 	if pathTunnelEnabled(cfg) {
 		if err := run("ip", "route", "replace", "default", "dev", pathTunName, "table", pathPolicyTable); err != nil {
 			return errors.Join(err, CleanupFirewall())
@@ -259,9 +267,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	_ = run("nft", "add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; }")
 
 	var inputRules [][]string
-	if !isTun {
-		inputRules = append(inputRules, []string{"meta", "mark", tunMark, "accept"})
-	}
+	inputRules = append(inputRules, []string{"meta", "mark", tunMark, "accept"})
 	for _, iso := range cfg.Gateway.EffectiveIsolatedInterfaces() {
 		inputRules = append(inputRules, []string{"iifname", iso, "tcp", "dport", "22", "drop"})
 	}
@@ -281,7 +287,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	}
 
 	var forwardRules [][]string
-	if isTun {
+	if cfg.Gateway.EffectiveTUNEnabled() {
 		forwardRules = append(forwardRules,
 			[]string{"iifname", tunName, "accept"},
 			[]string{"oifname", tunName, "accept"})
@@ -765,7 +771,39 @@ func Verify(cfg *config.UserConfig) []string {
 	}
 
 	ipv6Configured := ipv6Available()
-	if mode == "tun" {
+
+	// 1. TProxy Policy Table & Listener Verification (Primary Gateway)
+	if !isTProxyPortListening(cfg.Gateway.EffectiveTProxyPort()) {
+		problems = append(problems, fmt.Sprintf("tproxy port %d is not listening", cfg.Gateway.EffectiveTProxyPort()))
+	}
+	for alias, port := range config.GatewayTProxyPorts(cfg) {
+		if port != cfg.Gateway.EffectiveTProxyPort() && !isTProxyPortListening(port) {
+			problems = append(problems, fmt.Sprintf("tproxy port %d (relay %s) is not listening", port, alias))
+		}
+	}
+	if cfg.Gateway.DNSListen != "" {
+		if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+			if !isTProxyPortListening(dnsPort) {
+				problems = append(problems, fmt.Sprintf("gateway dns port %d is not listening", dnsPort))
+			}
+		}
+	}
+
+	if ok, err := hasDefaultRoute(policyTable, "lo", false); err != nil {
+		problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
+	} else if !ok {
+		problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via lo")
+	}
+	if ipv6Configured {
+		if ok, err := hasDefaultRoute(policyTable, "lo", true); err != nil {
+			problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
+		} else if !ok {
+			problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via lo")
+		}
+	}
+
+	// 2. Pure TUN Adapter Verification (if enabled)
+	if cfg.Gateway.EffectiveTUNEnabled() {
 		if !interfaceExists(tunName) {
 			problems = append(problems, tunName+" interface is not present (Hint: Is the xray-proxya service running?)")
 		} else {
@@ -776,47 +814,14 @@ func Verify(cfg *config.UserConfig) []string {
 				problems = append(problems, tunName+" interface is missing IPv4 address "+tunIPv4CIDR)
 			}
 		}
+		/*
+		RESERVED AS FALLBACK: Standalone TUN Table 100 verification
 		if ok, err := hasDefaultRoute(policyTable, tunName, false); err != nil {
 			problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
 		} else if !ok {
 			problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via "+tunName)
 		}
-		if ipv6Configured {
-			if ok, err := hasDefaultRoute(policyTable, tunName, true); err != nil {
-				problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
-			} else if !ok {
-				problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via "+tunName)
-			}
-		}
-	} else {
-		if !isTProxyPortListening(cfg.Gateway.EffectiveTProxyPort()) {
-			problems = append(problems, fmt.Sprintf("tproxy port %d is not listening", cfg.Gateway.EffectiveTProxyPort()))
-		}
-		for alias, port := range config.GatewayTProxyPorts(cfg) {
-			if port != cfg.Gateway.EffectiveTProxyPort() && !isTProxyPortListening(port) {
-				problems = append(problems, fmt.Sprintf("tproxy port %d (relay %s) is not listening", port, alias))
-			}
-		}
-		if cfg.Gateway.DNSListen != "" {
-			if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
-				if !isTProxyPortListening(dnsPort) {
-					problems = append(problems, fmt.Sprintf("gateway dns port %d is not listening", dnsPort))
-				}
-			}
-		}
-
-		if ok, err := hasDefaultRoute(policyTable, "lo", false); err != nil {
-			problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
-		} else if !ok {
-			problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via lo")
-		}
-		if ipv6Configured {
-			if ok, err := hasDefaultRoute(policyTable, "lo", true); err != nil {
-				problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
-			} else if !ok {
-				problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via lo")
-			}
-		}
+		*/
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := exec.Command("ip", "link", "show", pathTunName).Run(); err != nil {
@@ -1169,7 +1174,6 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 
 func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6CIDRs []string, wanIface string) string {
 	var b strings.Builder
-	isTun := cfg != nil && cfg.Gateway.EffectiveMode() == "tun"
 	basePort := cfg.Gateway.EffectiveTProxyPort()
 	tproxyPorts := config.GatewayTProxyPorts(cfg)
 	isoIfaces := cfg.Gateway.EffectiveIsolatedInterfaces()
@@ -1193,16 +1197,14 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 	b.WriteString("table inet " + tableName + " {\n")
 	if cfg.Gateway.LANEnabled || cfg.Gateway.LocalEnabled {
 		blocks := blockRuleTokens(cfg)
-		hasInputRules := !isTun || len(blocks) > 0 || cfg.Gateway.DNSListen != "" || len(isoIfaces) > 0
+		hasInputRules := len(blocks) > 0 || cfg.Gateway.DNSListen != "" || len(isoIfaces) > 0 || len(portStrs) > 0
 		if hasInputRules {
 			b.WriteString("    chain input {\n")
 			b.WriteString("        type filter hook input priority mangle; policy accept;\n")
-			if !isTun {
-				if len(portStrs) == 1 {
-					b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport " + portStrs[0] + " drop\n")
-				} else {
-					b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport { " + strings.Join(portStrs, ", ") + " } drop\n")
-				}
+			if len(portStrs) == 1 {
+				b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport " + portStrs[0] + " drop\n")
+			} else {
+				b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport { " + strings.Join(portStrs, ", ") + " } drop\n")
 			}
 			for _, tk := range blocks {
 				b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
@@ -1228,13 +1230,11 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("    chain prerouting {\n")
 		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
-		if !isTun {
-			if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
-				b.WriteString("        iifname != \"lo\" fib daddr type local meta l4proto != { tcp, udp } return\n")
-				b.WriteString("        iifname != \"lo\" fib daddr type local th dport != 53 return\n")
-			} else {
-				b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
-			}
+		if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
+			b.WriteString("        iifname != \"lo\" fib daddr type local meta l4proto != { tcp, udp } return\n")
+			b.WriteString("        iifname != \"lo\" fib daddr type local th dport != 53 return\n")
+		} else {
+			b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
 		}
 
 		// Block rules (most specific selector first; less specific blocks
@@ -1315,11 +1315,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		}
 
 		if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
-			if !isTun {
-				b.WriteString("        fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
-			} else {
-				b.WriteString("        fib daddr type local meta l4proto { tcp, udp } th dport 53 meta mark set " + tunMark + "\n")
-			}
+			b.WriteString("        fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
 		}
 
 		// Destination bypasses
@@ -1359,55 +1355,57 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		}
 
 		// Per-client rules ordered by specificity: interface+MAC, MAC, interface.
-		if isTun {
-			for _, rule := range sortedGatewayRules(cfg, false) {
-				match := strings.Join(matchTokens(rule), " ")
-				target := strings.TrimSpace(rule.Target)
-				if strings.EqualFold(target, "direct") {
-					b.WriteString("        " + match + " return\n")
-					continue
-				}
-				// Fail closed: TUN mode does not support per-client relay routing.
-				b.WriteString("        " + match + " drop\n")
-			}
-			if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
-				b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
-				b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
-			}
-			b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
-		} else {
-			for _, rule := range sortedGatewayRules(cfg, false) {
-				match := strings.Join(matchTokens(rule), " ")
-				target := strings.TrimSpace(rule.Target)
-				if strings.EqualFold(target, "direct") {
-					b.WriteString("        " + match + " return\n")
-					continue
-				}
-				port := tproxyPorts[target]
-				if port <= 0 || !config.GatewayRelayActive(cfg, target) {
-					// Fail closed: never silently fall back to the default relay.
-					b.WriteString("        " + match + " drop\n")
-					continue
-				}
-				tproxyFamily := ""
-				if rule.IP != "" {
-					if isIPv6(rule.IP) {
-						tproxyFamily = "ip6 "
-					} else {
-						tproxyFamily = "ip "
-					}
-				}
-				b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
-			}
+		/*
+		RESERVED AS FALLBACK: Legacy Standalone TUN Interception Rules
+		Preserved as reference if TUN is ever required to intercept nftables prerouting directly:
 
-			// Default Gateway Policy
-			if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
-				b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
-				b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
+		for _, rule := range sortedGatewayRules(cfg, false) {
+			match := strings.Join(matchTokens(rule), " ")
+			target := strings.TrimSpace(rule.Target)
+			if strings.EqualFold(target, "direct") {
+				b.WriteString("        " + match + " return\n")
+				continue
 			}
-			if cfg.Gateway.RelayAlias != "" && !strings.EqualFold(cfg.Gateway.RelayAlias, "direct") && !strings.EqualFold(cfg.Gateway.RelayAlias, "block") {
-				b.WriteString("        meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
+			b.WriteString("        " + match + " drop\n")
+		}
+		if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
+			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
+			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
+		}
+		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
+		*/
+
+		for _, rule := range sortedGatewayRules(cfg, false) {
+			match := strings.Join(matchTokens(rule), " ")
+			target := strings.TrimSpace(rule.Target)
+			if strings.EqualFold(target, "direct") {
+				b.WriteString("        " + match + " return\n")
+				continue
 			}
+			port := tproxyPorts[target]
+			if port <= 0 || !config.GatewayRelayActive(cfg, target) {
+				// Fail closed: never silently fall back to the default relay.
+				b.WriteString("        " + match + " drop\n")
+				continue
+			}
+			tproxyFamily := ""
+			if rule.IP != "" {
+				if isIPv6(rule.IP) {
+					tproxyFamily = "ip6 "
+				} else {
+					tproxyFamily = "ip "
+				}
+			}
+			b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
+		}
+
+		// Default Gateway Policy
+		if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
+			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
+			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
+		}
+		if cfg.Gateway.RelayAlias != "" && !strings.EqualFold(cfg.Gateway.RelayAlias, "direct") && !strings.EqualFold(cfg.Gateway.RelayAlias, "block") {
+			b.WriteString("        meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
 		}
 		b.WriteString("    }\n")
 	}
@@ -1416,9 +1414,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("    chain output {\n")
 		b.WriteString("        type route hook output priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
-		if !isTun {
-			b.WriteString("        fib daddr type local return\n")
-		}
+		b.WriteString("        fib daddr type local return\n")
 		allowPrivate := hasActiveRelayAllowingPrivateTargets(cfg)
 		if !allowPrivate {
 			b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")

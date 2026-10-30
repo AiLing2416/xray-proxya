@@ -101,33 +101,31 @@ func restartWithTunDisabled(disabled bool) error {
 	if loaded, err := config.LoadConfig(); err == nil && loaded != nil {
 		cfg = loaded
 	}
-	isTun := cfg != nil && cfg.Gateway.EffectiveMode() == "tun"
 	if !disabled {
-		if isTun {
-			if err := waitForInterface(tunName, true); err != nil {
-				return err
-			}
-		} else {
-			port := config.DefaultTProxyPort
-			if cfg != nil {
-				port = cfg.Gateway.EffectiveTProxyPort()
-			}
-			if err := waitForTProxyListener(port); err != nil {
-				return err
-			}
-			if cfg != nil {
-				for alias, p := range config.GatewayTProxyPorts(cfg) {
-					if p != port {
-						if err := waitForTProxyListener(p); err != nil {
-							return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
-						}
+		port := config.DefaultTProxyPort
+		if cfg != nil {
+			port = cfg.Gateway.EffectiveTProxyPort()
+		}
+		if err := waitForTProxyListener(port); err != nil {
+			return err
+		}
+		if cfg != nil {
+			for alias, p := range config.GatewayTProxyPorts(cfg) {
+				if p != port {
+					if err := waitForTProxyListener(p); err != nil {
+						return fmt.Errorf("wait for relay %s tproxy listener on port %d: %w", alias, p, err)
 					}
+				}
+			}
+			if cfg.Gateway.EffectiveTUNEnabled() {
+				if err := waitForInterface(tunName, true); err != nil {
+					return err
 				}
 			}
 		}
 	}
 	if disabled {
-		if isTun {
+		if cfg != nil && cfg.Gateway.EffectiveTUNEnabled() {
 			if err := waitForInterface(tunName, false); err != nil {
 				return err
 			}
@@ -217,7 +215,7 @@ func restoreTunStateLocked(cfg *config.UserConfig) error {
 	if len(Verify(cfg)) == 0 {
 		return nil
 	}
-	if cfg.Gateway.EffectiveMode() == "tun" {
+	if cfg.Gateway.EffectiveTUNEnabled() {
 		if err := waitForInterface(tunName, true); err != nil {
 			return err
 		}

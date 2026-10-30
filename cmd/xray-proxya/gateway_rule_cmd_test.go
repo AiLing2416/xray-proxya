@@ -606,8 +606,9 @@ func TestGatewayRuleSet_TUNModeDisallowsRelay(t *testing.T) {
 	cfg := &config.UserConfig{
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
-			Mode:  "tun",
-			State: "proxy",
+			Mode:       "tun",
+			TUNEnabled: true,
+			State:      "proxy",
 		},
 		CustomOutbounds: []config.CustomOutbound{
 			{Alias: "relay-us", Enabled: true},
@@ -617,14 +618,13 @@ func TestGatewayRuleSet_TUNModeDisallowsRelay(t *testing.T) {
 		t.Fatalf("SaveEx(true) failed: %v", err)
 	}
 
-	// 1. Setting a relay target in TUN mode must fail
+	// 1. Setting a relay target with TUN enabled succeeds because TProxy handles routing
 	ruleSetInterface = "eth1"
 	ruleSetMAC = ""
 	ruleSetTo = "relay-us"
 	ruleSetForce = false
-	err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
-	if err == nil || !strings.Contains(err.Error(), "TUN mode does not support per-client relay routing") {
-		t.Fatalf("expected error setting relay target in TUN mode, got: %v", err)
+	if err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{}); err != nil {
+		t.Fatalf("expected relay target to succeed when TUN enabled, got: %v", err)
 	}
 
 	// 2. Setting a direct target in TUN mode must succeed

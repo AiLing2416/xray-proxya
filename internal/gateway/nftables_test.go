@@ -172,8 +172,10 @@ func TestBuildNFT_Proxy_LANOnly_GeneratesPreroutingOnly(t *testing.T) {
 }
 
 func TestBuildNFT_Proxy_TunMode(t *testing.T) {
+	// TUN operates purely as an unmanaged/standalone virtual device without nftables rules.
+	// Primary interception always uses TProxy rules.
 	cfg := testGatewayConfig(true, true)
-	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.TUNEnabled = true
 	cfg.Gateway.State = "proxy"
 	rules := buildNFT(cfg, "ens18", "192.168.50.0/24", "")
 
@@ -183,14 +185,8 @@ func TestBuildNFT_Proxy_TunMode(t *testing.T) {
 	if !strings.Contains(rules, "chain output") {
 		t.Error("rules must contain output chain")
 	}
-	if strings.Contains(rules, "tproxy to :") {
-		t.Error("tun mode rules must NOT contain tproxy to :<port>")
-	}
-	if !strings.Contains(rules, "meta l4proto { tcp, udp } meta mark set 1\n") {
-		t.Error("tun mode rules must contain meta mark set 1")
-	}
-	if strings.Contains(rules, "fib daddr type local return") {
-		t.Error("tun mode rules should not return on fib daddr type local")
+	if !strings.Contains(rules, "tproxy to :") {
+		t.Error("primary gateway must use TProxy socket interception even when TUN adapter is enabled")
 	}
 }
 
@@ -832,25 +828,14 @@ func TestBuildNFT_LocalLANDNSInterception(t *testing.T) {
 		t.Fatalf("unexpected local DNS tproxy capture rule when DNSListen is configured, got:\n%s", rulesDNSListen)
 	}
 
-	// Case 3: TUN mode, LANEnabled == true, DNSListen == ""
-	// Should mark DNS traffic destined to local LAN IP with tunMark
+	// Case 3: When TUN adapter is enabled, primary interception still uses TProxy local DNS capture
 	cfgTun := testGatewayConfig(true, true)
-	cfgTun.Gateway.Mode = "tun"
+	cfgTun.Gateway.TUNEnabled = true
 	cfgTun.Gateway.DNSListen = ""
 	rulesTun := buildNFT(cfgTun, "ens18", "192.168.50.0/24", "")
 
-	if strings.Contains(rulesTun, "fib daddr type local return") {
-		t.Fatalf("tun mode should not contain fib daddr type local return, got:\n%s", rulesTun)
-	}
-	expectedTunCapture := "fib daddr type local meta l4proto { tcp, udp } th dport 53 meta mark set 1\n"
-	if !strings.Contains(rulesTun, expectedTunCapture) {
-		t.Fatalf("expected local DNS mark rule in tun mode, got:\n%s", rulesTun)
-	}
-	// TUN mode local DNS rule should appear before LAN subnet return
-	idxTunCapture := strings.Index(rulesTun, expectedTunCapture)
-	idxTunBypass := strings.Index(rulesTun, "ip daddr 192.168.50.0/24 return")
-	if idxTunCapture == -1 || idxTunBypass == -1 || idxTunCapture > idxTunBypass {
-		t.Fatalf("tun mode local DNS capture rule must appear before LAN subnet bypass, capture=%d, bypass=%d", idxTunCapture, idxTunBypass)
+	if !strings.Contains(rulesTun, expectedTProxyCapture) {
+		t.Fatalf("expected local DNS tproxy capture rule when TUN adapter is enabled, got:\n%s", rulesTun)
 	}
 
 	// Case 4: LANEnabled == false (LocalEnabled only)
@@ -1260,13 +1245,13 @@ func TestBuildNFTMulti_TUNModeDirectRules(t *testing.T) {
 	}
 	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.1.0/24"}, nil, "")
 	if !strings.Contains(out, `iifname "eth1" return`) {
-		t.Fatalf("expected direct rule return in TUN mode, got:\n%s", out)
+		t.Fatalf("expected direct rule return, got:\n%s", out)
 	}
 	if !strings.Contains(out, `ether saddr aa:bb:cc:dd:ee:02 drop`) {
-		t.Fatalf("expected fail-closed drop for unsupported relay rule in TUN mode, got:\n%s", out)
+		t.Fatalf("expected fail-closed drop for unknown relay rule, got:\n%s", out)
 	}
-	if !strings.Contains(out, `meta l4proto { tcp, udp } meta mark set 1`) {
-		t.Fatalf("expected default TUN mark rule in TUN mode, got:\n%s", out)
+	if !strings.Contains(out, `meta l4proto { tcp, udp } tproxy to :12345 meta mark set 1 accept`) {
+		t.Fatalf("expected standard TProxy rule in nftables, got:\n%s", out)
 	}
 }
 

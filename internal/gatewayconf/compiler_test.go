@@ -541,3 +541,31 @@ zone wan -> direct isolate=true
 		t.Errorf("expected error isolating WAN zone rule, got: %v", err)
 	}
 }
+
+func TestCompile_PreservesTUNEnabled(t *testing.T) {
+	input := `
+def zone lan eth1
+local -> direct
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	userCfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:       "tproxy",
+			TUNEnabled: true,
+			TProxyPort: 12345,
+		},
+	}
+
+	compiled, err := Compile(ast, WithUserConfig(userCfg))
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	if !compiled.TUNEnabled {
+		t.Fatal("expected TUNEnabled to be preserved as true")
+	}
+}

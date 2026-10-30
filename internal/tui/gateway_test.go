@@ -2,6 +2,7 @@ package tui
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"xray-proxya/internal/config"
@@ -34,6 +35,12 @@ func TestHasGatewayStagedChanges(t *testing.T) {
 	}
 
 	staging = newTestGatewayConfig()
+	staging.Gateway.TUNEnabled = true
+	if !HasGatewayStagedChanges(active, staging) {
+		t.Fatal("expected staged changes after modifying Gateway.TUNEnabled")
+	}
+
+	staging = newTestGatewayConfig()
 	staging.Gateway.LocalEnabled = !active.Gateway.LocalEnabled
 	if !HasGatewayStagedChanges(active, staging) {
 		t.Fatal("expected staged changes after modifying Gateway.LocalEnabled")
@@ -50,16 +57,37 @@ func TestBuildGatewayReport(t *testing.T) {
 	active := newTestGatewayConfig()
 	staging := newTestGatewayConfig()
 	staging.Gateway.State = "proxy"
+	staging.Gateway.TUNEnabled = true
 	staging.Gateway.LocalEnabled = true
 	staging.Gateway.LANEnabled = true
 	staging.Gateway.LANInterface = "eth0"
 	staging.Gateway.BypassCountries = []string{"CN"}
 
-	for row := 0; row <= 6; row++ {
-		report := BuildGatewayReport(active, staging, row, true, true, true, "198.51.100.1", "203.0.113.1")
+	for row := 0; row <= 7; row++ {
+		report := BuildGatewayReport(active, staging, row, true, true, true, true, "198.51.100.1", "203.0.113.1")
 		if report == "" {
 			t.Fatalf("row %d: report should not be empty", row)
 		}
+	}
+}
+
+func TestRenderGateway(t *testing.T) {
+	active := newTestGatewayConfig()
+	staging := newTestGatewayConfig()
+	staging.Gateway.TUNEnabled = true
+
+	out := RenderGateway(active, staging, 1, 90, true, true, true, true, "10.0.82.21", "10.0.82.22")
+	if out == "" {
+		t.Fatal("RenderGateway output should not be empty")
+	}
+	if !strings.Contains(out, "TPROXY") {
+		t.Fatal("RenderGateway should display TPROXY badge in header")
+	}
+	if !strings.Contains(out, "TUN") {
+		t.Fatal("RenderGateway should display TUN badge in header")
+	}
+	if !strings.Contains(out, "TUN Adapter") {
+		t.Fatal("RenderGateway should render TUN Adapter row")
 	}
 }
 

@@ -334,6 +334,7 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if activeCfg.Gateway.LocalEnabled != stagingCfg.Gateway.LocalEnabled ||
 		activeCfg.Gateway.LANEnabled != stagingCfg.Gateway.LANEnabled ||
 		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
+		activeCfg.Gateway.EffectiveTUNEnabled() != stagingCfg.Gateway.EffectiveTUNEnabled() ||
 		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||
 		!reflect.DeepEqual(activeCfg.Gateway.EffectiveLANInterfaces(), stagingCfg.Gateway.EffectiveLANInterfaces()) ||
 		!reflect.DeepEqual(activeCfg.Gateway.EffectiveIsolatedInterfaces(), stagingCfg.Gateway.EffectiveIsolatedInterfaces()) ||

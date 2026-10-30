@@ -512,7 +512,8 @@ type GatewayRule struct {
 type GatewayConfig struct {
 	LocalEnabled    bool                `json:"local_enabled"`
 	LANEnabled      bool                `json:"lan_enabled"`
-	Mode            string              `json:"mode"` // "tun" or "tproxy"
+	Mode            string              `json:"mode,omitempty"`        // legacy mode field, superseded by TProxy as default
+	TUNEnabled      bool                `json:"tun_enabled,omitempty"` // standalone pure TUN adapter (proxya-tun) without nftables rules
 	RelayAlias      string              `json:"relay_alias"`
 	LANInterface    string              `json:"lan_interface"`
 	LANInterfaces   []string            `json:"lan_interfaces,omitempty"`
@@ -748,10 +749,14 @@ func NormalizeDNSQueryStrategy(value string) (string, bool) {
 }
 
 func (g GatewayConfig) EffectiveMode() string {
-	if strings.EqualFold(strings.TrimSpace(g.Mode), "tun") {
-		return "tun"
-	}
 	return "tproxy"
+}
+
+func (g GatewayConfig) EffectiveTUNEnabled() bool {
+	if g.TUNEnabled {
+		return true
+	}
+	return strings.EqualFold(strings.TrimSpace(g.Mode), "tun")
 }
 
 func (g GatewayConfig) EffectiveTProxyPort() int {
@@ -915,22 +920,10 @@ func ValidateInterfaceName(name string) error {
 	return nil
 }
 
-// ValidateGatewayRulesForMode verifies that gateway rules are compatible with the current gateway mode.
-// In TUN mode, per-client relay routing is unsupported (Xray only binds a single tun device),
-// so only "direct" and "block" rules are allowed.
+// ValidateGatewayRulesForMode verifies that gateway rules are compatible with the gateway configuration.
+// TProxy is the primary gateway interception mechanism supporting multi-relay rules.
+// Standalone pure TUN operates as a supplementary adapter for direct routing without restricting rules.
 func ValidateGatewayRulesForMode(userCfg *UserConfig) error {
-	if userCfg == nil || (userCfg.Role != "" && userCfg.Role != RoleGateway) {
-		return nil
-	}
-	if userCfg.Gateway.EffectiveMode() != "tun" {
-		return nil
-	}
-	for _, rule := range userCfg.Gateway.Rules {
-		target := strings.TrimSpace(rule.Target)
-		if !strings.EqualFold(target, "direct") && !strings.EqualFold(target, "block") {
-			return fmt.Errorf("TUN mode does not support per-client relay routing (rule targets relay %q); use 'tproxy' mode or change target to 'direct' or 'block'", rule.Target)
-		}
-	}
 	return nil
 }
 

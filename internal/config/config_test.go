@@ -142,8 +142,11 @@ func TestBackfillDefaultsGatewayPreservesTunMode(t *testing.T) {
 	if cfg.Gateway.Mode != "tun" {
 		t.Fatalf("Gateway.Mode = %q, want tun", cfg.Gateway.Mode)
 	}
-	if cfg.Gateway.EffectiveMode() != "tun" {
-		t.Fatalf("EffectiveMode() = %q, want tun", cfg.Gateway.EffectiveMode())
+	if !cfg.Gateway.EffectiveTUNEnabled() {
+		t.Fatalf("EffectiveTUNEnabled() = false, want true")
+	}
+	if cfg.Gateway.EffectiveMode() != "tproxy" {
+		t.Fatalf("EffectiveMode() = %q, want tproxy", cfg.Gateway.EffectiveMode())
 	}
 	if cfg.Gateway.TProxyPort != DefaultTProxyPort {
 		t.Fatalf("Gateway.TProxyPort = %d, want %d", cfg.Gateway.TProxyPort, DefaultTProxyPort)
@@ -1085,23 +1088,23 @@ func TestEffectiveIsolatedInterfaces(t *testing.T) {
 }
 
 func TestValidateGatewayRulesForMode(t *testing.T) {
-	// 1. TUN mode with relay target should fail
+	// Relay rules are supported even when TUN is enabled because TProxy handles routing
 	cfg1 := &UserConfig{
 		Role: RoleGateway,
 		Gateway: GatewayConfig{
-			Mode: "tun",
+			Mode:       "tun",
+			TUNEnabled: true,
 			Rules: []GatewayRule{
 				{Interface: "eth1", Target: "direct"},
 				{MAC: "52:54:00:12:34:56", Target: "relay-us"},
 			},
 		},
 	}
-	err1 := ValidateGatewayRulesForMode(cfg1)
-	if err1 == nil || !strings.Contains(err1.Error(), "TUN mode does not support per-client relay routing") {
-		t.Fatalf("expected error for relay target in TUN mode, got: %v", err1)
+	if err := ValidateGatewayRulesForMode(cfg1); err != nil {
+		t.Fatalf("expected relay target to be supported with TUN enabled, got: %v", err)
 	}
 
-	// 2. TUN mode with direct and block targets should pass
+	// Direct and block targets pass
 	cfg2 := &UserConfig{
 		Role: RoleGateway,
 		Gateway: GatewayConfig{
@@ -1116,7 +1119,7 @@ func TestValidateGatewayRulesForMode(t *testing.T) {
 		t.Fatalf("expected direct and block to pass in TUN mode, got: %v", err)
 	}
 
-	// 3. TProxy mode allows relay targets
+	// TProxy mode allows relay targets
 	cfg3 := &UserConfig{
 		Role: RoleGateway,
 		Gateway: GatewayConfig{
@@ -1131,8 +1134,8 @@ func TestValidateGatewayRulesForMode(t *testing.T) {
 	}
 
 	// 4. ValidateGatewayMode also invokes ValidateGatewayRulesForMode
-	if err := ValidateGatewayMode(cfg1); err == nil {
-		t.Fatal("expected ValidateGatewayMode to fail for TUN mode with relay targets")
+	if err := ValidateGatewayMode(cfg1); err != nil {
+		t.Fatalf("expected ValidateGatewayMode to succeed for TUN adapter with relay targets: %v", err)
 	}
 }
 
@@ -1661,4 +1664,40 @@ func TestValidateGatewayPorts_PortForward(t *testing.T) {
 			t.Error("expected overlapping proto conflict, got nil")
 		}
 	})
+}
+
+func TestCommitStagingPreservesTunEnabled(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	active := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{Mode: "tproxy"},
+	}
+	if err := active.SaveEx(false); err != nil {
+		t.Fatal(err)
+	}
+
+	stg := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{Mode: "tproxy", TUNEnabled: true},
+	}
+	if err := stg.SaveEx(true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := CommitStaging(); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadConfigEx(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Gateway.EffectiveTUNEnabled() {
+		t.Fatalf("expected EffectiveTUNEnabled true, got false")
+	}
+	if !loaded.Gateway.TUNEnabled {
+		t.Fatalf("expected TUNEnabled true, got false")
+	}
 }
