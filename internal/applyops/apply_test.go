@@ -414,6 +414,31 @@ func TestBuildImpactGatewayRouter(t *testing.T) {
 			t.Errorf("Initial apply with Rules: expected GatewayRuntimeChanged true, got: %+v", impact)
 		}
 	}
+
+	// 6. IsolatedInterfaces change
+	{
+		active := baseActive()
+		staging := baseActive()
+		staging.Gateway.IsolatedInterfaces = []string{"eth1"}
+		impact := BuildImpact(active, staging)
+		if !impact.GatewayRuntimeChanged || !impact.XrayConfigChanged {
+			t.Errorf("IsolatedInterfaces change: expected GatewayRuntimeChanged and XrayConfigChanged true, got: %+v", impact)
+		}
+	}
+
+	// 7. Initial apply with IsolatedInterfaces
+	{
+		staging := &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				IsolatedInterfaces: []string{"eth1"},
+			},
+		}
+		impact := BuildImpact(nil, staging)
+		if !impact.GatewayRuntimeChanged {
+			t.Errorf("Initial apply with IsolatedInterfaces: expected GatewayRuntimeChanged true, got: %+v", impact)
+		}
+	}
 }
 
 func TestApplyPending_GatewayConfSync(t *testing.T) {

@@ -223,6 +223,9 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 	} else if active.Gateway.LANInterface != staging.Gateway.LANInterface {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ LAN Interface: %q -> %q", active.Gateway.LANInterface, staging.Gateway.LANInterface))
 	}
+	if !reflect.DeepEqual(active.Gateway.EffectiveIsolatedInterfaces(), staging.Gateway.EffectiveIsolatedInterfaces()) {
+		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Isolated Interfaces: %v -> %v", active.Gateway.EffectiveIsolatedInterfaces(), staging.Gateway.EffectiveIsolatedInterfaces()))
+	}
 	if active.Gateway.WANInterface != staging.Gateway.WANInterface {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ WAN Interface: %q -> %q", active.Gateway.WANInterface, staging.Gateway.WANInterface))
 	}

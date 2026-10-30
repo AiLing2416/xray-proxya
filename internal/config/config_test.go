@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -1036,6 +1037,50 @@ func TestValidateGatewayInterfaces(t *testing.T) {
 	}
 	if err := ValidateGatewayInterfaces(cfg6); err == nil {
 		t.Fatal("expected error for invalid WAN interface name")
+	}
+
+	// 6. Isolated interface validation & WAN collision
+	cfg7 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterfaces:      []string{"eth1", "eth2"},
+			WANInterface:       "eth0",
+			IsolatedInterfaces: []string{"eth2"},
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg7); err != nil {
+		t.Fatalf("unexpected error for valid isolated interface: %v", err)
+	}
+
+	cfg8 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterfaces:      []string{"eth1", "eth2"},
+			WANInterface:       "eth0",
+			IsolatedInterfaces: []string{"eth0"},
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg8); err == nil || !strings.Contains(err.Error(), `cannot be configured as an isolated interface`) {
+		t.Fatalf("expected error for isolated WAN collision, got: %v", err)
+	}
+
+	cfg9 := &UserConfig{
+		Gateway: GatewayConfig{
+			LANInterfaces:      []string{"eth1"},
+			IsolatedInterfaces: []string{"invalid;iso"},
+		},
+	}
+	if err := ValidateGatewayInterfaces(cfg9); err == nil || !strings.Contains(err.Error(), `gateway isolated interface`) {
+		t.Fatalf("expected error for invalid isolated interface name, got: %v", err)
+	}
+}
+
+func TestEffectiveIsolatedInterfaces(t *testing.T) {
+	gw := GatewayConfig{
+		IsolatedInterfaces: []string{"vmbr1", "eth2, vmbr1", " eth3 ", ""},
+	}
+	eff := gw.EffectiveIsolatedInterfaces()
+	want := []string{"eth2", "eth3", "vmbr1"}
+	if !reflect.DeepEqual(eff, want) {
+		t.Fatalf("EffectiveIsolatedInterfaces() = %v, want %v", eff, want)
 	}
 }
 

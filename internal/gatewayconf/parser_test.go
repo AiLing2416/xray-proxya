@@ -395,3 +395,44 @@ forward 53 -> [fd00::1]:53 proto=udp
 		t.Errorf("f4 mismatch: %+v", f4)
 	}
 }
+
+func TestParse_ZoneIsolation(t *testing.T) {
+	input := `
+def zone guest vmbr1 isolate=true
+def zone guest2 vmbr2 isolate=false
+def zone iot eth2 isolate
+zone guest -> relay-us isolate=true
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	g := ast.FindZone("guest")
+	if g == nil || !g.Isolate {
+		t.Errorf("expected guest zone to have isolate=true, got %+v", g)
+	}
+
+	g2 := ast.FindZone("guest2")
+	if g2 == nil || g2.Isolate {
+		t.Errorf("expected guest2 zone to have isolate=false, got %+v", g2)
+	}
+
+	iot := ast.FindZone("iot")
+	if iot == nil || !iot.Isolate {
+		t.Errorf("expected iot zone to have isolate=true, got %+v", iot)
+	}
+
+	if len(ast.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(ast.Rules))
+	}
+	if val, ok := ast.Rules[0].Option("isolate"); !ok || val != "true" {
+		t.Errorf("expected rule option isolate=true, got val=%q, ok=%v", val, ok)
+	}
+
+	// Invalid isolate value
+	badInput := `def zone bad vmbr3 isolate=unknown`
+	if _, err := Parse(badInput); err == nil || !strings.Contains(err.Error(), "invalid isolate value") {
+		t.Errorf("expected error for invalid isolate value, got: %v", err)
+	}
+}

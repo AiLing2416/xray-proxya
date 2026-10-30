@@ -19,8 +19,8 @@ func Generate(gw *config.GatewayConfig) string {
 	b.WriteString("# Quick Reference & Syntax Guide:\n")
 	b.WriteString("#\n")
 	b.WriteString("# 1. Zone Definitions:\n")
-	b.WriteString("#    def zone wan <interface>                     # WAN interface (e.g. eth0)\n")
-	b.WriteString("#    def zone lan <interfaces...> [subnet=<cidr>] # LAN interfaces (e.g. eth1, vmbr0)\n")
+	b.WriteString("#    def zone wan <interface>                                     # WAN interface (e.g. eth0)\n")
+	b.WriteString("#    def zone lan <interfaces...> [subnet=<cidr>] [isolate=true]  # LAN interfaces (e.g. eth1, vmbr0)\n")
 	b.WriteString("#\n")
 	b.WriteString("# 2. Device & Group Aliases:\n")
 	b.WriteString("#    def device <name> mac=<mac> [zone=<zone>]    # Bind friendly alias to a MAC address\n")
@@ -55,8 +55,31 @@ func Generate(gw *config.GatewayConfig) string {
 		hasZones = true
 	}
 	lanIfaces := gw.EffectiveLANInterfaces()
-	if len(lanIfaces) > 0 {
-		b.WriteString(fmt.Sprintf("def zone lan %s\n", strings.Join(lanIfaces, ", ")))
+	isoSet := make(map[string]bool)
+	for _, iface := range gw.EffectiveIsolatedInterfaces() {
+		isoSet[iface] = true
+	}
+
+	var normalLAN []string
+	var isoLAN []string
+	for _, iface := range lanIfaces {
+		if isoSet[iface] {
+			isoLAN = append(isoLAN, iface)
+		} else {
+			normalLAN = append(normalLAN, iface)
+		}
+	}
+
+	if len(normalLAN) > 0 {
+		b.WriteString(fmt.Sprintf("def zone lan %s\n", strings.Join(normalLAN, ", ")))
+		hasZones = true
+	}
+	if len(isoLAN) > 0 {
+		zoneName := "guest"
+		if len(normalLAN) == 0 {
+			zoneName = "lan"
+		}
+		b.WriteString(fmt.Sprintf("def zone %s %s isolate=true\n", zoneName, strings.Join(isoLAN, ", ")))
 		hasZones = true
 	}
 	if !hasZones {
@@ -188,6 +211,9 @@ func GenerateFromAST(ast *ConfigAST) string {
 			b.WriteString(fmt.Sprintf("def zone %s %s", z.Name, strings.Join(z.Interfaces, ", ")))
 			if len(z.Subnets) > 0 {
 				b.WriteString(fmt.Sprintf(" subnet=%s", strings.Join(z.Subnets, ",")))
+			}
+			if z.Isolate {
+				b.WriteString(" isolate=true")
 			}
 			b.WriteString("\n")
 		}

@@ -262,6 +262,9 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	if !isTun {
 		inputRules = append(inputRules, []string{"meta", "mark", tunMark, "accept"})
 	}
+	for _, iso := range cfg.Gateway.EffectiveIsolatedInterfaces() {
+		inputRules = append(inputRules, []string{"iifname", iso, "tcp", "dport", "22", "drop"})
+	}
 	if cfg.Gateway.DNSListen != "" {
 		if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
 			if !isLoopbackDNSListenHost(host) {
@@ -306,6 +309,16 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 	}
 	for _, liface := range lanIfaces {
 		forwardRules = append(forwardRules, []string{"iifname", liface, "oifname", liface, "accept"})
+	}
+	if len(cfg.Gateway.EffectiveIsolatedInterfaces()) > 0 {
+		forwardRules = append(forwardRules, []string{"ct", "state", "established,related", "accept"})
+		for _, iso := range cfg.Gateway.EffectiveIsolatedInterfaces() {
+			for _, liface := range lanIfaces {
+				if liface != iso {
+					forwardRules = append(forwardRules, []string{"iifname", iso, "oifname", liface, "drop"})
+				}
+			}
+		}
 	}
 	if managedNATInstalled {
 		for _, liface := range lanIfaces {
@@ -1159,6 +1172,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 	isTun := cfg != nil && cfg.Gateway.EffectiveMode() == "tun"
 	basePort := cfg.Gateway.EffectiveTProxyPort()
 	tproxyPorts := config.GatewayTProxyPorts(cfg)
+	isoIfaces := cfg.Gateway.EffectiveIsolatedInterfaces()
 
 	var allPorts []int
 	seenPort := make(map[int]bool)
@@ -1179,7 +1193,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 	b.WriteString("table inet " + tableName + " {\n")
 	if cfg.Gateway.LANEnabled || cfg.Gateway.LocalEnabled {
 		blocks := blockRuleTokens(cfg)
-		hasInputRules := !isTun || len(blocks) > 0 || cfg.Gateway.DNSListen != ""
+		hasInputRules := !isTun || len(blocks) > 0 || cfg.Gateway.DNSListen != "" || len(isoIfaces) > 0
 		if hasInputRules {
 			b.WriteString("    chain input {\n")
 			b.WriteString("        type filter hook input priority mangle; policy accept;\n")
@@ -1192,6 +1206,9 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 			}
 			for _, tk := range blocks {
 				b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
+			}
+			for _, iso := range isoIfaces {
+				b.WriteString(fmt.Sprintf("        iifname %q tcp dport 22 drop\n", iso))
 			}
 			if cfg.Gateway.DNSListen != "" {
 				if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
@@ -1490,7 +1507,9 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("    }\n")
 	}
 
-	if hasManagedNAT || hasPortForwards {
+	hasIsolated := len(isoIfaces) > 0
+
+	if hasManagedNAT || hasPortForwards || hasIsolated {
 		b.WriteString("    chain forward {\n")
 		b.WriteString("        type filter hook forward priority filter; policy accept;\n")
 		for _, tk := range blockRuleTokens(cfg) {
@@ -1498,6 +1517,26 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		}
 		if hasPortForwards {
 			b.WriteString("        ct status dnat accept\n")
+		}
+		if hasIsolated {
+			b.WriteString("        ct state established,related accept\n")
+			for _, iso := range isoIfaces {
+				var others []string
+				for _, liface := range lanIfaces {
+					if liface != iso {
+						others = append(others, liface)
+					}
+				}
+				if len(others) == 1 {
+					b.WriteString(fmt.Sprintf("        iifname %q oifname %q drop\n", iso, others[0]))
+				} else if len(others) > 1 {
+					var quoted []string
+					for _, o := range others {
+						quoted = append(quoted, fmt.Sprintf("%q", o))
+					}
+					b.WriteString(fmt.Sprintf("        iifname %q oifname { %s } drop\n", iso, strings.Join(quoted, ", ")))
+				}
+			}
 		}
 		if hasManagedNAT {
 			var lanMatch string

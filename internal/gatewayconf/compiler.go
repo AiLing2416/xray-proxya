@@ -3,6 +3,7 @@ package gatewayconf
 import (
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -110,15 +111,46 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 
 	var lanInterfaces []string
 	seenLAN := make(map[string]bool)
+	var isolatedIfaces []string
+	seenIsolated := make(map[string]bool)
+
+	addIsolated := func(iface string, line int) error {
+		iface = strings.TrimSpace(iface)
+		if iface == "" {
+			return nil
+		}
+		if err := config.ValidateInterfaceName(iface); err != nil {
+			return &CompileError{Line: line, Msg: fmt.Sprintf("invalid isolated interface name %q: %v", iface, err)}
+		}
+		if iface == gwConfig.WANInterface {
+			return &CompileError{Line: line, Msg: fmt.Sprintf("WAN interface %q cannot be configured as an isolated interface", iface)}
+		}
+		if !seenIsolated[iface] {
+			seenIsolated[iface] = true
+			isolatedIfaces = append(isolatedIfaces, iface)
+		}
+		return nil
+	}
+
 	for i := range ast.Zones {
 		z := &ast.Zones[i]
 		if strings.EqualFold(z.Name, "wan") {
+			if z.Isolate {
+				return nil, &CompileError{Line: z.Line, Msg: "WAN zone cannot be configured as an isolated zone"}
+			}
 			continue
 		}
 		for _, iface := range z.Interfaces {
 			if !seenLAN[iface] {
 				seenLAN[iface] = true
 				lanInterfaces = append(lanInterfaces, iface)
+			}
+		}
+		if z.Isolate {
+			for _, iface := range z.Interfaces {
+				if err := addIsolated(iface, z.Line); err != nil {
+					return nil, err
+				}
 			}
 		}
 	}
@@ -223,6 +255,41 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 	for _, r := range ast.Rules {
 		if err := validateTarget(r.Target, r.Line); err != nil {
 			return nil, err
+		}
+
+		isIsolate := false
+		if isoVal, ok := r.Option("isolate"); ok {
+			isoVal = strings.ToLower(strings.TrimSpace(isoVal))
+			if isoVal == "true" || isoVal == "" || isoVal == "1" || isoVal == "yes" {
+				isIsolate = true
+			} else if isoVal != "false" && isoVal != "0" && isoVal != "no" {
+				return nil, &CompileError{Line: r.Line, Msg: fmt.Sprintf("invalid isolate value %q: expected true or false", isoVal)}
+			}
+		}
+
+		if isIsolate {
+			switch r.Kind {
+			case SubjectZone:
+				zoneName := strings.ToLower(r.SubjectValue)
+				z := zoneMap[zoneName]
+				if z == nil {
+					return nil, &CompileError{Line: r.Line, Msg: fmt.Sprintf("rule references undefined zone %q", r.SubjectValue)}
+				}
+				if zoneName == "wan" {
+					return nil, &CompileError{Line: r.Line, Msg: "cannot apply isolate to WAN zone"}
+				}
+				for _, iface := range z.Interfaces {
+					if err := addIsolated(iface, r.Line); err != nil {
+						return nil, err
+					}
+				}
+			case SubjectInterface:
+				if err := addIsolated(r.SubjectValue, r.Line); err != nil {
+					return nil, err
+				}
+			default:
+				return nil, &CompileError{Line: r.Line, Msg: fmt.Sprintf("isolate option is only supported on zone or interface rules, got %s", r.Kind)}
+			}
 		}
 
 		switch r.Kind {
@@ -397,6 +464,8 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 	}
 
 	gwConfig.Rules = rules
+	sort.Strings(isolatedIfaces)
+	gwConfig.IsolatedInterfaces = isolatedIfaces
 
 	// 5. Process Port Forwarding Rules
 	var portForwards []config.PortForwardRule
@@ -456,6 +525,9 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 	if options.UserConfig != nil {
 		testUserCfg := *options.UserConfig
 		testUserCfg.Gateway = *gwConfig
+		if err := config.ValidateGatewayInterfaces(&testUserCfg); err != nil {
+			return nil, err
+		}
 		if err := config.ValidateGatewayRulesForMode(&testUserCfg); err != nil {
 			return nil, err
 		}

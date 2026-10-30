@@ -1,6 +1,7 @@
 package gatewayconf
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
@@ -490,5 +491,53 @@ forward 10085 -> 192.168.1.100:80 proto=tcp
 	}
 	if !strings.Contains(err.Error(), "port 10085 is used by both") {
 		t.Errorf("expected collision message, got: %v", err)
+	}
+}
+
+func TestCompile_ZoneIsolation(t *testing.T) {
+	input := `
+def zone wan eth0
+def zone lan eth1
+def zone guest vmbr1 isolate=true
+def zone iot eth2
+zone guest -> relay-main
+zone iot -> relay-main isolate=true
+interface eth3 -> direct isolate=true
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	wantIsolated := []string{"eth2", "eth3", "vmbr1"}
+	eff := cfg.EffectiveIsolatedInterfaces()
+	if !reflect.DeepEqual(eff, wantIsolated) {
+		t.Errorf("IsolatedInterfaces = %v, want %v", eff, wantIsolated)
+	}
+
+	// WAN zone cannot be isolated
+	badWAN := `
+def zone wan eth0 isolate=true
+def zone lan eth1
+`
+	astWAN, _ := Parse(badWAN)
+	if _, err := Compile(astWAN); err == nil || !strings.Contains(err.Error(), "WAN zone cannot be configured as an isolated zone") {
+		t.Errorf("expected error isolating WAN zone, got: %v", err)
+	}
+
+	// WAN rule cannot be isolated
+	badWANRule := `
+def zone wan eth0
+def zone lan eth1
+zone wan -> direct isolate=true
+`
+	astWANRule, _ := Parse(badWANRule)
+	if _, err := Compile(astWANRule); err == nil || !strings.Contains(err.Error(), "cannot apply isolate to WAN zone") {
+		t.Errorf("expected error isolating WAN zone rule, got: %v", err)
 	}
 }

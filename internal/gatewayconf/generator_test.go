@@ -125,12 +125,13 @@ func TestGenerateFromAST(t *testing.T) {
 
 func TestRoundTrip_GatewayConfigConsistency(t *testing.T) {
 	original := &config.GatewayConfig{
-		WANInterface:  "eth0",
-		LANInterfaces: []string{"eth1", "eth2"},
-		LocalEnabled:  true,
-		LANEnabled:    true,
-		RelayAlias:    "relay-default",
-		Mode:          "tproxy",
+		WANInterface:       "eth0",
+		LANInterfaces:      []string{"eth1", "eth2"},
+		IsolatedInterfaces: []string{"eth2"},
+		LocalEnabled:       true,
+		LANEnabled:         true,
+		RelayAlias:         "relay-default",
+		Mode:               "tproxy",
 		Rules: []config.GatewayRule{
 			{MAC: "52:54:00:84:00:11", Target: "direct"},
 			{Interface: "eth2", Target: "block"},
@@ -165,6 +166,9 @@ func TestRoundTrip_GatewayConfigConsistency(t *testing.T) {
 	}
 	if !reflect.DeepEqual(recompiled.LANInterfaces, original.LANInterfaces) {
 		t.Errorf("LANInterfaces = %v, want %v", recompiled.LANInterfaces, original.LANInterfaces)
+	}
+	if !reflect.DeepEqual(recompiled.EffectiveIsolatedInterfaces(), original.EffectiveIsolatedInterfaces()) {
+		t.Errorf("IsolatedInterfaces = %v, want %v", recompiled.EffectiveIsolatedInterfaces(), original.EffectiveIsolatedInterfaces())
 	}
 	if recompiled.LocalEnabled != original.LocalEnabled {
 		t.Errorf("LocalEnabled = %v, want %v", recompiled.LocalEnabled, original.LocalEnabled)
@@ -204,6 +208,7 @@ func TestRoundTrip_ASTConsistency(t *testing.T) {
 		Zones: []ZoneDef{
 			{Name: "wan", Interfaces: []string{"eth0"}},
 			{Name: "lan", Interfaces: []string{"eth1", "vmbr0"}, Subnets: []string{"192.168.1.0/24"}},
+			{Name: "guest", Interfaces: []string{"vmbr1"}, Isolate: true},
 		},
 		Devices: []DeviceDef{
 			{Name: "tv", MAC: "52:54:00:84:00:11", Zone: "lan", IP: "192.168.1.50"},
@@ -243,7 +248,7 @@ func TestRoundTrip_ASTConsistency(t *testing.T) {
 	for i := range origAST.Zones {
 		zWant := origAST.Zones[i]
 		zGot := reparsed.Zones[i]
-		if zGot.Name != zWant.Name || !reflect.DeepEqual(zGot.Interfaces, zWant.Interfaces) || !reflect.DeepEqual(zGot.Subnets, zWant.Subnets) {
+		if zGot.Name != zWant.Name || !reflect.DeepEqual(zGot.Interfaces, zWant.Interfaces) || !reflect.DeepEqual(zGot.Subnets, zWant.Subnets) || zGot.Isolate != zWant.Isolate {
 			t.Errorf("Zone[%d] = %+v, want %+v", i, zGot, zWant)
 		}
 	}

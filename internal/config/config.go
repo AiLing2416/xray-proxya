@@ -528,6 +528,7 @@ type GatewayConfig struct {
 	DNSServers      []string            `json:"dns_servers,omitempty"`
 	DNSRecords      map[string][]string `json:"dns_records,omitempty"`
 	PortForwards    []PortForwardRule   `json:"port_forwards,omitempty"`
+	IsolatedInterfaces []string         `json:"isolated_interfaces,omitempty"`
 }
 
 type PortForwardRule struct {
@@ -788,6 +789,27 @@ func (g GatewayConfig) EffectiveLANInterfaces() []string {
 	return result
 }
 
+// EffectiveIsolatedInterfaces parses, trims, deduplicates, and sorts interfaces in g.IsolatedInterfaces.
+func (g GatewayConfig) EffectiveIsolatedInterfaces() []string {
+	var result []string
+	seen := make(map[string]bool)
+
+	for _, item := range g.IsolatedInterfaces {
+		for _, part := range strings.Split(item, ",") {
+			trimmed := strings.TrimSpace(part)
+			if trimmed == "" {
+				continue
+			}
+			if !seen[trimmed] {
+				seen[trimmed] = true
+				result = append(result, trimmed)
+			}
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
 // NormalizeMAC parses a MAC address using net.ParseMAC, requires a 6-byte EUI-48 hardware address,
 // and returns the lowercase normalized format "xx:xx:xx:xx:xx:xx".
 func NormalizeMAC(raw string) (string, error) {
@@ -936,6 +958,12 @@ func ValidateGatewayInterfaces(userCfg *UserConfig) error {
 			return fmt.Errorf("gateway LAN interface: %w", err)
 		}
 	}
+	isoIfaces := userCfg.Gateway.EffectiveIsolatedInterfaces()
+	for _, name := range isoIfaces {
+		if err := ValidateInterfaceName(name); err != nil {
+			return fmt.Errorf("gateway isolated interface: %w", err)
+		}
+	}
 	if wan := strings.TrimSpace(userCfg.Gateway.WANInterface); wan != "" && !strings.EqualFold(wan, "auto") {
 		if err := ValidateInterfaceName(wan); err != nil {
 			return fmt.Errorf("gateway WAN interface: %w", err)
@@ -943,6 +971,11 @@ func ValidateGatewayInterfaces(userCfg *UserConfig) error {
 		for _, lan := range lanIfaces {
 			if wan == lan {
 				return fmt.Errorf("WAN interface %q cannot also be configured as a LAN interface", wan)
+			}
+		}
+		for _, iso := range isoIfaces {
+			if wan == iso {
+				return fmt.Errorf("WAN interface %q cannot be configured as an isolated interface", wan)
 			}
 		}
 	}
@@ -1574,6 +1607,11 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		if cfg.Gateway.LANInterface != expectedLANInterface {
 			cfg.Gateway.LANInterface = expectedLANInterface
 			changes = append(changes, "synchronized gateway.lan_interface")
+		}
+		effectiveIsolated := cfg.Gateway.EffectiveIsolatedInterfaces()
+		if !reflect.DeepEqual(cfg.Gateway.IsolatedInterfaces, effectiveIsolated) {
+			cfg.Gateway.IsolatedInterfaces = effectiveIsolated
+			changes = append(changes, "synchronized gateway.isolated_interfaces")
 		}
 		if cfg.Gateway.WANInterface != strings.TrimSpace(cfg.Gateway.WANInterface) {
 			cfg.Gateway.WANInterface = strings.TrimSpace(cfg.Gateway.WANInterface)

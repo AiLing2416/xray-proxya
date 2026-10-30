@@ -202,4 +202,23 @@ func TestDiffUserConfigGatewayRouter(t *testing.T) {
 	if !strings.Contains(joinedPF, "Port Forwarding: 1 rule(s) -> 2 rule(s)") {
 		t.Errorf("expected Port Forwarding diff, got: %s", joinedPF)
 	}
+
+	// Isolated interfaces diff
+	activeIso := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			IsolatedInterfaces: []string{"eth1"},
+		},
+	}
+	stagingIso := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			IsolatedInterfaces: []string{"eth1", "eth2"},
+		},
+	}
+	diffsIso := DiffUserConfig(activeIso, stagingIso)
+	joinedIso := strings.Join(diffsIso, "\n")
+	if !strings.Contains(joinedIso, "Isolated Interfaces: [eth1] -> [eth1 eth2]") {
+		t.Errorf("expected Isolated Interfaces diff, got: %s", joinedIso)
+	}
 }

@@ -23,6 +23,7 @@ type ZoneDef struct {
 	Name       string   `json:"name"`
 	Interfaces []string `json:"interfaces"`
 	Subnets    []string `json:"subnets,omitempty"`
+	Isolate    bool     `json:"isolate,omitempty"`
 	Line       int      `json:"line"`
 }
 

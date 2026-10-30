@@ -94,16 +94,34 @@ func parseZoneDef(args []string, name string, lineNum int, ast *ConfigAST) error
 		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("duplicate zone definition %q", name)}
 	}
 
+	normalizedArgs := normalizeKeyValueTokens(args)
 	var ifaces []string
 	var subnets []string
+	var isolate bool
 
-	for _, arg := range args {
+	for _, arg := range normalizedArgs {
 		argTrim := strings.TrimSpace(arg)
 		if argTrim == "" {
 			continue
 		}
 
-		if strings.HasPrefix(strings.ToLower(argTrim), "subnet=") {
+		low := strings.ToLower(argTrim)
+		if low == "isolate" {
+			isolate = true
+			continue
+		} else if strings.HasPrefix(low, "isolate=") {
+			val := strings.TrimPrefix(low, "isolate=")
+			if val == "true" || val == "1" || val == "yes" {
+				isolate = true
+			} else if val == "false" || val == "0" || val == "no" {
+				isolate = false
+			} else {
+				return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid isolate value %q: expected true or false", val)}
+			}
+			continue
+		}
+
+		if strings.HasPrefix(low, "subnet=") {
 			subnetVal := argTrim[len("subnet="):]
 			parts := strings.Split(subnetVal, ",")
 			for _, part := range parts {
@@ -141,6 +159,7 @@ func parseZoneDef(args []string, name string, lineNum int, ast *ConfigAST) error
 		Name:       name,
 		Interfaces: ifaces,
 		Subnets:    subnets,
+		Isolate:    isolate,
 		Line:       lineNum,
 	})
 	return nil

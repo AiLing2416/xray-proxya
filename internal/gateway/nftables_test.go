@@ -3,6 +3,7 @@ package gateway
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -1335,5 +1336,104 @@ func TestBuildNFTMulti_PortForwarding_NoWAN(t *testing.T) {
 	}
 	if strings.Contains(out, "ct status dnat accept") {
 		t.Errorf("did not expect ct status dnat accept when wan interface is empty, got:\n%s", out)
+	}
+}
+
+func TestBuildNFTMulti_ZoneIsolation(t *testing.T) {
+	// Case 1: 1 isolated interface with 2 other LAN interfaces
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:               "tproxy",
+			LANEnabled:         true,
+			LANInterfaces:      []string{"eth1", "vmbr0", "guest0"},
+			IsolatedInterfaces: []string{"guest0"},
+			RelayAlias:         "relay-main",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-main", Enabled: true},
+		},
+	}
+
+	lanIfaces := []string{"eth1", "vmbr0", "guest0"}
+	lanCIDRs := []string{"192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"}
+	out := buildNFTMulti(cfg, lanIfaces, lanCIDRs, nil, "eth0")
+
+	// 1. Input chain should drop SSH port 22 from guest0
+	if !strings.Contains(out, `iifname "guest0" tcp dport 22 drop`) {
+		t.Errorf("expected input chain to drop SSH port 22 from guest0, got:\n%s", out)
+	}
+
+	// 2. Forward chain should allow established/related connections
+	if !strings.Contains(out, "ct state established,related accept") {
+		t.Errorf("expected forward chain to accept established/related, got:\n%s", out)
+	}
+
+	// 3. Forward chain should drop guest0 forwarding to other LAN interfaces
+	if !strings.Contains(out, `iifname "guest0" oifname { "eth1", "vmbr0" } drop`) {
+		t.Errorf("expected forward chain to drop guest0 forwarding to { eth1, vmbr0 }, got:\n%s", out)
+	}
+
+	// Case 2: 1 isolated interface with exactly 1 other LAN interface
+	cfgSingleOther := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:               "tproxy",
+			LANEnabled:         true,
+			LANInterfaces:      []string{"eth1", "guest0"},
+			IsolatedInterfaces: []string{"guest0"},
+			RelayAlias:         "relay-main",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-main", Enabled: true},
+		},
+	}
+	outSingle := buildNFTMulti(cfgSingleOther, []string{"eth1", "guest0"}, nil, nil, "eth0")
+	if !strings.Contains(outSingle, `iifname "guest0" oifname "eth1" drop`) {
+		t.Errorf("expected forward chain to drop guest0 forwarding to eth1, got:\n%s", outSingle)
+	}
+
+	// Case 3: Multiple isolated interfaces (guest0 and iot0)
+	cfgMultiIso := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:               "tproxy",
+			LANEnabled:         true,
+			LANInterfaces:      []string{"eth1", "guest0", "iot0"},
+			IsolatedInterfaces: []string{"guest0", "iot0"},
+			RelayAlias:         "relay-main",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-main", Enabled: true},
+		},
+	}
+	outMulti := buildNFTMulti(cfgMultiIso, []string{"eth1", "guest0", "iot0"}, nil, nil, "eth0")
+	if !strings.Contains(outMulti, `iifname "guest0" oifname { "eth1", "iot0" } drop`) {
+		t.Errorf("expected guest0 drop to { eth1, iot0 }, got:\n%s", outMulti)
+	}
+	if !strings.Contains(outMulti, `iifname "iot0" oifname { "eth1", "guest0" } drop`) {
+		t.Errorf("expected iot0 drop to { eth1, guest0 }, got:\n%s", outMulti)
+	}
+	if !strings.Contains(outMulti, `iifname "guest0" tcp dport 22 drop`) {
+		t.Errorf("expected guest0 SSH drop, got:\n%s", outMulti)
+	}
+	if !strings.Contains(outMulti, `iifname "iot0" tcp dport 22 drop`) {
+		t.Errorf("expected iot0 SSH drop, got:\n%s", outMulti)
+	}
+
+	// Verify generated nftables script syntax in an isolated network/user namespace
+	if _, err := exec.LookPath("nft"); err == nil {
+		if _, err := exec.LookPath("unshare"); err == nil {
+			cmd := exec.Command("unshare", "-rn", "nft", "-c", "-f", "-")
+			cmd.Stdin = strings.NewReader(out)
+			if outBytes, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("nft syntax check failed for out:\n%s\nError: %v\nOutput: %s", out, err, string(outBytes))
+			}
+			cmdMulti := exec.Command("unshare", "-rn", "nft", "-c", "-f", "-")
+			cmdMulti.Stdin = strings.NewReader(outMulti)
+			if outBytes, err := cmdMulti.CombinedOutput(); err != nil {
+				t.Fatalf("nft syntax check failed for outMulti:\n%s\nError: %v\nOutput: %s", outMulti, err, string(outBytes))
+			}
+		}
 	}
 }
