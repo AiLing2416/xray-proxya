@@ -62,15 +62,19 @@ var statusCmd = &cobra.Command{
 			if cfg.Gateway.LocalEnabled {
 				localStr = ui.Green("ON", colorEnabled)
 			}
+			lanIfaceStr := cfg.Gateway.LANInterface
+			if len(cfg.Gateway.EffectiveLANInterfaces()) > 0 {
+				lanIfaceStr = strings.Join(cfg.Gateway.EffectiveLANInterfaces(), ", ")
+			}
 			lanStr := ui.Gray("OFF", colorEnabled)
 			if cfg.Gateway.LANEnabled {
-				lanStr = fmt.Sprintf("%s (Iface: %s)", ui.Green("ON", colorEnabled), cfg.Gateway.LANInterface)
+				lanStr = fmt.Sprintf("%s (Iface: %s)", ui.Green("ON", colorEnabled), lanIfaceStr)
 			}
 			relayStr := cfg.Gateway.RelayAlias
 			if relayStr == "" {
 				relayStr = "direct"
 			}
-			fmt.Printf("  Gateway State      : %s (Mode: %s)\n", gwState, cfg.Gateway.Mode)
+			fmt.Printf("  Gateway State      : %s (Mode: %s)\n", gwState, cfg.Gateway.EffectiveMode())
 			fmt.Printf("  Interception       : Local: %s │ LAN: %s\n", localStr, lanStr)
 			fmt.Printf("  Active Outbound    : %s\n", relayStr)
 			fmt.Printf("  Managed Resources  : %d relays │ %d guest tenants │ %d certificates\n",
@@ -335,11 +339,16 @@ func outputStatusJSON(cfg *config.UserConfig, isRoot bool) error {
 		if relayStr == "" {
 			relayStr = "direct"
 		}
+		lanIfaceStr := cfg.Gateway.LANInterface
+		if len(cfg.Gateway.EffectiveLANInterfaces()) > 0 {
+			lanIfaceStr = strings.Join(cfg.Gateway.EffectiveLANInterfaces(), ",")
+		}
 		networkState["gateway_state"] = gwState
-		networkState["gateway_mode"] = cfg.Gateway.Mode
+		networkState["gateway_mode"] = cfg.Gateway.EffectiveMode()
+		networkState["tun_enabled"] = cfg.Gateway.EffectiveTUNEnabled()
 		networkState["local_enabled"] = cfg.Gateway.LocalEnabled
 		networkState["lan_enabled"] = cfg.Gateway.LANEnabled
-		networkState["lan_interface"] = cfg.Gateway.LANInterface
+		networkState["lan_interface"] = lanIfaceStr
 		networkState["active_relay"] = relayStr
 	} else {
 		networkState["sub_port"] = cfg.SubPort

@@ -48,7 +48,7 @@ var (
 var gatewayRuleCmd = &cobra.Command{
 	Use:     "rule",
 	Aliases: []string{"rules"},
-	Short:   "Manage gateway per-MAC and per-interface routing rules (STAGING)",
+	Short:   "Manage gateway per-MAC, per-IP/CIDR, and per-interface routing rules (STAGING)",
 	Args:    cobra.ArbitraryArgs,
 	RunE:    runGatewayRule,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
@@ -567,6 +567,38 @@ func completeInterfaceNames(cmd *cobra.Command, args []string, toComplete string
 	return names, cobra.ShellCompDirectiveNoFileComp
 }
 
+func completeRuleMACs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var macs []string
+	seen := make(map[string]bool)
+	for _, r := range cfg.Gateway.Rules {
+		if r.MAC != "" && !seen[r.MAC] {
+			seen[r.MAC] = true
+			macs = append(macs, r.MAC)
+		}
+	}
+	return macs, cobra.ShellCompDirectiveNoFileComp
+}
+
+func completeRuleIPs(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	cfg, err := config.LoadConfigEx(true)
+	if err != nil || cfg == nil {
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+	var ips []string
+	seen := make(map[string]bool)
+	for _, r := range cfg.Gateway.Rules {
+		if r.IP != "" && !seen[r.IP] {
+			seen[r.IP] = true
+			ips = append(ips, r.IP)
+		}
+	}
+	return ips, cobra.ShellCompDirectiveNoFileComp
+}
+
 func init() {
 	gatewayRuleCmd.Flags().StringVarP(&ruleMAC, "mac", "m", "", "Client MAC address (e.g. 52:54:00:83:00:11)")
 	gatewayRuleCmd.Flags().StringVar(&ruleIP, "ip", "", "Client IP address or CIDR subnet (e.g. 192.168.1.95 or 10.0.0.0/24)")
@@ -582,6 +614,8 @@ func init() {
 	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("to", completeRuleTargets)
 	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("target", completeRuleTargets)
 	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
+	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("mac", completeRuleMACs)
+	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("ip", completeRuleIPs)
 
 	gatewayRuleListCmd.Flags().BoolVar(&gatewayRuleListJSON, "json", false, "Output in JSON format")
 
@@ -595,12 +629,16 @@ func init() {
 	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("to", completeRuleTargets)
 	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("target", completeRuleTargets)
 	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
+	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("mac", completeRuleMACs)
+	_ = gatewayRuleSetCmd.RegisterFlagCompletionFunc("ip", completeRuleIPs)
 
 	gatewayRuleDelCmd.Flags().StringVarP(&ruleDelMAC, "mac", "m", "", "Client MAC address to match")
 	gatewayRuleDelCmd.Flags().StringVar(&ruleDelIP, "ip", "", "Client IP address or CIDR subnet to match")
 	gatewayRuleDelCmd.Flags().StringVarP(&ruleDelInterface, "interface", "i", "", "LAN interface name to match")
 
 	_ = gatewayRuleDelCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
+	_ = gatewayRuleDelCmd.RegisterFlagCompletionFunc("mac", completeRuleMACs)
+	_ = gatewayRuleDelCmd.RegisterFlagCompletionFunc("ip", completeRuleIPs)
 
 	gatewayRuleCmd.AddCommand(
 		gatewayRuleListCmd,

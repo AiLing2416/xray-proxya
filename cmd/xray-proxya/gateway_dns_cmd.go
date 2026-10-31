@@ -353,7 +353,7 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("✅ Gateway DNS parameters updated in STAGING.")
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 	return nil
 }
 
@@ -367,9 +367,10 @@ var gatewayDNSRecordCmd = &cobra.Command{
 }
 
 var gatewayDNSRecordSetCmd = &cobra.Command{
-	Use:   "set <domain> <ip1> [ip2...]",
-	Short: "Set static A/AAAA record(s) for a domain in STAGING",
-	Args:  cobra.MinimumNArgs(2),
+	Use:               "set <domain> <ip1> [ip2...]",
+	Short:             "Set static A/AAAA record(s) for a domain in STAGING",
+	Args:              cobra.MinimumNArgs(2),
+	ValidArgsFunction: completeDNSRecordDomains,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain, err := config.NormalizeDNSRecordDomain(args[0])
 		if err != nil {
@@ -386,7 +387,7 @@ var gatewayDNSRecordSetCmd = &cobra.Command{
 			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 		}
 		fmt.Printf("✅ Static record %s -> %s set in STAGING.\n", domain, strings.Join(ips, ", "))
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	},
 }
@@ -415,7 +416,7 @@ var gatewayDNSRecordDelCmd = &cobra.Command{
 			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 		}
 		fmt.Printf("✅ Static record for %s removed in STAGING.\n", domain)
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	},
 }
@@ -460,7 +461,7 @@ var gatewayDNSRecordClearCmd = &cobra.Command{
 			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 		}
 		fmt.Println("✅ Cleared all static DNS records in STAGING.")
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	},
 }
@@ -505,12 +506,18 @@ func init() {
 	gatewayDNSSetCmd.Flags().StringVarP(&dnsSetStrategy, "strategy", "s", "", "DNS query strategy (UseIP, UseIPv4, UseIPv6)")
 	gatewayDNSSetCmd.Flags().BoolVar(&dnsSetReset, "reset", false, "Reset gateway DNS listen, strategy, and servers to empty/default")
 
-	_ = gatewayDNSSetCmd.RegisterFlagCompletionFunc("strategy", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	completeDNSStrategyFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"UseIP", "UseIPv4", "UseIPv6"}, cobra.ShellCompDirectiveNoFileComp
-	})
-	_ = gatewayDNSSetCmd.RegisterFlagCompletionFunc("servers", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	}
+	completeDNSServersFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"1.1.1.1", "8.8.8.8", "https://1.1.1.1/dns-query", "https://dns.google/dns-query", "tls://1.1.1.1:853"}, cobra.ShellCompDirectiveNoFileComp
-	})
+	}
+	for _, c := range []*cobra.Command{gatewayDNSCmd, gatewayDNSSetCmd} {
+		_ = c.RegisterFlagCompletionFunc("strategy", completeDNSStrategyFn)
+		_ = c.RegisterFlagCompletionFunc("servers", completeDNSServersFn)
+		_ = c.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
+	}
+	_ = gatewayDNSCmd.RegisterFlagCompletionFunc("record-del", completeDNSRecordDomains)
 
 	gatewayDNSRecordCmd.AddCommand(
 		gatewayDNSRecordSetCmd,

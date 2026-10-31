@@ -285,10 +285,34 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 		}
 	}
 
-	// 12. Verify gateway set flag completions
-	for _, flag := range []string{"relay", "lan", "state", "bypass-countries"} {
-		if fn, ok := gatewaySetCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
-			t.Errorf("gateway set missing --%s completion", flag)
+	// 12. Verify gateway set and tproxy flag completions
+	for _, gwCmd := range []*cobra.Command{gatewaySetCmd, gatewayTProxyCmd} {
+		for _, flag := range []string{"relay", "lan", "state", "mode", "bypass-countries", "bypass-dns", "interface", "wan"} {
+			if fn, ok := gwCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+				t.Errorf("gateway %s missing --%s completion", gwCmd.Name(), flag)
+			}
+		}
+	}
+	for _, dnsCmd := range []*cobra.Command{gatewayDNSCmd, gatewayDNSSetCmd} {
+		for _, flag := range []string{"strategy", "servers", "listen"} {
+			if fn, ok := dnsCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+				t.Errorf("gateway dns (%s) missing --%s completion", dnsCmd.Name(), flag)
+			}
+		}
+	}
+	if fn, ok := gatewayDNSCmd.GetFlagCompletionFunc("record-del"); !ok || fn == nil {
+		t.Error("gateway dns missing --record-del completion")
+	}
+	for _, ruleCmd := range []*cobra.Command{gatewayRuleCmd, gatewayRuleSetCmd} {
+		for _, flag := range []string{"to", "target", "interface", "mac", "ip"} {
+			if fn, ok := ruleCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+				t.Errorf("gateway rule (%s) missing --%s completion", ruleCmd.Name(), flag)
+			}
+		}
+	}
+	for _, flag := range []string{"interface", "mac", "ip"} {
+		if fn, ok := gatewayRuleDelCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+			t.Errorf("gateway rule del missing --%s completion", flag)
 		}
 	}
 }

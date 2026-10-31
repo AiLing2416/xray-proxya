@@ -154,6 +154,7 @@ func getEffectiveGatewayState(cfg *config.UserConfig) string {
 var gatewayStatusCmd = &cobra.Command{
 	Use:   "status",
 	Short: "Show current gateway configuration and system state",
+	Args:  cobra.NoArgs,
 	RunE:  runGatewayStatus,
 }
 
@@ -663,7 +664,7 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Println("✅ Gateway parameters updated in STAGING.")
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 	return nil
 }
 
@@ -712,7 +713,7 @@ func runGatewayTun(cmd *cobra.Command, args []string) error {
 		}
 
 		fmt.Printf("✅ Gateway TUN set to %s in STAGING.\n", val)
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
 
@@ -746,6 +747,7 @@ func runGatewayTun(cmd *cobra.Command, args []string) error {
 var gatewayEnableCmd = &cobra.Command{
 	Use:   "enable",
 	Short: "Turn on transparent gateway (local & lan) in staging",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gatewayTProxyEnable = true
 		gatewayTProxyNow = gatewayEnableNow
@@ -756,6 +758,7 @@ var gatewayEnableCmd = &cobra.Command{
 var gatewayDisableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "Turn off transparent gateway (local & lan) in staging",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gatewayTProxyDisable = true
 		gatewayTProxyNow = gatewayDisableNow
@@ -773,7 +776,8 @@ var gatewaySetCmd = &cobra.Command{
 
 var gatewayUpCmd = &cobra.Command{
 	Use:   "up",
-	Short: "Restart Xray with TUN and bring gateway runtime rules up",
+	Short: "Bring transparent gateway interception rules up and sync runtime",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGatewayManagement("system-up")
 	},
@@ -782,6 +786,7 @@ var gatewayUpCmd = &cobra.Command{
 var gatewaySystemUpCmd = &cobra.Command{
 	Use:    "system-up",
 	Short:  "Apply Gateway runtime from the SELinux management domain",
+	Args:   cobra.NoArgs,
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig()
@@ -799,6 +804,7 @@ var gatewaySystemUpCmd = &cobra.Command{
 var gatewayDiffCmd = &cobra.Command{
 	Use:   "diff",
 	Short: "Show gateway runtime rules that would be applied",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
 		if cfg == nil {
@@ -829,6 +835,7 @@ var gatewayDiffCmd = &cobra.Command{
 var gatewayCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Check gateway runtime state",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
 		if config.GatewayConfExists() {
@@ -862,7 +869,8 @@ var gatewayCheckCmd = &cobra.Command{
 
 var gatewayDownCmd = &cobra.Command{
 	Use:   "down",
-	Short: "Remove gateway rules and restart Xray without TUN",
+	Short: "Tear down transparent gateway interception rules and clear runtime",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGatewayManagement("system-down")
 	},
@@ -871,12 +879,13 @@ var gatewayDownCmd = &cobra.Command{
 var gatewaySystemDownCmd = &cobra.Command{
 	Use:    "system-down",
 	Short:  "Remove Gateway runtime from the SELinux management domain",
+	Args:   cobra.NoArgs,
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := gateway.Down(); err != nil {
 			return fmt.Errorf("remove gateway runtime: %w", err)
 		}
-		fmt.Println("✅ Gateway runtime rules are down and Xray restarted without TUN.")
+		fmt.Println("✅ Gateway runtime rules are down.")
 		return nil
 	},
 }
@@ -884,6 +893,7 @@ var gatewaySystemDownCmd = &cobra.Command{
 var gatewaySystemSyncCmd = &cobra.Command{
 	Use:    "system-sync",
 	Short:  "Synchronize Gateway runtime from the SELinux management domain",
+	Args:   cobra.NoArgs,
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig()
@@ -906,6 +916,7 @@ var gatewaySystemSyncCmd = &cobra.Command{
 var gatewaySystemRestoreCmd = &cobra.Command{
 	Use:    "system-restore",
 	Short:  "Restore Gateway runtime from the SELinux management domain",
+	Args:   cobra.NoArgs,
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig()
@@ -949,7 +960,7 @@ func runGatewayManagement(operation string) error {
 	if operation == "system-up" {
 		fmt.Println("✅ Gateway runtime rules are up.")
 	} else {
-		fmt.Println("✅ Gateway runtime rules are down and Xray restarted without TUN.")
+		fmt.Println("✅ Gateway runtime rules are down.")
 	}
 	return nil
 }
@@ -957,6 +968,7 @@ func runGatewayManagement(operation string) error {
 var gatewayTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Observe enabled gateway paths through non-bypassed endpoints",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
 		if err != nil {
@@ -1153,8 +1165,8 @@ func init() {
 	gatewayDisableCmd.Flags().BoolVar(&gatewayDisableNow, "now", false, "Immediately commit changes and bring gateway runtime down")
 	gatewayStatusCmd.Flags().BoolVar(&gatewayStatusJSON, "json", false, "Output in JSON format")
 
-	gatewaySetCmd.Flags().Bool("tun", false, "Enable standalone pure TUN adapter (proxya-tun) in staging")
-	gatewaySetCmd.Flags().Bool("no-tun", false, "Disable standalone pure TUN adapter in staging")
+	gatewaySetCmd.Flags().Bool("tun", false, "Enable standalone TUN adapter (proxya-tun) in staging")
+	gatewaySetCmd.Flags().Bool("no-tun", false, "Disable standalone TUN adapter in staging")
 	gatewaySetCmd.Flags().StringP("mode", "m", "", "Interception mode: 'tproxy' (default) or 'tun'")
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name (supports comma-separated multiple interfaces)")
@@ -1165,31 +1177,32 @@ func init() {
 	gatewaySetCmd.Flags().StringSliceP("bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
 	gatewaySetCmd.Flags().StringSliceP("bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
 	gatewaySetCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
-	gatewaySetCmd.Flags().Bool("lan", false, "Enable or disable LAN gateway forwarding in staging")
+	gatewaySetCmd.Flags().Int("port", 0, "TProxy listener port (e.g. 12345)")
+	gatewaySetCmd.Flags().BoolVar(&gatewayTProxyNow, "now", false, "Immediately apply changes and update runtime rules")
+	gatewaySetCmd.Flags().Bool("lan", false, "Enable LAN gateway forwarding in staging")
 	gatewaySetCmd.Flags().Bool("no-lan", false, "Disable LAN gateway in staging")
 	gatewaySetCmd.Flags().Bool("lan-enable", false, "Enable LAN gateway (IP forwarding) in staging")
 	gatewaySetCmd.Flags().Bool("lan-disable", false, "Disable LAN gateway in staging")
-	gatewaySetCmd.Flags().Bool("local", false, "Enable or disable local machine transparent proxy in staging")
+	gatewaySetCmd.Flags().Bool("local", false, "Enable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("no-local", false, "Disable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("local-enable", false, "Enable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("local-disable", false, "Disable local machine transparent proxy in staging")
 
-	gatewaySetCmd.RegisterFlagCompletionFunc("mode", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	completeModeFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"tproxy\tTransparent proxy using socket redirect (default)", "tun\tTransparent proxy using proxya-tun device"}, cobra.ShellCompDirectiveNoFileComp
-	})
-
-	gatewaySetCmd.RegisterFlagCompletionFunc("state", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	}
+	completeStateFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"disabled", "forward-only", "proxy"}, cobra.ShellCompDirectiveNoFileComp
-	})
-
-	gatewaySetCmd.RegisterFlagCompletionFunc("bypass-countries", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	}
+	completeBypassCountriesFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"CN", "US", "HK", "SG", "JP", "TW", "GB", "DE"}, cobra.ShellCompDirectiveNoFileComp
-	})
-
-	// Dynamic completions
-	gatewaySetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	}
+	completeBypassDNSFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		return []string{"1.1.1.1", "8.8.8.8", "9.9.9.9", "223.5.5.5", "119.29.29.29"}, cobra.ShellCompDirectiveNoFileComp
+	}
+	completeRelayFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		cfg, err := config.LoadConfigEx(true)
-		if err != nil {
+		if err != nil || cfg == nil {
 			return nil, cobra.ShellCompDirectiveNoFileComp
 		}
 		var aliases []string
@@ -1197,24 +1210,11 @@ func init() {
 			aliases = append(aliases, co.Alias)
 		}
 		return aliases, cobra.ShellCompDirectiveNoFileComp
-	})
-	gatewaySetCmd.RegisterFlagCompletionFunc("lan", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	}
+	completeBoolFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"true", "false"}, cobra.ShellCompDirectiveNoFileComp
-	})
-	gatewaySetCmd.RegisterFlagCompletionFunc("interface", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		ifaces, err := net.Interfaces()
-		if err != nil {
-			return nil, cobra.ShellCompDirectiveNoFileComp
-		}
-		var names []string
-		for _, iface := range ifaces {
-			if iface.Name != "" {
-				names = append(names, iface.Name)
-			}
-		}
-		return names, cobra.ShellCompDirectiveNoFileComp
-	})
-	gatewaySetCmd.RegisterFlagCompletionFunc("wan", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	}
+	completeWANFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		ifaces, err := net.Interfaces()
 		if err != nil {
 			return []string{"auto"}, cobra.ShellCompDirectiveNoFileComp
@@ -1226,9 +1226,9 @@ func init() {
 			}
 		}
 		return names, cobra.ShellCompDirectiveNoFileComp
-	})
+	}
 
-	gatewayExportCmd.Flags().BoolVarP(&gatewayExportWrite, "write", "w", false, "Write directly to ~/.config/xray-proxya/gateway.conf")
+	gatewayExportCmd.Flags().BoolVarP(&gatewayExportWrite, "write", "w", false, "Write directly to active user's gateway.conf")
 	gatewayExportCmd.Flags().StringVarP(&gatewayExportOut, "output", "o", "", "Output file path")
 
 	_ = gatewaySetCmd.Flags().MarkHidden("lan-interface")
@@ -1242,19 +1242,23 @@ func init() {
 	gatewayStateCmd.Flags().BoolVar(&gatewayStateDisabled, "disabled", false, "Set gateway state to disabled in staging")
 	gatewayStateCmd.Flags().BoolVar(&gatewayStateJSON, "json", false, "Output in JSON format")
 
-	gatewayTunCmd.Flags().BoolVar(&gatewayTunEnable, "enable", false, "Enable standalone TUN adapter in staging")
+	gatewayTunCmd.Flags().BoolVar(&gatewayTunEnable, "enable", false, "Enable standalone TUN adapter (proxya-tun) in staging")
 	gatewayTunCmd.Flags().BoolVar(&gatewayTunDisable, "disable", false, "Disable standalone TUN adapter in staging")
 	gatewayTunCmd.Flags().BoolVar(&gatewayTunNow, "now", false, "Immediately apply changes and bring runtime rules up")
 	gatewayTunCmd.Flags().BoolVar(&gatewayTunJSON, "json", false, "Output in JSON format")
 
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyEnable, "enable", false, "Enable transparent proxy gateway (local & lan) in staging")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyDisable, "disable", false, "Disable transparent proxy gateway (local & lan) in staging")
+	gatewayTProxyCmd.Flags().Bool("tun", false, "Enable standalone TUN adapter (proxya-tun) in staging")
+	gatewayTProxyCmd.Flags().Bool("no-tun", false, "Disable standalone TUN adapter in staging")
+	gatewayTProxyCmd.Flags().StringP("mode", "m", "", "Interception mode: 'tproxy' (default) or 'tun'")
+	gatewayTProxyCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
 	gatewayTProxyCmd.Flags().StringVarP(&gatewayTProxyRelay, "relay", "r", "", "Relay alias to bind")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyLocal, "local", false, "Enable local machine transparent proxy in staging")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNoLocal, "no-local", false, "Disable local machine transparent proxy in staging")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyLAN, "lan", false, "Enable LAN gateway forwarding in staging")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNoLAN, "no-lan", false, "Disable LAN gateway forwarding in staging")
-	gatewayTProxyCmd.Flags().StringVarP(&gatewayTProxyInterface, "interface", "i", "", "LAN interface name(s)")
+	gatewayTProxyCmd.Flags().StringVarP(&gatewayTProxyInterface, "interface", "i", "", "LAN interface name (supports comma-separated multiple interfaces)")
 	gatewayTProxyCmd.Flags().StringVar(&gatewayTProxyInterface, "lan-interface", "", "LAN interface name(s)")
 	gatewayTProxyCmd.Flags().StringVar(&gatewayTProxyWAN, "wan", "", "WAN interface name ('auto' or empty to auto-detect)")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNAT, "nat", false, "Enable WAN NAT masquerade in staging")
@@ -1265,6 +1269,17 @@ func init() {
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNow, "now", false, "Immediately apply changes and update runtime rules")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyJSON, "json", false, "Output in JSON format")
 	_ = gatewayTProxyCmd.Flags().MarkHidden("lan-interface")
+
+	for _, c := range []*cobra.Command{gatewaySetCmd, gatewayTProxyCmd} {
+		_ = c.RegisterFlagCompletionFunc("mode", completeModeFn)
+		_ = c.RegisterFlagCompletionFunc("state", completeStateFn)
+		_ = c.RegisterFlagCompletionFunc("bypass-countries", completeBypassCountriesFn)
+		_ = c.RegisterFlagCompletionFunc("bypass-dns", completeBypassDNSFn)
+		_ = c.RegisterFlagCompletionFunc("relay", completeRelayFn)
+		_ = c.RegisterFlagCompletionFunc("lan", completeBoolFn)
+		_ = c.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
+		_ = c.RegisterFlagCompletionFunc("wan", completeWANFn)
+	}
 
 	gatewayCmd.AddCommand(
 		gatewayStatusCmd,
