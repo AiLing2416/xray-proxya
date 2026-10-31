@@ -639,7 +639,7 @@ func init() {
 	presetsSetCmd.RegisterFlagCompletionFunc("min-ver", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{
 			"26.3.27\tShadowrocket latest & Xray baseline (Default)",
-			"26.10.29\tLatest strict mode (All clients on latest core)",
+			"26.10.31\tLatest strict mode (All clients on latest core)",
 			"0.0.0\tDisable check (Sing-Box/Clash compatible)",
 			"1.8.0\tLegacy compatibility",
 		}, cobra.ShellCompDirectiveNoFileComp
