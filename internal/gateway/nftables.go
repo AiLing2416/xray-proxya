@@ -102,6 +102,36 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return fmt.Errorf("gateway runtime is down; run 'xray-proxya gateway up' first")
 	}
 
+	if cfg.Gateway.EffectiveMode() == "tun" {
+		if err := CleanupFirewall(); err != nil {
+			return fmt.Errorf("clean up existing gateway state: %w", err)
+		}
+		rollback := true
+		defer func() {
+			if err != nil && rollback {
+				err = errors.Join(err, CleanupFirewall())
+			}
+		}()
+		if err := SetupKernel(lanIfaces...); err != nil {
+			return fmt.Errorf("kernel setup failed: %w", err)
+		}
+		if err := waitForInterface(tunName, true); err != nil {
+			return fmt.Errorf("tun interface %s was not created in time by Xray core: %w", tunName, err)
+		}
+		ipv6Supported := ipv6Available()
+		if err := run("ip", "addr", "replace", tunIPv4CIDR, "dev", tunName); err != nil {
+			return err
+		}
+		if ipv6Supported {
+			_ = run("ip", "-6", "addr", "replace", tunIPv6CIDR, "dev", tunName)
+		}
+		if err := run("ip", "link", "set", "dev", tunName, "up"); err != nil {
+			return err
+		}
+		rollback = false
+		return nil
+	}
+
 	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, cfg.Gateway.LANEnabled)
 	if err != nil {
 		return err
@@ -681,7 +711,7 @@ func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
 	if cfg != nil {
 		mode = cfg.Gateway.EffectiveMode()
 	}
-	if cfg == nil || cfg.Role != config.RoleGateway || (mode != "tproxy" && mode != "tun") {
+	if cfg == nil || cfg.Role != config.RoleGateway || mode != "tproxy" {
 		return "", nil
 	}
 	state := cfg.Gateway.State
@@ -765,44 +795,44 @@ func Verify(cfg *config.UserConfig) []string {
 		return problems
 	}
 
-	// For proxy state, perform full verification
-	if err := execCommandRun("nft", "list", "table", "inet", tableName); err != nil {
-		problems = append(problems, "nft table inet "+tableName+" is not present")
-	}
-
 	ipv6Configured := ipv6Available()
 
-	// 1. TProxy Policy Table & Listener Verification (Primary Gateway)
-	if !isTProxyPortListening(cfg.Gateway.EffectiveTProxyPort()) {
-		problems = append(problems, fmt.Sprintf("tproxy port %d is not listening", cfg.Gateway.EffectiveTProxyPort()))
-	}
-	for alias, port := range config.GatewayTProxyPorts(cfg) {
-		if port != cfg.Gateway.EffectiveTProxyPort() && !isTProxyPortListening(port) {
-			problems = append(problems, fmt.Sprintf("tproxy port %d (relay %s) is not listening", port, alias))
+	// 1. TProxy Policy Table & Listener Verification (only in tproxy mode)
+	if mode == "tproxy" {
+		if err := execCommandRun("nft", "list", "table", "inet", tableName); err != nil {
+			problems = append(problems, "nft table inet "+tableName+" is not present")
 		}
-	}
-	if cfg.Gateway.DNSListen != "" {
-		if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
-			if !isTProxyPortListening(dnsPort) {
-				problems = append(problems, fmt.Sprintf("gateway dns port %d is not listening", dnsPort))
+		if !isTProxyPortListening(cfg.Gateway.EffectiveTProxyPort()) {
+			problems = append(problems, fmt.Sprintf("tproxy port %d is not listening", cfg.Gateway.EffectiveTProxyPort()))
+		}
+		for alias, port := range config.GatewayTProxyPorts(cfg) {
+			if port != cfg.Gateway.EffectiveTProxyPort() && !isTProxyPortListening(port) {
+				problems = append(problems, fmt.Sprintf("tproxy port %d (relay %s) is not listening", port, alias))
+			}
+		}
+		if cfg.Gateway.DNSListen != "" {
+			if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+				if !isTProxyPortListening(dnsPort) {
+					problems = append(problems, fmt.Sprintf("gateway dns port %d is not listening", dnsPort))
+				}
+			}
+		}
+
+		if ok, err := hasDefaultRoute(policyTable, "lo", false); err != nil {
+			problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
+		} else if !ok {
+			problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via lo")
+		}
+		if ipv6Configured {
+			if ok, err := hasDefaultRoute(policyTable, "lo", true); err != nil {
+				problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
+			} else if !ok {
+				problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via lo")
 			}
 		}
 	}
 
-	if ok, err := hasDefaultRoute(policyTable, "lo", false); err != nil {
-		problems = append(problems, "cannot inspect IPv4 policy table "+policyTable+": "+err.Error())
-	} else if !ok {
-		problems = append(problems, "IPv4 policy table "+policyTable+" has no default route via lo")
-	}
-	if ipv6Configured {
-		if ok, err := hasDefaultRoute(policyTable, "lo", true); err != nil {
-			problems = append(problems, "cannot inspect IPv6 policy table "+policyTable+": "+err.Error())
-		} else if !ok {
-			problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via lo")
-		}
-	}
-
-	// 2. Pure TUN Adapter Verification (if enabled)
+	// 2. Pure TUN Adapter Verification (if enabled or mode == tun)
 	if cfg.Gateway.EffectiveTUNEnabled() {
 		if !interfaceExists(tunName) {
 			problems = append(problems, tunName+" interface is not present (Hint: Is the xray-proxya service running?)")

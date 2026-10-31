@@ -51,6 +51,27 @@ func TestLoadConfig_MigratesV05InlineGateway(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_MigratesV05InlineTunModeToTProxyPlusTun(t *testing.T) {
+	skipIfRoot(t)
+	dir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", dir)
+	legacy := `{"role":"gateway","gateway":{"mode":"tun","wan_interface":"eth0","lan_interfaces":["eth1"],"lan_enabled":true,"local_enabled":true}}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := config.LoadConfigEx(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Gateway.EffectiveMode() != "tproxy" {
+		t.Fatalf("migrated EffectiveMode() = %q, want tproxy", cfg.Gateway.EffectiveMode())
+	}
+	if !cfg.Gateway.TUNEnabled || !cfg.Gateway.EffectiveTUNEnabled() {
+		t.Fatalf("migrated TUNEnabled = %v, want true", cfg.Gateway.TUNEnabled)
+	}
+}
+
 // CommitStaging must promote gateway.conf intact (not clobber it with the
 // gateway-less staging JSON).
 func TestCommitStaging_PreservesGatewayConf(t *testing.T) {

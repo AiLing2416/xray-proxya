@@ -307,6 +307,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		gatewayState = "proxy"
 	}
 	gatewayTunEnabled := isGateway && !disableGatewayTun && gatewayState == "proxy" && (userCfg.Gateway.LocalEnabled || userCfg.Gateway.LANEnabled)
+	gatewayTProxyEnabled := gatewayTunEnabled && userCfg.Gateway.EffectiveMode() == "tproxy"
 	relayInboundTags := map[string][]string{}
 	for _, co := range userCfg.CustomOutbounds {
 		if co.InternalProxyPort <= 0 {
@@ -546,7 +547,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	// Primary Gateway Inbound (TProxy)
-	if gatewayTunEnabled {
+	if gatewayTProxyEnabled {
 		basePort := userCfg.Gateway.EffectiveTProxyPort()
 		tproxyPort := getPort("tproxy-in", basePort)
 		inbounds = append(inbounds, map[string]interface{}{
@@ -686,7 +687,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 	var tproxyRoutes []tproxyRoute
 	var mainAlias string
-	if gatewayTunEnabled {
+	if gatewayTProxyEnabled {
 		basePort := userCfg.Gateway.EffectiveTProxyPort()
 		tproxyPorts := config.GatewayTProxyPorts(userCfg)
 		mainAlias = userCfg.Gateway.RelayAlias
@@ -717,6 +718,9 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 	if userCfg.Role == config.RoleGateway && userCfg.Gateway.EffectiveTUNEnabled() && !disableGatewayTun {
 		tunAlias := userCfg.Gateway.RelayAlias
+		if mainAlias == "" {
+			mainAlias = tunAlias
+		}
 		if tunAlias != "" && tunAlias != "direct" && tunAlias != "block" {
 			tproxyRoutes = append(tproxyRoutes, tproxyRoute{alias: tunAlias, inboundTag: "tun-in"})
 		}

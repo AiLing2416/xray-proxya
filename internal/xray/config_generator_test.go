@@ -1769,3 +1769,81 @@ func TestGenerateXrayJSON_MultiRelayDNSRouting(t *testing.T) {
 		t.Errorf("expected exactly 1 port 53 rule (fallback to dns-out) in single-relay mode, got %d", port53Count)
 	}
 }
+
+func TestGenerateXrayJSON_TunOnlyModeVsHybridMode(t *testing.T) {
+	// 1. Mode == "tun": only tun-in should be generated, no tproxy-in
+	tunOnlyCfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tun",
+			State:        "proxy",
+			LANEnabled:   true,
+			LocalEnabled: true,
+			TProxyPort:   12345,
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-a",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	tunParsed := generateAndDecodeXrayConfig(t, tunOnlyCfg, "")
+	inbounds, _ := tunParsed["inbounds"].([]interface{})
+	hasTunIn := false
+	hasTProxyIn := false
+	for _, raw := range inbounds {
+		inb, _ := raw.(map[string]interface{})
+		switch inb["tag"] {
+		case "tun-in":
+			hasTunIn = true
+		case "tproxy-in":
+			hasTProxyIn = true
+		}
+	}
+	if !hasTunIn {
+		t.Fatal("mode=tun must generate tun-in inbound")
+	}
+	if hasTProxyIn {
+		t.Fatal("mode=tun must NOT generate tproxy-in inbound")
+	}
+
+	// 2. Mode == "tproxy" && TUNEnabled == true: both tproxy-in and tun-in should be generated
+	hybridCfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			TUNEnabled:   true,
+			State:        "proxy",
+			LANEnabled:   true,
+			LocalEnabled: true,
+			TProxyPort:   12345,
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "relay-a",
+				Enabled: true,
+				Config:  map[string]interface{}{"protocol": "freedom"},
+			},
+		},
+	}
+	hybridParsed := generateAndDecodeXrayConfig(t, hybridCfg, "")
+	hybridInbounds, _ := hybridParsed["inbounds"].([]interface{})
+	hasTunIn = false
+	hasTProxyIn = false
+	for _, raw := range hybridInbounds {
+		inb, _ := raw.(map[string]interface{})
+		switch inb["tag"] {
+		case "tun-in":
+			hasTunIn = true
+		case "tproxy-in":
+			hasTProxyIn = true
+		}
+	}
+	if !hasTunIn || !hasTProxyIn {
+		t.Fatalf("hybrid mode (mode=tproxy, tun=true) must generate both tun-in (%v) and tproxy-in (%v)", hasTunIn, hasTProxyIn)
+	}
+}

@@ -1422,3 +1422,25 @@ func TestBuildNFTMulti_ZoneIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRulesPreview_TunOnlyModeReturnsEmpty(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tun",
+			State:        "proxy",
+			LocalEnabled: true,
+			RelayAlias:   "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-a", Enabled: true},
+		},
+	}
+	preview, err := BuildRulesPreview(cfg)
+	if err != nil {
+		t.Fatalf("BuildRulesPreview() unexpected error: %v", err)
+	}
+	if preview != "" {
+		t.Fatalf("BuildRulesPreview() in mode=tun = %q, want empty string", preview)
+	}
+}

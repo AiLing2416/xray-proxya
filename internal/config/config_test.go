@@ -145,8 +145,8 @@ func TestBackfillDefaultsGatewayPreservesTunMode(t *testing.T) {
 	if !cfg.Gateway.EffectiveTUNEnabled() {
 		t.Fatalf("EffectiveTUNEnabled() = false, want true")
 	}
-	if cfg.Gateway.EffectiveMode() != "tproxy" {
-		t.Fatalf("EffectiveMode() = %q, want tproxy", cfg.Gateway.EffectiveMode())
+	if cfg.Gateway.EffectiveMode() != "tun" {
+		t.Fatalf("EffectiveMode() = %q, want tun", cfg.Gateway.EffectiveMode())
 	}
 	if cfg.Gateway.TProxyPort != DefaultTProxyPort {
 		t.Fatalf("Gateway.TProxyPort = %d, want %d", cfg.Gateway.TProxyPort, DefaultTProxyPort)

@@ -97,10 +97,12 @@ func Generate(gw *config.GatewayConfig) string {
 		b.WriteString(fmt.Sprintf("set state %s\n", gw.State))
 		hasGlobal = true
 	}
-	if gw.Mode != "" && gw.Mode != "tproxy" {
-		b.WriteString(fmt.Sprintf("set mode %s\n", gw.Mode))
-		hasGlobal = true
+	mode := strings.ToLower(strings.TrimSpace(gw.Mode))
+	if mode == "" {
+		mode = "tproxy"
 	}
+	b.WriteString(fmt.Sprintf("set mode %s\n", mode))
+	hasGlobal = true
 	if gw.LocalEnabled {
 		b.WriteString("set local true\n")
 		hasGlobal = true

@@ -822,11 +822,11 @@ var gatewayDiffCmd = &cobra.Command{
 			fmt.Print(rules)
 		}
 		fmt.Println("# policy routing")
-		fmt.Println("ip rule add fwmark 1 table 100 pref 10100")
-		fmt.Println("ip rule add fwmark 255 table main pref 10000")
 		if cfg.Gateway.EffectiveMode() == "tun" {
-			fmt.Println("ip route replace default dev proxya-tun table 100")
+			fmt.Println("(no policy routing rules in standalone tun mode)")
 		} else {
+			fmt.Println("ip rule add fwmark 1 table 100 pref 10100")
+			fmt.Println("ip rule add fwmark 255 table main pref 10000")
 			fmt.Println("ip route replace local default dev lo table 100")
 		}
 	},
@@ -1167,7 +1167,7 @@ func init() {
 
 	gatewaySetCmd.Flags().Bool("tun", false, "Enable standalone TUN adapter (proxya-tun) in staging")
 	gatewaySetCmd.Flags().Bool("no-tun", false, "Disable standalone TUN adapter in staging")
-	gatewaySetCmd.Flags().StringP("mode", "m", "", "Interception mode: 'tproxy' (default) or 'tun'")
+	gatewaySetCmd.Flags().StringP("mode", "m", "", "Gateway mode: 'tproxy' (default) or 'tun' (standalone virtual adapter only)")
 	gatewaySetCmd.Flags().StringP("relay", "r", "", "Relay alias to bind")
 	gatewaySetCmd.Flags().StringP("interface", "i", "", "LAN interface name (supports comma-separated multiple interfaces)")
 	gatewaySetCmd.Flags().String("lan-interface", "", "LAN interface name")
@@ -1189,7 +1189,10 @@ func init() {
 	gatewaySetCmd.Flags().Bool("local-disable", false, "Disable local machine transparent proxy in staging")
 
 	completeModeFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
-		return []string{"tproxy\tTransparent proxy using socket redirect (default)", "tun\tTransparent proxy using proxya-tun device"}, cobra.ShellCompDirectiveNoFileComp
+		return []string{
+			"tproxy\tTransparent proxy using socket redirect (default; combine with --tun for hybrid)",
+			"tun\tStandalone proxya-tun virtual adapter only (no TProxy nftables/routing rules)",
+		}, cobra.ShellCompDirectiveNoFileComp
 	}
 	completeStateFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{"disabled", "forward-only", "proxy"}, cobra.ShellCompDirectiveNoFileComp
@@ -1251,7 +1254,7 @@ func init() {
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyDisable, "disable", false, "Disable transparent proxy gateway (local & lan) in staging")
 	gatewayTProxyCmd.Flags().Bool("tun", false, "Enable standalone TUN adapter (proxya-tun) in staging")
 	gatewayTProxyCmd.Flags().Bool("no-tun", false, "Disable standalone TUN adapter in staging")
-	gatewayTProxyCmd.Flags().StringP("mode", "m", "", "Interception mode: 'tproxy' (default) or 'tun'")
+	gatewayTProxyCmd.Flags().StringP("mode", "m", "", "Gateway mode: 'tproxy' (default) or 'tun' (standalone virtual adapter only)")
 	gatewayTProxyCmd.Flags().StringP("state", "s", "", "Gateway state (disabled, proxy, or experimental forward-only)")
 	gatewayTProxyCmd.Flags().StringVarP(&gatewayTProxyRelay, "relay", "r", "", "Relay alias to bind")
 	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyLocal, "local", false, "Enable local machine transparent proxy in staging")

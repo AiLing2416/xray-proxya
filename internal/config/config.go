@@ -763,6 +763,9 @@ func NormalizeDNSQueryStrategy(value string) (string, bool) {
 }
 
 func (g GatewayConfig) EffectiveMode() string {
+	if strings.EqualFold(strings.TrimSpace(g.Mode), "tun") {
+		return "tun"
+	}
 	return "tproxy"
 }
 
@@ -2195,6 +2198,12 @@ func migrateLegacyGateway(cfg *UserConfig) error {
 	}
 	if GatewayConfExists() || GatewayActiveConfExists() {
 		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(cfg.Gateway.Mode), "tun") {
+		cfg.Gateway.Mode = "tproxy"
+		cfg.Gateway.TUNEnabled = true
+	} else if strings.TrimSpace(cfg.Gateway.Mode) == "" {
+		cfg.Gateway.Mode = "tproxy"
 	}
 	content := []byte(GatewayConfigGenerator(cfg))
 	if err := os.MkdirAll(GetConfigDir(), 0700); err != nil {
