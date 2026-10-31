@@ -598,7 +598,7 @@ func init() {
 	presetsSetCmd.Flags().IntVar(&presetSkinPort, "skin-port", 0, "Specify local port for Web camouflage skin (defaults to random free port)")
 
 	presetsSetCmd.Flags().StringVar(&presetDest, "dest", "", "Set REALITY destination host:port (host must match SNI)")
-	presetsSetCmd.Flags().StringVar(&presetMinVer, "min-ver", "", "Set minimum Xray client version required for REALITY (e.g. 26.10.21, or 0.0.0 to disable)")
+	presetsSetCmd.Flags().StringVar(&presetMinVer, "min-ver", "", "Set minimum Xray client version required for REALITY (e.g. 26.3.27, or 0.0.0 to disable)")
 
 	presetsSetCmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if len(args) != 0 {
@@ -638,8 +638,8 @@ func init() {
 
 	presetsSetCmd.RegisterFlagCompletionFunc("min-ver", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{
-			"26.10.21\tLatest pinned & Xray default",
-			"26.3.27\tShadowrocket latest & Xray baseline",
+			"26.3.27\tShadowrocket latest & Xray baseline (Default)",
+			"26.10.29\tLatest strict mode (All clients on latest core)",
 			"0.0.0\tDisable check (Sing-Box/Clash compatible)",
 			"1.8.0\tLegacy compatibility",
 		}, cobra.ShellCompDirectiveNoFileComp

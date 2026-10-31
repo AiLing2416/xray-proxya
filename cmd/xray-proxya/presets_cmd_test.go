@@ -346,14 +346,14 @@ func TestPresetsSetMinVer(t *testing.T) {
 	})
 
 	// 1. Valid min-ver for VLESSVision
-	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.10.21"}); err != nil {
+	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.3.27"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
 	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
 
 	loaded, _ := config.LoadConfigEx(true)
-	if loaded.Presets[0].MinClientVer != "26.10.21" {
-		t.Errorf("MinClientVer = %q, want 26.10.21", loaded.Presets[0].MinClientVer)
+	if loaded.Presets[0].MinClientVer != "26.3.27" {
+		t.Errorf("MinClientVer = %q, want 26.3.27", loaded.Presets[0].MinClientVer)
 	}
 
 	// 2. Set min-ver to 0.0.0 (compatible mode)
@@ -379,7 +379,7 @@ func TestPresetsSetMinVer(t *testing.T) {
 	}
 
 	// 4. Unsupported mode (VMessWS is slot 4)
-	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.10.21"}); err != nil {
+	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.3.27"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
 	presetsSetCmd.Run(presetsSetCmd, []string{"4"})
