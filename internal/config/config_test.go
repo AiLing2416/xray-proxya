@@ -1672,7 +1672,6 @@ func TestCommitStagingPreservesTunEnabled(t *testing.T) {
 
 	active := &UserConfig{
 		Role: RoleGateway,
-		Gateway: GatewayConfig{Mode: "tproxy"},
 	}
 	if err := active.SaveEx(false); err != nil {
 		t.Fatal(err)
@@ -1680,9 +1679,11 @@ func TestCommitStagingPreservesTunEnabled(t *testing.T) {
 
 	stg := &UserConfig{
 		Role: RoleGateway,
-		Gateway: GatewayConfig{Mode: "tproxy", TUNEnabled: true},
 	}
 	if err := stg.SaveEx(true); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(GetGatewayConfPath(), []byte("set mode tproxy\nset tun true\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 

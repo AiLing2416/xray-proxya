@@ -16,6 +16,7 @@ const (
 	SubjectMAC       RuleSubjectKind = "mac"
 	SubjectInterface RuleSubjectKind = "interface"
 	SubjectIP        RuleSubjectKind = "ip"
+	SubjectRule      RuleSubjectKind = "rule"
 )
 
 // ZoneDef defines a network zone (e.g. wan, lan, guest, iot).
@@ -51,9 +52,13 @@ type RuleOption struct {
 
 // RuleAST represents a single parsed rule directive.
 // Syntax: <kind> [<subject_value>] (->|=>) <target> [options...]
+// Or: rule [mac=<mac>] [ip=<ip>] [interface=<iface>] (->|=>) <target> [options...]
 type RuleAST struct {
 	Kind         RuleSubjectKind `json:"kind"`
 	SubjectValue string          `json:"subject_value,omitempty"`
+	MAC          string          `json:"mac,omitempty"`
+	IP           string          `json:"ip,omitempty"`
+	Interface    string          `json:"interface,omitempty"`
 	Target       string          `json:"target"`
 	Options      []RuleOption    `json:"options,omitempty"`
 	Line         int             `json:"line"`
@@ -81,6 +86,22 @@ func (r *RuleAST) OptionsMap() map[string]string {
 	return m
 }
 
+// SetAST represents a global configuration parameter directive.
+// Syntax: set <key> <value>
+type SetAST struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+	Line  int    `json:"line"`
+}
+
+// DNSAST represents a static DNS mapping directive.
+// Syntax: dns <domain> (->|=>) <ip1>[, <ip2>...]
+type DNSAST struct {
+	Domain string   `json:"domain"`
+	IPs    []string `json:"ips"`
+	Line   int      `json:"line"`
+}
+
 // ForwardAST represents a parsed port forwarding directive.
 // Syntax: forward [wan:]<wan_port> -> <target>:<target_port> [proto=tcp|udp]
 type ForwardAST struct {
@@ -93,11 +114,13 @@ type ForwardAST struct {
 
 // ConfigAST represents the root abstract syntax tree of a parsed gateway.conf.
 type ConfigAST struct {
-	Zones    []ZoneDef    `json:"zones,omitempty"`
-	Devices  []DeviceDef  `json:"devices,omitempty"`
-	Groups   []GroupDef   `json:"groups,omitempty"`
-	Forwards []ForwardAST `json:"forwards,omitempty"`
-	Rules    []RuleAST    `json:"rules,omitempty"`
+	Zones      []ZoneDef    `json:"zones,omitempty"`
+	Devices    []DeviceDef  `json:"devices,omitempty"`
+	Groups     []GroupDef   `json:"groups,omitempty"`
+	Sets       []SetAST     `json:"sets,omitempty"`
+	DNSRecords []DNSAST     `json:"dns_records,omitempty"`
+	Forwards   []ForwardAST `json:"forwards,omitempty"`
+	Rules      []RuleAST    `json:"rules,omitempty"`
 }
 
 // FindZone returns the ZoneDef with the given name, or nil if not found.

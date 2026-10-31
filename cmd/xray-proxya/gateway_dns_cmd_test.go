@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gatewayconf"
 
 	"github.com/spf13/pflag"
 )
@@ -247,5 +248,68 @@ func TestGatewayDNSRecordCommands(t *testing.T) {
 	loaded, _ = config.LoadConfigEx(true)
 	if len(loaded.Gateway.DNSRecords) != 0 {
 		t.Fatalf("expected empty records after clear, got %d", len(loaded.Gateway.DNSRecords))
+	}
+}
+
+func TestGatewayDNSRecordDirectFlags(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:  "tproxy",
+			State: "proxy",
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	// 1. Direct record add: gateway dns --record-add admin.lan 10.0.1.1
+	resetCmdFlags(gatewayDNSCmd)
+	dnsRecordAddSlice = nil
+	if err := gatewayDNSCmd.ParseFlags([]string{"--record-add", "admin.lan", "10.0.1.1,10.0.1.2"}); err != nil {
+		t.Fatalf("ParseFlags failed: %v", err)
+	}
+	err := runGatewayDNS(gatewayDNSCmd, gatewayDNSCmd.Flags().Args())
+	if err != nil {
+		t.Fatalf("runGatewayDNS --record-add failed: %v", err)
+	}
+
+	loaded, _ := config.LoadConfigEx(true)
+	if ips, ok := loaded.Gateway.DNSRecords["admin.lan"]; !ok || len(ips) != 2 || ips[0] != "10.0.1.1" {
+		t.Fatalf("expected admin.lan -> [10.0.1.1 10.0.1.2], got: %v", ips)
+	}
+
+	// 2. Direct record del: gateway dns --record-del admin.lan
+	resetCmdFlags(gatewayDNSCmd)
+	if err := gatewayDNSCmd.ParseFlags([]string{"--record-del", "admin.lan"}); err != nil {
+		t.Fatalf("ParseFlags failed: %v", err)
+	}
+	err = runGatewayDNS(gatewayDNSCmd, []string{})
+	if err != nil {
+		t.Fatalf("runGatewayDNS --record-del failed: %v", err)
+	}
+
+	loaded, _ = config.LoadConfigEx(true)
+	if _, ok := loaded.Gateway.DNSRecords["admin.lan"]; ok {
+		t.Fatal("expected admin.lan to be deleted")
+	}
+
+	// 3. Direct record clear: gateway dns --record-clear
+	_ = gatewayconf.ModifyGatewayConf(func(content string) string {
+		content = gatewayconf.UpdateDNSRecord(content, "x.lan", []string{"1.1.1.1"})
+		return gatewayconf.UpdateDNSRecord(content, "y.lan", []string{"2.2.2.2"})
+	})
+	resetCmdFlags(gatewayDNSCmd)
+	if err := gatewayDNSCmd.ParseFlags([]string{"--record-clear"}); err != nil {
+		t.Fatalf("ParseFlags failed: %v", err)
+	}
+	err = runGatewayDNS(gatewayDNSCmd, []string{})
+	if err != nil {
+		t.Fatalf("runGatewayDNS --record-clear failed: %v", err)
+	}
+
+	loaded, _ = config.LoadConfigEx(true)
+	if len(loaded.Gateway.DNSRecords) != 0 {
+		t.Fatalf("expected 0 dns records, got %d", len(loaded.Gateway.DNSRecords))
 	}
 }

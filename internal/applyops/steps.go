@@ -120,6 +120,9 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 	if data, err := os.ReadFile(config.GetConfigPathEx(true)); err == nil {
 		ctx.StagingBackupRaw = data
 	}
+	if data, err := os.ReadFile(config.GetGatewayActiveConfPath()); err == nil {
+		ctx.GatewayActiveBackupRaw = data
+	}
 
 	if err := config.CommitStaging(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)

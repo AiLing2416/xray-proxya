@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gatewayconf"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -16,6 +17,16 @@ import (
 
 var (
 	gatewayRuleListJSON bool
+
+	ruleMAC       string
+	ruleIP        string
+	ruleInterface string
+	ruleTo        string
+	ruleTarget    string
+	ruleForce     bool
+	ruleDel       bool
+	ruleClear     bool
+	ruleStatus    bool
 
 	ruleSetMAC       string
 	ruleSetIP        string
@@ -38,10 +49,8 @@ var gatewayRuleCmd = &cobra.Command{
 	Use:     "rule",
 	Aliases: []string{"rules"},
 	Short:   "Manage gateway per-MAC and per-interface routing rules (STAGING)",
-	Args:    cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runGatewayRuleList(cmd, args)
-	},
+	Args:    cobra.ArbitraryArgs,
+	RunE:    runGatewayRule,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return utils.RequireRootShell("gateway rule")
 	},
@@ -282,119 +291,162 @@ func detectLockoutRisk(targetRule config.GatewayRule) (bool, string) {
 	return false, ""
 }
 
-func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
-	force := ruleSetForce
-	if cmd != nil && cmd.Flags() != nil {
-		if f, err := cmd.Flags().GetBool("force"); err == nil && f {
-			force = true
-		}
+func runGatewayRule(cmd *cobra.Command, args []string) error {
+	mac := ruleMAC
+	if mac == "" {
+		mac = ruleSetMAC
 	}
-	defer func() {
-		ruleSetForce = false
-		if cmd != nil && cmd.Flags() != nil && cmd.Flags().Lookup("force") != nil {
-			_ = cmd.Flags().Set("force", "false")
-		}
-	}()
-
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+	if mac == "" {
+		mac = ruleDelMAC
 	}
 
-	target := ruleSetTo
+	ip := ruleIP
+	if ip == "" {
+		ip = ruleSetIP
+	}
+	if ip == "" {
+		ip = ruleDelIP
+	}
+
+	iface := ruleInterface
+	if iface == "" {
+		iface = ruleSetInterface
+	}
+	if iface == "" {
+		iface = ruleDelInterface
+	}
+
+	target := ruleTo
+	if target == "" {
+		target = ruleTarget
+	}
+	if target == "" {
+		target = ruleSetTo
+	}
 	if target == "" {
 		target = ruleSetTarget
 	}
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return fmt.Errorf("❌ Target must be specified via --to / -t (allowed: direct, block, or an existing relay alias)")
+
+	force := ruleForce || ruleSetForce
+	defer func() {
+		ruleForce = false
+		ruleSetForce = false
+		ruleDel = false
+		ruleClear = false
+		ruleStatus = false
+	}()
+
+	// 1. Clear rules
+	if ruleClear {
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.ClearRules(content)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to clear rules in gateway.conf: %w", err)
+		}
+		fmt.Println("✅ All client rules cleared from STAGING (gateway.conf).")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		return nil
 	}
 
-	rawRule := config.GatewayRule{
-		MAC:       ruleSetMAC,
-		IP:        ruleSetIP,
-		Interface: ruleSetInterface,
-		Target:    target,
+	// 2. Delete rule
+	if ruleDel {
+		if mac == "" && ip == "" && iface == "" {
+			return fmt.Errorf("❌ At least one selector (--mac, --ip, or --interface) must be specified for delete")
+		}
+		delRule := config.GatewayRule{MAC: mac, IP: ip, Interface: iface}
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.DeleteRule(content, delRule)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to delete rule from gateway.conf: %w", err)
+		}
+		fmt.Println("✅ Rule deleted from STAGING (gateway.conf).")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		return nil
 	}
 
-	normRule, err := config.ValidateGatewayRule(rawRule)
-	if err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
+	// 3. Add or update rule (if --to / -t is specified)
+	if target != "" {
+		target = strings.TrimSpace(target)
+		rawRule := config.GatewayRule{
+			MAC:       mac,
+			IP:        ip,
+			Interface: iface,
+			Target:    target,
+		}
+		normRule, err := config.ValidateGatewayRule(rawRule)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
 
-	// Validate target against CustomOutbounds if not "direct" or "block"
-	if normRule.Target != "direct" && normRule.Target != "block" {
-		found := false
-		for _, co := range cfg.CustomOutbounds {
-			if co.Alias == normRule.Target {
-				found = true
-				break
+		// Validate target against CustomOutbounds if not direct/block
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg != nil && normRule.Target != "direct" && normRule.Target != "block" {
+			found := false
+			for _, co := range cfg.CustomOutbounds {
+				if co.Alias == normRule.Target {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("❌ Target relay %q not found in custom outbounds (allowed: direct, block, or an existing relay alias)", normRule.Target)
 			}
 		}
-		if !found {
-			return fmt.Errorf("❌ Target relay %q not found in custom outbounds (allowed: direct, block, or an existing relay alias)", normRule.Target)
-		}
-	}
 
-	// High-risk lockout risk detection
-	hasRisk, warningMsg := detectLockoutRisk(normRule)
-	if hasRisk {
-		if force {
-			fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule forced (--force specified): %s\n", warningMsg)
-		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule detected!\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "   %s\n", warningMsg)
-			fmt.Fprintf(cmd.OutOrStdout(), "   Applying this rule may immediately sever your active SSH session and cause permanent management lockout.\n")
-			fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to proceed? [N/y]: ")
+		// Lockout risk detection
+		hasRisk, warningMsg := detectLockoutRisk(normRule)
+		if hasRisk {
+			if force {
+				fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule forced (--force specified): %s\n", warningMsg)
+			} else {
+				fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule detected!\n")
+				fmt.Fprintf(cmd.OutOrStdout(), "   %s\n", warningMsg)
+				fmt.Fprintf(cmd.OutOrStdout(), "   Applying this rule may immediately sever your active SSH session and cause permanent management lockout.\n")
+				fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to proceed? [N/y]: ")
 
-			reader := bufio.NewReader(cmd.InOrStdin())
-			input, err := reader.ReadString('\n')
-			if err != nil && len(input) == 0 {
-				return fmt.Errorf("❌ Operation cancelled: failed to read confirmation (use --force to bypass)")
-			}
-			answer := strings.TrimSpace(input)
-			if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
-				return fmt.Errorf("❌ Operation cancelled by user (lockout protection)")
+				reader := bufio.NewReader(cmd.InOrStdin())
+				input, err := reader.ReadString('\n')
+				if err != nil && len(input) == 0 {
+					return fmt.Errorf("❌ Operation cancelled: failed to read confirmation (use --force to bypass)")
+				}
+				answer := strings.TrimSpace(input)
+				if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
+					return fmt.Errorf("❌ Operation cancelled by user (lockout protection)")
+				}
 			}
 		}
-	}
 
-	// Update in-place if matching (MAC, IP, Interface) exists
-	updated := false
-	for i, r := range cfg.Gateway.Rules {
-		if r.MAC == normRule.MAC && r.IP == normRule.IP && r.Interface == normRule.Interface {
-			cfg.Gateway.Rules[i].Target = normRule.Target
-			updated = true
-			break
+		err = gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.UpdateRule(content, normRule)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update rule in gateway.conf: %w", err)
 		}
-	}
-	if !updated {
-		cfg.Gateway.Rules = append(cfg.Gateway.Rules, normRule)
+
+		macDesc := normRule.MAC
+		if macDesc == "" {
+			macDesc = "(any)"
+		}
+		ipDesc := normRule.IP
+		if ipDesc == "" {
+			ipDesc = "(any)"
+		}
+		ifaceDesc := normRule.Interface
+		if ifaceDesc == "" {
+			ifaceDesc = "(any)"
+		}
+		fmt.Printf("✅ Updated gateway rule in STAGING (gateway.conf): MAC=%s, IP=%s, Interface=%s -> %s\n", macDesc, ipDesc, ifaceDesc, normRule.Target)
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		return nil
 	}
 
-	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
-	}
+	return runGatewayRuleList(cmd, args)
+}
 
-	macDesc := normRule.MAC
-	if macDesc == "" {
-		macDesc = "(any)"
-	}
-	ipDesc := normRule.IP
-	if ipDesc == "" {
-		ipDesc = "(any)"
-	}
-	ifaceDesc := normRule.Interface
-	if ifaceDesc == "" {
-		ifaceDesc = "(any)"
-	}
-	if updated {
-		fmt.Printf("✅ Updated existing gateway rule in STAGING: MAC=%s, IP=%s, Interface=%s -> %s\n", macDesc, ipDesc, ifaceDesc, normRule.Target)
-	} else {
-		fmt.Printf("✅ Added new gateway rule in STAGING: MAC=%s, IP=%s, Interface=%s -> %s\n", macDesc, ipDesc, ifaceDesc, normRule.Target)
-	}
-	fmt.Println("ℹ️  Run 'xray-proxya apply' to commit changes.")
-	return nil
+func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
+	return runGatewayRule(cmd, args)
 }
 
 var gatewayRuleDelCmd = &cobra.Command{
@@ -422,9 +474,11 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("❌ Invalid rule index %q (must be between 1 and %d)", args[0], len(cfg.Gateway.Rules))
 		}
 		deleted := cfg.Gateway.Rules[idx-1]
-		cfg.Gateway.Rules = append(cfg.Gateway.Rules[:idx-1], cfg.Gateway.Rules[idx:]...)
-		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		err = gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.DeleteRule(content, deleted)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to delete rule from gateway.conf: %w", err)
 		}
 		macDesc := deleted.MAC
 		if macDesc == "" {
@@ -439,66 +493,12 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 			ifaceDesc = "(any)"
 		}
 		fmt.Printf("✅ Deleted rule #%d (MAC=%s, IP=%s, Interface=%s -> %s) from STAGING.\n", idx, macDesc, ipDesc, ifaceDesc, deleted.Target)
-		fmt.Println("ℹ️  Run 'xray-proxya apply' to commit changes.")
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
 
-	hasMAC := cmd.Flags().Changed("mac")
-	hasIP := cmd.Flags().Changed("ip")
-	hasIface := cmd.Flags().Changed("interface")
-	if !hasMAC && !hasIP && !hasIface {
-		return fmt.Errorf("❌ Must specify either a 1-based rule index (e.g. 'gateway rule del 1') or --mac / --ip / --interface flags")
-	}
-
-	targetMAC := strings.TrimSpace(ruleDelMAC)
-	if hasMAC && targetMAC != "" {
-		normMAC, err := config.NormalizeMAC(targetMAC)
-		if err != nil {
-			return fmt.Errorf("❌ %w", err)
-		}
-		targetMAC = normMAC
-	}
-	targetIP := strings.TrimSpace(ruleDelIP)
-	if hasIP && targetIP != "" {
-		normIP, err := config.NormalizeIPOrCIDR(targetIP)
-		if err != nil {
-			return fmt.Errorf("❌ %w", err)
-		}
-		targetIP = normIP
-	}
-	targetIface := strings.TrimSpace(ruleDelInterface)
-
-	var filtered []config.GatewayRule
-	deletedCount := 0
-	for _, r := range cfg.Gateway.Rules {
-		match := true
-		if hasMAC && r.MAC != targetMAC {
-			match = false
-		}
-		if hasIP && r.IP != targetIP {
-			match = false
-		}
-		if hasIface && r.Interface != targetIface {
-			match = false
-		}
-		if match {
-			deletedCount++
-		} else {
-			filtered = append(filtered, r)
-		}
-	}
-
-	if deletedCount == 0 {
-		return fmt.Errorf("❌ No rule matched criteria (MAC=%q, IP=%q, Interface=%q)", targetMAC, targetIP, targetIface)
-	}
-
-	cfg.Gateway.Rules = filtered
-	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
-	}
-	fmt.Printf("✅ Deleted %d matching rule(s) from STAGING.\n", deletedCount)
-	fmt.Println("ℹ️  Run 'xray-proxya apply' to commit changes.")
-	return nil
+	ruleDel = true
+	return runGatewayRule(cmd, args)
 }
 
 var gatewayRuleClearCmd = &cobra.Command{
@@ -506,18 +506,8 @@ var gatewayRuleClearCmd = &cobra.Command{
 	Short: "Clear all gateway routing rules in STAGING",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfigEx(true)
-		if err != nil || cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config: %v", err)
-		}
-		count := len(cfg.Gateway.Rules)
-		cfg.Gateway.Rules = nil
-		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("❌ Failed to save staging config: %w", err)
-		}
-		fmt.Printf("✅ Cleared %d gateway rule(s) in STAGING.\n", count)
-		fmt.Println("ℹ️  Run 'xray-proxya apply' to commit changes.")
-		return nil
+		ruleClear = true
+		return runGatewayRule(cmd, args)
 	},
 }
 
@@ -578,7 +568,21 @@ func completeInterfaceNames(cmd *cobra.Command, args []string, toComplete string
 }
 
 func init() {
+	gatewayRuleCmd.Flags().StringVarP(&ruleMAC, "mac", "m", "", "Client MAC address (e.g. 52:54:00:83:00:11)")
+	gatewayRuleCmd.Flags().StringVar(&ruleIP, "ip", "", "Client IP address or CIDR subnet (e.g. 192.168.1.95 or 10.0.0.0/24)")
+	gatewayRuleCmd.Flags().StringVarP(&ruleInterface, "interface", "i", "", "LAN interface name (e.g. eth1)")
+	gatewayRuleCmd.Flags().StringVarP(&ruleTo, "to", "t", "", "Target destination ('direct', 'block', or relay alias)")
+	gatewayRuleCmd.Flags().StringVar(&ruleTarget, "target", "", "Alias for --to")
+	gatewayRuleCmd.Flags().BoolVarP(&ruleForce, "force", "f", false, "Force setting the rule even if it poses a lockout risk")
+	gatewayRuleCmd.Flags().BoolVar(&ruleDel, "del", false, "Delete rule matching specified criteria")
+	gatewayRuleCmd.Flags().BoolVar(&ruleClear, "clear", false, "Clear all rules")
+	gatewayRuleCmd.Flags().BoolVar(&ruleStatus, "status", false, "Show current rule status")
 	gatewayRuleCmd.Flags().BoolVar(&gatewayRuleListJSON, "json", false, "Output in JSON format")
+
+	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("to", completeRuleTargets)
+	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("target", completeRuleTargets)
+	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
+
 	gatewayRuleListCmd.Flags().BoolVar(&gatewayRuleListJSON, "json", false, "Output in JSON format")
 
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetMAC, "mac", "m", "", "Client MAC address (e.g. 52:54:00:83:00:11)")

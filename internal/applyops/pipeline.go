@@ -7,17 +7,18 @@ import (
 
 // ApplyContext carries execution state, configuration snapshots, and output logs throughout the apply pipeline.
 type ApplyContext struct {
-	Options             Options
-	ActiveCfg           *config.UserConfig
-	StagingCfg          *config.UserConfig
-	Impact              Impact
-	Lines               []string
-	XrayRestarted       bool
-	SubRestarted        bool
-	GatewaySyncRequired bool
-	Committed           bool
-	ActiveBackupRaw     []byte
-	StagingBackupRaw    []byte
+	Options                Options
+	ActiveCfg              *config.UserConfig
+	StagingCfg             *config.UserConfig
+	Impact                 Impact
+	Lines                  []string
+	XrayRestarted          bool
+	SubRestarted           bool
+	GatewaySyncRequired    bool
+	Committed              bool
+	ActiveBackupRaw        []byte
+	StagingBackupRaw       []byte
+	GatewayActiveBackupRaw []byte
 }
 
 // AppendLine appends a user-facing log or status line to the context.
@@ -60,6 +61,9 @@ func (p *ApplyPipeline) Execute(actx *ApplyContext) error {
 					_ = os.WriteFile(config.GetConfigPath(), actx.ActiveBackupRaw, 0600)
 					if len(actx.StagingBackupRaw) > 0 {
 						_ = os.WriteFile(config.GetConfigPathEx(true), actx.StagingBackupRaw, 0600)
+					}
+					if len(actx.GatewayActiveBackupRaw) > 0 {
+						_ = os.WriteFile(config.GetGatewayActiveConfPath(), actx.GatewayActiveBackupRaw, 0644)
 					}
 					actx.AppendLine("⚠️ Apply failed after commit. Automatically rolled back active configuration to protect system state.")
 				}

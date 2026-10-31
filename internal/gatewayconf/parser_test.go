@@ -436,3 +436,61 @@ zone guest -> relay-us isolate=true
 		t.Errorf("expected error for invalid isolate value, got: %v", err)
 	}
 }
+
+func TestParse_SetsAndDNSAndMultiCriteriaRule(t *testing.T) {
+	input := `
+set state proxy
+set mode tproxy
+set tun false
+set nat enabled
+set wan eth0
+set tproxy_port 12345
+set bypass_countries CN,RU
+set bypass_dns 1.1.1.1, 8.8.8.8
+set dns_listen :53
+set dns_strategy UseIP
+set dns_servers 1.1.1.1, https://1.1.1.1/dns-query
+
+dns admin.lan -> 10.0.1.1
+dns multi.lan -> 10.0.1.2, 10.0.1.3
+
+rule ip=10.0.0.1 mac=52:54:00:83:00:11 interface=eth1 -> relay-node1
+rule --mac 52:54:00:83:00:12 --to relay-node2
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+
+	if len(ast.Sets) != 11 {
+		t.Fatalf("expected 11 sets, got %d", len(ast.Sets))
+	}
+	if ast.Sets[0].Key != "state" || ast.Sets[0].Value != "proxy" {
+		t.Errorf("set state mismatch: %+v", ast.Sets[0])
+	}
+	if ast.Sets[6].Key != "bypass_countries" || ast.Sets[6].Value != "CN,RU" {
+		t.Errorf("set bypass_countries mismatch: %+v", ast.Sets[6])
+	}
+
+	if len(ast.DNSRecords) != 2 {
+		t.Fatalf("expected 2 dns records, got %d", len(ast.DNSRecords))
+	}
+	if ast.DNSRecords[0].Domain != "admin.lan" || len(ast.DNSRecords[0].IPs) != 1 || ast.DNSRecords[0].IPs[0] != "10.0.1.1" {
+		t.Errorf("dns record 0 mismatch: %+v", ast.DNSRecords[0])
+	}
+	if ast.DNSRecords[1].Domain != "multi.lan" || len(ast.DNSRecords[1].IPs) != 2 {
+		t.Errorf("dns record 1 mismatch: %+v", ast.DNSRecords[1])
+	}
+
+	if len(ast.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(ast.Rules))
+	}
+	r0 := ast.Rules[0]
+	if r0.Kind != SubjectRule || r0.IP != "10.0.0.1" || r0.MAC != "52:54:00:83:00:11" || r0.Interface != "eth1" || r0.Target != "relay-node1" {
+		t.Errorf("rule 0 mismatch: %+v", r0)
+	}
+	r1 := ast.Rules[1]
+	if r1.Kind != SubjectRule || r1.MAC != "52:54:00:83:00:12" || r1.Target != "relay-node2" {
+		t.Errorf("rule 1 mismatch: %+v", r1)
+	}
+}

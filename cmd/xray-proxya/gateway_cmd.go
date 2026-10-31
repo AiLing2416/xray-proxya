@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"xray-proxya/internal/applyops"
 	"xray-proxya/internal/config"
@@ -25,6 +26,33 @@ var (
 	gatewayDisableNow bool
 	gatewayStatusJSON bool
 
+	gatewayStateProxy       bool
+	gatewayStateForwardOnly bool
+	gatewayStateDisabled    bool
+	gatewayStateJSON        bool
+
+	gatewayTProxyEnable          bool
+	gatewayTProxyDisable         bool
+	gatewayTProxyRelay           string
+	gatewayTProxyLocal           bool
+	gatewayTProxyNoLocal         bool
+	gatewayTProxyLAN             bool
+	gatewayTProxyNoLAN           bool
+	gatewayTProxyInterface       string
+	gatewayTProxyWAN             string
+	gatewayTProxyNAT             bool
+	gatewayTProxyNoNAT           bool
+	gatewayTProxyBypassCountries []string
+	gatewayTProxyBypassDNS       []string
+	gatewayTProxyPort            int
+	gatewayTProxyNow             bool
+	gatewayTProxyJSON            bool
+
+	gatewayTunEnable  bool
+	gatewayTunDisable bool
+	gatewayTunNow     bool
+	gatewayTunJSON    bool
+
 	applyPendingFunc         = applyops.ApplyPending
 	runGatewayManagementFunc = runGatewayManagement
 )
@@ -42,19 +70,19 @@ var gatewayCmd = &cobra.Command{
 }
 
 type GatewayConfigJSON struct {
-	Mode          string               `json:"mode,omitempty"`
-	TUNEnabled    bool                 `json:"tun_enabled"`
-	LocalEnabled  bool                 `json:"local_enabled"`
-	LANEnabled    bool                 `json:"lan_enabled"`
-	Relay         string               `json:"relay"`
-	Interface     string               `json:"interface"`
-	LANInterfaces []string             `json:"lan_interfaces,omitempty"`
-	WANInterface  string               `json:"wan_interface,omitempty"`
-	NATDisabled   bool                 `json:"nat_disabled,omitempty"`
-	Rules         []config.GatewayRule `json:"rules,omitempty"`
-	State         string               `json:"state"`
-	DNSListen     string               `json:"dns_listen,omitempty"`
-	DNSStrategy   string               `json:"dns_strategy,omitempty"`
+	Mode          string                   `json:"mode,omitempty"`
+	TUNEnabled    bool                     `json:"tun_enabled"`
+	LocalEnabled  bool                     `json:"local_enabled"`
+	LANEnabled    bool                     `json:"lan_enabled"`
+	Relay         string                   `json:"relay"`
+	Interface     string                   `json:"interface"`
+	LANInterfaces []string                 `json:"lan_interfaces,omitempty"`
+	WANInterface  string                   `json:"wan_interface,omitempty"`
+	NATDisabled   bool                     `json:"nat_disabled,omitempty"`
+	Rules         []config.GatewayRule     `json:"rules,omitempty"`
+	State         string                   `json:"state"`
+	DNSListen     string                   `json:"dns_listen,omitempty"`
+	DNSStrategy   string                   `json:"dns_strategy,omitempty"`
 	DNSServers    []string                 `json:"dns_servers,omitempty"`
 	DNSRecords    map[string][]string      `json:"dns_records,omitempty"`
 	PortForwards  []config.PortForwardRule `json:"port_forwards,omitempty"`
@@ -326,107 +354,123 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-var gatewayEnableCmd = &cobra.Command{
-	Use:   "enable",
-	Short: "Turn on transparent gateway (local & lan) in staging",
-	RunE:  runGatewayEnable,
+var gatewayStateCmd = &cobra.Command{
+	Use:   "state",
+	Short: "View or set gateway state (--proxy, --forward-only, --disabled)",
+	Args:  cobra.NoArgs,
+	RunE:  runGatewayState,
 }
 
-func runGatewayEnable(cmd *cobra.Command, args []string) error {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil || cfg == nil {
-		return fmt.Errorf("failed to load staging config: %v", err)
+func runGatewayState(cmd *cobra.Command, args []string) error {
+	defer func() {
+		gatewayStateProxy = false
+		gatewayStateForwardOnly = false
+		gatewayStateDisabled = false
+		gatewayStateJSON = false
+	}()
+	count := 0
+	targetState := ""
+	if gatewayStateProxy {
+		count++
+		targetState = "proxy"
 	}
-	cfg.Gateway.LocalEnabled = true
-	cfg.Gateway.LANEnabled = true
-	if cfg.Gateway.Mode == "" {
-		cfg.Gateway.Mode = "tproxy"
+	if gatewayStateForwardOnly {
+		count++
+		targetState = "forward-only"
 	}
-	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("failed to save staging config: %w", err)
+	if gatewayStateDisabled {
+		count++
+		targetState = "disabled"
 	}
 
-	if !gatewayEnableNow {
-		fmt.Println("✅ Gateway ENABLED in STAGING. Run 'apply' to commit, then 'gateway up' to update runtime rules.")
+	if count > 1 {
+		return fmt.Errorf("❌ Conflicting state flags: only one of --proxy, --forward-only, or --disabled may be specified")
+	}
+
+	if count == 1 {
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.UpdateSet(content, "state", targetState)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		}
+		fmt.Printf("✅ Gateway state updated to '%s' in STAGING.\n", targetState)
+		if targetState == "forward-only" {
+			fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
+		}
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
 
-	lines, err := applyPendingFunc(applyops.Options{Start: true})
-	for _, line := range lines {
-		fmt.Println(line)
-	}
-	if err != nil {
-		return fmt.Errorf("failed to apply configuration: %w", err)
-	}
-	if err := runGatewayManagementFunc("system-up"); err != nil {
-		return fmt.Errorf("failed to bring gateway runtime up: %w", err)
-	}
-	fmt.Println("✅ Gateway ENABLED and runtime rules are UP.")
-	return nil
-}
-
-var gatewayDisableCmd = &cobra.Command{
-	Use:   "disable",
-	Short: "Turn off transparent gateway (local & lan) in staging",
-	RunE:  runGatewayDisable,
-}
-
-func runGatewayDisable(cmd *cobra.Command, args []string) error {
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil || cfg == nil {
-		return fmt.Errorf("failed to load staging config: %v", err)
-	}
-	cfg.Gateway.LocalEnabled = false
-	cfg.Gateway.LANEnabled = false
-	if cfg.Gateway.Mode == "" {
-		cfg.Gateway.Mode = "tproxy"
-	}
-	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("failed to save staging config: %w", err)
-	}
-
-	if !gatewayDisableNow {
-		fmt.Println("✅ Gateway DISABLED in STAGING. Run 'apply' to commit, then 'gateway down' to remove runtime rules.")
+	// Status display
+	activeCfg, _ := config.LoadConfigEx(false)
+	stagingCfg, _ := config.LoadConfigEx(true)
+	if gatewayStateJSON {
+		out := map[string]string{
+			"active":  getEffectiveGatewayState(activeCfg),
+			"staging": getEffectiveGatewayState(stagingCfg),
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(data))
 		return nil
 	}
 
-	lines, err := applyPendingFunc(applyops.Options{})
-	for _, line := range lines {
-		fmt.Println(line)
+	fmt.Println("\n🛰️ GATEWAY STATE")
+	fmt.Println("--------------------------------------------------")
+	actState := "(not initialized)"
+	if activeCfg != nil {
+		actState = getEffectiveGatewayState(activeCfg)
 	}
-	if err != nil {
-		return fmt.Errorf("failed to apply configuration: %w", err)
+	stgState := "(not initialized)"
+	if stagingCfg != nil {
+		stgState = getEffectiveGatewayState(stagingCfg)
 	}
-	if err := runGatewayManagementFunc("system-down"); err != nil {
-		return fmt.Errorf("failed to bring gateway runtime down: %w", err)
-	}
-	fmt.Println("✅ Gateway DISABLED and runtime rules are DOWN.")
+	fmt.Printf("  ACTIVE:  %s\n", actState)
+	fmt.Printf("  STAGING: %s\n", stgState)
 	return nil
 }
 
-var gatewaySetCmd = &cobra.Command{
-	Use:               "set [relay]",
-	Short:             "Configure gateway parameters in STAGING",
+var gatewayTProxyCmd = &cobra.Command{
+	Use:               "tproxy",
+	Short:             "Configure or inspect TProxy transparent gateway settings",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
-	RunE:              runGatewaySet,
+	RunE:              runGatewayTProxy,
 }
 
-func runGatewaySet(cmd *cobra.Command, args []string) error {
+func runGatewayTProxy(cmd *cobra.Command, args []string) error {
+	defer func() {
+		gatewayTProxyEnable = false
+		gatewayTProxyDisable = false
+		gatewayTProxyRelay = ""
+		gatewayTProxyLocal = false
+		gatewayTProxyNoLocal = false
+		gatewayTProxyLAN = false
+		gatewayTProxyNoLAN = false
+		gatewayTProxyInterface = ""
+		gatewayTProxyWAN = ""
+		gatewayTProxyNAT = false
+		gatewayTProxyNoNAT = false
+		gatewayTProxyBypassCountries = nil
+		gatewayTProxyBypassDNS = nil
+		gatewayTProxyPort = 0
+		gatewayTProxyNow = false
+		gatewayTProxyJSON = false
+		gatewayEnableNow = false
+		gatewayDisableNow = false
+	}()
+
 	var positionalRelay string
 	if len(args) == 1 {
 		positionalRelay = strings.TrimSpace(args[0])
 	}
 
 	hasChanged := positionalRelay != ""
-	cmd.Flags().VisitAll(func(f *pflag.Flag) {
-		if f.Changed {
+	cmd.Flags().Visit(func(f *pflag.Flag) {
+		if f.Changed && f.Name != "json" && f.Name != "now" {
 			hasChanged = true
 		}
 	})
-	if !hasChanged {
-		return fmt.Errorf("❌ Error: No parameter supplied")
-	}
 
 	lanEnable := cmd.Flags().Changed("lan-enable") && cmd.Flags().Lookup("lan-enable").Value.String() == "true"
 	lanDisable := cmd.Flags().Changed("lan-disable") && cmd.Flags().Lookup("lan-disable").Value.String() == "true"
@@ -472,93 +516,8 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 	if localEnable && localDisable {
 		return fmt.Errorf("❌ Error: Conflicting flags specified")
 	}
-
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
-	}
-
-	if cmd.Flags().Changed("tun") {
-		tunVal, _ := cmd.Flags().GetBool("tun")
-		cfg.Gateway.TUNEnabled = tunVal
-		if tunVal {
-			cfg.Gateway.Mode = ""
-		}
-	}
-	if cmd.Flags().Changed("no-tun") {
-		cfg.Gateway.TUNEnabled = false
-		cfg.Gateway.Mode = ""
-	}
-
-	if cmd.Flags().Changed("mode") {
-		modeVal, _ := cmd.Flags().GetString("mode")
-		modeVal = strings.ToLower(strings.TrimSpace(modeVal))
-		if modeVal != "tproxy" && modeVal != "tun" {
-			return fmt.Errorf("❌ Invalid mode %q; valid options are 'tproxy' and 'tun'", modeVal)
-		}
-		if modeVal == "tun" {
-			cfg.Gateway.TUNEnabled = true
-		} else {
-			cfg.Gateway.TUNEnabled = false
-		}
-		cfg.Gateway.Mode = modeVal
-		if err := config.ValidateGatewayRulesForMode(cfg); err != nil {
-			return fmt.Errorf("❌ %w", err)
-		}
-	} else if cfg.Gateway.Mode == "" {
-		cfg.Gateway.Mode = "tproxy"
-	}
-	if cmd.Flags().Changed("relay") {
-		relay, _ := cmd.Flags().GetString("relay")
-		if positionalRelay != "" && relay != positionalRelay {
-			return fmt.Errorf("❌ Error: Positional relay %q conflicts with --relay flag %q", positionalRelay, relay)
-		}
-		cfg.Gateway.RelayAlias = relay
-	} else if positionalRelay != "" {
-		cfg.Gateway.RelayAlias = positionalRelay
-	}
-
-	var iface string
-	if cmd.Flags().Changed("interface") {
-		iface, _ = cmd.Flags().GetString("interface")
-	} else if cmd.Flags().Changed("lan-interface") {
-		iface, _ = cmd.Flags().GetString("lan-interface")
-	}
-	if iface != "" {
-		parts := strings.Split(iface, ",")
-		var validIfaces []string
-		seen := make(map[string]bool)
-		for _, part := range parts {
-			trimmed := strings.TrimSpace(part)
-			if trimmed == "" {
-				continue
-			}
-			if err := config.ValidateInterfaceName(trimmed); err != nil {
-				return fmt.Errorf("❌ %w", err)
-			}
-			if !seen[trimmed] {
-				seen[trimmed] = true
-				validIfaces = append(validIfaces, trimmed)
-			}
-		}
-		if len(validIfaces) == 0 {
-			return fmt.Errorf("❌ Invalid interface parameter: empty interface name")
-		}
-		cfg.Gateway.LANInterfaces = validIfaces
-		cfg.Gateway.LANInterface = strings.Join(validIfaces, ",")
-	}
-
-	if cmd.Flags().Changed("wan") {
-		wan, _ := cmd.Flags().GetString("wan")
-		wanTrimmed := strings.TrimSpace(wan)
-		if wanTrimmed == "" || strings.EqualFold(wanTrimmed, "auto") {
-			cfg.Gateway.WANInterface = ""
-		} else {
-			if err := config.ValidateInterfaceName(wanTrimmed); err != nil {
-				return fmt.Errorf("❌ WAN %w", err)
-			}
-			cfg.Gateway.WANInterface = wanTrimmed
-		}
+	if gatewayTProxyEnable && gatewayTProxyDisable {
+		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --enable and --disable")
 	}
 
 	natEnable := cmd.Flags().Changed("nat")
@@ -566,58 +525,250 @@ func runGatewaySet(cmd *cobra.Command, args []string) error {
 	if natEnable && natDisable {
 		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --nat and --no-nat")
 	}
-	if natEnable {
-		cfg.Gateway.NATDisabled = false
-	} else if natDisable {
-		cfg.Gateway.NATDisabled = true
-	}
 
-	if cmd.Flags().Changed("state") {
-		state, _ := cmd.Flags().GetString("state")
-		stateLower := strings.ToLower(strings.TrimSpace(state))
-		if stateLower != "disabled" && stateLower != "forward-only" && stateLower != "proxy" {
-			return fmt.Errorf("❌ Invalid state: %s (must be one of: disabled, forward-only, proxy)", state)
+	if !hasChanged && !lanEnable && !lanDisable && !localEnable && !localDisable && !gatewayTProxyEnable && !gatewayTProxyDisable {
+		if cmd.Name() == "set" {
+			return fmt.Errorf("❌ Error: No parameter supplied")
 		}
-		cfg.Gateway.State = stateLower
-		if stateLower == "forward-only" {
-			fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
+		return runGatewayStatus(cmd, args)
+	}
+
+	err := gatewayconf.ModifyGatewayConf(func(content string) string {
+		if gatewayTProxyEnable {
+			content = gatewayconf.UpdateSet(content, "local", "true")
+			content = gatewayconf.UpdateSet(content, "lan", "true")
+			content = gatewayconf.UpdateSet(content, "mode", "tproxy")
+		}
+		if gatewayTProxyDisable {
+			content = gatewayconf.UpdateSet(content, "local", "false")
+			content = gatewayconf.UpdateSet(content, "lan", "false")
+		}
+		if lanEnable {
+			content = gatewayconf.UpdateSet(content, "lan", "true")
+		} else if lanDisable {
+			content = gatewayconf.UpdateSet(content, "lan", "false")
+		}
+		if localEnable {
+			content = gatewayconf.UpdateSet(content, "local", "true")
+		} else if localDisable {
+			content = gatewayconf.UpdateSet(content, "local", "false")
+		}
+
+		if cmd.Flags().Changed("relay") {
+			relay, _ := cmd.Flags().GetString("relay")
+			content = gatewayconf.UpdateSet(content, "relay", relay)
+		} else if positionalRelay != "" {
+			content = gatewayconf.UpdateSet(content, "relay", positionalRelay)
+		}
+
+		if cmd.Flags().Changed("wan") {
+			wan, _ := cmd.Flags().GetString("wan")
+			wanTrimmed := strings.TrimSpace(wan)
+			if wanTrimmed == "" || strings.EqualFold(wanTrimmed, "auto") {
+				content = gatewayconf.UpdateSet(content, "wan", "auto")
+			} else {
+				content = gatewayconf.UpdateSet(content, "wan", wanTrimmed)
+			}
+		}
+
+		var iface string
+		if cmd.Flags().Changed("interface") {
+			iface, _ = cmd.Flags().GetString("interface")
+		} else if cmd.Flags().Changed("lan-interface") {
+			iface, _ = cmd.Flags().GetString("lan-interface")
+		}
+		if iface != "" {
+			content = gatewayconf.UpdateSet(content, "lan_interfaces", iface)
+		}
+
+		if natEnable {
+			content = gatewayconf.UpdateSet(content, "nat", "true")
+		} else if natDisable {
+			content = gatewayconf.UpdateSet(content, "nat", "false")
+		}
+
+		if cmd.Flags().Changed("port") {
+			port, _ := cmd.Flags().GetInt("port")
+			content = gatewayconf.UpdateSet(content, "tproxy_port", strconv.Itoa(port))
+		}
+
+		if cmd.Flags().Changed("bypass-countries") {
+			bypassCountries, _ := cmd.Flags().GetStringSlice("bypass-countries")
+			content = gatewayconf.UpdateSet(content, "bypass_countries", strings.Join(bypassCountries, ","))
+		}
+		if cmd.Flags().Changed("bypass-dns") {
+			bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
+			content = gatewayconf.UpdateSet(content, "bypass_dns", strings.Join(bypassDNS, ","))
+		}
+
+		if cmd.Flags().Changed("mode") {
+			modeVal, _ := cmd.Flags().GetString("mode")
+			modeVal = strings.ToLower(strings.TrimSpace(modeVal))
+			content = gatewayconf.UpdateSet(content, "mode", modeVal)
+		}
+		if cmd.Flags().Changed("tun") {
+			tunVal, _ := cmd.Flags().GetBool("tun")
+			val := "false"
+			if tunVal {
+				val = "true"
+			}
+			content = gatewayconf.UpdateSet(content, "tun", val)
+		}
+		if cmd.Flags().Changed("no-tun") {
+			content = gatewayconf.UpdateSet(content, "tun", "false")
+		}
+		if cmd.Flags().Changed("state") {
+			stateVal, _ := cmd.Flags().GetString("state")
+			content = gatewayconf.UpdateSet(content, "state", stateVal)
+		}
+
+		return content
+	})
+	if err != nil {
+		return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+	}
+
+	// Validate staging gateway
+	stgCfg, err := config.LoadConfigEx(true)
+	if err != nil {
+		return fmt.Errorf("❌ Validation error in updated gateway: %w", err)
+	}
+	if stgCfg != nil {
+		if err := config.ValidateGatewayInterfaces(stgCfg); err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		if err := config.ValidateGatewayRulesForMode(stgCfg); err != nil {
+			return fmt.Errorf("❌ %w", err)
 		}
 	}
 
-	if lanEnable {
-		cfg.Gateway.LANEnabled = true
-	} else if lanDisable {
-		cfg.Gateway.LANEnabled = false
+	now := gatewayTProxyNow || gatewayEnableNow || gatewayDisableNow
+	if now {
+		op := "system-up"
+		if gatewayTProxyDisable || gatewayDisableNow {
+			op = "system-down"
+		}
+		lines, err := applyPendingFunc(applyops.Options{Start: true})
+		for _, line := range lines {
+			fmt.Println(line)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to apply configuration: %w", err)
+		}
+		if err := runGatewayManagementFunc(op); err != nil {
+			return fmt.Errorf("failed to sync gateway runtime: %w", err)
+		}
+		fmt.Printf("✅ Gateway parameters updated and runtime rules synced (%s).\n", op)
+		return nil
 	}
 
-	if localEnable {
-		cfg.Gateway.LocalEnabled = true
-	} else if localDisable {
-		cfg.Gateway.LocalEnabled = false
-	}
-
-	if cmd.Flags().Changed("bypass-dns") {
-		bypassDNS, _ := cmd.Flags().GetStringSlice("bypass-dns")
-		cfg.Gateway.BypassDNS = bypassDNS
-	}
-	if cmd.Flags().Changed("bypass-countries") {
-		bypassCountries, _ := cmd.Flags().GetStringSlice("bypass-countries")
-		cfg.Gateway.BypassCountries = bypassCountries
-	}
-
-	if err := config.ValidateGatewayInterfaces(cfg); err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
-	if err := config.ValidateGatewayRulesForMode(cfg); err != nil {
-		return fmt.Errorf("❌ %w", err)
-	}
-
-	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
-	}
 	fmt.Println("✅ Gateway parameters updated in STAGING.")
 	fmt.Println("🚀 Run 'apply' to commit changes.")
 	return nil
+}
+
+var gatewayTunCmd = &cobra.Command{
+	Use:   "tun",
+	Short: "Configure or inspect standalone TUN adapter settings",
+	Args:  cobra.NoArgs,
+	RunE:  runGatewayTun,
+}
+
+func runGatewayTun(cmd *cobra.Command, args []string) error {
+	defer func() {
+		gatewayTunEnable = false
+		gatewayTunDisable = false
+		gatewayTunNow = false
+		gatewayTunJSON = false
+	}()
+
+	if gatewayTunEnable && gatewayTunDisable {
+		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --enable and --disable")
+	}
+
+	if gatewayTunEnable || gatewayTunDisable {
+		val := "false"
+		if gatewayTunEnable {
+			val = "true"
+		}
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.UpdateSet(content, "tun", val)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		}
+
+		if gatewayTunNow {
+			lines, err := applyPendingFunc(applyops.Options{Start: true})
+			for _, line := range lines {
+				fmt.Println(line)
+			}
+			if err != nil {
+				return fmt.Errorf("failed to apply configuration: %w", err)
+			}
+			_ = runGatewayManagementFunc("system-up")
+			fmt.Println("✅ Gateway TUN updated and runtime rules are UP.")
+			return nil
+		}
+
+		fmt.Printf("✅ Gateway TUN set to %s in STAGING.\n", val)
+		fmt.Println("🚀 Run 'apply' to commit changes.")
+		return nil
+	}
+
+	activeCfg, _ := config.LoadConfigEx(false)
+	stagingCfg, _ := config.LoadConfigEx(true)
+	if gatewayTunJSON {
+		out := map[string]bool{
+			"active":  activeCfg != nil && activeCfg.Gateway.EffectiveTUNEnabled(),
+			"staging": stagingCfg != nil && stagingCfg.Gateway.EffectiveTUNEnabled(),
+		}
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Println("\n🛰️ GATEWAY TUN ADAPTER")
+	fmt.Println("--------------------------------------------------")
+	actTUN := false
+	if activeCfg != nil {
+		actTUN = activeCfg.Gateway.EffectiveTUNEnabled()
+	}
+	stgTUN := false
+	if stagingCfg != nil {
+		stgTUN = stagingCfg.Gateway.EffectiveTUNEnabled()
+	}
+	fmt.Printf("  ACTIVE:  %s\n", formatGatewayBoolState(actTUN))
+	fmt.Printf("  STAGING: %s\n", formatGatewayBoolState(stgTUN))
+	return nil
+}
+
+var gatewayEnableCmd = &cobra.Command{
+	Use:   "enable",
+	Short: "Turn on transparent gateway (local & lan) in staging",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		gatewayTProxyEnable = true
+		gatewayTProxyNow = gatewayEnableNow
+		return runGatewayTProxy(cmd, args)
+	},
+}
+
+var gatewayDisableCmd = &cobra.Command{
+	Use:   "disable",
+	Short: "Turn off transparent gateway (local & lan) in staging",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		gatewayTProxyDisable = true
+		gatewayTProxyNow = gatewayDisableNow
+		return runGatewayTProxy(cmd, args)
+	},
+}
+
+var gatewaySetCmd = &cobra.Command{
+	Use:               "set [relay]",
+	Short:             "Configure gateway parameters in STAGING",
+	Args:              cobra.MaximumNArgs(1),
+	ValidArgsFunction: completeRelayAliasesArg,
+	RunE:              runGatewayTProxy,
 }
 
 var gatewayUpCmd = &cobra.Command{
@@ -644,7 +795,6 @@ var gatewaySystemUpCmd = &cobra.Command{
 		return nil
 	},
 }
-
 
 var gatewayDiffCmd = &cobra.Command{
 	Use:   "diff",
@@ -709,7 +859,6 @@ var gatewayCheckCmd = &cobra.Command{
 		os.Exit(1)
 	},
 }
-
 
 var gatewayDownCmd = &cobra.Command{
 	Use:   "down",
@@ -1088,8 +1237,40 @@ func init() {
 	_ = gatewaySetCmd.Flags().MarkHidden("local-enable")
 	_ = gatewaySetCmd.Flags().MarkHidden("local-disable")
 
+	gatewayStateCmd.Flags().BoolVar(&gatewayStateProxy, "proxy", false, "Set gateway state to proxy in staging")
+	gatewayStateCmd.Flags().BoolVar(&gatewayStateForwardOnly, "forward-only", false, "Set gateway state to forward-only in staging")
+	gatewayStateCmd.Flags().BoolVar(&gatewayStateDisabled, "disabled", false, "Set gateway state to disabled in staging")
+	gatewayStateCmd.Flags().BoolVar(&gatewayStateJSON, "json", false, "Output in JSON format")
+
+	gatewayTunCmd.Flags().BoolVar(&gatewayTunEnable, "enable", false, "Enable standalone TUN adapter in staging")
+	gatewayTunCmd.Flags().BoolVar(&gatewayTunDisable, "disable", false, "Disable standalone TUN adapter in staging")
+	gatewayTunCmd.Flags().BoolVar(&gatewayTunNow, "now", false, "Immediately apply changes and bring runtime rules up")
+	gatewayTunCmd.Flags().BoolVar(&gatewayTunJSON, "json", false, "Output in JSON format")
+
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyEnable, "enable", false, "Enable transparent proxy gateway (local & lan) in staging")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyDisable, "disable", false, "Disable transparent proxy gateway (local & lan) in staging")
+	gatewayTProxyCmd.Flags().StringVarP(&gatewayTProxyRelay, "relay", "r", "", "Relay alias to bind")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyLocal, "local", false, "Enable local machine transparent proxy in staging")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNoLocal, "no-local", false, "Disable local machine transparent proxy in staging")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyLAN, "lan", false, "Enable LAN gateway forwarding in staging")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNoLAN, "no-lan", false, "Disable LAN gateway forwarding in staging")
+	gatewayTProxyCmd.Flags().StringVarP(&gatewayTProxyInterface, "interface", "i", "", "LAN interface name(s)")
+	gatewayTProxyCmd.Flags().StringVar(&gatewayTProxyInterface, "lan-interface", "", "LAN interface name(s)")
+	gatewayTProxyCmd.Flags().StringVar(&gatewayTProxyWAN, "wan", "", "WAN interface name ('auto' or empty to auto-detect)")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNAT, "nat", false, "Enable WAN NAT masquerade in staging")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNoNAT, "no-nat", false, "Disable WAN NAT masquerade in staging")
+	gatewayTProxyCmd.Flags().StringSliceVarP(&gatewayTProxyBypassDNS, "bypass-dns", "d", nil, "DNS server IPs to bypass transparent proxy hijacking")
+	gatewayTProxyCmd.Flags().StringSliceVarP(&gatewayTProxyBypassCountries, "bypass-countries", "c", nil, "Country codes to bypass (e.g. CN)")
+	gatewayTProxyCmd.Flags().IntVar(&gatewayTProxyPort, "port", 0, "TProxy listener port (e.g. 12345)")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyNow, "now", false, "Immediately apply changes and update runtime rules")
+	gatewayTProxyCmd.Flags().BoolVar(&gatewayTProxyJSON, "json", false, "Output in JSON format")
+	_ = gatewayTProxyCmd.Flags().MarkHidden("lan-interface")
+
 	gatewayCmd.AddCommand(
 		gatewayStatusCmd,
+		gatewayStateCmd,
+		gatewayTProxyCmd,
+		gatewayTunCmd,
 		gatewayEnableCmd,
 		gatewayDisableCmd,
 		gatewaySetCmd,

@@ -224,15 +224,15 @@ func TestGatewaySetRouterFlags(t *testing.T) {
 	_ = cfg.SaveEx(true)
 
 	// Set multi-interface, wan, and nat
-	cmd := gatewaySetCmd
+	cmd := gatewayTProxyCmd
 	resetCmdFlags(cmd)
 	_ = cmd.Flags().Set("interface", "eth1,eth2")
 	_ = cmd.Flags().Set("wan", "eth0")
 	_ = cmd.Flags().Set("no-nat", "true")
 
-	err := runGatewaySet(cmd, []string{})
+	err := runGatewayTProxy(cmd, []string{})
 	if err != nil {
-		t.Fatalf("runGatewaySet failed: %v", err)
+		t.Fatalf("runGatewayTProxy failed: %v", err)
 	}
 
 	stg, _ := config.LoadConfigEx(true)
@@ -251,9 +251,9 @@ func TestGatewaySetRouterFlags(t *testing.T) {
 	_ = cmd.Flags().Set("wan", "auto")
 	_ = cmd.Flags().Set("nat", "true")
 
-	err = runGatewaySet(cmd, []string{})
+	err = runGatewayTProxy(cmd, []string{})
 	if err != nil {
-		t.Fatalf("runGatewaySet failed: %v", err)
+		t.Fatalf("runGatewayTProxy failed: %v", err)
 	}
 
 	stg, _ = config.LoadConfigEx(true)
@@ -268,9 +268,9 @@ func TestGatewaySetRouterFlags(t *testing.T) {
 	resetCmdFlags(cmd)
 	_ = cmd.Flags().Set("interface", "eth1,eth2")
 	_ = cmd.Flags().Set("wan", "eth1")
-	err = runGatewaySet(cmd, []string{})
+	err = runGatewayTProxy(cmd, []string{})
 	if err == nil {
-		t.Fatal("expected runGatewaySet to fail when WAN is configured as a LAN interface")
+		t.Fatal("expected runGatewayTProxy to fail when WAN is configured as a LAN interface")
 	}
 	if !strings.Contains(err.Error(), `cannot also be configured as a LAN interface`) {
 		t.Fatalf("unexpected error message: %v", err)
@@ -795,5 +795,57 @@ func TestDetectLockoutRisk_WithIP(t *testing.T) {
 	hasRisk, msg = detectLockoutRisk(ruleOtherIface)
 	if hasRisk {
 		t.Errorf("expected no risk for client IP on different interface, got true (%s)", msg)
+	}
+}
+
+func TestGatewayRuleDirectFlags_MultiCriteria(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:  "tproxy",
+			State: "proxy",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-node1", Enabled: true},
+		},
+	}
+	_ = cfg.SaveEx(true)
+
+	// 1. Direct multi-criteria add: gateway rule --ip 10.0.0.1 --mac 52:54:00:83:00:11 --interface eth1 --to relay-node1
+	resetCmdFlags(gatewayRuleCmd)
+	ruleIP = "10.0.0.1"
+	ruleMAC = "52:54:00:83:00:11"
+	ruleInterface = "eth1"
+	ruleTo = "relay-node1"
+	err := runGatewayRule(gatewayRuleCmd, []string{})
+	if err != nil {
+		t.Fatalf("runGatewayRule multi-criteria failed: %v", err)
+	}
+
+	stg, _ := config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 1 {
+		t.Fatalf("expected 1 rule in staging, got: %+v", stg.Gateway.Rules)
+	}
+	r := stg.Gateway.Rules[0]
+	if r.IP != "10.0.0.1" || r.MAC != "52:54:00:83:00:11" || r.Interface != "eth1" || r.Target != "relay-node1" {
+		t.Fatalf("unexpected rule content: %+v", r)
+	}
+
+	// 2. Direct delete matching criteria: gateway rule --ip 10.0.0.1 --mac 52:54:00:83:00:11 --interface eth1 --del
+	resetCmdFlags(gatewayRuleCmd)
+	ruleIP = "10.0.0.1"
+	ruleMAC = "52:54:00:83:00:11"
+	ruleInterface = "eth1"
+	ruleDel = true
+	err = runGatewayRule(gatewayRuleCmd, []string{})
+	if err != nil {
+		t.Fatalf("runGatewayRule --del failed: %v", err)
+	}
+
+	stg, _ = config.LoadConfigEx(true)
+	if len(stg.Gateway.Rules) != 0 {
+		t.Fatalf("expected 0 rules after --del, got: %+v", stg.Gateway.Rules)
 	}
 }

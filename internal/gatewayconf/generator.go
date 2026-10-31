@@ -2,6 +2,7 @@ package gatewayconf
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -87,7 +88,75 @@ func Generate(gw *config.GatewayConfig) string {
 	}
 	b.WriteString("\n")
 
-	// 2. Outbound Rules
+	// 2. Global Parameters
+	b.WriteString("# ------------------------------------------------------------------------------\n")
+	b.WriteString("# Global Parameters\n")
+	b.WriteString("# ------------------------------------------------------------------------------\n")
+	hasGlobal := false
+	if gw.State != "" {
+		b.WriteString(fmt.Sprintf("set state %s\n", gw.State))
+		hasGlobal = true
+	}
+	if gw.Mode != "" && gw.Mode != "tproxy" {
+		b.WriteString(fmt.Sprintf("set mode %s\n", gw.Mode))
+		hasGlobal = true
+	}
+	if gw.LocalEnabled {
+		b.WriteString("set local true\n")
+		hasGlobal = true
+	} else {
+		b.WriteString("set local false\n")
+		hasGlobal = true
+	}
+	if gw.LANEnabled {
+		b.WriteString("set lan true\n")
+		hasGlobal = true
+	} else {
+		b.WriteString("set lan false\n")
+		hasGlobal = true
+	}
+	if gw.RelayAlias != "" {
+		b.WriteString(fmt.Sprintf("set relay %s\n", gw.RelayAlias))
+		hasGlobal = true
+	}
+	if gw.TUNEnabled {
+		b.WriteString("set tun true\n")
+		hasGlobal = true
+	}
+	if gw.NATDisabled {
+		b.WriteString("set nat false\n")
+		hasGlobal = true
+	}
+	if gw.TProxyPort > 0 && gw.TProxyPort != 12345 {
+		b.WriteString(fmt.Sprintf("set tproxy_port %d\n", gw.TProxyPort))
+		hasGlobal = true
+	}
+	if len(gw.BypassCountries) > 0 {
+		b.WriteString(fmt.Sprintf("set bypass_countries %s\n", strings.Join(gw.BypassCountries, ",")))
+		hasGlobal = true
+	}
+	if len(gw.BypassDNS) > 0 {
+		b.WriteString(fmt.Sprintf("set bypass_dns %s\n", strings.Join(gw.BypassDNS, ",")))
+		hasGlobal = true
+	}
+	if gw.DNSListen != "" {
+		b.WriteString(fmt.Sprintf("set dns_listen %s\n", gw.DNSListen))
+		hasGlobal = true
+	}
+	if gw.DNSStrategy != "" {
+		b.WriteString(fmt.Sprintf("set dns_strategy %s\n", gw.DNSStrategy))
+		hasGlobal = true
+	}
+	if len(gw.DNSServers) > 0 {
+		b.WriteString(fmt.Sprintf("set dns_servers %s\n", strings.Join(gw.DNSServers, ", ")))
+		hasGlobal = true
+	}
+	if !hasGlobal {
+		b.WriteString("# (defaults active)\n")
+	}
+	b.WriteString("\n")
+
+	// 3. Outbound Rules
 	b.WriteString("# ------------------------------------------------------------------------------\n")
 	b.WriteString("# Outbound Routing Rules\n")
 	b.WriteString("# ------------------------------------------------------------------------------\n")
@@ -109,7 +178,23 @@ func Generate(gw *config.GatewayConfig) string {
 	}
 	b.WriteString("\n")
 
-	// 3. Client & Interface Specific Rules
+	// 4. Static DNS Records
+	if len(gw.DNSRecords) > 0 {
+		b.WriteString("# ------------------------------------------------------------------------------\n")
+		b.WriteString("# Static DNS Records\n")
+		b.WriteString("# ------------------------------------------------------------------------------\n")
+		keys := make([]string, 0, len(gw.DNSRecords))
+		for k := range gw.DNSRecords {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			b.WriteString(fmt.Sprintf("dns %s -> %s\n", k, strings.Join(gw.DNSRecords[k], ", ")))
+		}
+		b.WriteString("\n")
+	}
+
+	// 5. Client & Interface Specific Rules
 	b.WriteString("# ------------------------------------------------------------------------------\n")
 	b.WriteString("# Client & Interface Specific Rules\n")
 	b.WriteString("# ------------------------------------------------------------------------------\n")
@@ -122,7 +207,11 @@ func Generate(gw *config.GatewayConfig) string {
 				target = "direct"
 			}
 
-			if rule.MAC != "" && rule.Interface != "" {
+			if rule.MAC != "" && rule.IP != "" && rule.Interface != "" {
+				b.WriteString(fmt.Sprintf("rule mac=%s ip=%s interface=%s -> %s\n", rule.MAC, rule.IP, rule.Interface, target))
+			} else if rule.MAC != "" && rule.IP != "" {
+				b.WriteString(fmt.Sprintf("rule mac=%s ip=%s -> %s\n", rule.MAC, rule.IP, target))
+			} else if rule.MAC != "" && rule.Interface != "" {
 				b.WriteString(fmt.Sprintf("mac %s -> %s interface=%s\n", rule.MAC, target, rule.Interface))
 			} else if rule.MAC != "" {
 				b.WriteString(fmt.Sprintf("mac %s -> %s\n", rule.MAC, target))
@@ -243,11 +332,39 @@ func GenerateFromAST(ast *ConfigAST) string {
 		b.WriteString("\n")
 	}
 
+	if len(ast.Sets) > 0 {
+		b.WriteString("# --- Global Parameters ---\n")
+		for _, s := range ast.Sets {
+			b.WriteString(fmt.Sprintf("set %s %s\n", s.Key, s.Value))
+		}
+		b.WriteString("\n")
+	}
+
+	if len(ast.DNSRecords) > 0 {
+		b.WriteString("# --- Static DNS Records ---\n")
+		for _, d := range ast.DNSRecords {
+			b.WriteString(fmt.Sprintf("dns %s -> %s\n", d.Domain, strings.Join(d.IPs, ", ")))
+		}
+		b.WriteString("\n")
+	}
+
 	if len(ast.Rules) > 0 {
 		b.WriteString("# --- Routing Rules ---\n")
 		for _, r := range ast.Rules {
 			var subject string
 			switch r.Kind {
+			case SubjectRule:
+				var parts []string
+				if r.MAC != "" {
+					parts = append(parts, "mac="+r.MAC)
+				}
+				if r.IP != "" {
+					parts = append(parts, "ip="+r.IP)
+				}
+				if r.Interface != "" {
+					parts = append(parts, "interface="+r.Interface)
+				}
+				subject = "rule " + strings.Join(parts, " ")
 			case SubjectLocal:
 				subject = "local"
 			case SubjectZone:

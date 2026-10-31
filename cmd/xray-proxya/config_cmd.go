@@ -211,11 +211,34 @@ var configShowCmd = &cobra.Command{
 		}
 
 		if configShowFilter != "" {
+			filterKey := strings.TrimSpace(configShowFilter)
+			if strings.EqualFold(filterKey, "gateway") {
+				if configShowRaw {
+					confPath := config.GetGatewayConfPath()
+					if !configShowStaging && config.GatewayActiveConfExists() {
+						confPath = config.GetGatewayActiveConfPath()
+					}
+					gwBytes, _ := os.ReadFile(confPath)
+					fmt.Println(strings.TrimRight(string(gwBytes), "\n"))
+					return nil
+				}
+				cfg, err := config.LoadConfigEx(configShowStaging)
+				if err != nil || cfg == nil {
+					return fmt.Errorf("❌ Failed to load gateway configuration: %v", err)
+				}
+				formatted, err := json.MarshalIndent(cfg.Gateway, "", "  ")
+				if err != nil {
+					return err
+				}
+				fmt.Println(string(formatted))
+				return nil
+			}
+
 			var rawMap map[string]json.RawMessage
 			if err := json.Unmarshal(data, &rawMap); err != nil {
 				return fmt.Errorf("❌ Failed to parse config JSON: %w", err)
 			}
-			filterKey := strings.TrimSpace(configShowFilter)
+			filterKey = strings.TrimSpace(configShowFilter)
 			rawVal, ok := rawMap[filterKey]
 			if !ok {
 				rawVal, ok = rawMap[strings.ToLower(filterKey)]

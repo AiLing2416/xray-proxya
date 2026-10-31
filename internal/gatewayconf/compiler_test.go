@@ -569,3 +569,72 @@ local -> direct
 		t.Fatal("expected TUNEnabled to be preserved as true")
 	}
 }
+
+func TestCompile_SetsAndDNSAndRules(t *testing.T) {
+	input := `
+def zone wan eth0
+def zone lan eth1
+
+set state proxy
+set mode tproxy
+set tun true
+set nat false
+set wan eth0
+set tproxy_port 12345
+set bypass_countries CN,RU
+set bypass_dns 1.1.1.1, 8.8.8.8
+set dns_listen :53
+set dns_strategy UseIPv4
+set dns_servers 1.1.1.1, https://1.1.1.1/dns-query
+
+dns admin.lan -> 10.0.1.1
+dns multi.lan -> 10.0.1.2, 10.0.1.3
+
+rule ip=10.0.0.1 mac=52:54:00:83:00:11 interface=eth1 -> relay-node1
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	userCfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-node1", Enabled: true},
+		},
+	}
+
+	gw, err := Compile(ast, WithUserConfig(userCfg))
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	if gw.State != "proxy" {
+		t.Errorf("expected State=proxy, got %s", gw.State)
+	}
+	if !gw.TUNEnabled {
+		t.Errorf("expected TUNEnabled=true")
+	}
+	if !gw.NATDisabled {
+		t.Errorf("expected NATDisabled=true")
+	}
+	if gw.TProxyPort != 12345 {
+		t.Errorf("expected TProxyPort=12345, got %d", gw.TProxyPort)
+	}
+	if len(gw.BypassCountries) != 2 || gw.BypassCountries[0] != "CN" || gw.BypassCountries[1] != "RU" {
+		t.Errorf("unexpected BypassCountries: %v", gw.BypassCountries)
+	}
+	if len(gw.DNSRecords) != 2 {
+		t.Fatalf("expected 2 dns records, got %d", len(gw.DNSRecords))
+	}
+	if len(gw.DNSRecords["admin.lan"]) != 1 || gw.DNSRecords["admin.lan"][0] != "10.0.1.1" {
+		t.Errorf("unexpected admin.lan record: %v", gw.DNSRecords["admin.lan"])
+	}
+	if len(gw.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(gw.Rules))
+	}
+	r := gw.Rules[0]
+	if r.IP != "10.0.0.1" || r.MAC != "52:54:00:83:00:11" || r.Interface != "eth1" || r.Target != "relay-node1" {
+		t.Errorf("unexpected compiled rule: %+v", r)
+	}
+}

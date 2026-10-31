@@ -43,8 +43,24 @@ func ParseReader(r io.Reader) (*ConfigAST, error) {
 			continue
 		}
 
-		// 3. Check if this is a port forwarding directive (forward ...)
+		// 3. Check if this is a set directive (set <key> <value>)
 		lowerLine := strings.ToLower(line)
+		if strings.HasPrefix(lowerLine, "set ") || strings.HasPrefix(lowerLine, "set\t") {
+			if err := parseSet(line, lineNum, ast); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// 4. Check if this is a static DNS directive (dns <domain> -> <ips>)
+		if strings.HasPrefix(lowerLine, "dns ") || strings.HasPrefix(lowerLine, "dns\t") {
+			if err := parseDNS(line, lineNum, ast); err != nil {
+				return nil, err
+			}
+			continue
+		}
+
+		// 5. Check if this is a port forwarding directive (forward ...)
 		if lowerLine == "forward" || strings.HasPrefix(lowerLine, "forward ") || strings.HasPrefix(lowerLine, "forward\t") {
 			if err := parseForward(line, lineNum, ast); err != nil {
 				return nil, err
@@ -52,7 +68,7 @@ func ParseReader(r io.Reader) (*ConfigAST, error) {
 			continue
 		}
 
-		// 4. Otherwise it must be a rule directive (... -> ... or ... => ...)
+		// 6. Otherwise it must be a rule directive (... -> ... or ... => ...)
 		if err := parseRule(line, lineNum, ast); err != nil {
 			return nil, err
 		}
@@ -254,11 +270,82 @@ func parseGroupDef(args []string, name string, lineNum int, ast *ConfigAST) erro
 	return nil
 }
 
+func parseSet(line string, lineNum int, ast *ConfigAST) error {
+	fields := strings.Fields(line)
+	if len(fields) < 3 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("incomplete set directive %q: expected 'set <key> <value>'", line)}
+	}
+	key := strings.ToLower(fields[1])
+	idx := strings.Index(line, fields[1])
+	val := strings.TrimSpace(line[idx+len(fields[1]):])
+	ast.Sets = append(ast.Sets, SetAST{
+		Key:   key,
+		Value: val,
+		Line:  lineNum,
+	})
+	return nil
+}
+
+func parseDNS(line string, lineNum int, ast *ConfigAST) error {
+	arrowIdx := strings.Index(line, "->")
+	arrowLen := 2
+	if arrowIdx < 0 {
+		arrowIdx = strings.Index(line, "=>")
+	}
+	if arrowIdx < 0 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("missing '->' in dns directive %q (expected 'dns <domain> -> <ips>')", line)}
+	}
+
+	left := strings.TrimSpace(line[:arrowIdx])
+	right := strings.TrimSpace(line[arrowIdx+arrowLen:])
+
+	leftTokens := strings.Fields(left)
+	if len(leftTokens) != 2 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid dns directive %q: expected 'dns <domain> -> <ips>'", line)}
+	}
+	domain := leftTokens[1]
+	normDomain, err := config.NormalizeDNSRecordDomain(domain)
+	if err != nil {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid domain in dns directive: %v", err)}
+	}
+
+	rawParts := strings.Split(right, ",")
+	var ips []string
+	for _, p := range rawParts {
+		for _, token := range strings.Fields(p) {
+			t := strings.TrimSpace(token)
+			if t != "" {
+				ips = append(ips, t)
+			}
+		}
+	}
+	if len(ips) == 0 {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("missing target IP in dns directive for %q", domain)}
+	}
+	normIPs, err := config.ValidateDNSRecordIPs(ips)
+	if err != nil {
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid IP in dns directive: %v", err)}
+	}
+
+	ast.DNSRecords = append(ast.DNSRecords, DNSAST{
+		Domain: normDomain,
+		IPs:    normIPs,
+		Line:   lineNum,
+	})
+	return nil
+}
+
 func parseRule(line string, lineNum int, ast *ConfigAST) error {
 	arrowIdx := strings.Index(line, "->")
 	arrowLen := 2
 	if arrowIdx < 0 {
 		arrowIdx = strings.Index(line, "=>")
+	}
+	if arrowIdx < 0 {
+		if idx := strings.Index(line, " --to "); idx >= 0 {
+			arrowIdx = idx + 1
+			arrowLen = 5
+		}
 	}
 	if arrowIdx < 0 {
 		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unrecognized directive or missing '->' in %q", line)}
@@ -275,8 +362,80 @@ func parseRule(line string, lineNum int, ast *ConfigAST) error {
 	kindStr := strings.ToLower(leftTokens[0])
 	var kind RuleSubjectKind
 	var subjectVal string
+	var ruleMAC, ruleIP, ruleIface string
 
 	switch kindStr {
+	case "rule":
+		kind = SubjectRule
+		criteriaTokens := normalizeKeyValueTokens(leftTokens[1:])
+		if len(criteriaTokens) == 0 {
+			return &ParseError{Line: lineNum, Msg: "rule directive requires criteria before arrow, e.g. 'rule ip=10.0.0.1 mac=... -> ...'"}
+		}
+		i := 0
+		for i < len(criteriaTokens) {
+			token := criteriaTokens[i]
+			tokenClean := strings.TrimPrefix(token, "--")
+			tokenClean = strings.TrimPrefix(tokenClean, "-")
+			if strings.Contains(tokenClean, "=") {
+				parts := strings.SplitN(tokenClean, "=", 2)
+				k := strings.ToLower(strings.TrimSpace(parts[0]))
+				v := strings.TrimSpace(parts[1])
+				switch k {
+				case "mac":
+					norm, err := config.NormalizeMAC(v)
+					if err != nil {
+						return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid MAC %q: %v", v, err)}
+					}
+					ruleMAC = norm
+				case "ip":
+					norm, err := config.NormalizeIPOrCIDR(v)
+					if err != nil {
+						return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid IP/CIDR %q: %v", v, err)}
+					}
+					ruleIP = norm
+				case "interface", "iface", "i":
+					if err := config.ValidateInterfaceName(v); err != nil {
+						return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid interface %q: %v", v, err)}
+					}
+					ruleIface = v
+				default:
+					return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unknown rule criterion %q in rule directive", k)}
+				}
+				i++
+			} else {
+				k := strings.ToLower(tokenClean)
+				if i+1 >= len(criteriaTokens) {
+					return &ParseError{Line: lineNum, Msg: fmt.Sprintf("missing value for criterion %q", token)}
+				}
+				v := criteriaTokens[i+1]
+				switch k {
+				case "mac":
+					norm, err := config.NormalizeMAC(v)
+					if err != nil {
+						return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid MAC %q: %v", v, err)}
+					}
+					ruleMAC = norm
+				case "ip":
+					norm, err := config.NormalizeIPOrCIDR(v)
+					if err != nil {
+						return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid IP/CIDR %q: %v", v, err)}
+					}
+					ruleIP = norm
+				case "interface", "iface", "i":
+					if err := config.ValidateInterfaceName(v); err != nil {
+						return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid interface %q: %v", v, err)}
+					}
+					ruleIface = v
+				default:
+					return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unknown rule criterion %q in rule directive", token)}
+				}
+				i += 2
+			}
+		}
+		if ruleMAC == "" && ruleIP == "" && ruleIface == "" {
+			return &ParseError{Line: lineNum, Msg: "rule directive requires at least one of mac=..., ip=..., or interface=..."}
+		}
+
 	case "local":
 		if len(leftTokens) > 1 {
 			return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unexpected arguments after 'local': %q", strings.Join(leftTokens[1:], " "))}
@@ -314,6 +473,7 @@ func parseRule(line string, lineNum int, ast *ConfigAST) error {
 		}
 		kind = SubjectMAC
 		subjectVal = normMAC
+		ruleMAC = normMAC
 
 	case "interface", "iface":
 		if len(leftTokens) != 2 {
@@ -324,6 +484,7 @@ func parseRule(line string, lineNum int, ast *ConfigAST) error {
 		}
 		kind = SubjectInterface
 		subjectVal = leftTokens[1]
+		ruleIface = leftTokens[1]
 
 	case "ip":
 		if len(leftTokens) != 2 {
@@ -337,9 +498,10 @@ func parseRule(line string, lineNum int, ast *ConfigAST) error {
 		}
 		kind = SubjectIP
 		subjectVal = ipVal
+		ruleIP = ipVal
 
 	default:
-		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unknown rule subject kind %q (expected local, zone, device, group, mac, interface, or ip)", leftTokens[0])}
+		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unknown rule subject kind %q (expected rule, local, zone, device, group, mac, interface, or ip)", leftTokens[0])}
 	}
 
 	rightTokens := strings.Fields(right)
@@ -365,6 +527,24 @@ func parseRule(line string, lineNum int, ast *ConfigAST) error {
 				return &ParseError{Line: lineNum, Msg: fmt.Sprintf("invalid option format %q", optToken)}
 			}
 			options = append(options, RuleOption{Key: k, Value: v})
+			switch strings.ToLower(k) {
+			case "interface", "iface":
+				if ruleIface == "" {
+					ruleIface = v
+				}
+			case "mac":
+				if ruleMAC == "" {
+					if norm, err := config.NormalizeMAC(v); err == nil {
+						ruleMAC = norm
+					}
+				}
+			case "ip":
+				if ruleIP == "" {
+					if norm, err := config.NormalizeIPOrCIDR(v); err == nil {
+						ruleIP = norm
+					}
+				}
+			}
 		} else {
 			options = append(options, RuleOption{Key: optToken, Value: "true"})
 		}
@@ -373,6 +553,9 @@ func parseRule(line string, lineNum int, ast *ConfigAST) error {
 	ast.Rules = append(ast.Rules, RuleAST{
 		Kind:         kind,
 		SubjectValue: subjectVal,
+		MAC:          ruleMAC,
+		IP:           ruleIP,
+		Interface:    ruleIface,
 		Target:       target,
 		Options:      options,
 		Line:         lineNum,
@@ -424,6 +607,12 @@ func parseForward(line string, lineNum int, ast *ConfigAST) error {
 	arrowLen := 2
 	if arrowIdx < 0 {
 		arrowIdx = strings.Index(line, "=>")
+	}
+	if arrowIdx < 0 {
+		if idx := strings.Index(line, " --to "); idx >= 0 {
+			arrowIdx = idx + 1
+			arrowLen = 5
+		}
 	}
 	if arrowIdx < 0 {
 		return &ParseError{Line: lineNum, Msg: fmt.Sprintf("unrecognized directive or missing '->' in %q", line)}

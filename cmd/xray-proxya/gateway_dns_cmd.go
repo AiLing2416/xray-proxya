@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/gatewayconf"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -15,24 +16,164 @@ import (
 var (
 	gatewayDNSStatusJSON bool
 
-	dnsSetListen   string
-	dnsSetPort     int
-	dnsSetOff      bool
-	dnsSetServers  []string
-	dnsSetStrategy string
-	dnsSetReset    bool
+	dnsSetListen      string
+	dnsSetPort        int
+	dnsSetOff         bool
+	dnsSetServers     []string
+	dnsSetStrategy    string
+	dnsSetReset       bool
+	dnsRecordAddSlice []string
+	dnsRecordDelStr   string
+	dnsRecordClear    bool
+	dnsStatusFlag     bool
 )
 
 var gatewayDNSCmd = &cobra.Command{
 	Use:   "dns",
 	Short: "Manage gateway internal DNS resolution and static records (STAGING)",
-	Args:  cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runGatewayDNSStatus(cmd, args)
-	},
+	Args:  cobra.ArbitraryArgs,
+	RunE:  runGatewayDNS,
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		return utils.RequireRootShell("gateway dns")
 	},
+}
+
+func runGatewayDNS(cmd *cobra.Command, args []string) error {
+	defer func() {
+		dnsRecordAddSlice = nil
+		dnsRecordDelStr = ""
+		dnsRecordClear = false
+		dnsStatusFlag = false
+		dnsSetListen = ""
+		dnsSetPort = 0
+		dnsSetOff = false
+		dnsSetServers = nil
+		dnsSetStrategy = ""
+		dnsSetReset = false
+	}()
+
+	hasAction := false
+
+	// 1. Record Add via flag or positional args
+	if cmd.Flags().Changed("record-add") {
+		hasAction = true
+		var recordAddArgs []string
+		for _, s := range dnsRecordAddSlice {
+			s = strings.TrimSpace(s)
+			if s != "" && s != "[]" {
+				recordAddArgs = append(recordAddArgs, s)
+			}
+		}
+		recordAddArgs = append(recordAddArgs, args...)
+		if len(recordAddArgs) < 2 {
+			return fmt.Errorf("❌ --record-add requires domain and at least one IP: --record-add <domain> <ip1> [ip2...]")
+		}
+		domain, err := config.NormalizeDNSRecordDomain(recordAddArgs[0])
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		ips, err := config.ValidateDNSRecordIPs(recordAddArgs[1:])
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		err = gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.UpdateDNSRecord(content, domain, ips)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		}
+		fmt.Printf("✅ Static record %s -> %s set in STAGING (gateway.conf).\n", domain, strings.Join(ips, ", "))
+	}
+
+	// 2. Record Del
+	if cmd.Flags().Changed("record-del") && dnsRecordDelStr != "" {
+		hasAction = true
+		domain, err := config.NormalizeDNSRecordDomain(dnsRecordDelStr)
+		if err != nil {
+			return fmt.Errorf("❌ %w", err)
+		}
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg != nil {
+			if _, exists := cfg.Gateway.DNSRecords[domain]; !exists {
+				return fmt.Errorf("❌ Static record for domain %q not found in STAGING", domain)
+			}
+		}
+		err = gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.DeleteDNSRecord(content, domain)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		}
+		fmt.Printf("✅ Static record for %s removed from STAGING (gateway.conf).\n", domain)
+	}
+
+	// 3. Record Clear
+	if cmd.Flags().Changed("record-clear") && dnsRecordClear {
+		hasAction = true
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.ClearDNSRecords(content)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		}
+		fmt.Println("✅ Cleared all static DNS records in STAGING (gateway.conf).")
+	}
+
+	// 4. DNS Settings (listen, port, off, strategy, servers, reset)
+	if dnsSetReset || dnsSetOff || cmd.Flags().Changed("listen") || cmd.Flags().Changed("port") || cmd.Flags().Changed("strategy") || cmd.Flags().Changed("servers") {
+		hasAction = true
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			if dnsSetReset {
+				content = gatewayconf.DeleteSet(content, "dns_listen")
+				content = gatewayconf.DeleteSet(content, "dns_strategy")
+				content = gatewayconf.DeleteSet(content, "dns_servers")
+			}
+			if dnsSetOff {
+				content = gatewayconf.UpdateSet(content, "dns_listen", "off")
+			}
+			if cmd.Flags().Changed("listen") {
+				_, _, normListen, err := config.ParseDNSListen(dnsSetListen)
+				if err == nil {
+					content = gatewayconf.UpdateSet(content, "dns_listen", normListen)
+				}
+			}
+			if cmd.Flags().Changed("port") {
+				if dnsSetPort >= 1 && dnsSetPort <= 65535 {
+					listenAddr := fmt.Sprintf(":%d", dnsSetPort)
+					content = gatewayconf.UpdateSet(content, "dns_listen", listenAddr)
+				}
+			}
+			if cmd.Flags().Changed("strategy") {
+				if norm, ok := config.NormalizeDNSQueryStrategy(dnsSetStrategy); ok {
+					content = gatewayconf.UpdateSet(content, "dns_strategy", norm)
+				}
+			}
+			if cmd.Flags().Changed("servers") {
+				var normServers []string
+				for _, s := range dnsSetServers {
+					s = strings.TrimSpace(s)
+					if s != "" {
+						if norm, err := config.ValidateDNSServerEntry(s); err == nil {
+							normServers = append(normServers, norm)
+						}
+					}
+				}
+				content = gatewayconf.UpdateSet(content, "dns_servers", strings.Join(normServers, ", "))
+			}
+			return content
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		}
+		fmt.Println("✅ Gateway DNS parameters updated in STAGING (gateway.conf).")
+	}
+
+	if hasAction {
+		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		return nil
+	}
+
+	return runGatewayDNSStatus(cmd, args)
 }
 
 type GatewayDNSConfigJSON struct {
@@ -160,80 +301,57 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Error: No flags specified. Run 'xray-proxya gateway dns set --help' for usage.")
 	}
 
-	cfg, err := config.LoadConfigEx(true)
-	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
-	}
-
 	reset, _ := cmd.Flags().GetBool("reset")
-	if reset {
-		cfg.Gateway.DNSListen = ""
-		cfg.Gateway.DNSStrategy = ""
-		cfg.Gateway.DNSServers = nil
-	}
-
 	off, _ := cmd.Flags().GetBool("off")
-	if off {
-		cfg.Gateway.DNSListen = ""
-	}
 
-	if cmd.Flags().Changed("listen") {
-		listen, _ := cmd.Flags().GetString("listen")
-		_, _, normListen, err := config.ParseDNSListen(listen)
-		if err != nil {
-			return fmt.Errorf("❌ Invalid dns listen address: %w", err)
+	err := gatewayconf.ModifyGatewayConf(func(content string) string {
+		if reset {
+			content = gatewayconf.DeleteSet(content, "dns_listen")
+			content = gatewayconf.DeleteSet(content, "dns_strategy")
+			content = gatewayconf.DeleteSet(content, "dns_servers")
 		}
-		cfg.Gateway.DNSListen = normListen
-	}
-
-	if cmd.Flags().Changed("port") {
-		port, _ := cmd.Flags().GetInt("port")
-		if port < 1 || port > 65535 {
-			return fmt.Errorf("❌ Invalid port %d: must be between 1 and 65535", port)
+		if off {
+			content = gatewayconf.UpdateSet(content, "dns_listen", "off")
 		}
-		if cfg.Gateway.DNSListen == "" {
-			cfg.Gateway.DNSListen = fmt.Sprintf("127.0.0.1:%d", port)
-		} else {
-			host, _, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen)
-			if err != nil || host == "::" {
-				cfg.Gateway.DNSListen = fmt.Sprintf(":%d", port)
-			} else if strings.Contains(host, ":") {
-				cfg.Gateway.DNSListen = fmt.Sprintf("[%s]:%d", host, port)
-			} else {
-				cfg.Gateway.DNSListen = fmt.Sprintf("%s:%d", host, port)
+		if cmd.Flags().Changed("listen") {
+			listen, _ := cmd.Flags().GetString("listen")
+			_, _, normListen, err := config.ParseDNSListen(listen)
+			if err == nil {
+				content = gatewayconf.UpdateSet(content, "dns_listen", normListen)
 			}
 		}
-	}
-
-	if cmd.Flags().Changed("strategy") {
-		strategy, _ := cmd.Flags().GetString("strategy")
-		norm, ok := config.NormalizeDNSQueryStrategy(strategy)
-		if !ok {
-			return fmt.Errorf("❌ Invalid dns strategy %q (must be UseIP, UseIPv4, or UseIPv6)", strategy)
-		}
-		cfg.Gateway.DNSStrategy = norm
-	}
-
-	if cmd.Flags().Changed("servers") {
-		servers, _ := cmd.Flags().GetStringSlice("servers")
-		var normServers []string
-		for _, s := range servers {
-			s = strings.TrimSpace(s)
-			if s == "" {
-				continue
+		if cmd.Flags().Changed("port") {
+			port, _ := cmd.Flags().GetInt("port")
+			if port >= 1 && port <= 65535 {
+				listenAddr := fmt.Sprintf(":%d", port)
+				content = gatewayconf.UpdateSet(content, "dns_listen", listenAddr)
 			}
-			norm, err := config.ValidateDNSServerEntry(s)
-			if err != nil {
-				return fmt.Errorf("❌ Invalid dns server %q: %w", s, err)
-			}
-			normServers = append(normServers, norm)
 		}
-		cfg.Gateway.DNSServers = normServers
+		if cmd.Flags().Changed("strategy") {
+			strategy, _ := cmd.Flags().GetString("strategy")
+			if norm, ok := config.NormalizeDNSQueryStrategy(strategy); ok {
+				content = gatewayconf.UpdateSet(content, "dns_strategy", norm)
+			}
+		}
+		if cmd.Flags().Changed("servers") {
+			servers, _ := cmd.Flags().GetStringSlice("servers")
+			var normServers []string
+			for _, s := range servers {
+				s = strings.TrimSpace(s)
+				if s != "" {
+					if norm, err := config.ValidateDNSServerEntry(s); err == nil {
+						normServers = append(normServers, norm)
+					}
+				}
+			}
+			content = gatewayconf.UpdateSet(content, "dns_servers", strings.Join(normServers, ", "))
+		}
+		return content
+	})
+	if err != nil {
+		return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 	}
 
-	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
-	}
 	fmt.Println("✅ Gateway DNS parameters updated in STAGING.")
 	fmt.Println("🚀 Run 'apply' to commit changes.")
 	return nil
@@ -261,16 +379,11 @@ var gatewayDNSRecordSetCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("❌ %w", err)
 		}
-		cfg, err := config.LoadConfigEx(true)
-		if err != nil || cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config: %v", err)
-		}
-		if cfg.Gateway.DNSRecords == nil {
-			cfg.Gateway.DNSRecords = make(map[string][]string)
-		}
-		cfg.Gateway.DNSRecords[domain] = ips
-		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		err = gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.UpdateDNSRecord(content, domain, ips)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 		}
 		fmt.Printf("✅ Static record %s -> %s set in STAGING.\n", domain, strings.Join(ips, ", "))
 		fmt.Println("🚀 Run 'apply' to commit changes.")
@@ -289,19 +402,17 @@ var gatewayDNSRecordDelCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("❌ %w", err)
 		}
-		cfg, err := config.LoadConfigEx(true)
-		if err != nil || cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg != nil {
+			if _, exists := cfg.Gateway.DNSRecords[domain]; !exists {
+				return fmt.Errorf("❌ Static record for domain %q not found in STAGING", domain)
+			}
 		}
-		if cfg.Gateway.DNSRecords == nil {
-			return fmt.Errorf("❌ Record for domain %q not found in staging", domain)
-		}
-		if _, exists := cfg.Gateway.DNSRecords[domain]; !exists {
-			return fmt.Errorf("❌ Record for domain %q not found in staging", domain)
-		}
-		delete(cfg.Gateway.DNSRecords, domain)
-		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		err = gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.DeleteDNSRecord(content, domain)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 		}
 		fmt.Printf("✅ Static record for %s removed in STAGING.\n", domain)
 		fmt.Println("🚀 Run 'apply' to commit changes.")
@@ -342,13 +453,11 @@ var gatewayDNSRecordClearCmd = &cobra.Command{
 	Short: "Clear all static DNS records in STAGING",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.LoadConfigEx(true)
-		if err != nil || cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config: %v", err)
-		}
-		cfg.Gateway.DNSRecords = make(map[string][]string)
-		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		err := gatewayconf.ModifyGatewayConf(func(content string) string {
+			return gatewayconf.ClearDNSRecords(content)
+		})
+		if err != nil {
+			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 		}
 		fmt.Println("✅ Cleared all static DNS records in STAGING.")
 		fmt.Println("🚀 Run 'apply' to commit changes.")
@@ -376,6 +485,17 @@ func completeDNSRecordDomains(cmd *cobra.Command, args []string, toComplete stri
 
 func init() {
 	gatewayDNSCmd.Flags().BoolVar(&gatewayDNSStatusJSON, "json", false, "Output in JSON format")
+	gatewayDNSCmd.Flags().BoolVar(&dnsStatusFlag, "status", false, "Show gateway DNS configuration")
+	gatewayDNSCmd.Flags().StringSliceVar(&dnsRecordAddSlice, "record-add", nil, "Add static record: <domain> <ip1> [ip2...]")
+	gatewayDNSCmd.Flags().StringVar(&dnsRecordDelStr, "record-del", "", "Remove static record for domain")
+	gatewayDNSCmd.Flags().BoolVar(&dnsRecordClear, "record-clear", false, "Clear all static records")
+	gatewayDNSCmd.Flags().StringVarP(&dnsSetListen, "listen", "l", "", "DNS listen address (e.g. 127.0.0.1:5353, :53)")
+	gatewayDNSCmd.Flags().IntVarP(&dnsSetPort, "port", "p", 0, "DNS listen port (e.g. 5353)")
+	gatewayDNSCmd.Flags().BoolVar(&dnsSetOff, "off", false, "Disable gateway DNS listener")
+	gatewayDNSCmd.Flags().StringSliceVarP(&dnsSetServers, "servers", "v", nil, "Upstream DNS servers (e.g. 1.1.1.1, tcp://8.8.8.8:53, https://1.1.1.1/dns-query)")
+	gatewayDNSCmd.Flags().StringVarP(&dnsSetStrategy, "strategy", "s", "", "DNS query strategy (UseIP, UseIPv4, UseIPv6)")
+	gatewayDNSCmd.Flags().BoolVar(&dnsSetReset, "reset", false, "Reset gateway DNS listen, strategy, and servers to empty/default")
+
 	gatewayDNSStatusCmd.Flags().BoolVar(&gatewayDNSStatusJSON, "json", false, "Output in JSON format")
 
 	gatewayDNSSetCmd.Flags().StringVarP(&dnsSetListen, "listen", "l", "", "DNS listen address (e.g. 127.0.0.1:5353, :53)")
