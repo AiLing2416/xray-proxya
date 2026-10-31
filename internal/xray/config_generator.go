@@ -123,8 +123,9 @@ func buildDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget st
 	}
 
 	hosts := map[string]interface{}{
-		"dns.google":         "8.8.8.8",
-		"cloudflare-dns.com": "1.1.1.1",
+		"dns.google":                  "8.8.8.8",
+		"cloudflare-dns.com":          "1.1.1.1",
+		"engage.cloudflareclient.com": []interface{}{"162.159.192.1", "2606:4700:d0::a29f:c001"},
 	}
 
 	if isGateway && userCfg != nil && len(userCfg.Gateway.DNSRecords) > 0 {

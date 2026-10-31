@@ -14,6 +14,7 @@ const (
 	ProtoHTTP        = "http"
 	ProtoFreedom     = "freedom"
 	ProtoHysteria2   = "hysteria2"
+	ProtoWireGuard   = "wireguard"
 )
 
 // NodeSpec represents a strongly-typed proxy node specification
@@ -95,7 +96,7 @@ func (n *NodeSpec) TransportSummary() string {
 		switch n.Protocol {
 		case ProtoShadowsocks, ProtoSocks, ProtoHTTP, ProtoFreedom:
 			transport = "tcp"
-		case ProtoHysteria2:
+		case ProtoHysteria2, ProtoWireGuard:
 			transport = "udp"
 		}
 	}

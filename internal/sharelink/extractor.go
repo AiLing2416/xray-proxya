@@ -2,6 +2,7 @@ package sharelink
 
 import (
 	"fmt"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -64,6 +65,21 @@ func FromOutbound(outbound map[string]interface{}) *NodeSpec {
 		spec.Protocol = ProtoHysteria2
 		spec.Address = stringValue(settings["address"])
 		spec.Port = intValue(settings["port"])
+
+	case ProtoWireGuard:
+		if peers := getMapSlice(settings, "peers"); len(peers) > 0 {
+			endpoint := stringValue(peers[0]["endpoint"])
+			host, portStr, err := net.SplitHostPort(endpoint)
+			if err == nil {
+				spec.Address = host
+				spec.Port, _ = strconv.Atoi(portStr)
+			} else {
+				spec.Address = endpoint
+			}
+			if pubKey := stringValue(peers[0]["publicKey"]); pubKey != "" {
+				spec.PublicKey = pubKey
+			}
+		}
 	}
 
 	if stream != nil {

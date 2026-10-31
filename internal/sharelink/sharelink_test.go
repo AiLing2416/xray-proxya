@@ -393,4 +393,37 @@ func TestParseVLESS_CertPinning(t *testing.T) {
 	}
 }
 
+func TestFromOutbound_WireGuard(t *testing.T) {
+	outbound := map[string]interface{}{
+		"protocol": "wireguard",
+		"settings": map[string]interface{}{
+			"secretKey": "testSecretKey=",
+			"address":   []string{"172.16.0.2/32", "2606:4700::1/128"},
+			"peers": []interface{}{
+				map[string]interface{}{
+					"publicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+					"endpoint":  "engage.cloudflareclient.com:2408",
+				},
+			},
+			"reserved": []int{1, 2, 3},
+			"mtu":      1280,
+		},
+	}
+
+	spec := FromOutbound(outbound)
+	if spec.Protocol != ProtoWireGuard {
+		t.Fatalf("Protocol = %s, want %s", spec.Protocol, ProtoWireGuard)
+	}
+	if spec.Address != "engage.cloudflareclient.com" || spec.Port != 2408 {
+		t.Fatalf("Address:Port = %s:%d, want engage.cloudflareclient.com:2408", spec.Address, spec.Port)
+	}
+	if spec.ServerSpec() != "engage.cloudflareclient.com:2408" {
+		t.Fatalf("ServerSpec = %s, want engage.cloudflareclient.com:2408", spec.ServerSpec())
+	}
+	if spec.TransportSummary() != "udp" {
+		t.Fatalf("TransportSummary = %s, want udp", spec.TransportSummary())
+	}
+}
+
+
 
