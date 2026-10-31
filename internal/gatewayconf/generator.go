@@ -129,7 +129,7 @@ func Generate(gw *config.GatewayConfig) string {
 		b.WriteString("set nat false\n")
 		hasGlobal = true
 	}
-	if gw.TProxyPort > 0 && gw.TProxyPort != 12345 {
+	if gw.TProxyPort > 0 && gw.TProxyPort != config.DefaultTProxyPort {
 		b.WriteString(fmt.Sprintf("set tproxy_port %d\n", gw.TProxyPort))
 		hasGlobal = true
 	}

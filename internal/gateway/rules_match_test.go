@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -140,12 +141,12 @@ func TestBuildNFTScript_WithIPRules(t *testing.T) {
 	}
 
 	// IPv4 relay tproxy rule uses "tproxy ip to :port"
-	if !strings.Contains(rules, "ip saddr 10.0.0.0/24 meta l4proto { tcp, udp } tproxy ip to :12346 meta mark set 1 accept") {
+	if !strings.Contains(rules, fmt.Sprintf("ip saddr 10.0.0.0/24 meta l4proto { tcp, udp } tproxy ip to :%d meta mark set 1 accept", config.DefaultTProxyPort+1)) {
 		t.Errorf("expected tproxy ip rule for 10.0.0.0/24, got:\n%s", rules)
 	}
 
 	// IPv6 relay tproxy rule uses "tproxy ip6 to :port"
-	if !strings.Contains(rules, "ip6 saddr fd00:82::1 meta l4proto { tcp, udp } tproxy ip6 to :12346 meta mark set 1 accept") {
+	if !strings.Contains(rules, fmt.Sprintf("ip6 saddr fd00:82::1 meta l4proto { tcp, udp } tproxy ip6 to :%d meta mark set 1 accept", config.DefaultTProxyPort+1)) {
 		t.Errorf("expected tproxy ip6 rule for fd00:82::1, got:\n%s", rules)
 	}
 

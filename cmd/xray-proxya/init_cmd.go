@@ -130,7 +130,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		cfg.Gateway.LocalEnabled = true
 		cfg.Gateway.LANEnabled = true
 		cfg.Gateway.Mode = "tproxy"
-		cfg.Gateway.TProxyPort = config.DefaultTProxyPort
+		cfg.Gateway.TProxyPort = config.AllocateTProxyBasePort()
 		if iface, err := gateway.DetectDefaultInterface(); err == nil {
 			cfg.Gateway.LANInterface = iface
 		}

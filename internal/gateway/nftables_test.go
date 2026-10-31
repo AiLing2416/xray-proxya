@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"fmt"
 	"errors"
 	"os"
 	"os/exec"
@@ -112,13 +113,13 @@ func TestBuildNFTConditionalChains(t *testing.T) {
 	if !strings.Contains(rulesBoth, "chain input") {
 		t.Error("rules should contain input chain when gateway is enabled")
 	}
-	if !strings.Contains(rulesBoth, "meta mark != 1 meta l4proto { tcp, udp } th dport 12345 drop") {
+	if !strings.Contains(rulesBoth, fmt.Sprintf("meta mark != 1 meta l4proto { tcp, udp } th dport %d drop", config.DefaultTProxyPort)) {
 		t.Error("input chain should contain tproxy port guard")
 	}
 	if !strings.Contains(rulesBoth, "fib daddr type local return") {
 		t.Error("output chain should contain fib daddr type local return")
 	}
-	if !strings.Contains(rulesBoth, "tproxy to :12345 meta mark set 1 accept") {
+	if !strings.Contains(rulesBoth, fmt.Sprintf("tproxy to :%d meta mark set 1 accept", config.DefaultTProxyPort)) {
 		t.Error("prerouting should contain tproxy interception rule")
 	}
 
@@ -154,7 +155,7 @@ func TestBuildNFT_Proxy_LocalOnly_GeneratesPreroutingAndOutput(t *testing.T) {
 	if !strings.Contains(rules, "chain output") {
 		t.Error("rules must contain output chain when LocalEnabled is true in proxy state")
 	}
-	if !strings.Contains(rules, "tproxy to :12345 meta mark set 1 accept") {
+	if !strings.Contains(rules, fmt.Sprintf("tproxy to :%d meta mark set 1 accept", config.DefaultTProxyPort)) {
 		t.Error("rules must contain tproxy rule in prerouting")
 	}
 }
@@ -801,7 +802,7 @@ func TestBuildNFT_LocalLANDNSInterception(t *testing.T) {
 	if strings.Contains(rulesTProxy, `iifname != "lo" fib daddr type local return`) {
 		t.Fatalf("did not expect blanket local return in prerouting when DNSListen is empty and LANEnabled is true, got:\n%s", rulesTProxy)
 	}
-	expectedTProxyCapture := `fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :12345 meta mark set 1 accept`
+	expectedTProxyCapture := fmt.Sprintf("fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :%d meta mark set 1 accept", config.DefaultTProxyPort)
 	if !strings.Contains(rulesTProxy, expectedTProxyCapture) {
 		t.Fatalf("expected local DNS tproxy capture rule %q in prerouting, got:\n%s", expectedTProxyCapture, rulesTProxy)
 	}
@@ -1221,7 +1222,7 @@ func TestValidateInterfaceNameAndPorts(t *testing.T) {
 	if _, err := config.ValidateGatewayRule(config.GatewayRule{Interface: `e"th`, Target: "direct"}); err == nil {
 		t.Error("rule with unsafe interface must be rejected")
 	}
-	cfg := &config.UserConfig{Role: config.RoleGateway, APIInbound: 12346}
+	cfg := &config.UserConfig{Role: config.RoleGateway, APIInbound: config.DefaultTProxyPort + 1}
 	cfg.Gateway.RelayAlias = "a"
 	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth1", Target: "b"}}
 	cfg.CustomOutbounds = []config.CustomOutbound{{Alias: "a", Enabled: true}, {Alias: "b", Enabled: true}}
@@ -1250,7 +1251,7 @@ func TestBuildNFTMulti_TUNModeDirectRules(t *testing.T) {
 	if !strings.Contains(out, `ether saddr aa:bb:cc:dd:ee:02 drop`) {
 		t.Fatalf("expected fail-closed drop for unknown relay rule, got:\n%s", out)
 	}
-	if !strings.Contains(out, `meta l4proto { tcp, udp } tproxy to :12345 meta mark set 1 accept`) {
+	if !strings.Contains(out, fmt.Sprintf("meta l4proto { tcp, udp } tproxy to :%d meta mark set 1 accept", config.DefaultTProxyPort)) {
 		t.Fatalf("expected standard TProxy rule in nftables, got:\n%s", out)
 	}
 }

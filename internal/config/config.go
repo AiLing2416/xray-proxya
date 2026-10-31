@@ -36,7 +36,11 @@ const (
 )
 
 const (
-	DefaultTProxyPort = 12345
+	DefaultTProxyPort = 53905
+
+	// tproxyPortSpan is the number of consecutive ports (base + relay offsets)
+	// that must be free for a base port to be accepted.
+	tproxyPortSpan = 8
 )
 
 type PresetMode string
@@ -1140,7 +1144,7 @@ func GatewayRelayActive(userCfg *UserConfig, alias string) bool {
 }
 
 // GatewayTProxyPorts returns a map of relay aliases to their allocated TProxy ports.
-// The default relay alias (if set and not direct/block) uses basePort (default 12345).
+// The default relay alias (if set and not direct/block) uses basePort (default DefaultTProxyPort).
 // Additional relay targets specified in Gateway.Rules receive basePort + len(ports).
 func GatewayTProxyPorts(userCfg *UserConfig) map[string]int {
 	ports := make(map[string]int)
@@ -1407,6 +1411,47 @@ func AllocateRandomSkinPort() int {
 		}
 	}
 	return 9443
+}
+
+// tproxyPortRangeFree reports whether base..base+tproxyPortSpan-1 can all be
+// bound on both TCP and UDP (TProxy listens on "::" for tcp,udp).
+func tproxyPortRangeFree(base int) bool {
+	if base < 1024 || base+tproxyPortSpan > 65535 {
+		return false
+	}
+	for p := base; p < base+tproxyPortSpan; p++ {
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", p))
+		if err != nil {
+			return false
+		}
+		_ = ln.Close()
+		pc, err := net.ListenPacket("udp", fmt.Sprintf(":%d", p))
+		if err != nil {
+			return false
+		}
+		_ = pc.Close()
+	}
+	return true
+}
+
+// AllocateTProxyBasePort returns DefaultTProxyPort when it (and the following
+// relay ports) is free, otherwise backs off to random ports in 20000-59999.
+// If nothing is free after several attempts it returns DefaultTProxyPort and
+// leaves conflict reporting to validation/doctor.
+func AllocateTProxyBasePort() int {
+	if tproxyPortRangeFree(DefaultTProxyPort) {
+		return DefaultTProxyPort
+	}
+	for i := 0; i < 50; i++ {
+		n, err := rand.Int(rand.Reader, big.NewInt(40000))
+		if err != nil {
+			break
+		}
+		if port := int(n.Int64()) + 20000; tproxyPortRangeFree(port) {
+			return port
+		}
+	}
+	return DefaultTProxyPort
 }
 
 // GetSkinPort returns the configured Web camouflage skin port.
