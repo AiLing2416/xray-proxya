@@ -5,10 +5,14 @@
 set -e
 
 GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+YELLOW='\033[0;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}🛠️ Starting Xray-Proxya local build...${NC}"
+TARGET="${1:-full}"
+
+echo -e "${GREEN}🛠️ Starting Xray-Proxya local build (target: ${TARGET})...${NC}"
 
 # 1. Environment Detection
 if ! command -v go &> /dev/null; then
@@ -19,17 +23,38 @@ fi
 GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
 echo -e "📦 Detected Go version: $GO_VERSION"
 
-# 2. Perform Build
-echo -e "🚀 Building statically linked binary..."
 mkdir -p build
-CGO_ENABLED=0 go build -ldflags "-s -w" -o build/xray-proxya ./cmd/xray-proxya/
-CGO_ENABLED=0 go build -ldflags "-s -w" -o build/pathd ./cmd/xray-proxya-pathd/
 
-# 3. Verify
-if [ -f "build/xray-proxya" ] && [ -f "build/pathd" ]; then
-	echo -e "${GREEN}✅ Build successful: build/xray-proxya and build/pathd${NC}"
-    build/xray-proxya version
-else
-    echo -e "${RED}❌ Build failed.${NC}"
-    exit 1
-fi
+case "$TARGET" in
+    slim)
+        echo -e "🚀 Building statically linked Slim binary (-trimpath -tags slim)..."
+        CGO_ENABLED=0 go build -trimpath -tags slim -ldflags "-s -w" -o build/xray-proxya-slim ./cmd/xray-proxya/
+        CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/pathd ./cmd/xray-proxya-pathd/
+        echo -e "${GREEN}✅ Build successful: build/xray-proxya-slim and build/pathd${NC}"
+        ls -lh build/xray-proxya-slim build/pathd
+        echo ""
+        build/xray-proxya-slim version
+        ;;
+    all)
+        echo -e "🚀 Building statically linked Full binary (-trimpath)..."
+        CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/xray-proxya ./cmd/xray-proxya/
+        echo -e "🚀 Building statically linked Slim binary (-trimpath -tags slim)..."
+        CGO_ENABLED=0 go build -trimpath -tags slim -ldflags "-s -w" -o build/xray-proxya-slim ./cmd/xray-proxya/
+        CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/pathd ./cmd/xray-proxya-pathd/
+        echo -e "${GREEN}✅ Build successful: build/xray-proxya, build/xray-proxya-slim, and build/pathd${NC}"
+        ls -lh build/xray-proxya build/xray-proxya-slim build/pathd
+        echo ""
+        build/xray-proxya version
+        echo ""
+        build/xray-proxya-slim version
+        ;;
+    full|default|*)
+        echo -e "🚀 Building statically linked binary (-trimpath)..."
+        CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/xray-proxya ./cmd/xray-proxya/
+        CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/pathd ./cmd/xray-proxya-pathd/
+        echo -e "${GREEN}✅ Build successful: build/xray-proxya and build/pathd${NC}"
+        ls -lh build/xray-proxya build/pathd
+        echo ""
+        build/xray-proxya version
+        ;;
+esac

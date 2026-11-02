@@ -3,9 +3,9 @@ package skin
 import (
 	"crypto/rand"
 	"crypto/tls"
-	"embed"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
@@ -25,8 +25,8 @@ import (
 	"xray-proxya/internal/config"
 )
 
-//go:embed assets/*
-var assetsFS embed.FS
+// ErrSkinDisabled is returned when skin operations are invoked in a slim build.
+var ErrSkinDisabled = errors.New("web skin feature is disabled in slim build")
 
 // DelaySimulateAuth controls whether simulated password hashing delay is enabled (can be disabled in tests).
 var DelaySimulateAuth = true
@@ -73,6 +73,9 @@ func generateBase62(n int) string {
 
 // NewHandler creates an http.Handler implementing the requested skin camouflage.
 func NewHandler(skinType string) (http.Handler, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
 	st := strings.ToLower(strings.TrimSpace(skinType))
 	switch st {
 	case config.SkinFilebrowser:
@@ -176,6 +179,9 @@ func (ch *certHolder) getCertificate() (*tls.Certificate, error) {
 // It uses SNI in the TLS ClientHello to dynamically serve each domain's valid certificate,
 // and routes incoming HTTP requests to each domain's configured skin handler.
 func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin string) (*http.Server, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
 	handlers := make(map[string]http.Handler)
 	certHolders := make(map[string]*certHolder)
 	var firstHolder *certHolder
@@ -347,6 +353,9 @@ func addFilebrowserHeaders(next http.Handler) http.Handler {
 }
 
 func newFilebrowserHandler() (http.Handler, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
 	sub, err := fs.Sub(assetsFS, "assets/filebrowser")
 	if err != nil {
 		return nil, err
@@ -590,6 +599,9 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 }
 
 func newNextcloudHandler() (http.Handler, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
 	sub, err := fs.Sub(assetsFS, "assets/nextcloud")
 	if err != nil {
 		return nil, err
@@ -970,6 +982,9 @@ func serveSeafileStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 var reCsrfToken = regexp.MustCompile(`name="csrfmiddlewaretoken" value="[^"]*"`)
 
 func newSeafileHandler() (http.Handler, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
 	sub, err := fs.Sub(assetsFS, "assets/seafile")
 	if err != nil {
 		return nil, err

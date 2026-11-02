@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"xray-proxya/internal/buildinfo"
 	"xray-proxya/internal/config"
 
 	"github.com/spf13/pflag"
@@ -225,6 +226,9 @@ func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
 }
 
 func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
+	if buildinfo.IsSlim {
+		t.Skip("Skin configuration is disabled in slim build")
+	}
 	setupTestConfigDir(t)
 
 	cfg := &config.UserConfig{
@@ -490,6 +494,9 @@ func TestPresetsSetHysteria2ManualSNI(t *testing.T) {
 }
 
 func TestPresetsSetHysteria2SkinWithSelfSigned(t *testing.T) {
+	if buildinfo.IsSlim {
+		t.Skip("Skin configuration is disabled in slim build")
+	}
 	setupTestConfigDir(t)
 
 	cfg := &config.UserConfig{
@@ -572,5 +579,53 @@ func TestPresetsSetHysteria2SkinWithSelfSigned(t *testing.T) {
 	}
 	if h2.Settings.CertPEM == "" || len(h2.Settings.PublicKey) != 64 {
 		t.Errorf("missing self-signed cert after skin-domain update")
+	}
+}
+
+func TestPresetsSkinInSlimBuild(t *testing.T) {
+	if !buildinfo.IsSlim {
+		t.Skip("Only tested in slim build")
+	}
+
+	// 1. presets skin command should fail
+	err := presetsSkinCmd.PersistentPreRunE(presetsSkinCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "Web camouflage skin feature is disabled in Slim build") {
+		t.Fatalf("expected slim error from presets skin, got: %v", err)
+	}
+
+	// 2. presets skin list should fail
+	err = presetsSkinListCmd.RunE(presetsSkinListCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "Web camouflage skin feature is disabled in Slim build") {
+		t.Fatalf("expected slim error from presets skin list, got: %v", err)
+	}
+
+	// 3. presets set --skin <name> should fail
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Presets: []config.ModeInfo{
+			{Mode: config.ModeVLESSVision, Enabled: true, Port: 443, SNI: "pkg.go.dev", Dest: "pkg.go.dev:443"},
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		presetSkin = ""
+		presetSkinDomain = ""
+		presetSkinPort = 0
+		presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+			_ = f.Value.Set(f.DefValue)
+			f.Changed = false
+		})
+	})
+
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	err = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
+	if err == nil || !strings.Contains(err.Error(), "Web camouflage skin feature is disabled in Slim build") {
+		t.Fatalf("expected slim error from presets set --skin, got: %v", err)
 	}
 }

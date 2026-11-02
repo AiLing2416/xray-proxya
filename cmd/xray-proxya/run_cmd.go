@@ -313,20 +313,24 @@ var runCmd = &cobra.Command{
 		}
 
 		if len(skinMappings) > 0 {
-			skinPort := cfg.EnsureSkinPort()
-			skinAddr := fmt.Sprintf("127.0.0.1:%d", skinPort)
-			defaultSkin := skinMappings[0].SkinType
-			srv, err := skin.StartMultiSkinServer(skinAddr, skinMappings, defaultSkin)
-			if err == nil {
-				skinServers = append(skinServers, srv)
-				go func(s *http.Server) { _ = s.ListenAndServeTLS("", "") }(srv)
-				domains := make([]string, 0, len(skinMappings))
-				for _, sm := range skinMappings {
-					domains = append(domains, fmt.Sprintf("%s (%s)", sm.Domain, sm.SkinType))
-				}
-				fmt.Printf("🎨 Web Skin HTTPS server listening on %s for: %s\n", skinAddr, strings.Join(domains, ", "))
+			if !skin.Enabled {
+				fmt.Println("⚠️  Web camouflage skin feature is disabled in Slim build. Skipping skin server.")
 			} else {
-				fmt.Printf("⚠️  Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
+				skinPort := cfg.EnsureSkinPort()
+				skinAddr := fmt.Sprintf("127.0.0.1:%d", skinPort)
+				defaultSkin := skinMappings[0].SkinType
+				srv, err := skin.StartMultiSkinServer(skinAddr, skinMappings, defaultSkin)
+				if err == nil {
+					skinServers = append(skinServers, srv)
+					go func(s *http.Server) { _ = s.ListenAndServeTLS("", "") }(srv)
+					domains := make([]string, 0, len(skinMappings))
+					for _, sm := range skinMappings {
+						domains = append(domains, fmt.Sprintf("%s (%s)", sm.Domain, sm.SkinType))
+					}
+					fmt.Printf("🎨 Web Skin HTTPS server listening on %s for: %s\n", skinAddr, strings.Join(domains, ", "))
+				} else {
+					fmt.Printf("⚠️  Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
+				}
 			}
 
 			hasFileCert := false

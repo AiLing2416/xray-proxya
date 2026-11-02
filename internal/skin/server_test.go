@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -25,6 +26,9 @@ func init() {
 }
 
 func TestFilebrowserHandler(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
 	h, err := NewHandler(config.SkinFilebrowser)
 	if err != nil {
 		t.Fatalf("NewHandler(filebrowser) error: %v", err)
@@ -205,6 +209,9 @@ func TestFilebrowserHandler(t *testing.T) {
 }
 
 func TestNextcloudHandler(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
 	h, err := NewHandler(config.SkinNextcloud)
 	if err != nil {
 		t.Fatalf("NewHandler(nextcloud) error: %v", err)
@@ -419,6 +426,9 @@ func TestNextcloudHandler(t *testing.T) {
 }
 
 func TestSeafileHandler(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
 	h, err := NewHandler(config.SkinSeafile)
 	if err != nil {
 		t.Fatalf("NewHandler(seafile) error: %v", err)
@@ -659,6 +669,9 @@ func TestSeafileHandler(t *testing.T) {
 }
 
 func TestStartMultiSkinServer(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
 	mappings := []DomainSkinMapping{
 		{Domain: "nc.example.com", SkinType: config.SkinNextcloud},
 		{Domain: "fb.example.com", SkinType: config.SkinFilebrowser},
@@ -733,6 +746,9 @@ func generateTestCert(domain string) (string, string, error) {
 }
 
 func TestStartMultiSkinServerWithInlineCert(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
 	certPEM, keyPEM, err := generateTestCert("example.com")
 	if err != nil {
 		t.Fatalf("generateTestCert failed: %v", err)
@@ -777,6 +793,27 @@ func TestStartMultiSkinServerWithInlineCert(t *testing.T) {
 	srv.Handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Nextcloud") {
 		t.Errorf("127.0.0.1:9443 /status.php failed: %d, body: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSkinDisabledInSlim(t *testing.T) {
+	if Enabled {
+		t.Skip("Only tested in slim build")
+	}
+
+	_, err := NewHandler(config.SkinFilebrowser)
+	if !errors.Is(err, ErrSkinDisabled) {
+		t.Errorf("expected ErrSkinDisabled from NewHandler, got %v", err)
+	}
+
+	_, err = StartSkinServer("127.0.0.1:0", config.SkinFilebrowser, "", "")
+	if !errors.Is(err, ErrSkinDisabled) {
+		t.Errorf("expected ErrSkinDisabled from StartSkinServer, got %v", err)
+	}
+
+	_, err = StartMultiSkinServer("127.0.0.1:0", nil, "")
+	if !errors.Is(err, ErrSkinDisabled) {
+		t.Errorf("expected ErrSkinDisabled from StartMultiSkinServer, got %v", err)
 	}
 }
 

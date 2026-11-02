@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Version = buildinfo.Version
+var Version = buildinfo.GetVersion()
 var versionVerbose bool
 
 var rootCmd = &cobra.Command{
@@ -51,6 +51,7 @@ var versionCmd = &cobra.Command{
 
 		goVer := runtime.Version()
 		arch := fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
+		cmd.Printf("  Profile    : %s\n", buildinfo.Profile)
 		cmd.Printf("  Go Runtime : %s (%s, static)\n", goVer, arch)
 
 		xrayVer := "not found"

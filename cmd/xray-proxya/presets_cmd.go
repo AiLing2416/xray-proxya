@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"xray-proxya/internal/buildinfo"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/ui"
 
@@ -132,8 +133,17 @@ var presetsListCmd = &cobra.Command{
 var presetsSkinCmd = &cobra.Command{
 	Use:   "skin",
 	Short: "Manage Web camouflage skins for presets",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = cmd.Help()
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if buildinfo.IsSlim {
+			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+		}
+		return nil
+	},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if buildinfo.IsSlim {
+			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+		}
+		return cmd.Help()
 	},
 }
 
@@ -141,7 +151,10 @@ var presetsSkinListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List available Web camouflage skins and their characteristics",
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if buildinfo.IsSlim {
+			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+		}
 		t := ui.NewTable("SKIN", "DESCRIPTION")
 		t.AddRow("nextcloud", "Official Nextcloud Hub login replica with /status.php & auth rejection")
 		t.AddRow("filebrowser", "Modern Vue-based File Browser login replica with /manifest.json & 403 rejection")
@@ -151,6 +164,7 @@ var presetsSkinListCmd = &cobra.Command{
 		fmt.Println("\nAVAILABLE WEB CAMOUFLAGE SKINS:")
 		fmt.Print(t.Render())
 		fmt.Println()
+		return nil
 	},
 }
 
@@ -396,6 +410,9 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 
 	// 4.5. Web camouflage skin port configuration
 	if cmd.Flags().Changed("skin-port") {
+		if buildinfo.IsSlim {
+			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+		}
 		if presetSkinPort < 1024 || presetSkinPort > 65535 {
 			return fmt.Errorf("❌ Error: Invalid --skin-port %d. Must be between 1024 and 65535.", presetSkinPort)
 		}
@@ -410,10 +427,13 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 
 	// 5. Web camouflage skin configuration
 	if cmd.Flags().Changed("skin") && presetSkin != "" {
+		st := strings.ToLower(strings.TrimSpace(presetSkin))
+		if st != "off" && st != "none" && buildinfo.IsSlim {
+			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+		}
 		if !supportsSkin(m.Mode) {
 			return fmt.Errorf("❌ Error: Mode [%s] does not support Web camouflage skin.", m.Mode)
 		}
-		st := strings.ToLower(strings.TrimSpace(presetSkin))
 		if st == "off" || st == "none" {
 			m.Skin = ""
 			m.SkinDomain = ""
@@ -479,6 +499,9 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			}
 		}
 	} else if cmd.Flags().Changed("skin-domain") {
+		if buildinfo.IsSlim {
+			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+		}
 		if m.Skin == "" {
 			return fmt.Errorf("❌ Error: Cannot set --skin-domain without setting --skin.")
 		}
