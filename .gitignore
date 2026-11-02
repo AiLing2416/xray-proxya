@@ -6,6 +6,7 @@ proton-vpn.conf
 build/
 /xray-proxya
 *.zip
+*.apk
 *.log
 xray.pid
 config.json.staging

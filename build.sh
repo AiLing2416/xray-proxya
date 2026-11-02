@@ -35,6 +35,12 @@ case "$TARGET" in
         echo ""
         build/xray-proxya-slim version
         ;;
+    apk|slim-apk)
+        echo -e "🚀 Building statically linked Slim binary (-trimpath -tags slim)..."
+        CGO_ENABLED=0 go build -trimpath -tags slim -ldflags "-s -w" -o build/xray-proxya-slim ./cmd/xray-proxya/
+        shift 2>/dev/null || true
+        ./scripts/package-apk.sh "$@"
+        ;;
     all)
         echo -e "🚀 Building statically linked Full binary (-trimpath)..."
         CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o build/xray-proxya ./cmd/xray-proxya/

@@ -19,4 +19,7 @@ clean:
 test:
 	go test ./...
 
-.PHONY: all build-arm64 build-amd64 clean test
+package-apk:
+	./scripts/package-apk.sh --build
+
+.PHONY: all build-arm64 build-amd64 clean test package-apk
