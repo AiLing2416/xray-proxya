@@ -65,12 +65,12 @@ func ValidateRootManagerBinary() (string, error) {
 // ValidateRootOwnedExecutable verifies that an executable and its parent directories
 // are owned by root and not group- or world-writable.
 func ValidateRootOwnedExecutable(path string) (string, error) {
-	path, err := filepath.EvalSymlinks(path)
+	resolved, err := filepath.EvalSymlinks(path)
 	if err != nil {
 		return "", fmt.Errorf("resolve executable: %w", err)
 	}
-	path = filepath.Clean(path)
-	for current := path; current != "/"; current = filepath.Dir(current) {
+	resolved = filepath.Clean(resolved)
+	for current := resolved; current != "/"; current = filepath.Dir(current) {
 		info, err := os.Stat(current)
 		if err != nil {
 			return "", fmt.Errorf("inspect %s: %w", current, err)
@@ -83,12 +83,30 @@ func ValidateRootOwnedExecutable(path string) (string, error) {
 			return "", fmt.Errorf("%s must not be group- or world-writable", current)
 		}
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(resolved)
 	if err != nil || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%s must be a regular executable file", path)
+		return "", fmt.Errorf("%s must be a regular executable file", resolved)
 	}
 	if info.Mode().Perm()&0111 == 0 {
-		return "", fmt.Errorf("%s is not executable", path)
+		return "", fmt.Errorf("%s is not executable", resolved)
 	}
-	return path, nil
+
+	cleanPath := filepath.Clean(path)
+	if cleanPath != resolved {
+		for current := filepath.Dir(cleanPath); current != "/"; current = filepath.Dir(current) {
+			info, err := os.Stat(current)
+			if err != nil {
+				return "", fmt.Errorf("inspect %s: %w", current, err)
+			}
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok || stat.Uid != 0 {
+				return "", fmt.Errorf("%s must be owned by root", current)
+			}
+			if info.Mode().Perm()&0022 != 0 {
+				return "", fmt.Errorf("%s must not be group- or world-writable", current)
+			}
+		}
+	}
+
+	return resolved, nil
 }

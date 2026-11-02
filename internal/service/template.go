@@ -185,6 +185,7 @@ func WritePathdConfig(cfg *config.UserConfig) error {
 	if cfg.Path.Token == "" {
 		return fmt.Errorf("pathd token is not configured; run 'path set --token <token>'")
 	}
+	_, _ = EnsurePathdSymlink()
 	data, err := json.MarshalIndent(struct {
 		Listen      string `json:"listen"`
 		Token       string `json:"token"`

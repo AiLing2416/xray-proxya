@@ -86,14 +86,14 @@ func (p *ProcdProvider) Install(cfg *config.UserConfig) error {
 	}
 
 	// 3. Write /etc/init.d/xray-proxya-pathd if pathd binary is available
-	pathdPath, err := ValidateRootOwnedExecutable(PathdBinaryPath())
-	if err == nil {
+	_, _ = EnsurePathdSymlink()
+	if _, err := ValidateRootOwnedExecutable(PathdBinaryPath()); err == nil {
 		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
 			if err := WritePathdConfig(cfg); err != nil {
 				return fmt.Errorf("write pathd configuration: %w", err)
 			}
 		}
-		pathdContent := BuildProcdPathdServiceContent(pathdPath, PathdConfigPath())
+		pathdContent := BuildProcdPathdServiceContent(PathdBinaryPath(), PathdConfigPath())
 		if err := os.WriteFile(p.UnitPath(PathdUnit), []byte(pathdContent), 0755); err != nil {
 			return fmt.Errorf("write %s: %w", p.UnitPath(PathdUnit), err)
 		}

@@ -90,8 +90,8 @@ func (p *SystemdProvider) Install(cfg *config.UserConfig) error {
 
 	var pathdContent string
 	if system {
-		pathdPath, err := ValidateRootOwnedExecutable(PathdBinaryPath())
-		if err != nil {
+		_, _ = EnsurePathdSymlink()
+		if _, err := ValidateRootOwnedExecutable(PathdBinaryPath()); err != nil {
 			return fmt.Errorf("pathd binary is unavailable: %w", err)
 		}
 		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
@@ -99,7 +99,7 @@ func (p *SystemdProvider) Install(cfg *config.UserConfig) error {
 				return fmt.Errorf("write pathd configuration: %w", err)
 			}
 		}
-		pathdContent = BuildPathdServiceContent(pathdPath, PathdConfigPath())
+		pathdContent = BuildPathdServiceContent(PathdBinaryPath(), PathdConfigPath())
 	}
 
 	if err := os.MkdirAll(p.UnitDirectory(), 0700); err != nil {

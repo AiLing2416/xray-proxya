@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"xray-proxya/internal/service"
 	"xray-proxya/internal/xray"
 )
 
@@ -147,6 +148,26 @@ func CheckCore(ctx context.Context) []CheckResult {
 			Detail:      "Missing geosite.dat",
 			Remediation: "Download geosite.dat to " + assetDir,
 			DurationMs:  time.Since(geoStart).Milliseconds(),
+		})
+	}
+
+	// 3. Check PathLink Companion (pathd) binary / symlink
+	pathdStart := time.Now()
+	pathdBin := service.PathdBinaryPath()
+	if !fileExists(pathdBin) {
+		_, _ = service.EnsurePathdSymlink()
+	}
+	if fileExists(pathdBin) {
+		detail := "present"
+		if lfi, lerr := os.Lstat(pathdBin); lerr == nil && lfi.Mode()&os.ModeSymlink != 0 {
+			detail = "symlink to xray-proxya (multi-call)"
+		}
+		results = append(results, CheckResult{
+			Category:   "Core & Assets",
+			Name:       "PathLink Companion (pathd)",
+			Status:     StatusPass,
+			Detail:     detail,
+			DurationMs: time.Since(pathdStart).Milliseconds(),
 		})
 	}
 

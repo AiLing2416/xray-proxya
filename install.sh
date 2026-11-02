@@ -93,7 +93,7 @@ BASE_URL="https://github.com/$REPO/releases/download/$RELEASE_TAG"
 WORK_DIR=$(mktemp -d)
 
 echo -e "⬇️ Downloading ${YELLOW}$RELEASE_TAG${NC} for $BIN_ARCH..."
-for asset in "$MAIN_ASSET" "$PATHD_ASSET" SHA256SUMS; do
+for asset in "$MAIN_ASSET" SHA256SUMS; do
     curl -fL --retry 3 --retry-delay 1 "$BASE_URL/$asset" -o "$WORK_DIR/$asset" || fail "Download failed: $asset"
 done
 
@@ -105,12 +105,11 @@ verify_asset() {
     [ "$actual" = "$expected" ] || fail "Integrity check failed for $asset"
 }
 verify_asset "$MAIN_ASSET"
-verify_asset "$PATHD_ASSET"
 
 mkdir -p "$INSTALL_DIR" "$SHARE_BIN_DIR"
 
-# Preserve the old private Xray-core location migration, but only after both
-# new release artifacts were verified.
+# Preserve the old private Xray-core location migration, but only after
+# the new release artifact was verified.
 OLD_CORE="$INSTALL_DIR/xray"
 if [ -f "$OLD_CORE" ]; then
     echo "📦 Moving legacy Xray core into private storage..."
@@ -119,10 +118,23 @@ fi
 
 install -m 0755 "$WORK_DIR/$MAIN_ASSET" "$INSTALL_DIR/.xray-proxya.new"
 mv -f "$INSTALL_DIR/.xray-proxya.new" "$INSTALL_DIR/xray-proxya"
-install -m 0755 "$WORK_DIR/$PATHD_ASSET" "$SHARE_BIN_DIR/.pathd.new"
-mv -f "$SHARE_BIN_DIR/.pathd.new" "$SHARE_BIN_DIR/pathd"
+
+# Multi-call symlink for pathd (saves ~4.5MB redundant Go runtime binary)
+rm -f "$SHARE_BIN_DIR/pathd"
+if ln -sf "$INSTALL_DIR/xray-proxya" "$SHARE_BIN_DIR/pathd" 2>/dev/null; then
+    echo -e "${GREEN}✅ pathd linked to: $INSTALL_DIR/xray-proxya (multi-call)${NC}"
+else
+    # Fallback for environments lacking symlink support: download standalone binary if available
+    if curl -fsSL "$BASE_URL/$PATHD_ASSET" -o "$WORK_DIR/$PATHD_ASSET" 2>/dev/null && grep -q "$PATHD_ASSET" "$WORK_DIR/SHA256SUMS"; then
+        verify_asset "$PATHD_ASSET"
+        install -m 0755 "$WORK_DIR/$PATHD_ASSET" "$SHARE_BIN_DIR/pathd"
+        echo -e "${GREEN}✅ pathd installed to: $SHARE_BIN_DIR/pathd${NC}"
+    else
+        cp -f "$INSTALL_DIR/xray-proxya" "$SHARE_BIN_DIR/pathd"
+        echo -e "${GREEN}✅ pathd copied from: $INSTALL_DIR/xray-proxya${NC}"
+    fi
+fi
 echo -e "${GREEN}✅ xray-proxya installed to: $INSTALL_DIR/xray-proxya${NC}"
-echo -e "${GREEN}✅ private pathd installed to: $SHARE_BIN_DIR/pathd${NC}"
 
 SHELL_NAME=$(basename "${SHELL:-/bin/bash}")
 RC_FILE="$HOME/.bashrc"

@@ -409,6 +409,7 @@ var pathSetCmd = &cobra.Command{
 			if err := cfg.SaveEx(true); err != nil {
 				return fmt.Errorf("❌ %w", err)
 			}
+			_, _ = service.EnsurePathdSymlink()
 			fmt.Printf("✅ Server Pathd configured in STAGING (%s). Run 'apply', then manage it with 'service enable --now xray-proxya-pathd'.\n", cfg.Path.Listen)
 			if generated != "" {
 				fmt.Printf("🔐 Generated token (save it now): %s\n", generated)
@@ -514,6 +515,7 @@ var pathStatusCmd = &cobra.Command{
 			if targetRelay != "" {
 				return fmt.Errorf("❌ Server Pathd is local; --relay is only valid on a Gateway")
 			}
+			_, _ = service.EnsurePathdSymlink()
 			serviceState := "unknown"
 			serviceEnabled := "unknown"
 			if os.Geteuid() == 0 {
