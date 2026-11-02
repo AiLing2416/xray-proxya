@@ -39,10 +39,6 @@ func RegisterRestartHook(hook func() error) {
 	restartHook = hook
 }
 
-func GetXrayAssetPath() string {
-	return filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya", "bin")
-}
-
 func RestartXrayService() error {
 	return config.WithLifecycleLock(func() error {
 		if err := restartXrayService(); err != nil {
@@ -88,9 +84,10 @@ func StartXrayRaw(configPath string) error {
 		if err := DownloadXray(); err != nil {
 			return err
 		}
+		bin = GetXrayBinaryPath()
 	}
 	cmd := exec.Command(bin, "run", "-c", configPath)
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+GetXrayAssetPath())
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -99,7 +96,7 @@ func StartXrayRaw(configPath string) error {
 func StartXray(configPath string) (*exec.Cmd, error) {
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "run", "-c", configPath)
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+GetXrayAssetPath())
 	cmd.Stdout, cmd.Stderr = os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
@@ -140,7 +137,7 @@ func StartXrayTempWithOutput(jsonData []byte, stderr io.Writer) (*exec.Cmd, func
 
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "run", "-c", tmpFile)
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+GetXrayAssetPath())
 	if stderr != nil {
 		cmd.Stderr = stderr
 	}
@@ -263,7 +260,7 @@ func ValidateConfig(jsonData []byte) error {
 
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "run", "-test", "-c", tmpFile)
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+GetXrayAssetPath())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, string(out))
@@ -276,7 +273,7 @@ func ValidateConfig(jsonData []byte) error {
 func GetXrayStats(apiPort int) (map[string]int64, error) {
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "api", "statsquery", "--server=127.0.0.1:"+fmt.Sprint(apiPort), "--pattern=", "--reset=false")
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+GetXrayAssetPath())
 	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
@@ -334,7 +331,7 @@ func GetXrayStats(apiPort int) (map[string]int64, error) {
 func RemoveUserAPI(apiPort int, inboundTag, email string) error {
 	bin := GetXrayBinaryPath()
 	cmd := exec.Command(bin, "api", "rmu", "--server=127.0.0.1:"+fmt.Sprint(apiPort), "-tag="+inboundTag, email)
-	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(bin))
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+GetXrayAssetPath())
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%v: %s", err, string(out))
@@ -344,10 +341,6 @@ func RemoveUserAPI(apiPort int, inboundTag, email string) error {
 
 func GetFreePort() (int, error) {
 	return utils.GetFreePort()
-}
-
-func GetXrayBinaryPath() string {
-	return filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya", "bin", "xray")
 }
 
 func GetXrayProxyaPath() string {
@@ -379,6 +372,7 @@ func GenerateMLKEM() (string, string, error) {
 		if err := DownloadXray(); err != nil {
 			return "", "", err
 		}
+		bin = GetXrayBinaryPath()
 	}
 	out, err := exec.Command(bin, "vlessenc").Output()
 	if err != nil {
@@ -461,7 +455,7 @@ func DownloadXray() error {
 		arch = "arm64-v8a"
 	}
 	url := xrayDownloadURL(arch)
-	binPath := GetXrayBinaryPath()
+	binPath := GetDefaultPrivateBinaryPath()
 	binDir := filepath.Dir(binPath)
 	os.MkdirAll(binDir, 0755)
 
@@ -552,6 +546,7 @@ func DownloadXray() error {
 			}
 		}
 	}
+	ResetResolverCache()
 	return nil
 }
 
