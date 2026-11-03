@@ -157,7 +157,7 @@ var presetsSkinListCmd = &cobra.Command{
 		}
 		t := ui.NewTable("SKIN", "DESCRIPTION")
 		t.AddRow("nextcloud", "Official Nextcloud Hub login replica with /status.php & auth rejection")
-		t.AddRow("filebrowser", "Modern Vue-based File Browser login replica with /manifest.json & 403 rejection")
+		t.AddRow("filebrowser", "Modern Vue-based File Browser login replica with /health & 403 rejection")
 		t.AddRow("seafile", "Seafile Seahub login replica with /api2/ping & 200 error banner")
 		t.AddRow("off / none", "Disable Web camouflage skin")
 

@@ -34,7 +34,7 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Fatalf("NewHandler(filebrowser) error: %v", err)
 	}
 
-	// 1. GET /
+	// 1. GET / returns 200 OK with SPA HTML
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -45,7 +45,20 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Errorf("GET / missing File Browser title")
 	}
 
-	// 2. GET /manifest.json
+	// Non-GET methods on SPA routes return 404 Not Found
+	for _, m := range []string{"POST", "HEAD", "OPTIONS", "PUT", "DELETE"} {
+		req = httptest.NewRequest(m, "/", nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s / code = %d, want 404", m, rec.Code)
+		}
+		if rec.Body.String() != "404 Not Found\n" {
+			t.Errorf("%s / body = %q, want '404 Not Found\\n'", m, rec.Body.String())
+		}
+	}
+
+	// 2. GET /manifest.json falls through to SPA index.html
 	req = httptest.NewRequest("GET", "/manifest.json", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -56,12 +69,15 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Errorf("GET /manifest.json content mismatch")
 	}
 
-	// 3. GET /api/public/settings
-	req = httptest.NewRequest("GET", "/api/public/settings", nil)
+	// 3. GET /health probe returns exact 15 bytes {"status":"OK"} without newline
+	req = httptest.NewRequest("GET", "/health", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Errorf("GET /api/public/settings code = %d, want 200", rec.Code)
+		t.Errorf("GET /health code = %d, want 200", rec.Code)
+	}
+	if rec.Body.String() != `{"status":"OK"}` {
+		t.Errorf("GET /health body = %q, want '{\"status\":\"OK\"}'", rec.Body.String())
 	}
 
 	// 4. /api/login: POST, GET, OPTIONS all return 403 Forbidden
@@ -97,8 +113,8 @@ func TestFilebrowserHandler(t *testing.T) {
 		}
 	}
 
-	// 6. Redirects: /api/resources and /api/raw return 301
-	for _, p := range []string{"/api/resources", "/api/raw"} {
+	// 6. Redirects: /api/resources, /api/raw, /api/usage, /api/tus, /api/search return 301
+	for _, p := range []string{"/api/resources", "/api/raw", "/api/usage", "/api/tus", "/api/search", "/api/subtitle", "/api/command", "/api/share"} {
 		req = httptest.NewRequest("GET", p, nil)
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -110,8 +126,8 @@ func TestFilebrowserHandler(t *testing.T) {
 		}
 	}
 
-	// 7. Public share / dl: return 404 Not Found on invalid token
-	for _, p := range []string{"/api/public/share/invalidtoken", "/api/public/dl/invalidtoken"} {
+	// 7. Public share / dl: return 404 Not Found
+	for _, p := range []string{"/api/public/share/invalidtoken", "/api/public/dl/invalidtoken", "/api/public/share", "/api/public/dl"} {
 		req = httptest.NewRequest("GET", p, nil)
 		rec = httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
@@ -126,7 +142,7 @@ func TestFilebrowserHandler(t *testing.T) {
 		}
 	}
 
-	// 8. Unknown /api/ routes fall back to SPA index.html (200 OK)
+	// 8. Unknown /api/ routes fall back to SPA index.html on GET (200 OK), but 404 on POST
 	req = httptest.NewRequest("GET", "/api/unknown_custom_route", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -140,15 +156,24 @@ func TestFilebrowserHandler(t *testing.T) {
 		t.Errorf("GET /api/unknown_custom_route should return SPA HTML")
 	}
 
-	// 9. Authenticated API: /api/resources/ returns 401
-	req = httptest.NewRequest("GET", "/api/resources/", nil)
+	req = httptest.NewRequest("POST", "/api/unknown_custom_route", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("GET /api/resources/ code = %d, want 401", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("POST /api/unknown_custom_route code = %d, want 404", rec.Code)
 	}
-	if rec.Body.String() != "401 Unauthorized\n" {
-		t.Errorf("GET /api/resources/ body = %q, want '401 Unauthorized\\n'", rec.Body.String())
+
+	// 9. Authenticated API: /api/resources/, /api/renew, /api/settings return 401
+	for _, p := range []string{"/api/resources/", "/api/renew", "/api/settings", "/api/users", "/api/shares", "/api/usage/", "/api/tus/"} {
+		req = httptest.NewRequest("GET", p, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("GET %s code = %d, want 401", p, rec.Code)
+		}
+		if rec.Body.String() != "401 Unauthorized\n" {
+			t.Errorf("GET %s body = %q, want '401 Unauthorized\\n'", p, rec.Body.String())
+		}
 	}
 
 	// 10. Static asset CSS: /static/assets/index-BOEsmRAc.css
@@ -161,17 +186,25 @@ func TestFilebrowserHandler(t *testing.T) {
 	if !strings.Contains(rec.Header().Get("Cache-Control"), "max-age=86400") {
 		t.Errorf("GET /static/assets/index-BOEsmRAc.css missing Cache-Control: max-age=86400")
 	}
-	if rec.Header().Get("Server") != "Caddy" {
-		t.Errorf("GET /static/assets/index-BOEsmRAc.css Server = %q, want 'Caddy'", rec.Header().Get("Server"))
-	}
-	if rec.Header().Get("ETag") != "" {
-		t.Errorf("GET /static/assets/index-BOEsmRAc.css should NOT have ETag, got %q", rec.Header().Get("ETag"))
-	}
-	if rec.Header().Get("Accept-Ranges") != "" {
-		t.Errorf("GET /static/assets/index-BOEsmRAc.css should NOT have Accept-Ranges, got %q", rec.Header().Get("Accept-Ranges"))
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Errorf("GET /static/assets/index-BOEsmRAc.css Accept-Ranges = %q, want 'bytes'", rec.Header().Get("Accept-Ranges"))
 	}
 
-	// 11. Static asset JS: /static/assets/index-BqkXVoMb.js
+	// 11. Static webfont: /static/assets/material-icons-kAwBdRge.woff2
+	req = httptest.NewRequest("GET", "/static/assets/material-icons-kAwBdRge.woff2", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /static/assets/material-icons-kAwBdRge.woff2 code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "font/woff2" {
+		t.Errorf("GET /static/assets/material-icons-kAwBdRge.woff2 Content-Type = %q, want 'font/woff2'", rec.Header().Get("Content-Type"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Errorf("GET /static/assets/material-icons-kAwBdRge.woff2 Accept-Ranges = %q, want 'bytes'", rec.Header().Get("Accept-Ranges"))
+	}
+
+	// 12. Static asset JS: /static/assets/index-BqkXVoMb.js
 	req = httptest.NewRequest("GET", "/static/assets/index-BqkXVoMb.js", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -181,14 +214,16 @@ func TestFilebrowserHandler(t *testing.T) {
 	if rec.Header().Get("Content-Type") != "application/javascript; charset=utf-8" {
 		t.Errorf("GET /static/assets/index-BqkXVoMb.js Content-Type = %q, want 'application/javascript; charset=utf-8'", rec.Header().Get("Content-Type"))
 	}
-	if rec.Header().Get("ETag") != "" {
-		t.Errorf("GET /static/assets/index-BqkXVoMb.js should NOT have ETag, got %q", rec.Header().Get("ETag"))
-	}
-	if rec.Header().Get("Accept-Ranges") != "" {
-		t.Errorf("GET /static/assets/index-BqkXVoMb.js should NOT have Accept-Ranges, got %q", rec.Header().Get("Accept-Ranges"))
+
+	// Non-GET on static assets returns 404
+	req = httptest.NewRequest("POST", "/static/assets/index-BqkXVoMb.js", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("POST /static/assets/index-BqkXVoMb.js code = %d, want 404", rec.Code)
 	}
 
-	// 12. Non-existent static asset returns 404 Not Found (no Go runtime leak)
+	// 13. Non-existent static asset returns 404 Not Found
 	req = httptest.NewRequest("GET", "/static/nonexistent.js", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -197,14 +232,6 @@ func TestFilebrowserHandler(t *testing.T) {
 	}
 	if rec.Body.String() != "404 Not Found\n" {
 		t.Errorf("GET /static/nonexistent.js body = %q, want '404 Not Found\\n'", rec.Body.String())
-	}
-
-	// 13. GET /health
-	req = httptest.NewRequest("GET", "/health", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "OK") {
-		t.Errorf("GET /health failed: %s", rec.Body.String())
 	}
 }
 
@@ -693,12 +720,12 @@ func TestStartMultiSkinServer(t *testing.T) {
 	}
 
 	// 2. Host: fb.example.com -> File Browser
-	req = httptest.NewRequest("GET", "/api/public/settings", nil)
+	req = httptest.NewRequest("GET", "/health", nil)
 	req.Host = "fb.example.com"
 	rec = httptest.NewRecorder()
 	srv.Handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "signup") {
-		t.Errorf("fb.example.com /api/public/settings failed: %s", rec.Body.String())
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `{"status":"OK"}`) {
+		t.Errorf("fb.example.com /health failed: %s", rec.Body.String())
 	}
 
 	// 3. Host: sf.example.com -> Seafile
