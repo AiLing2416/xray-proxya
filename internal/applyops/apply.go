@@ -326,9 +326,9 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.SubContentChanged = true
 		mark("subscriptions")
 	}
-	if !reflect.DeepEqual(activeCfg.IPv6Pool, stagingCfg.IPv6Pool) || !reflect.DeepEqual(activeCfg.IPv6Rotations, stagingCfg.IPv6Rotations) {
+	if !reflect.DeepEqual(activeCfg.IPv6Rotation, stagingCfg.IPv6Rotation) || !reflect.DeepEqual(activeCfg.IPv6Rotations, stagingCfg.IPv6Rotations) {
 		impact.SubContentChanged = true
-		mark("ipv6_pool")
+		mark("ipv6_rotation")
 	}
 
 	if activeCfg.Gateway.LocalEnabled != stagingCfg.Gateway.LocalEnabled ||

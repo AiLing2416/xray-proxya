@@ -204,9 +204,12 @@ type UserConfig struct {
 	AddressNode     string                `json:"address_node,omitempty"`
 	GateURL         string                `json:"gate_url,omitempty"`
 	Endpoints       map[string]EndpointConfig `json:"endpoints,omitempty"`
-	IPv6Pool        IPv6Config            `json:"ipv6_pool"`
 	Certs         []ManagedCert         `json:"certs,omitempty"`
 	SkinPort      int                   `json:"skin_port,omitempty"`
+
+	// legacyIPv6Pool is populated only while decoding the pre-rotation
+	// schema. It is migrated to IPv6Rotation and intentionally not persisted.
+	legacyIPv6Pool IPv6Config
 
 	// legacyPath* are populated only while decoding the pre-relay PathLink
 	// schema. They are intentionally not persisted.
@@ -230,15 +233,19 @@ type PathConfig struct {
 func (cfg *UserConfig) UnmarshalJSON(data []byte) error {
 	type Alias UserConfig
 	aux := &struct {
-		ActiveModes   []ModeInfo      `json:"active_modes"`
-		Path          json.RawMessage `json:"path"`
-		LegacyGateway *GatewayConfig  `json:"gateway,omitempty"`
+		ActiveModes    []ModeInfo      `json:"active_modes"`
+		Path           json.RawMessage `json:"path"`
+		LegacyGateway  *GatewayConfig  `json:"gateway,omitempty"`
+		LegacyIPv6Pool *IPv6Config     `json:"ipv6_pool,omitempty"`
 		*Alias
 	}{
 		Alias: (*Alias)(cfg),
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
+	}
+	if aux.LegacyIPv6Pool != nil {
+		cfg.legacyIPv6Pool = *aux.LegacyIPv6Pool
 	}
 	if aux.LegacyGateway != nil {
 		// v0.5.x stored the Gateway settings inline in config.json. They are
@@ -1800,20 +1807,20 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 	}
 	legacyRotate := cfg.AdminSub.legacyMode == "ipv6-rotate" ||
 		(cfg.AdminSub.legacyIPv6Rotate.legacyEnabled != nil && *cfg.AdminSub.legacyIPv6Rotate.legacyEnabled) ||
-		(cfg.IPv6Pool.legacyEnabled != nil && *cfg.IPv6Pool.legacyEnabled)
+		(cfg.legacyIPv6Pool.legacyEnabled != nil && *cfg.legacyIPv6Pool.legacyEnabled)
 	if legacyRotate && cfg.AdminSub.Token != "" && cfg.AdminSub.IPv6Rotation == "" {
 		rotation := cfg.AdminSub.legacyIPv6Rotate
 		if rotation.Subnet == "" {
-			rotation.Subnet = cfg.IPv6Pool.Subnet
+			rotation.Subnet = cfg.legacyIPv6Pool.Subnet
 		}
 		if rotation.Interface == "" {
-			rotation.Interface = cfg.IPv6Pool.Interface
+			rotation.Interface = cfg.legacyIPv6Pool.Interface
 		}
 		if rotation.MaxAddresses == 0 {
-			rotation.MaxAddresses = cfg.IPv6Pool.MaxAddresses
+			rotation.MaxAddresses = cfg.legacyIPv6Pool.MaxAddresses
 		}
 		if !rotation.EnableNDP {
-			rotation.EnableNDP = cfg.IPv6Pool.EnableNDP
+			rotation.EnableNDP = cfg.legacyIPv6Pool.EnableNDP
 		}
 		cfg.IPv6Rotation = IPv6Config{Subnet: rotation.Subnet, Interface: rotation.Interface, MaxAddresses: rotation.MaxAddresses, EnableNDP: rotation.EnableNDP}
 		cfg.IPv6Rotations["default"] = cfg.IPv6Rotation
@@ -1841,8 +1848,8 @@ func (cfg *UserConfig) BackfillDefaults() []string {
 		cfg.SubPort = cfg.AdminSub.Port
 		changes = append(changes, "synced legacy sub_port from admin_sub.port")
 	}
-	if cfg.IPv6Pool.Subnet != "" || cfg.IPv6Pool.Interface != "" || cfg.IPv6Pool.MaxAddresses != 0 || cfg.IPv6Pool.EnableNDP {
-		cfg.IPv6Pool = IPv6Config{}
+	if cfg.legacyIPv6Pool.Subnet != "" || cfg.legacyIPv6Pool.Interface != "" || cfg.legacyIPv6Pool.MaxAddresses != 0 || cfg.legacyIPv6Pool.EnableNDP {
+		cfg.legacyIPv6Pool = IPv6Config{}
 		changes = append(changes, "removed migrated legacy ipv6_pool")
 	}
 	if legacyAdminIdx >= 0 {
