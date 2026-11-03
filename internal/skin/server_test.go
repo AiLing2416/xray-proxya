@@ -262,8 +262,32 @@ func TestNextcloudHandler(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /status.php code = %d, want 200", rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), `"version":"34.0.3.2"`) {
+		t.Errorf("GET /status.php body missing version 34.0.3.2: %s", rec.Body.String())
+	}
 	if !strings.Contains(rec.Body.String(), `"productname":"Nextcloud"`) {
 		t.Errorf("GET /status.php body missing Nextcloud")
+	}
+	if rec.Header().Get("Server") != "Apache/2.4.68 (Debian)" {
+		t.Errorf("GET /status.php Server = %q, want Apache/2.4.68 (Debian)", rec.Header().Get("Server"))
+	}
+	if rec.Header().Get("X-Powered-By") != "PHP/8.5.10" {
+		t.Errorf("GET /status.php X-Powered-By = %q, want PHP/8.5.10", rec.Header().Get("X-Powered-By"))
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Errorf("GET /status.php missing nosniff header")
+	}
+	var hasStatusLax, hasStatusStrict bool
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "nc_sameSiteCookielax" {
+			hasStatusLax = true
+		}
+		if c.Name == "nc_sameSiteCookiestrict" {
+			hasStatusStrict = true
+		}
+	}
+	if !hasStatusLax || !hasStatusStrict {
+		t.Errorf("GET /status.php missing SameSite cookies")
 	}
 
 	// 3. GET /login
@@ -275,6 +299,9 @@ func TestNextcloudHandler(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "initial-state-core-loginUsername") {
 		t.Errorf("GET /login missing initial state")
+	}
+	if !strings.Contains(rec.Header().Get("Feature-Policy"), "camera 'none'") {
+		t.Errorf("GET /login missing Feature-Policy header")
 	}
 
 	// 4. POST /login (wrong credentials redirects 303 to login?direct=1&user=admin)
@@ -292,6 +319,9 @@ func TestNextcloudHandler(t *testing.T) {
 	if !strings.Contains(rec.Header().Get("Location"), "direct=1") {
 		t.Errorf("POST /login Location = %q, want direct=1", rec.Header().Get("Location"))
 	}
+	if rec.Header().Get("X-Nextcloud-Bruteforce-Throttled") != "6400ms" {
+		t.Errorf("POST /login missing bruteforce throttling header: %q", rec.Header().Get("X-Nextcloud-Bruteforce-Throttled"))
+	}
 
 	// 5. GET /login with direct=1 and user populated
 	req = httptest.NewRequest("GET", "/login?direct=1&user=admin", nil)
@@ -304,7 +334,14 @@ func TestNextcloudHandler(t *testing.T) {
 		t.Errorf("GET /login?direct=1 missing base64 encoded username")
 	}
 
-	// 6. WebDAV probe (SabreDAV XML, no Go plaintext)
+	// 6. WebDAV probes (direct processing, Basic & Bearer messages)
+	req = httptest.NewRequest("GET", "/remote.php/webdav", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /remote.php/webdav code = %d, want 401 (no 301 redirect)", rec.Code)
+	}
+
 	req = httptest.NewRequest("GET", "/remote.php/webdav/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -317,44 +354,238 @@ func TestNextcloudHandler(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), "<s:exception>Sabre\\DAV\\Exception\\NotAuthenticated</s:exception>") {
 		t.Errorf("GET /remote.php/webdav/ missing SabreDAV XML body, got %q", rec.Body.String())
 	}
-	if rec.Body.String() == "Unauthorized\n" {
-		t.Errorf("GET /remote.php/webdav/ returned Go plaintext Unauthorized")
+	if !strings.Contains(rec.Body.String(), "No 'Authorization: Basic' header found") {
+		t.Errorf("GET /remote.php/webdav/ missing expected no-header message")
 	}
 
-	// 7. CalDAV probe redirect
-	req = httptest.NewRequest("GET", "/.well-known/caldav", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusMovedPermanently {
-		t.Errorf("GET /.well-known/caldav code = %d, want 301", rec.Code)
-	}
-
-	// 8. OCS getapppassword probe
-	req = httptest.NewRequest("GET", "/ocs/v2.php/core/getapppassword", nil)
+	// WebDAV with invalid Basic Auth
+	req = httptest.NewRequest("GET", "/remote.php/webdav/", nil)
+	req.Header.Set("Authorization", "Basic YWRtaW46d3JvbmdwYXNz")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("GET /ocs/v2.php/core/getapppassword code = %d, want 401", rec.Code)
+		t.Errorf("GET /remote.php/webdav/ with Basic auth code = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Username or password was incorrect") {
+		t.Errorf("GET /remote.php/webdav/ with Basic auth body missing 'Username or password was incorrect', got %q", rec.Body.String())
 	}
 
-	// 9. Static asset: no X-Powered-By, valid Cache-Control, text/javascript MIME
+	// WebDAV with invalid Bearer Auth
+	req = httptest.NewRequest("GET", "/remote.php/webdav/", nil)
+	req.Header.Set("Authorization", "Bearer badtoken123")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("GET /remote.php/webdav/ with Bearer auth code = %d, want 401", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "Bearer token was incorrect") {
+		t.Errorf("GET /remote.php/webdav/ with Bearer auth body missing 'Bearer token was incorrect', got %q", rec.Body.String())
+	}
+
+	// 7. Well-known routes
+	req = httptest.NewRequest("GET", "/.well-known/webdav", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /.well-known/webdav code = %d, want 404", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"message":"webdav not supported"`) {
+		t.Errorf("GET /.well-known/webdav body = %q", rec.Body.String())
+	}
+	if rec.Header().Get("X-Nextcloud-Well-Known") != "1" {
+		t.Errorf("GET /.well-known/webdav missing X-Nextcloud-Well-Known header")
+	}
+
+	req = httptest.NewRequest("GET", "/.well-known/caldav", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/remote.php/dav/" {
+		t.Errorf("GET /.well-known/caldav code = %d, loc = %q, want 301 to /remote.php/dav/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	req = httptest.NewRequest("GET", "/.well-known/carddav", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/remote.php/dav/" {
+		t.Errorf("GET /.well-known/carddav code = %d, loc = %q, want 301 to /remote.php/dav/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	req = httptest.NewRequest("GET", "/.well-known/change-password", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/settings/user/security" {
+		t.Errorf("GET /.well-known/change-password code = %d, loc = %q, want 303 to /settings/user/security", rec.Code, rec.Header().Get("Location"))
+	}
+
+	req = httptest.NewRequest("GET", "/.well-known/security.txt", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "hackerone.com/nextcloud") {
+		t.Errorf("GET /.well-known/security.txt code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 8. Login Flow v2
+	req = httptest.NewRequest("POST", "/index.php/login/v2", nil)
+	req.Host = "cloud.example.com"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("POST /index.php/login/v2 code = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"endpoint":"https://cloud.example.com/login/v2/poll"`) {
+		t.Errorf("POST /index.php/login/v2 body missing poll endpoint: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"login":"https://cloud.example.com/login/v2/flow/`) {
+		t.Errorf("POST /index.php/login/v2 body missing flow URL: %s", rec.Body.String())
+	}
+
+	req = httptest.NewRequest("POST", "/index.php/login/v2/poll", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("POST /index.php/login/v2/poll code = %d, body = %s, want 404 []", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/index.php/login/flow", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "initial-state-core-loginUsername") {
+		t.Errorf("GET /index.php/login/flow code = %d, want 200", rec.Code)
+	}
+
+	// 9. OCS endpoints & capabilities
+	req = httptest.NewRequest("GET", "/ocs/v2.php/cloud/capabilities", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Errorf("GET /ocs/v2.php/cloud/capabilities without OCS header code = %d, want 412", rec.Code)
+	}
+
+	// Capabilities with OCS header (XML)
+	req = httptest.NewRequest("GET", "/ocs/v2.php/cloud/capabilities", nil)
+	req.Header.Set("OCS-APIRequest", "true")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<theming>") {
+		t.Errorf("GET /ocs/v2.php/cloud/capabilities XML failed: %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Capabilities with OCS header (JSON)
+	req = httptest.NewRequest("GET", "/ocs/v2.php/cloud/capabilities?format=json", nil)
+	req.Header.Set("OCS-APIRequest", "true")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"statuscode":200`) {
+		t.Errorf("GET /ocs/v2.php/cloud/capabilities?format=json failed: %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Capabilities v1 with OCS header (JSON)
+	req = httptest.NewRequest("GET", "/ocs/v1.php/cloud/capabilities?format=json", nil)
+	req.Header.Set("OCS-APIRequest", "true")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"statuscode":100`) {
+		t.Errorf("GET /ocs/v1.php/cloud/capabilities?format=json failed: %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// OCS getapppassword probe (JSON)
+	req = httptest.NewRequest("GET", "/ocs/v2.php/core/getapppassword?format=json", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `"statuscode":997`) {
+		t.Errorf("GET /ocs/v2.php/core/getapppassword?format=json code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 10. Dynamic instance ID & cookies
+	req1 := httptest.NewRequest("GET", "/login", nil)
+	req1.Host = "host1.example.com"
+	rec1 := httptest.NewRecorder()
+	h.ServeHTTP(rec1, req1)
+	var instanceID1 string
+	for _, c := range rec1.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "oc") && len(c.Name) == 12 && c.Name != "oc_sessionPassphrase" {
+			instanceID1 = c.Name
+		}
+	}
+	if instanceID1 == "" || instanceID1 == "ocouaube3hh1" {
+		t.Errorf("expected dynamic instance ID cookie for host1, got %q", instanceID1)
+	}
+
+	// Repeated request to host1 gets same cookie name
+	req1Repeat := httptest.NewRequest("GET", "/login", nil)
+	req1Repeat.Host = "host1.example.com"
+	rec1Repeat := httptest.NewRecorder()
+	h.ServeHTTP(rec1Repeat, req1Repeat)
+	var instanceID1Repeat string
+	for _, c := range rec1Repeat.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "oc") && len(c.Name) == 12 && c.Name != "oc_sessionPassphrase" {
+			instanceID1Repeat = c.Name
+		}
+	}
+	if instanceID1Repeat != instanceID1 {
+		t.Errorf("instance ID cookie not consistent on same host: %q vs %q", instanceID1Repeat, instanceID1)
+	}
+
+	// Request to host2 gets different cookie name
+	req2 := httptest.NewRequest("GET", "/login", nil)
+	req2.Host = "host2.example.com"
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req2)
+	var instanceID2 string
+	for _, c := range rec2.Result().Cookies() {
+		if strings.HasPrefix(c.Name, "oc") && len(c.Name) == 12 && c.Name != "oc_sessionPassphrase" {
+			instanceID2 = c.Name
+		}
+	}
+	if instanceID2 == "" || instanceID2 == instanceID1 {
+		t.Errorf("expected different instance ID cookie for host2, got %q (host1 had %q)", instanceID2, instanceID1)
+	}
+
+	// 11. Static assets & caching (with and without ?v=, and newly bundled files)
+	req = httptest.NewRequest("GET", "/dist/core-common.js?v=bc8081c2-0", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /dist/core-common.js?v=... code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Cache-Control") != "max-age=15778463, immutable" {
+		t.Errorf("GET /dist/core-common.js?v=... Cache-Control = %q, want 'max-age=15778463, immutable'", rec.Header().Get("Cache-Control"))
+	}
+
 	req = httptest.NewRequest("GET", "/dist/core-common.js", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Errorf("GET /dist/core-common.js code = %d, want 200", rec.Code)
 	}
-	if rec.Header().Get("X-Powered-By") != "" {
-		t.Errorf("GET /dist/core-common.js should not have X-Powered-By header, got %q", rec.Header().Get("X-Powered-By"))
-	}
-	if rec.Header().Get("Content-Type") != "text/javascript" {
-		t.Errorf("GET /dist/core-common.js Content-Type = %q, want 'text/javascript'", rec.Header().Get("Content-Type"))
-	}
-	if !strings.Contains(rec.Header().Get("Cache-Control"), "max-age=15778463") {
-		t.Errorf("GET /dist/core-common.js missing Cache-Control max-age header")
+	if rec.Header().Get("Cache-Control") != "max-age=15778463" {
+		t.Errorf("GET /dist/core-common.js Cache-Control = %q, want 'max-age=15778463'", rec.Header().Get("Cache-Control"))
 	}
 
-	// 10. 204 Ping probe
+	// Newly bundled static assets
+	newAssets := []struct {
+		path  string
+		ctype string
+	}{
+		{"/apps/theming/img/background/jo-myoung-hee-fluid-dark.webp", "image/webp"},
+		{"/apps/theming/fonts/OpenDyslexic-Regular.otf", "font/otf"},
+		{"/apps/theming/fonts/OpenDyslexic-Bold.otf", "font/otf"},
+		{"/core/img/actions/confirm.svg", "image/svg+xml"},
+		{"/core/img/loading-dark.gif", "image/gif"},
+	}
+	for _, na := range newAssets {
+		req = httptest.NewRequest("GET", na.path, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s code = %d, want 200", na.path, rec.Code)
+		}
+		if rec.Header().Get("Content-Type") != na.ctype {
+			t.Errorf("GET %s Content-Type = %q, want %q", na.path, rec.Header().Get("Content-Type"), na.ctype)
+		}
+	}
+
+	// 12. 204 Ping probe
 	req = httptest.NewRequest("GET", "/index.php/204", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -365,7 +596,7 @@ func TestNextcloudHandler(t *testing.T) {
 		t.Errorf("GET /index.php/204 missing X-Powered-By: PHP/8.5.10")
 	}
 
-	// 11. Webcron probe
+	// 13. Webcron probe
 	req = httptest.NewRequest("GET", "/cron.php", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -373,37 +604,15 @@ func TestNextcloudHandler(t *testing.T) {
 		t.Errorf("GET /cron.php failed: %s", rec.Body.String())
 	}
 
-	// 12. Robots.txt: no X-Powered-By
+	// 14. Robots.txt
 	req = httptest.NewRequest("GET", "/robots.txt", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "User-agent: *") {
 		t.Errorf("GET /robots.txt failed: %s", rec.Body.String())
 	}
-	if rec.Header().Get("X-Powered-By") != "" {
-		t.Errorf("GET /robots.txt should not have X-Powered-By header")
-	}
 
-	// 13. Nodeinfo probe
-	req = httptest.NewRequest("GET", "/.well-known/nodeinfo", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET /.well-known/nodeinfo code = %d, want 404", rec.Code)
-	}
-	if rec.Header().Get("X-Nextcloud-Well-Known") != "1" {
-		t.Errorf("GET /.well-known/nodeinfo missing X-Nextcloud-Well-Known header")
-	}
-
-	// 14. Capabilities probe
-	req = httptest.NewRequest("GET", "/ocs/v2.php/cloud/capabilities", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusPreconditionFailed {
-		t.Errorf("GET /ocs/v2.php/cloud/capabilities code = %d, want 412", rec.Code)
-	}
-
-	// 15. Catch-all 404: Apache HTML, no Go plaintext 404
+	// 15. Catch-all Nextcloud 404 (styled HTML page, not Apache raw error)
 	req = httptest.NewRequest("GET", "/some/random/nonexistent/path", nil)
 	req.Host = "nextcloud.example.com"
 	rec = httptest.NewRecorder()
@@ -411,44 +620,17 @@ func TestNextcloudHandler(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("GET /some/random/nonexistent/path code = %d, want 404", rec.Code)
 	}
-	if rec.Body.String() == "404 page not found\n" {
-		t.Errorf("GET /some/random/nonexistent/path returned Go plaintext 404")
+	if !strings.Contains(rec.Body.String(), "Page not found") {
+		t.Errorf("GET /some/random/nonexistent/path body missing Nextcloud 'Page not found'")
 	}
-	if !strings.Contains(rec.Body.String(), "<title>404 Not Found</title>") {
-		t.Errorf("GET /some/random/nonexistent/path missing Apache 404 title")
+	if !strings.Contains(rec.Body.String(), "Back to Nextcloud") {
+		t.Errorf("GET /some/random/nonexistent/path body missing 'Back to Nextcloud'")
 	}
-	if !strings.Contains(rec.Body.String(), "Apache/2.4.68 (Debian) Server at nextcloud.example.com Port 443") {
-		t.Errorf("GET /some/random/nonexistent/path missing Apache server address banner")
+	if rec.Header().Get("Server") != "Apache/2.4.68 (Debian)" {
+		t.Errorf("GET /some/random/nonexistent/path Server = %q, want Apache/2.4.68 (Debian)", rec.Header().Get("Server"))
 	}
-
-	// 16. GET /login CSP and cookie verification
-	req = httptest.NewRequest("GET", "/login", nil)
-	req.Host = "nextcloud.example.com"
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	csp := rec.Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "script-src 'self' 'nonce-") {
-		t.Errorf("GET /login CSP missing nonce: %s", csp)
-	}
-	if strings.Contains(rec.Body.String(), "skin1.ailing.dev") {
-		t.Errorf("GET /login body contains leaked reference to skin1.ailing.dev")
-	}
-	cookies := rec.Result().Cookies()
-	var hasPassphrase, hasSID, hasLax, hasStrict bool
-	for _, c := range cookies {
-		switch c.Name {
-		case "oc_sessionPassphrase":
-			hasPassphrase = true
-		case "ocouaube3hh1":
-			hasSID = true
-		case "nc_sameSiteCookielax":
-			hasLax = true
-		case "nc_sameSiteCookiestrict":
-			hasStrict = true
-		}
-	}
-	if !hasPassphrase || !hasSID || !hasLax || !hasStrict {
-		t.Errorf("GET /login missing expected Nextcloud cookies")
+	if rec.Header().Get("X-Powered-By") != "PHP/8.5.10" {
+		t.Errorf("GET /some/random/nonexistent/path X-Powered-By = %q, want PHP/8.5.10", rec.Header().Get("X-Powered-By"))
 	}
 }
 

@@ -2,6 +2,7 @@ package skin
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -512,6 +513,70 @@ func newFilebrowserHandler() (http.Handler, error) {
 // Nextcloud Handler & Decoy Helpers
 // -----------------------------------------------------------------------------------------
 
+const base36Chars = "0123456789abcdefghijklmnopqrstuvwxyz"
+
+func nextcloudInstanceIDForHost(host string) string {
+	h := strings.ToLower(strings.TrimSpace(host))
+	if sh, _, err := net.SplitHostPort(h); err == nil {
+		h = sh
+	}
+	if h == "" {
+		h = "localhost"
+	}
+	sum := sha256.Sum256([]byte("nextcloud-instance:" + h))
+	b := make([]byte, 10)
+	for i := 0; i < 10; i++ {
+		b[i] = base36Chars[sum[i]%36]
+	}
+	return "oc" + string(b)
+}
+
+func setNextcloudSessionCookies(w http.ResponseWriter, r *http.Request) (string, string) {
+	instanceID := nextcloudInstanceIDForHost(r.Host)
+
+	passphraseBytes := make([]byte, 96)
+	_, _ = rand.Read(passphraseBytes)
+	rawPassphrase := base64.StdEncoding.EncodeToString(passphraseBytes)
+	escapedPassphrase := url.QueryEscape(rawPassphrase)
+
+	sidBytes := make([]byte, 16)
+	_, _ = rand.Read(sidBytes)
+	sid := hex.EncodeToString(sidBytes)
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "oc_sessionPassphrase",
+		Value:    escapedPassphrase,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     instanceID,
+		Value:    sid,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	expires2100 := time.Date(2100, 12, 31, 23, 59, 59, 0, time.UTC)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "nc_sameSiteCookielax",
+		Value:    "true",
+		Path:     "/",
+		HttpOnly: true,
+		Expires:  expires2100,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "nc_sameSiteCookiestrict",
+		Value:    "true",
+		Path:     "/",
+		HttpOnly: true,
+		Expires:  expires2100,
+		SameSite: http.SameSiteStrictMode,
+	})
+	return instanceID, sid
+}
+
 func serveApache404(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -535,35 +600,73 @@ func serveApache404(w http.ResponseWriter, r *http.Request) {
 `, host)
 }
 
+func serveNextcloud404(w http.ResponseWriter, r *http.Request, notFoundTemplate string) {
+	setNextcloudSessionCookies(w, r)
+	nonce := generate32ByteBase64()
+
+	html := notFoundTemplate
+	html = strings.ReplaceAll(html, "{{NEXTCLOUD_NONCE}}", nonce)
+
+	w.Header().Set("Content-Type", "text/html; charset=UTF-8")
+	w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+	w.Header().Set("X-Powered-By", "PHP/8.5.10")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("X-Request-Id", randomToken()[:20])
+	w.Header().Set("Feature-Policy", "autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'")
+	w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'none';base-uri 'none';manifest-src 'self';script-src 'nonce-%s';script-src-elem 'strict-dynamic' 'nonce-%s';style-src 'self' 'unsafe-inline';img-src 'self' data: blob: https://*.tile.openstreetmap.org;font-src 'self' data:;connect-src 'self';media-src 'self';frame-src 'self';frame-ancestors 'self';form-action 'self'", nonce, nonce))
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(html))
+}
+
 func serveNextcloudWebDAV(w http.ResponseWriter, r *http.Request) {
+	setNextcloudSessionCookies(w, r)
+	auth := r.Header.Get("Authorization")
+	var msg string
+	if strings.HasPrefix(auth, "Basic ") {
+		simulatedHashDelay()
+		msg = "Username or password was incorrect, No 'Authorization: Bearer' header found. Either the client didn't send one, or the server is mis-configured"
+	} else if strings.HasPrefix(auth, "Bearer ") {
+		simulatedHashDelay()
+		msg = "No 'Authorization: Basic' header found. Either the client didn't send one, or the server is misconfigured, Bearer token was incorrect"
+	} else {
+		msg = "No 'Authorization: Basic' header found. Either the client didn't send one, or the server is misconfigured, No 'Authorization: Bearer' header found. Either the client didn't send one, or the server is mis-configured"
+	}
+
 	w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 	w.Header().Set("WWW-Authenticate", `Basic realm="Nextcloud", charset="UTF-8"`)
 	w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 	w.Header().Set("X-Powered-By", "PHP/8.5.10")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("Content-Security-Policy", "default-src 'none';")
 	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0" encoding="utf-8"?>
 <d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
   <s:exception>Sabre\DAV\Exception\NotAuthenticated</s:exception>
-  <s:message>No 'Authorization: Basic' header found. Either the client didn't send one, or the server is misconfigured, No 'Authorization: Bearer' header found. Either the client didn't send one, or the server is mis-configured</s:message>
+  <s:message>%s</s:message>
 </d:error>
-`))
+`, msg)
 }
 
-func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
+func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request, notFoundTemplate string) {
 	relPath := strings.TrimPrefix(r.URL.Path, "/")
 	f, err := sub.Open(relPath)
 	if err != nil {
-		serveApache404(w, r)
+		serveNextcloud404(w, r, notFoundTemplate)
 		return
 	}
 	defer f.Close()
 
 	fi, err := f.Stat()
 	if err != nil || fi.IsDir() {
-		serveApache404(w, r)
+		serveNextcloud404(w, r, notFoundTemplate)
 		return
 	}
 
@@ -588,6 +691,8 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 		ctype = "image/webp"
 	case ".png":
 		ctype = "image/png"
+	case ".gif":
+		ctype = "image/gif"
 	case ".ico":
 		ctype = "image/x-icon"
 	case ".json":
@@ -596,6 +701,8 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 		ctype = "font/woff2"
 	case ".woff":
 		ctype = "font/woff"
+	case ".otf":
+		ctype = "font/otf"
 	default:
 		if strings.HasSuffix(relPath, "favicon") {
 			ctype = "image/x-icon"
@@ -608,13 +715,18 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		serveApache404(w, r)
+		serveNextcloud404(w, r, notFoundTemplate)
 		return
+	}
+
+	cacheControl := "max-age=15778463"
+	if strings.Contains(r.URL.RawQuery, "v=") {
+		cacheControl = "max-age=15778463, immutable"
 	}
 
 	w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Cache-Control", "max-age=15778463")
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Vary", "Accept-Encoding")
 	w.Header().Set("Last-Modified", "Fri, 04 Sep 2026 05:12:32 GMT")
 	w.Header().Set("ETag", etag)
@@ -647,11 +759,19 @@ func newNextcloudHandler() (http.Handler, error) {
 	}
 	capabilitiesTemplateStr := string(capabilitiesBytes)
 
+	notFoundBytes, err := fs.ReadFile(sub, "404.html")
+	var notFoundTemplateStr string
+	if err == nil {
+		notFoundTemplateStr = string(notFoundBytes)
+	} else {
+		notFoundTemplateStr = `<!DOCTYPE html><html class="ng-csp"><head><meta charset="utf-8"><title>Nextcloud</title></head><body><h2>Page not found</h2><p><a class="button primary" href="/">Back to Nextcloud</a></p></body></html>`
+	}
+
 	mux := http.NewServeMux()
 
 	// Static subdirectories: /core/, /dist/, /apps/
 	staticHandler := func(w http.ResponseWriter, r *http.Request) {
-		serveNextcloudStatic(sub, w, r)
+		serveNextcloudStatic(sub, w, r, notFoundTemplateStr)
 	}
 	mux.HandleFunc("/core/", staticHandler)
 	mux.HandleFunc("/dist/", staticHandler)
@@ -659,35 +779,82 @@ func newNextcloudHandler() (http.Handler, error) {
 
 	// Status.php probe
 	mux.HandleFunc("/status.php", func(w http.ResponseWriter, r *http.Request) {
+		expires2100 := time.Date(2100, 12, 31, 23, 59, 59, 0, time.UTC)
+		http.SetCookie(w, &http.Cookie{
+			Name:     "nc_sameSiteCookielax",
+			Value:    "true",
+			Path:     "/",
+			HttpOnly: true,
+			Expires:  expires2100,
+			SameSite: http.SameSiteLaxMode,
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     "nc_sameSiteCookiestrict",
+			Value:    "true",
+			Path:     "/",
+			HttpOnly: true,
+			Expires:  expires2100,
+			SameSite: http.SameSiteStrictMode,
+		})
+
+		nonce := generate32ByteBase64()
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 		w.Header().Set("X-Powered-By", "PHP/8.5.10")
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
 		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s'; style-src 'self' 'unsafe-inline'; frame-src *; img-src * data: blob:; font-src 'self' data:; media-src *; connect-src *; object-src 'none'; base-uri 'self';", nonce))
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"installed":true,"maintenance":false,"needsDbUpgrade":false,"version":"34.0.3.2","versionstring":"34.0.3","edition":"","productname":"Nextcloud","extendedSupport":false}`))
 	})
 
 	// 204 Ping probe
 	mux.HandleFunc("/index.php/204", func(w http.ResponseWriter, r *http.Request) {
+		setNextcloudSessionCookies(w, r)
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 		w.Header().Set("X-Powered-By", "PHP/8.5.10")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none';base-uri 'none';manifest-src 'self';frame-ancestors 'none'")
+		w.Header().Set("X-Request-Id", randomToken()[:20])
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("Feature-Policy", "autoplay 'none';camera 'none';fullscreen 'none';geolocation 'none';microphone 'none';payment 'none'")
 		w.WriteHeader(http.StatusNoContent)
 	})
 
 	// Webcron probe
 	mux.HandleFunc("/cron.php", func(w http.ResponseWriter, r *http.Request) {
+		setNextcloudSessionCookies(w, r)
+		nonce := generate32ByteBase64()
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 		w.Header().Set("X-Powered-By", "PHP/8.5.10")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s'; style-src 'self' 'unsafe-inline'; frame-src *; img-src * data: blob:; font-src 'self' data:; media-src *; connect-src *; object-src 'none'; base-uri 'self';", nonce))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"success"}`))
 	})
 
 	// Robots.txt
 	mux.HandleFunc("/robots.txt", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+		w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("User-agent: *\nDisallow: /\n"))
 	})
@@ -696,27 +863,40 @@ func newNextcloudHandler() (http.Handler, error) {
 	webdavHandler := func(w http.ResponseWriter, r *http.Request) {
 		serveNextcloudWebDAV(w, r)
 	}
+	mux.HandleFunc("/remote.php/webdav", webdavHandler)
 	mux.HandleFunc("/remote.php/webdav/", webdavHandler)
+	mux.HandleFunc("/remote.php/dav", webdavHandler)
 	mux.HandleFunc("/remote.php/dav/", webdavHandler)
-	mux.HandleFunc("/remote.php/webdav", func(w http.ResponseWriter, r *http.Request) {
+
+	// Well-known endpoints
+	mux.HandleFunc("/.well-known/webdav", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("X-Nextcloud-Well-Known", "1")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
-		http.Redirect(w, r, "/remote.php/webdav/", http.StatusMovedPermanently)
-	})
-	mux.HandleFunc("/remote.php/dav", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
-		http.Redirect(w, r, "/remote.php/dav/", http.StatusMovedPermanently)
+		w.Header().Set("X-Powered-By", "PHP/8.5.10")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"webdav not supported"}`))
 	})
 
-	// Well-known redirects
 	wellKnownDavRedirect := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
-		http.Redirect(w, r, "/remote.php/dav", http.StatusMovedPermanently)
+		http.Redirect(w, r, "/remote.php/dav/", http.StatusMovedPermanently)
 	}
-	mux.HandleFunc("/.well-known/webdav", wellKnownDavRedirect)
 	mux.HandleFunc("/.well-known/caldav", wellKnownDavRedirect)
 	mux.HandleFunc("/.well-known/carddav", wellKnownDavRedirect)
 
-	// Well-known metadata probes
+	mux.HandleFunc("/.well-known/change-password", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+		http.Redirect(w, r, "/settings/user/security", http.StatusSeeOther)
+	})
+
+	mux.HandleFunc("/.well-known/security.txt", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=UTF-8")
+		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Contact: https://hackerone.com/nextcloud\nExpires: 2026-12-31T23:00:00.000Z\nAcknowledgments: https://hackerone.com/nextcloud/thanks\nAcknowledgments: https://github.com/nextcloud/security-advisories/security/advisories\nPolicy: https://hackerone.com/nextcloud\nPreferred-Languages: en\n"))
+	})
+
 	mux.HandleFunc("/.well-known/nodeinfo", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("X-Nextcloud-Well-Known", "1")
@@ -734,20 +914,143 @@ func newNextcloudHandler() (http.Handler, error) {
 		_, _ = w.Write([]byte(`{"message":"webfinger not supported"}`))
 	})
 
-	// OCS endpoints
-	mux.HandleFunc("/ocs/v2.php/cloud/capabilities", func(w http.ResponseWriter, r *http.Request) {
+	// Login flow v2 (desktop/mobile app flow)
+	loginV2Handler := func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			setNextcloudSessionCookies(w, r)
+			tokenBytes := make([]byte, 64)
+			_, _ = rand.Read(tokenBytes)
+			token := hex.EncodeToString(tokenBytes)
+
+			host := r.Host
+			if host == "" {
+				host = "localhost"
+			}
+			scheme := "https"
+			if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" && (host == "127.0.0.1" || strings.HasPrefix(host, "localhost") || strings.HasPrefix(host, "127.0.0.1:")) {
+				scheme = "http"
+			}
+
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+			w.Header().Set("X-Powered-By", "PHP/8.5.10")
+			w.Header().Set("Content-Security-Policy", "default-src 'none';base-uri 'none';manifest-src 'self';frame-ancestors 'none'")
+			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+			w.Header().Set("X-Request-Id", randomToken()[:20])
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"poll":{"token":"%s","endpoint":"%s://%s/login/v2/poll"},"login":"%s://%s/login/v2/flow/%s"}`, token, scheme, host, scheme, host, token)
+			return
+		}
+		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+		w.Header().Set("X-Powered-By", "PHP/8.5.10")
+		w.WriteHeader(http.StatusMethodNotAllowed)
+	}
+
+	loginV2PollHandler := func(w http.ResponseWriter, r *http.Request) {
+		setNextcloudSessionCookies(w, r)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 		w.Header().Set("X-Powered-By", "PHP/8.5.10")
-		w.WriteHeader(http.StatusPreconditionFailed)
-		_, _ = w.Write([]byte(`{"message":"CSRF check failed"}`))
+		w.Header().Set("Content-Security-Policy", "default-src 'none';base-uri 'none';manifest-src 'self';frame-ancestors 'none'")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		w.Header().Set("X-Request-Id", randomToken()[:20])
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`[]`))
+	}
+
+	mux.HandleFunc("/login/v2", loginV2Handler)
+	mux.HandleFunc("/index.php/login/v2", loginV2Handler)
+	mux.HandleFunc("/login/v2/poll", loginV2PollHandler)
+	mux.HandleFunc("/index.php/login/v2/poll", loginV2PollHandler)
+
+	// OCS endpoints
+	serveCapabilities := func(w http.ResponseWriter, r *http.Request, versionMajor int) {
+		if r.Header.Get("OCS-APIRequest") != "true" {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+			w.Header().Set("X-Powered-By", "PHP/8.5.10")
+			w.WriteHeader(http.StatusPreconditionFailed)
+			_, _ = w.Write([]byte(`{"message":"CSRF check failed"}`))
+			return
+		}
+
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		if host == "" {
+			host = "localhost"
+		}
+
+		capJSON := strings.ReplaceAll(capabilitiesTemplateStr, "{{NEXTCLOUD_HOST}}", host)
+
+		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+		w.Header().Set("X-Powered-By", "PHP/8.5.10")
+
+		if r.URL.Query().Get("format") == "json" {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			if versionMajor == 1 {
+				_, _ = fmt.Fprintf(w, `{"ocs":{"meta":{"status":"ok","statuscode":100,"message":"OK","totalitems":"","itemsperpage":""},"data":{"version":{"major":34,"minor":0,"micro":3,"string":"34.0.3","edition":"","extendedSupport":false},"capabilities":%s}}}`, capJSON)
+			} else {
+				_, _ = fmt.Fprintf(w, `{"ocs":{"meta":{"status":"ok","statuscode":200,"message":"OK"},"data":{"version":{"major":34,"minor":0,"micro":3,"string":"34.0.3","edition":"","extendedSupport":false},"capabilities":%s}}}`, capJSON)
+			}
+		} else {
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			statusCode := 200
+			if versionMajor == 1 {
+				statusCode = 100
+			}
+			_, _ = fmt.Fprintf(w, `<?xml version="1.0"?>
+<ocs>
+ <meta>
+  <status>ok</status>
+  <statuscode>%d</statuscode>
+  <message>OK</message>
+ </meta>
+ <data>
+  <version>
+   <major>34</major>
+   <minor>0</minor>
+   <micro>3</micro>
+   <string>34.0.3</string>
+   <edition></edition>
+   <extendedSupport></extendedSupport>
+  </version>
+  <capabilities>
+   <theming>
+    <name>Nextcloud</name>
+    <url>https://nextcloud.com</url>
+    <slogan>a safe home for all your data</slogan>
+    <color>#00679e</color>
+    <color-text>#ffffff</color-text>
+   </theming>
+  </capabilities>
+ </data>
+</ocs>
+`, statusCode)
+		}
+	}
+
+	mux.HandleFunc("/ocs/v1.php/cloud/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		serveCapabilities(w, r, 1)
 	})
+	mux.HandleFunc("/ocs/v2.php/cloud/capabilities", func(w http.ResponseWriter, r *http.Request) {
+		serveCapabilities(w, r, 2)
+	})
+
 	mux.HandleFunc("/ocs/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/xml; charset=utf-8")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 		w.Header().Set("X-Powered-By", "PHP/8.5.10")
 		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte("<?xml version=\"1.0\"?>\n<ocs>\n <meta>\n  <status>failure</status>\n  <statuscode>997</statuscode>\n  <message>Current user is not logged in</message>\n </meta>\n <data/>\n</ocs>\n"))
+		if r.URL.Query().Get("format") == "json" {
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			_, _ = w.Write([]byte(`{"ocs":{"meta":{"status":"failure","statuscode":997,"message":"Current user is not logged in"},"data":[]}}`))
+		} else {
+			w.Header().Set("Content-Type", "application/xml; charset=utf-8")
+			_, _ = w.Write([]byte("<?xml version=\"1.0\"?>\n<ocs>\n <meta>\n  <status>failure</status>\n  <statuscode>997</statuscode>\n  <message>Current user is not logged in</message>\n </meta>\n <data/>\n</ocs>\n"))
+		}
 	})
 
 	// Login handler
@@ -762,6 +1065,7 @@ func newNextcloudHandler() (http.Handler, error) {
 
 		if r.Method == http.MethodPost {
 			simulatedLoginDelay()
+			setNextcloudSessionCookies(w, r)
 			_ = r.ParseForm()
 			user := r.FormValue("user")
 			if user == "" {
@@ -793,6 +1097,15 @@ func newNextcloudHandler() (http.Handler, error) {
 			})
 			w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 			w.Header().Set("X-Powered-By", "PHP/8.5.10")
+			w.Header().Set("X-Content-Type-Options", "nosniff")
+			w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+			w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
+			w.Header().Set("X-Robots-Tag", "noindex, nofollow")
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("Content-Security-Policy", "default-src 'none';base-uri 'none';manifest-src 'self';frame-ancestors 'none'")
+			w.Header().Set("X-Request-Id", randomToken()[:20])
+			w.Header().Set("X-Nextcloud-Bruteforce-Throttled", "6400ms")
+			w.Header().Set("Feature-Policy", "autoplay 'none';camera 'none';fullscreen 'none';geolocation 'none';microphone 'none';payment 'none'")
 			w.Header().Set("Location", "/login?direct=1&user="+url.QueryEscape(user))
 			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 			w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
@@ -801,6 +1114,7 @@ func newNextcloudHandler() (http.Handler, error) {
 		}
 
 		// GET login page
+		setNextcloudSessionCookies(w, r)
 		nonce := generate32ByteBase64()
 		token := generate32ByteBase64()
 		requestToken := token + ":" + nonce
@@ -823,46 +1137,6 @@ func newNextcloudHandler() (http.Handler, error) {
 			html = strings.Replace(html, `id="initial-state-core-loginThrottleDelay" value="MA=="`, `id="initial-state-core-loginThrottleDelay" value="MTA="`, 1)
 		}
 
-		passphraseBytes := make([]byte, 96)
-		_, _ = rand.Read(passphraseBytes)
-		passphrase := base64.StdEncoding.EncodeToString(passphraseBytes)
-
-		sidBytes := make([]byte, 16)
-		_, _ = rand.Read(sidBytes)
-		sid := hex.EncodeToString(sidBytes)
-
-		http.SetCookie(w, &http.Cookie{
-			Name:     "oc_sessionPassphrase",
-			Value:    passphrase,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
-		http.SetCookie(w, &http.Cookie{
-			Name:     "ocouaube3hh1",
-			Value:    sid,
-			Path:     "/",
-			HttpOnly: true,
-			SameSite: http.SameSiteLaxMode,
-		})
-		expires2100 := time.Date(2100, 12, 31, 23, 59, 59, 0, time.UTC)
-		http.SetCookie(w, &http.Cookie{
-			Name:     "nc_sameSiteCookielax",
-			Value:    "true",
-			Path:     "/",
-			HttpOnly: true,
-			Expires:  expires2100,
-			SameSite: http.SameSiteLaxMode,
-		})
-		http.SetCookie(w, &http.Cookie{
-			Name:     "nc_sameSiteCookiestrict",
-			Value:    "true",
-			Path:     "/",
-			HttpOnly: true,
-			Expires:  expires2100,
-			SameSite: http.SameSiteStrictMode,
-		})
-
 		w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
 		w.Header().Set("X-Powered-By", "PHP/8.5.10")
@@ -873,13 +1147,18 @@ func newNextcloudHandler() (http.Handler, error) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 		w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
-		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'self'; script-src 'self' 'nonce-%s'; style-src 'self' 'unsafe-inline'; frame-src *; img-src * data: blob:; font-src 'self' data:; media-src *; connect-src *; object-src 'none'; base-uri 'self';", nonce))
+		w.Header().Set("Feature-Policy", "autoplay 'self';camera 'none';fullscreen 'self';geolocation 'none';microphone 'none';payment 'none'")
+		w.Header().Set("Content-Security-Policy", fmt.Sprintf("default-src 'none';base-uri 'none';manifest-src 'self';script-src 'nonce-%s';script-src-elem 'strict-dynamic' 'nonce-%s';style-src 'self' 'unsafe-inline';img-src 'self' data: blob: https://*.tile.openstreetmap.org;font-src 'self' data:;connect-src 'self';media-src 'self';frame-src 'self';frame-ancestors 'self';form-action 'self'", nonce, nonce))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(html))
 	}
 
 	mux.HandleFunc("/login", loginHandler)
 	mux.HandleFunc("/index.php/login", loginHandler)
+	mux.HandleFunc("/login/flow", loginHandler)
+	mux.HandleFunc("/index.php/login/flow", loginHandler)
+	mux.HandleFunc("/login/v2/flow/", loginHandler)
+	mux.HandleFunc("/index.php/login/v2/flow/", loginHandler)
 
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
@@ -891,10 +1170,10 @@ func newNextcloudHandler() (http.Handler, error) {
 		if strings.HasPrefix(path, "/index.php/core/") || strings.HasPrefix(path, "/index.php/dist/") || strings.HasPrefix(path, "/index.php/apps/") {
 			r2 := r.Clone(r.Context())
 			r2.URL.Path = strings.TrimPrefix(path, "/index.php")
-			serveNextcloudStatic(sub, w, r2)
+			serveNextcloudStatic(sub, w, r2, notFoundTemplateStr)
 			return
 		}
-		serveApache404(w, r)
+		serveNextcloud404(w, r, notFoundTemplateStr)
 	})
 
 	return mux, nil
