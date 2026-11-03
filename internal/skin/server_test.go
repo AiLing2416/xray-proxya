@@ -650,8 +650,34 @@ func TestSeafileHandler(t *testing.T) {
 	if rec.Code != http.StatusFound {
 		t.Errorf("GET / code = %d, want 302", rec.Code)
 	}
+	if rec.Header().Get("Location") != "/accounts/login/?next=/" {
+		t.Errorf("GET / Location = %q, want '/accounts/login/?next=/'", rec.Header().Get("Location"))
+	}
 
-	// 2. GET /api2/ping/
+	// 1b. GET /?next=/repo/123 encodes query string into next
+	req = httptest.NewRequest("GET", "/?next=/repo/123", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Errorf("GET /?next=/repo/123 code = %d, want 302", rec.Code)
+	}
+	if rec.Header().Get("Location") != "/accounts/login/?next=/%3Fnext%3D/repo/123" {
+		t.Errorf("GET /?next=/repo/123 Location = %q, want '/accounts/login/?next=/%%3Fnext%%3D/repo/123'", rec.Header().Get("Location"))
+	}
+
+	// 1c. POST / without CSRF returns 403 Forbidden with Django CSRF error page
+	req = httptest.NewRequest("POST", "/", strings.NewReader("foo=bar"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("POST / without CSRF code = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "CSRF verification failed") {
+		t.Errorf("POST / without CSRF missing CSRF verification failed message")
+	}
+
+	// 2. GET /api2/ping/ & OPTIONS /api2/ping/
 	req = httptest.NewRequest("GET", "/api2/ping/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -660,6 +686,27 @@ func TestSeafileHandler(t *testing.T) {
 	}
 	if rec.Header().Get("Allow") != "GET, HEAD, OPTIONS" {
 		t.Errorf("GET /api2/ping/ Allow = %q, want 'GET, HEAD, OPTIONS'", rec.Header().Get("Allow"))
+	}
+
+	req = httptest.NewRequest("OPTIONS", "/api2/ping/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"name":"Ping"`) {
+		t.Errorf("OPTIONS /api2/ping/ code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// 2b. Django APPEND_SLASH: GET /api2/ping -> 301 to /api2/ping/
+	req = httptest.NewRequest("GET", "/api2/ping", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently {
+		t.Errorf("GET /api2/ping code = %d, want 301", rec.Code)
+	}
+	if rec.Header().Get("Location") != "/api2/ping/" {
+		t.Errorf("GET /api2/ping Location = %q, want '/api2/ping/'", rec.Header().Get("Location"))
+	}
+	if rec.Header().Get("Server") != "nginx" {
+		t.Errorf("GET /api2/ping Server = %q, want 'nginx'", rec.Header().Get("Server"))
 	}
 
 	// 3. GET /seafhttp/protocol-version
@@ -676,7 +723,42 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("GET /seafhttp/protocol-version body = %q, want '{\"version\": 2}'", rec.Body.String())
 	}
 
-	// 4. GET /accounts/login/ (dynamic CSRF & Cookies)
+	// 3b. /seafhttp/ unknown endpoints (including fake ping probe) return 404 with empty body
+	req = httptest.NewRequest("GET", "/seafhttp/ping", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("GET /seafhttp/ping code = %d, want 404", rec.Code)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("GET /seafhttp/ping should have 0 bytes body, got %d bytes: %q", rec.Body.Len(), rec.Body.String())
+	}
+	if rec.Header().Get("Server") != "nginx" {
+		t.Errorf("GET /seafhttp/ping Server = %q, want 'nginx'", rec.Header().Get("Server"))
+	}
+
+	// 4. Modern /api/v2.1/ endpoints
+	req = httptest.NewRequest("GET", "/api/v2.1/repos/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("GET /api/v2.1/repos/ code = %d, want 403", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Errorf("GET /api/v2.1/repos/ Content-Type = %q, want 'application/json'", rec.Header().Get("Content-Type"))
+	}
+	if !strings.Contains(rec.Body.String(), "Authentication credentials were not provided") {
+		t.Errorf("GET /api/v2.1/repos/ body = %q", rec.Body.String())
+	}
+
+	req = httptest.NewRequest("GET", "/api/v2.1/repos", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/api/v2.1/repos/" {
+		t.Errorf("GET /api/v2.1/repos unslashed code = %d, Location = %q", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// 5. GET /accounts/login/ (dynamic CSRF & Cookies)
 	req = httptest.NewRequest("GET", "/accounts/login/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -713,23 +795,67 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("CSRF token was not dynamically randomized across requests")
 	}
 
-	// 5. POST /accounts/login/ (wrong credentials)
-	formData := url.Values{
+	// 6. POST /accounts/login/
+	// 6a. Without CSRF -> 403 Forbidden with Django CSRF error page
+	formDataNoCSRF := url.Values{
 		"login":    {"user@example.com"},
 		"password": {"badpass"},
 	}
-	req = httptest.NewRequest("POST", "/accounts/login/", strings.NewReader(formData.Encode()))
+	req = httptest.NewRequest("POST", "/accounts/login/", strings.NewReader(formDataNoCSRF.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("POST /accounts/login/ without CSRF code = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<title>403 Forbidden</title>") || !strings.Contains(rec.Body.String(), "CSRF verification failed") {
+		t.Errorf("POST /accounts/login/ without CSRF body missing Django CSRF failure message")
+	}
+
+	// 6b. With valid CSRF -> 200 OK with Incorrect email or password, value="" kept empty, sfcsrftoken rotated, no sessionid
+	formDataWithCSRF := url.Values{
+		"csrfmiddlewaretoken": {m1[1]},
+		"login":               {"user@example.com"},
+		"password":            {"badpass"},
+	}
+	req = httptest.NewRequest("POST", "/accounts/login/", strings.NewReader(formDataWithCSRF.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: "sfcsrftoken", Value: csrfCookie.Value})
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Errorf("POST /accounts/login/ code = %d, want 200", rec.Code)
+		t.Errorf("POST /accounts/login/ with CSRF code = %d, want 200", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "Incorrect email or password") {
 		t.Errorf("POST /accounts/login/ should display error notice")
 	}
+	if strings.Contains(rec.Body.String(), `value="user@example.com"`) {
+		t.Errorf("POST /accounts/login/ should NOT reflect submitted username into value")
+	}
+	// Check cookies: sfcsrftoken rotated, sessionid NOT present on failure
+	var postCSRF, postSession *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == "sfcsrftoken" {
+			postCSRF = c
+		} else if c.Name == "sessionid" {
+			postSession = c
+		}
+	}
+	if postCSRF == nil || len(postCSRF.Value) != 32 {
+		t.Errorf("POST /accounts/login/ missing rotated sfcsrftoken cookie")
+	}
+	if postSession != nil {
+		t.Errorf("POST /accounts/login/ should NOT set sessionid cookie on authentication failure")
+	}
 
-	// 6. API2 auth-token: GET returns 405 with JSON, POST returns 400 with JSON
+	// 7. API2 auth-token: OPTIONS, empty body POST, valid credentials POST, GET 405
+	req = httptest.NewRequest("OPTIONS", "/api2/auth-token/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"name":"Obtain Auth Token"`) {
+		t.Errorf("OPTIONS /api2/auth-token/ code = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
 	req = httptest.NewRequest("GET", "/api2/auth-token/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -743,17 +869,31 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("GET /api2/auth-token/ Allow = %q, want 'POST, OPTIONS'", rec.Header().Get("Allow"))
 	}
 
+	// Empty body -> returns required field errors
 	req = httptest.NewRequest("POST", "/api2/auth-token/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("POST /api2/auth-token/ code = %d, want 400", rec.Code)
 	}
+	if !strings.Contains(rec.Body.String(), `"username":["This field is required."]`) || !strings.Contains(rec.Body.String(), `"password":["This field is required."]`) {
+		t.Errorf("POST /api2/auth-token/ empty body = %q", rec.Body.String())
+	}
+
+	// Provided credentials -> returns non_field_errors
+	tokenForm := url.Values{"username": {"user@example.com"}, "password": {"badpass"}}
+	req = httptest.NewRequest("POST", "/api2/auth-token/", strings.NewReader(tokenForm.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("POST /api2/auth-token/ with creds code = %d, want 400", rec.Code)
+	}
 	if !strings.Contains(rec.Body.String(), "Unable to login with provided credentials") {
 		t.Errorf("POST /api2/auth-token/ body = %q", rec.Body.String())
 	}
 
-	// 7. API2 protected endpoints (403 Forbidden with proper Allow)
+	// 8. API2 protected endpoints (403 Forbidden with proper Allow; unauthenticated OPTIONS is also 403)
 	req = httptest.NewRequest("GET", "/api2/account/info/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -765,6 +905,13 @@ func TestSeafileHandler(t *testing.T) {
 	}
 	if rec.Header().Get("Allow") != "GET, PUT, HEAD, OPTIONS" {
 		t.Errorf("GET /api2/account/info/ Allow = %q, want 'GET, PUT, HEAD, OPTIONS'", rec.Header().Get("Allow"))
+	}
+
+	req = httptest.NewRequest("OPTIONS", "/api2/account/info/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("OPTIONS /api2/account/info/ code = %d, want 403", rec.Code)
 	}
 
 	req = httptest.NewRequest("GET", "/api2/repos/", nil)
@@ -781,7 +928,7 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("POST /api2/client-login/ code = %d, Allow = %q", rec.Code, rec.Header().Get("Allow"))
 	}
 
-	// 8. Password Reset: /accounts/password/reset/
+	// 9. Password Reset: /accounts/password/reset/
 	req = httptest.NewRequest("GET", "/accounts/password/reset/", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -796,7 +943,17 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("password reset missing 64-char csrf token: %v", mPr)
 	}
 
-	// 9. Language Switch: /i18n/?lang=zh-cn
+	// POST /accounts/password/reset/ without CSRF -> 403
+	req = httptest.NewRequest("POST", "/accounts/password/reset/", strings.NewReader("email=admin@example.com"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("POST /accounts/password/reset/ without CSRF code = %d, want 403", rec.Code)
+	}
+
+	// 10. Language Switch: /i18n/?lang=zh-cn
+	// Without Referer -> redirects to /
 	req = httptest.NewRequest("GET", "/i18n/?lang=zh-cn", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -806,18 +963,25 @@ func TestSeafileHandler(t *testing.T) {
 	if rec.Header().Get("Location") != "/" {
 		t.Errorf("GET /i18n/?lang=zh-cn Location = %q, want '/'", rec.Header().Get("Location"))
 	}
-	var langCookie *http.Cookie
-	for _, c := range rec.Result().Cookies() {
-		if c.Name == "django_language" {
-			langCookie = c
-			break
-		}
-	}
-	if langCookie == nil || langCookie.Value != "zh-cn" || langCookie.MaxAge != 2592000 {
-		t.Errorf("invalid django_language cookie: %+v", langCookie)
+
+	// With Referer -> redirects to Referer
+	req = httptest.NewRequest("GET", "/i18n/?lang=zh-cn", nil)
+	req.Header.Set("Referer", "http://example.com/accounts/login/")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "http://example.com/accounts/login/" {
+		t.Errorf("GET /i18n/?lang=zh-cn with Referer code = %d, Location = %q", rec.Code, rec.Header().Get("Location"))
 	}
 
-	// 10. Global 404 fallback
+	// GET /i18n unslashed -> 301 to /i18n/
+	req = httptest.NewRequest("GET", "/i18n", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusMovedPermanently || rec.Header().Get("Location") != "/i18n/" {
+		t.Errorf("GET /i18n code = %d, Location = %q, want 301 /i18n/", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// 11. Global 404 fallback
 	req = httptest.NewRequest("GET", "/some-random-unknown-path", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -828,7 +992,17 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("GET /some-random-unknown-path did not return Seafile branded 404 HTML")
 	}
 
-	// 11. Media 404: non-existent static asset returns nginx default 404
+	// 12. Media requests: directory returns 403, nonexistent returns 404
+	req = httptest.NewRequest("GET", "/media/css/", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("GET /media/css/ code = %d, want 403", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "<center><h1>403 Forbidden</h1></center>") {
+		t.Errorf("GET /media/css/ did not return Nginx 403 HTML")
+	}
+
 	req = httptest.NewRequest("GET", "/media/nonexistent.js", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -842,7 +1016,18 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("GET /media/nonexistent.js did not return Nginx 404 HTML")
 	}
 
-	// 12. Static CSS headers: text/css without charset, ETag, Last-Modified, no X-Frame-Options
+	// 13. Double-slash request /media//css/seafile-ui.css (line 17 of 404.html) must serve 200 OK directly
+	req = httptest.NewRequest("GET", "/media//css/seafile-ui.css", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("GET /media//css/seafile-ui.css code = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Type") != "text/css" {
+		t.Errorf("GET /media//css/seafile-ui.css Content-Type = %q, want 'text/css'", rec.Header().Get("Content-Type"))
+	}
+
+	// 14. Static CSS headers: text/css without charset, ETag, Last-Modified, no X-Frame-Options
 	req = httptest.NewRequest("GET", "/media/css/seafile-ui.css", nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -862,18 +1047,25 @@ func TestSeafileHandler(t *testing.T) {
 		t.Errorf("GET /media/css/seafile-ui.css should NOT have X-Frame-Options, got %q", rec.Header().Get("X-Frame-Options"))
 	}
 
-	// 13. Static JS headers: application/javascript without charset, no X-Frame-Options
-	req = httptest.NewRequest("GET", "/media/assets/scripts/lib/jquery.min.js", nil)
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Errorf("GET /media/assets/scripts/lib/jquery.min.js code = %d, want 200", rec.Code)
+	// 15. Newly extracted static assets from seafile image: bg.png, grippy_large.png, ui-icons_444444_256x240.png
+	extraAssets := []struct {
+		urlPath string
+		ctype   string
+	}{
+		{"/media/img/bg.png", "image/png"},
+		{"/media/img/grippy_large.png", "image/png"},
+		{"/media/img/ui-icons_444444_256x240.png", "image/png"},
 	}
-	if rec.Header().Get("Content-Type") != "application/javascript" {
-		t.Errorf("GET /media/assets/scripts/lib/jquery.min.js Content-Type = %q, want 'application/javascript'", rec.Header().Get("Content-Type"))
-	}
-	if rec.Header().Get("X-Frame-Options") != "" {
-		t.Errorf("GET /media/assets/scripts/lib/jquery.min.js should NOT have X-Frame-Options, got %q", rec.Header().Get("X-Frame-Options"))
+	for _, ea := range extraAssets {
+		req = httptest.NewRequest("GET", ea.urlPath, nil)
+		rec = httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("GET %s code = %d, want 200", ea.urlPath, rec.Code)
+		}
+		if rec.Header().Get("Content-Type") != ea.ctype {
+			t.Errorf("GET %s Content-Type = %q, want %q", ea.urlPath, rec.Header().Get("Content-Type"), ea.ctype)
+		}
 	}
 }
 
