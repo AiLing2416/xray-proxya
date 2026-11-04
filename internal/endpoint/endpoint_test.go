@@ -177,12 +177,13 @@ func TestFindReferences(t *testing.T) {
 			{Alias: "alice", Endpoint: "custom-ep"},
 			{Alias: "bob", Endpoint: "default"},
 			{Alias: "carol", Endpoint: ""},
+			{Alias: "dave", Endpoint: "", OutboundLink: "custom-ep"},
 		},
 	}
 
 	refsCustom := FindReferences(cfg, "custom-ep")
-	if len(refsCustom) != 2 {
-		t.Fatalf("expected 2 references for custom-ep, got %d: %v", len(refsCustom), refsCustom)
+	if len(refsCustom) != 3 { // admin, alice, dave
+		t.Fatalf("expected 3 references for custom-ep, got %d: %v", len(refsCustom), refsCustom)
 	}
 
 	refsDefault := FindReferences(cfg, "default")

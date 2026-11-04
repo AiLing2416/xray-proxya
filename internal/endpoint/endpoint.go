@@ -396,7 +396,15 @@ func FindReferences(cfg *config.UserConfig, endpointName string) []string {
 
 	// Check guests
 	for _, g := range cfg.Guests {
-		if containsEndpoint(g.Endpoint, endpointName) {
+		effectiveSpec := g.Endpoint
+		if effectiveSpec == "" {
+			if g.OutboundLink != "" {
+				effectiveSpec = g.OutboundLink
+			} else {
+				effectiveSpec = "default"
+			}
+		}
+		if containsEndpoint(effectiveSpec, endpointName) {
 			refs = append(refs, fmt.Sprintf("guest:%s", g.Alias))
 		}
 	}

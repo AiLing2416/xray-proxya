@@ -291,8 +291,9 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		if subnetVal == "" {
 			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --subnet")
 		}
-		if _, _, err := net.ParseCIDR(subnetVal); err != nil {
-			return fmt.Errorf("❌ Error: Invalid IPv6 subnet '%s': %w", subnetVal, err)
+		ip, _, err := net.ParseCIDR(subnetVal)
+		if err != nil || ip == nil || ip.To4() != nil || ip.To16() == nil {
+			return fmt.Errorf("❌ Error: Invalid IPv6 subnet '%s' (must be a valid IPv6 CIDR, e.g. 2001:db8::/64)", subnetVal)
 		}
 
 		ifaceVal := strings.TrimSpace(endpointSetInterface)
@@ -301,6 +302,9 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		}
 		if ifaceVal == "" {
 			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --interface (specify the network interface holding the routed IPv6 subnet, e.g. --interface eth0)")
+		}
+		if len(ifaceVal) > 15 || strings.ContainsAny(ifaceVal, " \t\r\n/:") || ifaceVal == "." || ifaceVal == ".." {
+			return fmt.Errorf("❌ Error: Invalid interface name '%s' (must be 1-15 characters without spaces, slashes, or colons)", ifaceVal)
 		}
 
 		profileVal := strings.ToLower(strings.TrimSpace(endpointSetProfile))
@@ -369,6 +373,13 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		}
 		if hostVal == "" {
 			return fmt.Errorf("❌ Error: Host cannot be empty")
+		}
+		subParts := strings.Split(hostVal, ",")
+		for _, sp := range subParts {
+			h := strings.TrimSpace(sp)
+			if !endpoint.IsValidHost(h) {
+				return fmt.Errorf("❌ Error: Invalid host or IP address '%s'", h)
+			}
 		}
 		ep = config.EndpointConfig{
 			Type: config.EndpointTypeStatic,

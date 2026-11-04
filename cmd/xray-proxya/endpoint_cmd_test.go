@@ -121,6 +121,35 @@ func TestEndpointSetValidation(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Cannot specify both --host and --auto") {
 		t.Fatalf("expected 'Cannot specify both --host and --auto' error, got: %v", err)
 	}
+
+	// 3. Reject IPv4 CIDR for dynamic-v6
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "192.168.1.0/24")
+	_ = cmd.Flags().Set("interface", "eth0")
+	err = cmd.RunE(cmd, []string{"v4-dyn"})
+	if err == nil || !strings.Contains(err.Error(), "Invalid IPv6 subnet") {
+		t.Fatalf("expected 'Invalid IPv6 subnet' error for IPv4 CIDR, got: %v", err)
+	}
+
+	// 4. Reject invalid interface name
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "2001:db8::/64")
+	_ = cmd.Flags().Set("interface", "eth0/1")
+	err = cmd.RunE(cmd, []string{"bad-iface"})
+	if err == nil || !strings.Contains(err.Error(), "Invalid interface name") {
+		t.Fatalf("expected 'Invalid interface name' error, got: %v", err)
+	}
+
+	// 5. Reject invalid static host
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("type", "static")
+	_ = cmd.Flags().Set("host", "bad host with spaces")
+	err = cmd.RunE(cmd, []string{"bad-host"})
+	if err == nil || !strings.Contains(err.Error(), "Invalid host or IP address") {
+		t.Fatalf("expected 'Invalid host or IP address' error, got: %v", err)
+	}
 }
 
 func TestEndpointListJSON(t *testing.T) {
