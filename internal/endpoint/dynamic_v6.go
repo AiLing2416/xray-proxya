@@ -711,3 +711,55 @@ func reconcileOnStartupLocked(endpointName string, ep config.EndpointConfig) err
 
 	return SaveRotationState(endpointName, st)
 }
+
+// CleanupDynamicV6 removes all active and deprecated IPv6 addresses and proxy NDP entries
+// associated with a dynamic-v6 endpoint from the host interface, and removes the persisted
+// rotation state and lock files to prevent stale state poisoning.
+func CleanupDynamicV6(endpointName string, ep config.EndpointConfig) error {
+	rotationMutex.Lock()
+	defer rotationMutex.Unlock()
+
+	_ = withFileLock(endpointName, func() error {
+		st, _ := LoadRotationState(endpointName)
+		iface := strings.TrimSpace(ep.Interface)
+
+		if st != nil && iface != "" {
+			cleanupAddr := func(addr string) {
+				addr = strings.TrimSpace(addr)
+				if addr == "" {
+					return
+				}
+				execCmd("ip", "-6", "addr", "del", addr+"/128", "dev", iface)
+				if !isTunnelInterface(iface) && ep.EnableNDP {
+					execCmd("ip", "-6", "neigh", "del", "proxy", addr, "dev", iface)
+				}
+			}
+
+			for _, a := range st.ActivePool {
+				cleanupAddr(a.Address)
+			}
+			for _, a := range st.DeprecatedPool {
+				cleanupAddr(a.Address)
+			}
+			for _, cs := range st.Consumers {
+				if cs == nil {
+					continue
+				}
+				for _, a := range cs.ActivePool {
+					cleanupAddr(a.Address)
+				}
+				for _, a := range cs.DeprecatedPool {
+					cleanupAddr(a.Address)
+				}
+			}
+		}
+
+		statePath := RotationStatePath(endpointName)
+		_ = os.Remove(statePath)
+		return nil
+	})
+
+	lockPath := filepath.Join(config.GetConfigDir(), "endpoints", endpointName+".lock")
+	_ = os.Remove(lockPath)
+	return nil
+}

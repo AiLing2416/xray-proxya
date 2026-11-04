@@ -3,6 +3,7 @@ package endpoint
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1087,6 +1088,101 @@ func TestReconcileOnStartup_IsolatedMode(t *testing.T) {
 		t.Fatalf("expected 2 replayed addresses into kernel for isolated consumers, got %d: %v", len(replayedAddrs), replayedAddrs)
 	}
 }
+
+func TestCleanupDynamicV6(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-cleanup-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	var deletedAddrs []string
+	var deletedProxies []string
+	origCmdRunner := cmdRunner
+	defer func() {
+		cmdRunner = origCmdRunner
+	}()
+
+	cmdRunner = func(name string, arg ...string) ([]byte, error) {
+		if len(arg) >= 4 && arg[0] == "-6" && arg[1] == "addr" && arg[2] == "del" {
+			deletedAddrs = append(deletedAddrs, arg[3])
+		}
+		if len(arg) >= 5 && arg[0] == "-6" && arg[1] == "neigh" && arg[2] == "del" && arg[3] == "proxy" {
+			deletedProxies = append(deletedProxies, arg[4])
+		}
+		return []byte("ok"), nil
+	}
+
+	epName := "clean-ep"
+	ep := config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:9999::/64",
+		Interface: "eth0",
+		EnableNDP: true,
+	}
+
+	st := &RotationState{
+		ActivePool: []AddressEntry{
+			{Address: "2001:db8:9999::1", State: "active", CreatedAt: time.Now()},
+		},
+		DeprecatedPool: []AddressEntry{
+			{Address: "2001:db8:9999::2", State: "deprecated", DeprecatedAt: time.Now()},
+		},
+		Consumers: map[string]*ConsumerState{
+			"c1": {
+				ActivePool: []AddressEntry{
+					{Address: "2001:db8:9999::3", State: "active", CreatedAt: time.Now()},
+				},
+				DeprecatedPool: []AddressEntry{
+					{Address: "2001:db8:9999::4", State: "deprecated", DeprecatedAt: time.Now()},
+				},
+			},
+		},
+	}
+	if err := SaveRotationState(epName, st); err != nil {
+		t.Fatalf("failed to save state: %v", err)
+	}
+
+	// Create dummy lock file
+	lockDir := filepath.Join(tmpDir, "endpoints")
+	_ = os.MkdirAll(lockDir, 0700)
+	lockPath := filepath.Join(lockDir, epName+".lock")
+	_ = os.WriteFile(lockPath, []byte("lock"), 0600)
+
+	statePath := RotationStatePath(epName)
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("state file should exist before cleanup: %v", err)
+	}
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("lock file should exist before cleanup: %v", err)
+	}
+
+	// Execute cleanup
+	if err := CleanupDynamicV6(epName, ep); err != nil {
+		t.Fatalf("CleanupDynamicV6 failed: %v", err)
+	}
+
+	// Verify kernel commands
+	if len(deletedAddrs) != 4 {
+		t.Fatalf("expected 4 addresses deleted, got %d: %v", len(deletedAddrs), deletedAddrs)
+	}
+	if len(deletedProxies) != 4 {
+		t.Fatalf("expected 4 NDP proxy entries deleted, got %d: %v", len(deletedProxies), deletedProxies)
+	}
+
+	// Verify state and lock files removed
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("expected state file to be deleted, got err: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Errorf("expected lock file to be deleted, got err: %v", err)
+	}
+}
+
 
 
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -261,6 +262,25 @@ func TestEndpointRemoveAndDefaultProtection(t *testing.T) {
 	loaded, _ := config.LoadConfigEx(true)
 	if _, ok := loaded.Endpoints["custom"]; ok {
 		t.Fatalf("custom endpoint was not removed from staging")
+	}
+
+	// 3. Remove dynamic-v6 endpoint and verify state cleanup
+	loaded.Endpoints["dyn-to-del"] = config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:ffff::/64",
+		Interface: "eth0",
+	}
+	_ = loaded.SaveEx(true)
+	stPath := endpoint.RotationStatePath("dyn-to-del")
+	_ = endpoint.SaveRotationState("dyn-to-del", &endpoint.RotationState{
+		ActivePool: []endpoint.AddressEntry{{Address: "2001:db8:ffff::1", State: "active"}},
+	})
+	if _, err := os.Stat(stPath); err != nil {
+		t.Fatalf("expected state file to exist before removal: %v", err)
+	}
+	_ = endpointRemoveCmd.RunE(endpointRemoveCmd, []string{"dyn-to-del"})
+	if _, err := os.Stat(stPath); !os.IsNotExist(err) {
+		t.Fatalf("expected state file to be deleted upon endpoint remove, got err: %v", err)
 	}
 }
 

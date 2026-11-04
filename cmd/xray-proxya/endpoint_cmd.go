@@ -394,6 +394,10 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Error: Unsupported endpoint type '%s' (valid types: static, auto, dynamic-v6)", targetType)
 	}
 
+	if hasExisting && existingEp.Type == config.EndpointTypeDynamicV6 && ep.Type != config.EndpointTypeDynamicV6 {
+		_ = endpoint.CleanupDynamicV6(name, existingEp)
+	}
+
 	cfg.Endpoints[name] = ep
 
 	if err := cfg.SaveEx(true); err != nil {
@@ -422,13 +426,18 @@ func runEndpointRemove(cmd *cobra.Command, args []string) error {
 	if err != nil || cfg == nil {
 		return fmt.Errorf("❌ Failed to load staging config: %w", err)
 	}
-	if _, exists := cfg.Endpoints[name]; !exists {
+	existingEp, exists := cfg.Endpoints[name]
+	if !exists {
 		return fmt.Errorf("❌ Error: Endpoint '%s' not found", name)
 	}
 
 	refs := endpoint.FindReferences(cfg, name)
 	if len(refs) > 0 {
 		fmt.Printf("⚠️  Warning: Endpoint '%s' is currently referenced by: %s\n", name, strings.Join(refs, ", "))
+	}
+
+	if existingEp.Type == config.EndpointTypeDynamicV6 {
+		_ = endpoint.CleanupDynamicV6(name, existingEp)
 	}
 
 	delete(cfg.Endpoints, name)

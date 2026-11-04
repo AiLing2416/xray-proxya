@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/service"
 	"xray-proxya/internal/xray"
@@ -128,6 +129,18 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 		return fmt.Errorf("failed to commit: %w", err)
 	}
 	ctx.Committed = true
+
+	// Clean up removed or changed dynamic-v6 endpoints from kernel and state
+	if ctx.ActiveCfg != nil && ctx.ActiveCfg.Endpoints != nil {
+		for name, actEp := range ctx.ActiveCfg.Endpoints {
+			if actEp.Type == config.EndpointTypeDynamicV6 {
+				stgEp, exists := ctx.StagingCfg.Endpoints[name]
+				if !exists || stgEp.Type != config.EndpointTypeDynamicV6 {
+					_ = endpoint.CleanupDynamicV6(name, actEp)
+				}
+			}
+		}
+	}
 	if len(ctx.Impact.ChangedSections) > 0 {
 		ctx.AppendLine(fmt.Sprintf("ℹ️  Changed sections: %v", ctx.Impact.ChangedSections))
 	}
