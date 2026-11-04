@@ -216,7 +216,7 @@ func IsTunnelInterface(iface string) bool {
 
 	// 2. Exact prefix matching
 	prefixes := []string{
-		"tun", "tap", "sit", "wg", "gre", "gretap", "ip6tnl", "ip6gre", "he-", "dummy", "wireguard",
+		"tun", "tap", "sit", "wg", "gre", "gretap", "ip6tnl", "ip6gre", "he-", "dummy", "wireguard", "ppp",
 	}
 	for _, p := range prefixes {
 		if strings.HasPrefix(lower, p) {
@@ -420,6 +420,9 @@ func resolveDynamicV6Locked(endpointName string, ep config.EndpointConfig, consu
 		}
 
 		if len(cs.ActivePool) == 0 {
+			if !forSubscription {
+				return "", fmt.Errorf("dynamic-v6 endpoint '%s' has no active address for consumer '%s' (allocated upon subscription pull)", endpointName, cKey)
+			}
 			newIP, err := allocateAndVerifyAddress(subnet, iface, ep.EnableNDP, isColliding)
 			if err != nil {
 				return "", err
@@ -789,6 +792,9 @@ func reconcileOnStartupLocked(endpointName string, ep config.EndpointConfig) err
 		}
 	}
 	for _, cs := range st.Consumers {
+		if cs == nil {
+			continue
+		}
 		for _, act := range cs.ActivePool {
 			execCmd("ip", "-6", "addr", "replace", act.Address+"/128", "dev", iface, "nodad", "preferred_lft", "7200", "valid_lft", "14400")
 			if !isTunnelInterface(iface) && ep.EnableNDP {
@@ -816,6 +822,9 @@ func reconcileOnStartupLocked(endpointName string, ep config.EndpointConfig) err
 	st.DeprecatedPool = remaining
 
 	for _, cs := range st.Consumers {
+		if cs == nil {
+			continue
+		}
 		var csRem []AddressEntry
 		for _, dep := range cs.DeprecatedPool {
 			elapsed := now.Sub(dep.DeprecatedAt)

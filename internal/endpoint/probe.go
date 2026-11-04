@@ -5,8 +5,30 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
+
+var (
+	probeTargetsMutex sync.RWMutex
+	ipv6ProbeTargets  = []string{
+		"[2606:4700:4700::1111]:53", // Cloudflare DNS
+		"[2001:4860:4860::8888]:53", // Google DNS
+	}
+)
+
+// SetIPv6ProbeTargetsForTest overrides the default DNS targets probed by TestIPv6Reachability.
+func SetIPv6ProbeTargetsForTest(targets []string) func() {
+	probeTargetsMutex.Lock()
+	orig := ipv6ProbeTargets
+	ipv6ProbeTargets = targets
+	probeTargetsMutex.Unlock()
+	return func() {
+		probeTargetsMutex.Lock()
+		ipv6ProbeTargets = orig
+		probeTargetsMutex.Unlock()
+	}
+}
 
 // TestIPv6Reachability tests IPv6 Internet reachability with LocalAddr bound to sourceIPv6.
 // It uses Happy Eyeballs concurrent probing against Cloudflare ([2606:4700:4700::1111]:53)
@@ -16,15 +38,16 @@ func TestIPv6Reachability(sourceIPv6 string, timeout time.Duration) (bool, time.
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	src := net.ParseIP(sourceIPv6)
+	cleanSrc := strings.TrimSpace(sourceIPv6)
+	src := net.ParseIP(cleanSrc)
 	if src == nil || src.To4() != nil {
 		return false, 0, fmt.Errorf("invalid source IPv6 address: %q", sourceIPv6)
 	}
 
-	targets := []string{
-		"[2606:4700:4700::1111]:53", // Cloudflare DNS
-		"[2001:4860:4860::8888]:53", // Google DNS
-	}
+	probeTargetsMutex.RLock()
+	targets := make([]string, len(ipv6ProbeTargets))
+	copy(targets, ipv6ProbeTargets)
+	probeTargetsMutex.RUnlock()
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -82,6 +105,8 @@ func TestHostReachability(host string, timeout time.Duration) (bool, time.Durati
 	if _, _, err := net.SplitHostPort(cleanHost); err == nil {
 		targets = []string{cleanHost}
 	} else {
+		cleanHost = strings.TrimPrefix(cleanHost, "[")
+		cleanHost = strings.TrimSuffix(cleanHost, "]")
 		// Probe standard ports
 		for _, port := range []string{"443", "80", "53"} {
 			targets = append(targets, net.JoinHostPort(cleanHost, port))

@@ -124,7 +124,7 @@ func ValidateEndpointSpec(cfg *config.UserConfig, endpointSpec string) error {
 			continue
 		}
 
-		if strings.Contains(token, ".") {
+		if strings.Contains(token, ".") || strings.Contains(token, ":") {
 			return fmt.Errorf("unknown endpoint or invalid address '%s'", token)
 		}
 		return fmt.Errorf("endpoint '%s' not found", token)
@@ -371,7 +371,15 @@ func FindReferences(cfg *config.UserConfig, endpointName string) []string {
 	}
 
 	// Check admin sub
-	if containsEndpoint(cfg.AdminSub.Endpoint, endpointName) {
+	effectiveAdminSpec := cfg.AdminSub.Endpoint
+	if effectiveAdminSpec == "" {
+		if cfg.AdminSub.AddressNode != "" {
+			effectiveAdminSpec = cfg.AdminSub.AddressNode
+		} else {
+			effectiveAdminSpec = "default"
+		}
+	}
+	if containsEndpoint(effectiveAdminSpec, endpointName) {
 		if cfg.AdminSub.Token != "" {
 			refs = append(refs, "sub:admin")
 		}
@@ -387,7 +395,15 @@ func FindReferences(cfg *config.UserConfig, endpointName string) []string {
 	sort.Strings(instNames)
 	for _, instName := range instNames {
 		inst := cfg.SubscriptionInstances[instName]
-		if containsEndpoint(inst.Endpoint, endpointName) {
+		effectiveInstSpec := inst.Endpoint
+		if effectiveInstSpec == "" {
+			if inst.AddressNode != "" {
+				effectiveInstSpec = inst.AddressNode
+			} else {
+				effectiveInstSpec = "default"
+			}
+		}
+		if containsEndpoint(effectiveInstSpec, endpointName) {
 			if inst.Token != "" {
 				refs = append(refs, fmt.Sprintf("sub:%s", instName))
 			}

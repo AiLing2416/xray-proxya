@@ -2,6 +2,8 @@ package endpoint
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1194,7 +1196,7 @@ func TestCleanupDynamicV6(t *testing.T) {
 func TestIsTunnelInterface(t *testing.T) {
 	tunnels := []string{
 		"tun0", "tun-he", "tap1", "sit0", "sit-tunnel", "wg0", "wg-client",
-		"gre0", "gretap0", "ip6tnl0", "ip6gre0", "he-ipv6", "dummy0", "wireguard0",
+		"gre0", "gretap0", "ip6tnl0", "ip6gre0", "he-ipv6", "dummy0", "wireguard0", "ppp0", "ppp-wan",
 	}
 	for _, iface := range tunnels {
 		if !IsTunnelInterface(iface) {
@@ -1212,6 +1214,152 @@ func TestIsTunnelInterface(t *testing.T) {
 		}
 	}
 }
+
+func TestReconcileOnStartup_NilConsumerSafety(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-nil-consumer-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	restoreChecker := SetTestInterfaceChecker(func(iface string) bool { return true }, 50*time.Millisecond, 10*time.Millisecond)
+	defer restoreChecker()
+
+	restoreRunners := SetTestRunners(
+		func(name string, arg ...string) ([]byte, error) { return []byte("ok"), nil },
+		func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) { return true, 1 * time.Millisecond, nil },
+	)
+	defer restoreRunners()
+
+	ep := config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:1234::/64",
+		Interface: "dummy0",
+		Profile:   config.RotationProfileIsolated,
+	}
+
+	// State with nil consumer entry in map
+	st := &RotationState{
+		ActivePool:     []AddressEntry{},
+		DeprecatedPool: []AddressEntry{},
+		Consumers: map[string]*ConsumerState{
+			"valid-user": {
+				ActivePool:     []AddressEntry{{Address: "2001:db8:1234::10", State: "active", CreatedAt: time.Now()}},
+				DeprecatedPool: []AddressEntry{{Address: "2001:db8:1234::20", State: "deprecated", DeprecatedAt: time.Now().Add(-10 * time.Minute)}},
+			},
+			"corrupt-user": nil,
+		},
+	}
+	if err := SaveRotationState("nil-ep", st); err != nil {
+		t.Fatalf("failed to save state: %v", err)
+	}
+
+	// Reconcile must not panic when encountering nil consumer
+	if err := ReconcileOnStartup("nil-ep", ep); err != nil {
+		t.Fatalf("ReconcileOnStartup failed with nil consumer: %v", err)
+	}
+}
+
+func TestResolveDynamicV6_IsolatedReadOnlyNoAllocation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-isolated-ro-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	allocated := false
+	restoreRunners := SetTestRunners(
+		func(name string, arg ...string) ([]byte, error) {
+			allocated = true
+			return []byte("ok"), nil
+		},
+		func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
+			return true, 1 * time.Millisecond, nil
+		},
+	)
+	defer restoreRunners()
+
+	ep := config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:9999::/64",
+		Interface: "eth0",
+		Profile:   config.RotationProfileIsolated,
+	}
+
+	// Read-only query (forSubscription = false) on unallocated consumer must NOT allocate or mutate kernel
+	_, err = ResolveDynamicV6Address("iso-ro", ep, "guest:newbie", false)
+	if err == nil {
+		t.Fatal("expected error on read-only query for unallocated isolated consumer, got nil")
+	}
+	if allocated {
+		t.Fatal("expected NO kernel allocation during read-only query on isolated endpoint")
+	}
+
+	// Now pull with forSubscription = true: allocation should occur
+	ip, err := ResolveDynamicV6Address("iso-ro", ep, "guest:newbie", true)
+	if err != nil {
+		t.Fatalf("expected successful allocation on subscription pull, got: %v", err)
+	}
+	if ip == "" || !allocated {
+		t.Fatalf("expected allocated IP, got %q (allocated=%v)", ip, allocated)
+	}
+}
+
+func TestFindReferences_AdminSubAddressNode(t *testing.T) {
+	cfg := &config.UserConfig{
+		AdminSub: config.AdminSubConfig{
+			Token:       "tok-admin",
+			AddressNode: "node-admin-ep",
+			// Endpoint empty -> should fall back to AddressNode
+		},
+		SubscriptionInstances: map[string]config.AdminSubConfig{
+			"inst-1": {
+				Token:       "tok-inst-1",
+				AddressNode: "node-admin-ep",
+			},
+		},
+	}
+
+	refs := FindReferences(cfg, "node-admin-ep")
+	refsStr := strings.Join(refs, ",")
+	if !strings.Contains(refsStr, "sub:admin") || !strings.Contains(refsStr, "sub:inst-1") || len(refs) != 2 {
+		t.Errorf("expected references [sub:admin, sub:inst-1], got: %v", refs)
+	}
+}
+
+func TestHostReachability_LocalListener(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot bind local listener: %v", err)
+	}
+	defer l.Close()
+
+	addr := l.Addr().String()
+	ok, rtt, err := TestHostReachability(addr, 2*time.Second)
+	if !ok || err != nil {
+		t.Fatalf("expected TestHostReachability on local listener %s to pass, got ok=%v, err=%v", addr, ok, err)
+	}
+	if rtt <= 0 {
+		t.Errorf("expected positive rtt, got %v", rtt)
+	}
+
+	// Test host with brackets
+	host, port, _ := net.SplitHostPort(addr)
+	bracketed := fmt.Sprintf("[%s]:%s", host, port)
+	okBracket, _, errBracket := TestHostReachability(bracketed, 2*time.Second)
+	if !okBracket || errBracket != nil {
+		t.Fatalf("expected bracketed host %s to pass, got ok=%v, err=%v", bracketed, okBracket, errBracket)
+	}
+}
+
 
 
 
