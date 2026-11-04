@@ -137,6 +137,16 @@ func TestEndpointSetValidation(t *testing.T) {
 		t.Fatalf("expected 'Invalid IPv6 subnet' error for IPv4 CIDR, got: %v", err)
 	}
 
+	// 3b. Reject /128 mask for dynamic-v6
+	resetEndpointFlags(cmd)
+	_ = cmd.Flags().Set("type", "dynamic-v6")
+	_ = cmd.Flags().Set("subnet", "2001:db8::1/128")
+	_ = cmd.Flags().Set("interface", "eth0")
+	err = cmd.RunE(cmd, []string{"v6-128"})
+	if err == nil || !strings.Contains(err.Error(), "Invalid IPv6 subnet mask") {
+		t.Fatalf("expected 'Invalid IPv6 subnet mask' error for /128, got: %v", err)
+	}
+
 	// 4. Reject invalid interface name
 	resetEndpointFlags(cmd)
 	_ = cmd.Flags().Set("type", "dynamic-v6")
@@ -563,6 +573,10 @@ func TestEndpointTestCmd(t *testing.T) {
 				Type: config.EndpointTypeStatic,
 				Host: "127.0.0.1",
 			},
+			"static-v6": {
+				Type: config.EndpointTypeStatic,
+				Host: "2001:db8::8888",
+			},
 			"iso-test": {
 				Type:      config.EndpointTypeDynamicV6,
 				Subnet:    "2001:db8:7777::/64",
@@ -585,22 +599,61 @@ func TestEndpointTestCmd(t *testing.T) {
 		},
 	})
 
+	origProbeV6 := endpointProbeIPv6Func
+	origProbeHost := endpointProbeHostFunc
+	defer func() {
+		endpointProbeIPv6Func = origProbeV6
+		endpointProbeHostFunc = origProbeHost
+	}()
+
+	var probedV6 []string
+	var probedHost []string
+	endpointProbeIPv6Func = func(src string, timeout time.Duration) (bool, time.Duration, error) {
+		probedV6 = append(probedV6, src)
+		return true, 2 * time.Millisecond, nil
+	}
+	endpointProbeHostFunc = func(target string, timeout time.Duration) (bool, time.Duration, error) {
+		probedHost = append(probedHost, target)
+		return true, 3 * time.Millisecond, nil
+	}
+
 	endpointTestJSON = true
 	defer func() { endpointTestJSON = false }()
 
-	jsonOut := captureStdout(t, func() {
+	// Test iso-test (dynamic-v6 tenant IP -> probes IPv6 egress)
+	jsonOutIso := captureStdout(t, func() {
 		err := endpointTestCmd.RunE(endpointTestCmd, []string{"iso-test"})
 		if err != nil {
-			t.Fatalf("endpoint test failed: %v", err)
+			t.Fatalf("endpoint test iso-test failed: %v", err)
 		}
 	})
-
-	var results []EndpointTestResult
-	if err := json.Unmarshal([]byte(jsonOut), &results); err != nil {
-		t.Fatalf("failed to unmarshal JSON: %v, out: %s", err, jsonOut)
+	var resultsIso []EndpointTestResult
+	if err := json.Unmarshal([]byte(jsonOutIso), &resultsIso); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v, out: %s", err, jsonOutIso)
 	}
-	if len(results) == 0 || results[0].Address != "2001:db8:7777::beef" {
-		t.Fatalf("expected test result for isolated consumer IP 2001:db8:7777::beef, got: %+v", results)
+	if len(resultsIso) == 0 || resultsIso[0].Address != "2001:db8:7777::beef" || resultsIso[0].Status != "PASS" {
+		t.Fatalf("expected PASS for isolated consumer IP, got: %+v", resultsIso)
+	}
+	if len(probedV6) != 1 || probedV6[0] != "2001:db8:7777::beef" {
+		t.Fatalf("expected probedV6 [2001:db8:7777::beef], got: %v", probedV6)
+	}
+
+	// Test static-v6 (remote IPv6 target -> MUST probe target host, NOT local egress bind!)
+	jsonOutV6 := captureStdout(t, func() {
+		err := endpointTestCmd.RunE(endpointTestCmd, []string{"static-v6"})
+		if err != nil {
+			t.Fatalf("endpoint test static-v6 failed: %v", err)
+		}
+	})
+	var resultsV6 []EndpointTestResult
+	if err := json.Unmarshal([]byte(jsonOutV6), &resultsV6); err != nil {
+		t.Fatalf("failed to unmarshal JSON: %v, out: %s", err, jsonOutV6)
+	}
+	if len(resultsV6) == 0 || resultsV6[0].Address != "2001:db8::8888" || resultsV6[0].Status != "PASS" {
+		t.Fatalf("expected PASS for static IPv6 host, got: %+v", resultsV6)
+	}
+	if len(probedHost) != 1 || probedHost[0] != "2001:db8::8888" {
+		t.Fatalf("expected probedHost [2001:db8::8888], got: %v", probedHost)
 	}
 }
 
@@ -641,7 +694,15 @@ func TestEndpointRotateCmd(t *testing.T) {
 		t.Fatalf("expected error rotating static endpoint, got: %v", err)
 	}
 
-	// 2. Rotate dynamic-v6 with --json
+	// 2. Reject --consumer flag on turtle/shared endpoint
+	endpointRotateConsumer = "guest:alice"
+	err = endpointRotateCmd.RunE(endpointRotateCmd, []string{"he-pool"})
+	if err == nil || !strings.Contains(err.Error(), "--consumer flag only applies to endpoints with 'isolated' rotation profile") {
+		t.Fatalf("expected error using --consumer on turtle profile, got: %v", err)
+	}
+	endpointRotateConsumer = ""
+
+	// 3. Rotate dynamic-v6 with --json
 	endpointRotateJSON = true
 	defer func() { endpointRotateJSON = false }()
 
@@ -668,7 +729,7 @@ func TestEndpointRotateCmd(t *testing.T) {
 		t.Errorf("unexpected rotate result: %+v", rotRes)
 	}
 
-	// 3. Rotate dynamic-v6 with --consumer in isolated mode
+	// 4. Rotate dynamic-v6 with --consumer in isolated mode
 	cfg.Endpoints["iso-ep"] = config.EndpointConfig{
 		Type:      config.EndpointTypeDynamicV6,
 		Subnet:    "2001:db8:aaaa::/64",
@@ -676,6 +737,15 @@ func TestEndpointRotateCmd(t *testing.T) {
 		Profile:   config.RotationProfileIsolated,
 	}
 	_ = cfg.SaveEx(true)
+
+	// 4a. Rotating isolated endpoint without --consumer must fail
+	endpointRotateConsumer = ""
+	err = endpointRotateCmd.RunE(endpointRotateCmd, []string{"iso-ep"})
+	if err == nil || !strings.Contains(err.Error(), "uses 'isolated' profile. Specify a consumer") {
+		t.Fatalf("expected error rotating isolated endpoint without --consumer, got: %v", err)
+	}
+
+	// 4b. Rotate with --consumer
 	endpointRotateConsumer = "guest:alice"
 	defer func() { endpointRotateConsumer = "" }()
 

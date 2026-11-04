@@ -38,6 +38,9 @@ var (
 	endpointRequireRoot = func(operation string) error {
 		return utils.RequireRootShell(operation)
 	}
+
+	endpointProbeIPv6Func = endpoint.TestIPv6Reachability
+	endpointProbeHostFunc = endpoint.TestHostReachability
 )
 
 type EndpointListView struct {
@@ -294,9 +297,13 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		if subnetVal == "" {
 			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --subnet")
 		}
-		ip, _, err := net.ParseCIDR(subnetVal)
+		ip, ipNet, err := net.ParseCIDR(subnetVal)
 		if err != nil || ip == nil || ip.To4() != nil || ip.To16() == nil {
 			return fmt.Errorf("❌ Error: Invalid IPv6 subnet '%s' (must be a valid IPv6 CIDR, e.g. 2001:db8::/64)", subnetVal)
+		}
+		ones, bits := ipNet.Mask.Size()
+		if bits != 128 || ones <= 0 || ones > 120 {
+			return fmt.Errorf("❌ Error: Invalid IPv6 subnet mask '/%d' (dynamic-v6 requires a rotatable prefix between /1 and /120, typically /64)", ones)
 		}
 
 		ifaceVal := strings.TrimSpace(endpointSetInterface)
@@ -407,8 +414,10 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Error: Unsupported endpoint type '%s' (valid types: static, auto, dynamic-v6)", targetType)
 	}
 
-	if hasExisting && existingEp.Type == config.EndpointTypeDynamicV6 && ep.Type != config.EndpointTypeDynamicV6 {
-		_ = endpoint.CleanupDynamicV6(name, existingEp)
+	if hasExisting && existingEp.Type == config.EndpointTypeDynamicV6 {
+		if ep.Type != config.EndpointTypeDynamicV6 || (existingEp.Interface != "" && existingEp.Interface != ep.Interface) || (existingEp.Subnet != "" && existingEp.Subnet != ep.Subnet) {
+			_ = endpoint.CleanupDynamicV6(name, existingEp)
+		}
 	}
 
 	cfg.Endpoints[name] = ep
@@ -489,7 +498,11 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 	resolved, err := endpoint.Resolve(cfg, name)
 	resolvedStr := strings.Join(resolved, ", ")
 	if err != nil {
-		resolvedStr = fmt.Sprintf("(resolution failed: %v)", err)
+		if ep.Type == config.EndpointTypeDynamicV6 && endpoint.NormalizeProfile(ep.Profile) == config.RotationProfileIsolated {
+			resolvedStr = "(isolated per consumer)"
+		} else {
+			resolvedStr = fmt.Sprintf("(resolution failed: %v)", err)
+		}
 	}
 
 	refs := endpoint.FindReferences(cfg, name)
@@ -711,9 +724,9 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 
 		for _, testIP := range ipsToTest {
 			cleanIP := strings.TrimSpace(testIP)
-			if strings.Contains(cleanIP, ":") {
-				// IPv6 probe
-				ok, rtt, pErr := endpoint.TestIPv6Reachability(cleanIP, 3*time.Second)
+			if ep.Type == config.EndpointTypeDynamicV6 && strings.Contains(cleanIP, ":") {
+				// Local dynamic-v6 address egress probe
+				ok, rtt, pErr := endpointProbeIPv6Func(cleanIP, 3*time.Second)
 				if ok {
 					results = append(results, EndpointTestResult{
 						Name:    name,
@@ -736,8 +749,8 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 					})
 				}
 			} else {
-				// Host / IPv4 probe on actual host
-				ok, rtt, pErr := endpoint.TestHostReachability(cleanIP, 3*time.Second)
+				// Target host reachability probe (IPv4, IPv6, or domain name)
+				ok, rtt, pErr := endpointProbeHostFunc(cleanIP, 3*time.Second)
 				if ok {
 					results = append(results, EndpointTestResult{
 						Name:    name,
@@ -824,6 +837,25 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	consumer := strings.TrimSpace(endpointRotateConsumer)
+	profile := endpoint.NormalizeProfile(ep.Profile)
+	if consumer != "" && profile != config.RotationProfileIsolated {
+		return fmt.Errorf("❌ Error: --consumer flag only applies to endpoints with 'isolated' rotation profile (endpoint '%s' uses '%s')", name, ep.Profile)
+	}
+	if profile == config.RotationProfileIsolated && consumer == "" {
+		st, _ := endpoint.LoadRotationState(name)
+		var availConsumers []string
+		if st != nil {
+			for c := range st.Consumers {
+				availConsumers = append(availConsumers, c)
+			}
+			sort.Strings(availConsumers)
+		}
+		if len(availConsumers) > 0 {
+			return fmt.Errorf("❌ Error: Endpoint '%s' uses 'isolated' profile. Specify a consumer with --consumer (active consumers: %s)", name, strings.Join(availConsumers, ", "))
+		}
+		return fmt.Errorf("❌ Error: Endpoint '%s' uses 'isolated' profile. Specify a consumer to rotate with --consumer <name>", name)
+	}
+
 	newIP, err := endpoint.NextAddressForConsumer(name, ep, consumer)
 	if err != nil {
 		return fmt.Errorf("❌ Failed to rotate endpoint '%s': %w", name, err)

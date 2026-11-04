@@ -135,7 +135,7 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 		for name, actEp := range ctx.ActiveCfg.Endpoints {
 			if actEp.Type == config.EndpointTypeDynamicV6 {
 				stgEp, exists := ctx.StagingCfg.Endpoints[name]
-				if !exists || stgEp.Type != config.EndpointTypeDynamicV6 {
+				if !exists || stgEp.Type != config.EndpointTypeDynamicV6 || (stgEp.Interface != actEp.Interface) || (stgEp.Subnet != actEp.Subnet) {
 					_ = endpoint.CleanupDynamicV6(name, actEp)
 				}
 			}
