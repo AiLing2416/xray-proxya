@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"xray-proxya/internal/xray"
 	"xray-proxya/pkg/utils"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/spf13/cobra"
 )
 
@@ -175,7 +177,7 @@ var runCmd = &cobra.Command{
 			}
 		}
 
-		var skinServers []*http.Server
+		var skinServers []io.Closer
 		var pathTunManager *pathtun.Manager
 		var pathClient *pathd.IdleClient
 		var pathRuntimeStop chan struct{}
@@ -319,15 +321,23 @@ var runCmd = &cobra.Command{
 				skinPort := cfg.EnsureSkinPort()
 				skinAddr := fmt.Sprintf("127.0.0.1:%d", skinPort)
 				defaultSkin := skinMappings[0].SkinType
-				srv, err := skin.StartMultiSkinServer(skinAddr, skinMappings, defaultSkin)
+				srv, h3Srv, err := skin.StartMultiSkinServers(skinAddr, skinMappings, defaultSkin)
 				if err == nil {
 					skinServers = append(skinServers, srv)
 					go func(s *http.Server) { _ = s.ListenAndServeTLS("", "") }(srv)
+					if h3Srv != nil {
+						skinServers = append(skinServers, h3Srv)
+						go func(h *http3.Server) { _ = h.ListenAndServe() }(h3Srv)
+					}
 					domains := make([]string, 0, len(skinMappings))
 					for _, sm := range skinMappings {
 						domains = append(domains, fmt.Sprintf("%s (%s)", sm.Domain, sm.SkinType))
 					}
-					fmt.Printf("🎨 Web Skin HTTPS server listening on %s for: %s\n", skinAddr, strings.Join(domains, ", "))
+					h3Status := ""
+					if h3Srv != nil {
+						h3Status = " (H1/H2 + native H3)"
+					}
+					fmt.Printf("🎨 Web Skin HTTPS%s server listening on %s for: %s\n", h3Status, skinAddr, strings.Join(domains, ", "))
 				} else {
 					fmt.Printf("⚠️  Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
 				}

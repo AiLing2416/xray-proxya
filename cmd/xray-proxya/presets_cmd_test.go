@@ -3,11 +3,15 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 	"xray-proxya/internal/buildinfo"
+	"xray-proxya/internal/certmanager"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/xray"
 
 	"github.com/spf13/pflag"
 )
@@ -579,6 +583,142 @@ func TestPresetsSetHysteria2SkinWithSelfSigned(t *testing.T) {
 	}
 	if h2.Settings.CertPEM == "" || len(h2.Settings.PublicKey) != 64 {
 		t.Errorf("missing self-signed cert after skin-domain update")
+	}
+
+	// 3. Configure skin on Hysteria2 with managed cert in cfg.Certs -> uses managed cert & removes pinSHA256
+	certDir := filepath.Join(t.TempDir(), "certs")
+	_ = os.MkdirAll(certDir, 0700)
+	cFile := filepath.Join(certDir, "fullchain.pem")
+	kFile := filepath.Join(certDir, "privkey.pem")
+	_ = os.WriteFile(cFile, []byte("-----BEGIN CERTIFICATE-----\nMANAGED_CERT_DATA\n-----END CERTIFICATE-----\n"), 0600)
+	_ = os.WriteFile(kFile, []byte("-----BEGIN EC PRIVATE KEY-----\nMANAGED_KEY_DATA\n-----END EC PRIVATE KEY-----\n"), 0600)
+
+	loaded.AddCert(config.ManagedCert{
+		Domain:    "sea.ailing.dev",
+		CertPath:  cFile,
+		KeyPath:   kFile,
+		IssuedAt:  time.Now(),
+		ExpiresAt: time.Now().Add(90 * 24 * time.Hour),
+		Issuer:    "Let's Encrypt",
+		AutoRenew: true,
+	})
+	_ = loaded.SaveEx(true)
+
+	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	presetSkin = ""
+	presetSkinDomain = ""
+	presetOn = false
+	presetOff = false
+
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile", "--skin-domain", "sea.ailing.dev"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := presetsSetCmd.RunE(presetsSetCmd, []string{"6"}); err != nil {
+		t.Fatalf("runPresetsSet failed: %v", err)
+	}
+
+	loaded, _ = config.LoadConfigEx(true)
+	h2 = loaded.Presets[5]
+	if h2.Skin != "seafile" {
+		t.Errorf("Skin = %q, want seafile", h2.Skin)
+	}
+	if h2.SkinDomain != "sea.ailing.dev" || h2.SNI != "sea.ailing.dev" {
+		t.Errorf("Domain mismatch: SkinDomain=%q, SNI=%q", h2.SkinDomain, h2.SNI)
+	}
+	if !strings.Contains(h2.Settings.CertPEM, "MANAGED_CERT_DATA") {
+		t.Errorf("CertPEM did not load managed cert: %q", h2.Settings.CertPEM)
+	}
+	if h2.Settings.PublicKey != "" {
+		t.Errorf("PublicKey = %q, want empty (pinSHA256 must be removed for managed cert)", h2.Settings.PublicKey)
+	}
+
+	// Verify share link does not have pinSHA256
+	links := xray.GenerateLinks(loaded, "1.2.3.4")
+	var h2Link string
+	for _, l := range links {
+		if strings.HasPrefix(l, "hysteria2://") {
+			h2Link = l
+			break
+		}
+	}
+	if h2Link == "" {
+		t.Fatalf("No hysteria2 link generated: %v", links)
+	}
+	if strings.Contains(h2Link, "pinSHA256=") {
+		t.Errorf("hysteria2 link with managed cert unexpectedly contains pinSHA256: %s", h2Link)
+	}
+
+	// 4. Disable skin on Hysteria2 -> reverts dest; since sea.ailing.dev is still in cfg.Certs, managed cert is retained
+	presetsSetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	presetSkin = ""
+	presetSkinDomain = ""
+	presetOn = false
+	presetOff = false
+
+	if err := presetsSetCmd.ParseFlags([]string{"--skin", "off"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := presetsSetCmd.RunE(presetsSetCmd, []string{"6"}); err != nil {
+		t.Fatalf("runPresetsSet failed: %v", err)
+	}
+
+	loaded, _ = config.LoadConfigEx(true)
+	h2 = loaded.Presets[5]
+	if h2.Skin != "" || h2.SkinDomain != "" {
+		t.Errorf("Skin not disabled: Skin=%q, SkinDomain=%q", h2.Skin, h2.SkinDomain)
+	}
+	if h2.Dest != "sea.ailing.dev:443" {
+		t.Errorf("Dest = %q, want sea.ailing.dev:443", h2.Dest)
+	}
+
+	// 5. Remove the certificate from cfg.Certs -> restores self-signed credentials and pinSHA256
+	disabled, err := certmanager.RemoveCertificate(loaded, "sea.ailing.dev")
+	if err != nil {
+		t.Fatalf("RemoveCertificate failed: %v", err)
+	}
+	if len(disabled) != 1 || disabled[0] != 6 {
+		t.Errorf("disabled = %v, want [6]", disabled)
+	}
+	_ = loaded.SaveEx(true)
+
+	loaded, _ = config.LoadConfigEx(true)
+	h2 = loaded.Presets[5]
+	if h2.SNI != "www.bing.com" {
+		t.Errorf("SNI = %q, want www.bing.com", h2.SNI)
+	}
+	if h2.Dest != "www.bing.com:443" {
+		t.Errorf("Dest = %q, want www.bing.com:443", h2.Dest)
+	}
+	if len(h2.Settings.PublicKey) != 64 {
+		t.Errorf("PublicKey = %q, want 64-char sha256 pin restored", h2.Settings.PublicKey)
+	}
+
+	// Re-enable preset 6 and verify generated link now includes pinSHA256 and bing SNI
+	loaded.Presets[5].Enabled = true
+	_ = loaded.SaveEx(true)
+
+	h2Link = ""
+	links = xray.GenerateLinks(loaded, "1.2.3.4")
+	for _, l := range links {
+		if strings.HasPrefix(l, "hysteria2://") {
+			h2Link = l
+			break
+		}
+	}
+	if h2Link == "" {
+		t.Fatalf("no hysteria2 link generated after re-enabling")
+	}
+	if !strings.Contains(h2Link, "sni=www.bing.com") {
+		t.Errorf("hysteria2 link SNI = %q, want sni=www.bing.com", h2Link)
+	}
+	if !strings.Contains(h2Link, "pinSHA256=") {
+		t.Errorf("hysteria2 link without managed cert missing pinSHA256: %s", h2Link)
 	}
 }
 

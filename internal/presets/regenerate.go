@@ -66,13 +66,9 @@ func RegenerateMarkedModes(cfg *config.UserConfig) error {
 			if sni == "" {
 				sni = "www.bing.com"
 			}
-			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(sni)
-			if err != nil {
+			if err := cfg.UpdateHysteria2Credentials(mode, sni); err != nil {
 				return err
 			}
-			mode.Settings.CertPEM = certPEM
-			mode.Settings.PrivateKey = keyPEM
-			mode.Settings.PublicKey = pubHash
 			mode.Settings.Password = utils.GenerateRandomString(16)
 		}
 

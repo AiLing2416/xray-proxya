@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"math/big"
@@ -25,6 +26,9 @@ import (
 	"sync"
 	"time"
 	"xray-proxya/internal/config"
+
+	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/http3"
 )
 
 // ErrSkinDisabled is returned when skin operations are invoked in a slim build.
@@ -93,14 +97,27 @@ func NewHandler(skinType string) (http.Handler, error) {
 
 // StartSkinServer spins up an HTTP or HTTPS listener serving the chosen skin.
 func StartSkinServer(addr string, skinType string, certFile, keyFile string) (*http.Server, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
 	handler, err := NewHandler(skinType)
 	if err != nil {
 		return nil, err
 	}
 
+	port := 0
+	if _, pStr, err := net.SplitHostPort(addr); err == nil {
+		port, _ = strconv.Atoi(pStr)
+	}
+
+	wrapped := hideGoClientFingerprint(disguiseRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &sanitizingResponseWriter{ResponseWriter: w, req: r, skinType: skinType, port: port}
+		handler.ServeHTTP(sw, r)
+	}), func(r *http.Request) string { return skinType }))
+
 	server := &http.Server{
 		Addr:    addr,
-		Handler: handler,
+		Handler: wrapped,
 	}
 
 	if certFile != "" && keyFile != "" {
@@ -114,6 +131,52 @@ func StartSkinServer(addr string, skinType string, certFile, keyFile string) (*h
 		}
 	}
 
+	return server, nil
+}
+
+// StartSkinH3Server spins up an HTTP/3 listener serving the chosen skin.
+func StartSkinH3Server(addr string, skinType string, certFile, keyFile string) (*http3.Server, error) {
+	if !Enabled {
+		return nil, ErrSkinDisabled
+	}
+	handler, err := NewHandler(skinType)
+	if err != nil {
+		return nil, err
+	}
+
+	if certFile == "" || keyFile == "" {
+		return nil, errors.New("HTTP/3 requires TLS certificates")
+	}
+	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
+	if err != nil {
+		return nil, fmt.Errorf("load skin TLS certificate: %w", err)
+	}
+	tlsConf := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+	}
+
+	h3TLSConfig := http3.ConfigureTLSConfig(tlsConf)
+	port := 0
+	if _, pStr, err := net.SplitHostPort(addr); err == nil {
+		port, _ = strconv.Atoi(pStr)
+	}
+
+	wrapped := hideGoClientFingerprint(disguiseRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sw := &sanitizingResponseWriter{ResponseWriter: w, req: r, skinType: skinType, port: port}
+		handler.ServeHTTP(sw, r)
+	}), func(r *http.Request) string { return skinType }))
+
+	server := &http3.Server{
+		Addr:       addr,
+		Port:       port,
+		Handler:    wrapped,
+		TLSConfig:  h3TLSConfig,
+		QUICConfig: &quic.Config{
+			MaxIdleTimeout:  30 * time.Second,
+			KeepAlivePeriod: 10 * time.Second,
+			Allow0RTT:       true,
+		},
+	}
 	return server, nil
 }
 
@@ -177,18 +240,16 @@ func (ch *certHolder) getCertificate() (*tls.Certificate, error) {
 	return ch.cert, nil
 }
 
-// StartMultiSkinServer spins up an HTTPS listener serving Web camouflage skins for multiple domains.
-// It uses SNI in the TLS ClientHello to dynamically serve each domain's valid certificate,
-// and routes incoming HTTP requests to each domain's configured skin handler.
-func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin string) (*http.Server, error) {
+func buildMultiSkinHandlerAndTLS(addr string, mappings []DomainSkinMapping, defaultSkin string) (http.Handler, *tls.Config, int, error) {
 	if !Enabled {
-		return nil, ErrSkinDisabled
+		return nil, nil, 0, ErrSkinDisabled
 	}
 	handlers := make(map[string]http.Handler)
 	certHolders := make(map[string]*certHolder)
 	var firstHolder *certHolder
 	var firstHandler http.Handler
 
+	domainSkinTypes := make(map[string]string)
 	for _, m := range mappings {
 		domain := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(m.Domain), "."))
 		st := strings.ToLower(strings.TrimSpace(m.SkinType))
@@ -196,10 +257,11 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 		if st != "" {
 			h, err := NewHandler(st)
 			if err != nil {
-				return nil, err
+				return nil, nil, 0, err
 			}
 			if domain != "" {
 				handlers[domain] = h
+				domainSkinTypes[domain] = st
 			}
 			if firstHandler == nil {
 				firstHandler = h
@@ -233,6 +295,11 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 		}
 	}
 
+	port := 0
+	if _, pStr, err := net.SplitHostPort(addr); err == nil {
+		port, _ = strconv.Atoi(pStr)
+	}
+
 	muxHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		host := r.Host
 		if h, _, err := net.SplitHostPort(host); err == nil {
@@ -240,32 +307,52 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 		}
 		host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
 
+		effectiveSkin := defaultSkin
+		if st, ok := domainSkinTypes[host]; ok {
+			effectiveSkin = st
+		}
+
+		sw := &sanitizingResponseWriter{ResponseWriter: w, req: r, skinType: effectiveSkin, port: port}
+
 		if h, ok := handlers[host]; ok {
-			h.ServeHTTP(w, r)
+			h.ServeHTTP(sw, r)
 			return
 		}
 		if (host == "127.0.0.1" || host == "localhost" || host == "::1") && firstHandler != nil {
-			firstHandler.ServeHTTP(w, r)
+			firstHandler.ServeHTTP(sw, r)
 			return
 		}
-		if defaultSkin == config.SkinFilebrowser {
-			serveFilebrowser404(w, r)
+		if effectiveSkin == config.SkinFilebrowser {
+			serveFilebrowser404(sw, r)
 			return
 		}
-		if defaultSkin == config.SkinSeafile {
-			serveNginx404(w)
+		if effectiveSkin == config.SkinSeafile {
+			serveNginx404(sw)
 			return
 		}
-		serveApache404(w, r)
+		serveApache404(sw, r)
 	})
 
-	server := &http.Server{
-		Addr:    addr,
-		Handler: muxHandler,
+	getSkin := func(r *http.Request) string {
+		if r == nil {
+			return defaultSkin
+		}
+		host := r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+		if st, ok := domainSkinTypes[host]; ok {
+			return st
+		}
+		return defaultSkin
 	}
 
+	wrappedHandler := hideGoClientFingerprint(disguiseRecovery(muxHandler, getSkin))
+
+	var tlsConfig *tls.Config
 	if len(certHolders) > 0 {
-		server.TLSConfig = &tls.Config{
+		tlsConfig = &tls.Config{
 			GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 				serverName := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(hello.ServerName), "."))
 				if holder, ok := certHolders[serverName]; ok {
@@ -280,7 +367,230 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 		}
 	}
 
+	return wrappedHandler, tlsConfig, port, nil
+}
+
+// StartMultiSkinServer spins up an HTTPS listener serving Web camouflage skins for multiple domains.
+// It uses SNI in the TLS ClientHello to dynamically serve each domain's valid certificate,
+// and routes incoming HTTP requests to each domain's configured skin handler.
+func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin string) (*http.Server, error) {
+	handler, tlsConfig, _, err := buildMultiSkinHandlerAndTLS(addr, mappings, defaultSkin)
+	if err != nil {
+		return nil, err
+	}
+	server := &http.Server{
+		Addr:      addr,
+		Handler:   handler,
+		TLSConfig: tlsConfig,
+	}
 	return server, nil
+}
+
+// StartMultiSkinH3Server spins up an HTTP/3 listener serving Web camouflage skins for multiple domains over native H3/QUIC.
+func StartMultiSkinH3Server(addr string, mappings []DomainSkinMapping, defaultSkin string) (*http3.Server, error) {
+	handler, tlsConfig, port, err := buildMultiSkinHandlerAndTLS(addr, mappings, defaultSkin)
+	if err != nil {
+		return nil, err
+	}
+	if tlsConfig == nil {
+		return nil, errors.New("cannot start HTTP/3 server without TLS configuration")
+	}
+
+	h3TLSConfig := http3.ConfigureTLSConfig(tlsConfig.Clone())
+	h3Server := &http3.Server{
+		Addr:       addr,
+		Port:       port,
+		Handler:    handler,
+		TLSConfig:  h3TLSConfig,
+		QUICConfig: &quic.Config{
+			MaxIdleTimeout:  30 * time.Second,
+			KeepAlivePeriod: 10 * time.Second,
+			Allow0RTT:       true,
+		},
+	}
+	return h3Server, nil
+}
+
+// StartMultiSkinServers spins up both TCP HTTPS (H1/H2) and UDP HTTP/3 (H3) listeners on the target address.
+func StartMultiSkinServers(addr string, mappings []DomainSkinMapping, defaultSkin string) (*http.Server, *http3.Server, error) {
+	tcpSrv, err := StartMultiSkinServer(addr, mappings, defaultSkin)
+	if err != nil {
+		return nil, nil, err
+	}
+	h3Srv, err := StartMultiSkinH3Server(addr, mappings, defaultSkin)
+	if err != nil {
+		return tcpSrv, nil, nil
+	}
+	return tcpSrv, h3Srv, nil
+}
+
+// -----------------------------------------------------------------------------------------
+// Fingerprint Hiding & Error Decoys
+// -----------------------------------------------------------------------------------------
+
+type sanitizingResponseWriter struct {
+	http.ResponseWriter
+	req         *http.Request
+	skinType    string
+	port        int
+	headerWrote bool
+}
+
+func (s *sanitizingResponseWriter) WriteHeader(code int) {
+	if s.headerWrote {
+		return
+	}
+	s.headerWrote = true
+	s.sanitizeHeaders()
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *sanitizingResponseWriter) Write(b []byte) (int, error) {
+	if !s.headerWrote {
+		s.WriteHeader(http.StatusOK)
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *sanitizingResponseWriter) sanitizeHeaders() {
+	h := s.Header()
+	// Strip Go fingerprint from X-Powered-By if present, but retain authentic PHP headers for Nextcloud
+	if xpb := h.Get("X-Powered-By"); strings.Contains(strings.ToLower(xpb), "go") {
+		h.Del("X-Powered-By")
+	}
+
+	// Remove any Go client / server fingerprinting from response headers
+	for k, vv := range h {
+		for _, v := range vv {
+			if strings.Contains(strings.ToLower(v), "go-http-client") {
+				h.Del(k)
+				break
+			}
+		}
+	}
+
+	server := h.Get("Server")
+	if strings.Contains(strings.ToLower(server), "go") {
+		h.Del("Server")
+		server = ""
+	}
+	if server == "" {
+		switch s.skinType {
+		case config.SkinNextcloud:
+			h.Set("Server", "Apache/2.4.68 (Debian)")
+		case config.SkinSeafile:
+			h.Set("Server", "nginx")
+		}
+	}
+	if h.Get("Alt-Svc") == "" {
+		advertisedPort := "443"
+		if s.req != nil {
+			if xfp := s.req.Header.Get("X-Forwarded-Port"); xfp != "" {
+				advertisedPort = xfp
+			} else if _, p, err := net.SplitHostPort(s.req.Host); err == nil && p != "" {
+				advertisedPort = p
+			} else if host := strings.TrimSpace(s.req.Host); (host == "127.0.0.1" || host == "localhost") && s.port > 0 {
+				advertisedPort = strconv.Itoa(s.port)
+			}
+		} else if s.port > 0 {
+			advertisedPort = strconv.Itoa(s.port)
+		}
+		h.Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, advertisedPort))
+	}
+}
+
+func (s *sanitizingResponseWriter) Flush() {
+	if !s.headerWrote {
+		s.WriteHeader(http.StatusOK)
+	}
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func hideGoClientFingerprint(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ua := r.Header.Get("User-Agent")
+		if strings.Contains(strings.ToLower(ua), "go-http-client") {
+			r.Header.Del("User-Agent")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func disguiseRecovery(next http.Handler, getSkin func(r *http.Request) string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if rec := recover(); rec != nil {
+				skinType := ""
+				if getSkin != nil {
+					skinType = getSkin(r)
+				}
+				switch skinType {
+				case config.SkinSeafile:
+					serveNginx500(w)
+				case config.SkinFilebrowser:
+					serveFilebrowser500(w)
+				default:
+					serveApache500(w, r)
+				}
+			}
+		}()
+		next.ServeHTTP(w, r)
+	})
+}
+
+func serveApache500(w http.ResponseWriter, r *http.Request) {
+	host := "localhost"
+	if r != nil && r.Host != "" {
+		host = r.Host
+	}
+	serverName := host
+	port := "443"
+	if h, p, err := net.SplitHostPort(host); err == nil {
+		serverName = h
+		port = p
+	}
+	body := fmt.Sprintf(`<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>500 Internal Server Error</title>
+</head><body>
+<h1>Internal Server Error</h1>
+<p>The server encountered an internal error or
+misconfiguration and was unable to complete
+your request.</p>
+<hr>
+<address>Apache/2.4.68 (Debian) Server at %s Port %s</address>
+</body></html>
+`, html.EscapeString(serverName), html.EscapeString(port))
+
+	w.Header().Set("Server", "Apache/2.4.68 (Debian)")
+	w.Header().Set("Content-Type", "text/html; charset=iso-8859-1")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(body))
+}
+
+func serveNginx500(w http.ResponseWriter) {
+	w.Header().Set("Server", "nginx")
+	w.Header().Set("Content-Type", "text/html")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte(`<html>
+<head><title>500 Internal Server Error</title></head>
+<body>
+<center><h1>500 Internal Server Error</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+`))
+}
+
+func serveFilebrowser500(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte("500 Internal Server Error\n"))
 }
 
 // -----------------------------------------------------------------------------------------

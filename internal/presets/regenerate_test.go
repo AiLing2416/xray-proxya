@@ -4,6 +4,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/pem"
+	"os"
+	"path/filepath"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -178,5 +180,61 @@ func TestRegenerateMarkedModesHysteria2EmptySNIDefaultsToBing(t *testing.T) {
 	}
 	if h.Settings.CertPEM == "" || h.Settings.PrivateKey == "" || len(h.Settings.PublicKey) != 64 {
 		t.Fatalf("Credentials were not generated: %+v", h.Settings)
+	}
+}
+
+func TestRegenerateMarkedModesHysteria2WithManagedCert(t *testing.T) {
+	tempDir := t.TempDir()
+	certFile := filepath.Join(tempDir, "cert.pem")
+	keyFile := filepath.Join(tempDir, "key.pem")
+	if err := os.WriteFile(certFile, []byte("disk-cert-pem"), 0600); err != nil {
+		t.Fatalf("failed to write cert: %v", err)
+	}
+	if err := os.WriteFile(keyFile, []byte("disk-key-pem"), 0600); err != nil {
+		t.Fatalf("failed to write key: %v", err)
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		Certs: []config.ManagedCert{
+			{Domain: "managed.example.com", CertPath: certFile, KeyPath: keyFile},
+		},
+		Presets: []config.ModeInfo{
+			{
+				Mode:       config.ModeHysteria2,
+				Enabled:    true,
+				SNI:        "managed.example.com",
+				Skin:       "seafile",
+				SkinDomain: "managed.example.com",
+				Dest:       "127.0.0.1:9443",
+				RegenFlag:  true,
+				Settings: config.Settings{
+					CertPEM:    "old-cert",
+					PrivateKey: "old-key",
+					Password:   "old-password",
+				},
+			},
+		},
+	}
+
+	if err := RegenerateMarkedModes(cfg); err != nil {
+		t.Fatalf("RegenerateMarkedModes failed: %v", err)
+	}
+
+	h := cfg.Presets[0]
+	if h.RegenFlag {
+		t.Errorf("RegenFlag was not cleared")
+	}
+	if h.Settings.CertPEM != "disk-cert-pem" {
+		t.Errorf("CertPEM = %q, want disk-cert-pem", h.Settings.CertPEM)
+	}
+	if h.Settings.PrivateKey != "disk-key-pem" {
+		t.Errorf("PrivateKey = %q, want disk-key-pem", h.Settings.PrivateKey)
+	}
+	if h.Settings.PublicKey != "" {
+		t.Errorf("PublicKey = %q, want empty for managed cert", h.Settings.PublicKey)
+	}
+	if h.Settings.Password == "old-password" || len(h.Settings.Password) != 32 {
+		t.Errorf("Password was not rotated: %q", h.Settings.Password)
 	}
 }

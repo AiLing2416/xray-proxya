@@ -314,13 +314,9 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		m.SNI = normHost
 		m.Dest = dest
 		if m.Mode == config.ModeHysteria2 {
-			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(m.SNI)
-			if err != nil {
-				return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", m.SNI, err)
+			if err := cfg.UpdateHysteria2Credentials(m, m.SNI); err != nil {
+				return fmt.Errorf("❌ Error configuring credentials for %s: %v", m.SNI, err)
 			}
-			m.Settings.CertPEM = certPEM
-			m.Settings.PrivateKey = keyPEM
-			m.Settings.PublicKey = pubHash
 		}
 		fmt.Printf("🎯 Validated manual REALITY target: %s (%s)\n", normHost, dest)
 	} else if selectors > 0 {
@@ -350,13 +346,9 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		m.SNI = bestDomain
 		m.Dest = net.JoinHostPort(bestDomain, "443")
 		if m.Mode == config.ModeHysteria2 {
-			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(m.SNI)
-			if err != nil {
-				return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", m.SNI, err)
+			if err := cfg.UpdateHysteria2Credentials(m, m.SNI); err != nil {
+				return fmt.Errorf("❌ Error configuring credentials for %s: %v", m.SNI, err)
 			}
-			m.Settings.CertPEM = certPEM
-			m.Settings.PrivateKey = keyPEM
-			m.Settings.PublicKey = pubHash
 		}
 		fmt.Printf("🎯 Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
 	} else if presetDest != "" {
@@ -440,6 +432,9 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			if strings.HasPrefix(m.Dest, "127.0.0.1:") && m.SNI != "" {
 				m.Dest = net.JoinHostPort(m.SNI, "443")
 			}
+			if m.Mode == config.ModeHysteria2 {
+				_ = cfg.UpdateHysteria2Credentials(m, m.SNI)
+			}
 			fmt.Printf("🎨 Disabled Web Skin for preset [%s].\n", m.Mode)
 		} else {
 			if !config.IsValidSkin(st) {
@@ -470,19 +465,13 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 				m.SNI = effectiveDomain
 				m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
 			} else if m.Mode == config.ModeHysteria2 {
-				if m.SNI != effectiveDomain || m.Settings.CertPEM == "" {
-					certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(effectiveDomain)
-					if err != nil {
-						return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", effectiveDomain, err)
-					}
-					m.Settings.CertPEM = certPEM
-					m.Settings.PrivateKey = keyPEM
-					m.Settings.PublicKey = pubHash
-				}
 				m.SNI = effectiveDomain
 				m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
+				if err := cfg.UpdateHysteria2Credentials(m, effectiveDomain); err != nil {
+					return fmt.Errorf("❌ Error configuring credentials for %s: %v", effectiveDomain, err)
+				}
 			}
-			if m.Mode == config.ModeHysteria2 && cert == nil {
+			if m.Mode == config.ModeHysteria2 && m.Settings.PublicKey != "" {
 				pubKeyPin := m.Settings.PublicKey
 				if len(pubKeyPin) > 16 {
 					pubKeyPin = pubKeyPin[:16]
@@ -518,22 +507,20 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			m.SNI = effectiveDomain
 		} else if m.Mode == config.ModeHysteria2 {
 			m.SNI = effectiveDomain
-			certPEM, keyPEM, pubHash, err := config.GenerateSelfSignedCert(effectiveDomain)
-			if err != nil {
-				return fmt.Errorf("❌ Error generating self-signed certificate for %s: %v", effectiveDomain, err)
+			if err := cfg.UpdateHysteria2Credentials(m, effectiveDomain); err != nil {
+				return fmt.Errorf("❌ Error configuring credentials for %s: %v", effectiveDomain, err)
 			}
-			m.Settings.CertPEM = certPEM
-			m.Settings.PrivateKey = keyPEM
-			m.Settings.PublicKey = pubHash
 		}
-		if cert != nil {
-			fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
-		} else {
+		if m.Mode == config.ModeHysteria2 && m.Settings.PublicKey != "" {
 			pubKeyPin := m.Settings.PublicKey
 			if len(pubKeyPin) > 16 {
 				pubKeyPin = pubKeyPin[:16]
 			}
 			fmt.Printf("🎨 Updated Web Skin domain to %s using self-signed certificate (pinSHA256: %s...).\n", m.SkinDomain, pubKeyPin)
+		} else if cert != nil {
+			fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+		} else {
+			fmt.Printf("🎨 Updated Web Skin domain to %s.\n", m.SkinDomain)
 		}
 	}
 

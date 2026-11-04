@@ -290,5 +290,31 @@ func TestGenerateHysteria2Links(t *testing.T) {
 	if !strings.Contains(renamed[0], "#RenamedHysteria2") {
 		t.Errorf("WithPrimaryRemark failed: %q", renamed[0])
 	}
+
+	// 6. With managed certificate in cfg.Certs -> pinSHA256 omitted
+	cfgWithCert := &config.UserConfig{
+		UUID: "11111111-2222-3333-4444-555555555555",
+		Certs: []config.ManagedCert{
+			{Domain: "hy2.example.com", CertPath: "/tmp/cert.pem", KeyPath: "/tmp/key.pem"},
+		},
+		Presets: []config.ModeInfo{
+			{
+				Mode:    config.ModeHysteria2,
+				Enabled: true,
+				Port:    8443,
+				SNI:     "hy2.example.com",
+				Settings: config.Settings{
+					Password: "salamander-secret",
+				},
+			},
+		},
+	}
+	certLinks := GenerateLinks(cfgWithCert, "203.0.113.1")
+	if len(certLinks) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(certLinks))
+	}
+	if strings.Contains(certLinks[0], "pinSHA256=") {
+		t.Errorf("expected no pinSHA256 with managed cert, got %q", certLinks[0])
+	}
 }
 

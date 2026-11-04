@@ -205,7 +205,13 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 					"obfs-password="+url.QueryEscape(mode.Settings.Password),
 				)
 			}
-			if mode.Settings.PublicKey != "" {
+			isManagedCert := false
+			if cfg != nil {
+				if cfg.FindCert(sni) != nil || (mode.Skin != "" && mode.SkinDomain != "" && cfg.FindCert(mode.SkinDomain) != nil) {
+					isManagedCert = true
+				}
+			}
+			if mode.Settings.PublicKey != "" && !isManagedCert {
 				params = append(params, "pinSHA256="+url.QueryEscape(mode.Settings.PublicKey))
 			}
 			params = append(params, "insecure=0")

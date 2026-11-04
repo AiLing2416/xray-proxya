@@ -64,6 +64,13 @@ var certAddCmd = &cobra.Command{
 		}
 
 		cfg.AddCert(*cert)
+		for i := range cfg.Presets {
+			p := &cfg.Presets[i]
+			if p.Mode == config.ModeHysteria2 && (strings.EqualFold(p.SkinDomain, domain) || strings.EqualFold(p.SNI, domain)) {
+				_ = cfg.UpdateHysteria2Credentials(p, domain)
+				fmt.Printf("🎨 Preset #%d (hysteria2) credentials updated to use authentic certificate for %s (pinSHA256 removed).\n", i+1, domain)
+			}
+		}
 		if err := cfg.SaveEx(true); err != nil {
 			return fmt.Errorf("save config: %w", err)
 		}

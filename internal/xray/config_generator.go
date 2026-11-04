@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"xray-proxya/internal/config"
@@ -456,6 +457,20 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 
 			certPEM := strings.TrimSpace(m.Settings.CertPEM)
 			keyPEM := strings.TrimSpace(m.Settings.PrivateKey)
+			if userCfg != nil {
+				cert := userCfg.FindCert(sni)
+				if cert == nil && m.Skin != "" && m.SkinDomain != "" {
+					cert = userCfg.FindCert(m.SkinDomain)
+				}
+				if cert != nil && cert.CertPath != "" && cert.KeyPath != "" {
+					if cBytes, err := os.ReadFile(cert.CertPath); err == nil && len(cBytes) > 0 {
+						certPEM = string(cBytes)
+					}
+					if kBytes, err := os.ReadFile(cert.KeyPath); err == nil && len(kBytes) > 0 {
+						keyPEM = string(kBytes)
+					}
+				}
+			}
 			if certPEM == "" || keyPEM == "" {
 				var genErr error
 				certPEM, keyPEM, _, genErr = config.GenerateSelfSignedCert(sni)

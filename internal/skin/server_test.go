@@ -1,6 +1,7 @@
 package skin
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -9,7 +10,10 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +22,8 @@ import (
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
+
+	"github.com/quic-go/quic-go/http3"
 )
 
 func init() {
@@ -1197,6 +1203,288 @@ func TestStartMultiSkinServerWithInlineCert(t *testing.T) {
 	}
 }
 
+func TestStartMultiSkinH3Server(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
+
+	certPEM, keyPEM, _, err := config.GenerateSelfSignedCert("h3.example.com")
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCert error: %v", err)
+	}
+
+	mappings := []DomainSkinMapping{
+		{
+			Domain:   "h3.example.com",
+			SkinType: config.SkinNextcloud,
+			CertPEM:  certPEM,
+			KeyPEM:   keyPEM,
+		},
+	}
+
+	h3Srv, err := StartMultiSkinH3Server("127.0.0.1:9443", mappings, config.SkinNextcloud)
+	if err != nil {
+		t.Fatalf("StartMultiSkinH3Server error: %v", err)
+	}
+	defer h3Srv.Close()
+
+	if h3Srv.TLSConfig == nil {
+		t.Fatal("expected non-nil TLSConfig on H3 server")
+	}
+
+	req := httptest.NewRequest("GET", "/status.php", nil)
+	req.Host = "h3.example.com"
+	rec := httptest.NewRecorder()
+	h3Srv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Nextcloud") {
+		t.Errorf("H3 handler /status.php failed: %d, body: %s", rec.Code, rec.Body.String())
+	}
+
+	// Verify Alt-Svc header and Server header
+	if srvHdr := rec.Header().Get("Server"); srvHdr != "Apache/2.4.68 (Debian)" {
+		t.Errorf("Server header = %q, want Apache/2.4.68 (Debian)", srvHdr)
+	}
+	// For public domain name requests, Alt-Svc advertises standard public port 443, not internal loopback port
+	if altSvc := rec.Header().Get("Alt-Svc"); !strings.Contains(altSvc, `h3=":443"`) {
+		t.Errorf("Alt-Svc header for domain = %q, want h3=\":443\"", altSvc)
+	}
+	// Nextcloud authentic PHP header must not be stripped
+	if xpb := rec.Header().Get("X-Powered-By"); xpb != "PHP/8.5.10" {
+		t.Errorf("Nextcloud X-Powered-By = %q, want PHP/8.5.10", xpb)
+	}
+
+	// For loopback IP requests, Alt-Svc advertises the specific internal port
+	reqLoopback := httptest.NewRequest("GET", "/status.php", nil)
+	reqLoopback.Host = "127.0.0.1"
+	recLoopback := httptest.NewRecorder()
+	h3Srv.Handler.ServeHTTP(recLoopback, reqLoopback)
+	if altSvc := recLoopback.Header().Get("Alt-Svc"); !strings.Contains(altSvc, `h3=":9443"`) {
+		t.Errorf("Alt-Svc header for loopback = %q, want h3=\":9443\"", altSvc)
+	}
+}
+
+func TestNativeHTTP3ClientRealConn(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
+
+	certPEM, keyPEM, _, err := config.GenerateSelfSignedCert("nc-h3.example.com")
+	if err != nil {
+		t.Fatalf("GenerateSelfSignedCert error: %v", err)
+	}
+
+	mappings := []DomainSkinMapping{
+		{
+			Domain:   "nc-h3.example.com",
+			SkinType: config.SkinNextcloud,
+			CertPEM:  certPEM,
+			KeyPEM:   keyPEM,
+		},
+		{
+			Domain:   "sea-h3.example.com",
+			SkinType: config.SkinSeafile,
+			CertPEM:  certPEM,
+			KeyPEM:   keyPEM,
+		},
+	}
+
+	udpConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP error: %v", err)
+	}
+	defer udpConn.Close()
+
+	addr := udpConn.LocalAddr().String()
+	h3Srv, err := StartMultiSkinH3Server(addr, mappings, config.SkinNextcloud)
+	if err != nil {
+		t.Fatalf("StartMultiSkinH3Server error: %v", err)
+	}
+	defer h3Srv.Close()
+
+	go func() {
+		_ = h3Srv.Serve(udpConn)
+	}()
+
+	client := &http.Client{
+		Transport: &http3.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "nc-h3.example.com",
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	// 1. Nextcloud over native HTTP/3
+	req, err := http.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("https://%s/status.php", addr), nil)
+	if err != nil {
+		t.Fatalf("NewRequest error: %v", err)
+	}
+	req.Host = "nc-h3.example.com"
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do over HTTP/3 failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.Proto != "HTTP/3.0" {
+		t.Errorf("resp.Proto = %q, want HTTP/3.0", resp.Proto)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("resp.StatusCode = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Nextcloud") {
+		t.Errorf("unexpected body over HTTP/3: %s", string(body))
+	}
+	if srv := resp.Header.Get("Server"); srv != "Apache/2.4.68 (Debian)" {
+		t.Errorf("Server header = %q, want Apache/2.4.68 (Debian)", srv)
+	}
+	if xpb := resp.Header.Get("X-Powered-By"); xpb != "PHP/8.5.10" {
+		t.Errorf("X-Powered-By over HTTP/3 = %q, want PHP/8.5.10", xpb)
+	}
+
+	// 2. Seafile over native HTTP/3
+	clientSea := &http.Client{
+		Transport: &http3.Transport{
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         "sea-h3.example.com",
+			},
+		},
+		Timeout: 5 * time.Second,
+	}
+	reqSea, err := http.NewRequestWithContext(context.Background(), "GET", fmt.Sprintf("https://%s/api2/ping/", addr), nil)
+	if err != nil {
+		t.Fatalf("NewRequest error: %v", err)
+	}
+	reqSea.Host = "sea-h3.example.com"
+
+	respSea, err := clientSea.Do(reqSea)
+	if err != nil {
+		t.Fatalf("clientSea.Do over HTTP/3 failed: %v", err)
+	}
+	defer respSea.Body.Close()
+
+	if respSea.StatusCode != http.StatusOK {
+		t.Errorf("Seafile StatusCode = %d, want 200", respSea.StatusCode)
+	}
+	bodySea, _ := io.ReadAll(respSea.Body)
+	if !strings.Contains(string(bodySea), "pong") {
+		t.Errorf("unexpected Seafile body over HTTP/3: %s", string(bodySea))
+	}
+	if srv := respSea.Header.Get("Server"); srv != "nginx" {
+		t.Errorf("Server header for Seafile = %q, want nginx", srv)
+	}
+}
+
+func TestGoFingerprintMasking(t *testing.T) {
+	if !Enabled {
+		t.Skip("Skin feature is disabled in slim build")
+	}
+
+	// 1. User-Agent with Go-http-client is stripped
+	var receivedUA string
+	handler := hideGoClientFingerprint(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedUA = r.Header.Get("User-Agent")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Header.Set("User-Agent", "Go-http-client/1.1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if receivedUA != "" {
+		t.Errorf("expected User-Agent to be stripped, got %q", receivedUA)
+	}
+
+	// 2. sanitizingResponseWriter removes Go fingerprints but preserves authentic PHP headers
+	dummyGo := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Powered-By", "Go/1.25.0")
+		w.Header().Set("Server", "Go-http-client")
+		w.Header().Set("X-Custom-Client", "Go-http-client/1.1")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	rec = httptest.NewRecorder()
+	reqLoop := httptest.NewRequest("GET", "/", nil)
+	reqLoop.Host = "127.0.0.1"
+	sw := &sanitizingResponseWriter{ResponseWriter: rec, req: reqLoop, skinType: config.SkinSeafile, port: 8443}
+	dummyGo.ServeHTTP(sw, reqLoop)
+
+	if xpb := rec.Header().Get("X-Powered-By"); xpb != "" {
+		t.Errorf("Go X-Powered-By not stripped: %q", xpb)
+	}
+	if xcc := rec.Header().Get("X-Custom-Client"); xcc != "" {
+		t.Errorf("Header with Go-http-client value not stripped: %q", xcc)
+	}
+	if srv := rec.Header().Get("Server"); srv != "nginx" {
+		t.Errorf("Server header = %q, want nginx", srv)
+	}
+	if altSvc := rec.Header().Get("Alt-Svc"); altSvc != `h3=":8443"; ma=2592000` {
+		t.Errorf("Alt-Svc header = %q, want h3=\":8443\"; ma=2592000", altSvc)
+	}
+
+	// Verify authentic PHP X-Powered-By is preserved for Nextcloud
+	dummyPHP := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Powered-By", "PHP/8.5.10")
+		w.WriteHeader(http.StatusOK)
+	})
+	recPHP := httptest.NewRecorder()
+	reqDomain := httptest.NewRequest("GET", "/", nil)
+	reqDomain.Host = "cloud.example.com"
+	swPHP := &sanitizingResponseWriter{ResponseWriter: recPHP, req: reqDomain, skinType: config.SkinNextcloud, port: 8443}
+	dummyPHP.ServeHTTP(swPHP, reqDomain)
+
+	if xpb := recPHP.Header().Get("X-Powered-By"); xpb != "PHP/8.5.10" {
+		t.Errorf("Authentic PHP X-Powered-By unexpectedly stripped: %q", xpb)
+	}
+	if srv := recPHP.Header().Get("Server"); srv != "Apache/2.4.68 (Debian)" {
+		t.Errorf("Server header = %q, want Apache/2.4.68 (Debian)", srv)
+	}
+	if altSvc := recPHP.Header().Get("Alt-Svc"); altSvc != `h3=":443"; ma=2592000` {
+		t.Errorf("Alt-Svc for domain = %q, want h3=\":443\"; ma=2592000", altSvc)
+	}
+
+	// 3. Panic recovery does not leak Go stack trace and outputs skin-specific 500 error
+	panickingNextcloud := disguiseRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("critical internal runtime error at pointer 0xdeadbeef")
+	}), func(r *http.Request) string { return config.SkinNextcloud })
+
+	rec = httptest.NewRecorder()
+	panickingNextcloud.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("code = %d, want 500", rec.Code)
+	}
+	if srv := rec.Header().Get("Server"); srv != "Apache/2.4.68 (Debian)" {
+		t.Errorf("Server header = %q, want Apache/2.4.68 (Debian)", srv)
+	}
+	if strings.Contains(rec.Body.String(), "panic") || strings.Contains(rec.Body.String(), "0xdeadbeef") || strings.Contains(rec.Body.String(), ".go:") {
+		t.Errorf("Go stack trace or panic leaked to client: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "The server encountered an internal error") {
+		t.Errorf("Body missing Apache 500 text: %s", rec.Body.String())
+	}
+
+	// Panic recovery for Seafile outputs Nginx 500
+	panickingSeafile := disguiseRecovery(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		panic("seafile internal error")
+	}), func(r *http.Request) string { return config.SkinSeafile })
+
+	recSea := httptest.NewRecorder()
+	panickingSeafile.ServeHTTP(recSea, req)
+	if recSea.Code != http.StatusInternalServerError {
+		t.Errorf("Seafile panic code = %d, want 500", recSea.Code)
+	}
+	if srv := recSea.Header().Get("Server"); srv != "nginx" {
+		t.Errorf("Seafile panic Server header = %q, want nginx", srv)
+	}
+}
+
 func TestSkinDisabledInSlim(t *testing.T) {
 	if Enabled {
 		t.Skip("Only tested in slim build")
@@ -1215,6 +1503,16 @@ func TestSkinDisabledInSlim(t *testing.T) {
 	_, err = StartMultiSkinServer("127.0.0.1:0", nil, "")
 	if !errors.Is(err, ErrSkinDisabled) {
 		t.Errorf("expected ErrSkinDisabled from StartMultiSkinServer, got %v", err)
+	}
+
+	_, err = StartSkinH3Server("127.0.0.1:0", config.SkinFilebrowser, "", "")
+	if !errors.Is(err, ErrSkinDisabled) {
+		t.Errorf("expected ErrSkinDisabled from StartSkinH3Server, got %v", err)
+	}
+
+	_, err = StartMultiSkinH3Server("127.0.0.1:0", nil, "")
+	if !errors.Is(err, ErrSkinDisabled) {
+		t.Errorf("expected ErrSkinDisabled from StartMultiSkinH3Server, got %v", err)
 	}
 }
 

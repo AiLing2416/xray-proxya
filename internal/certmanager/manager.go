@@ -348,6 +348,12 @@ func CheckAndRenewCerts(cfg *config.UserConfig, force bool) (renewed []string, e
 				cert.CertPath = newCert.CertPath
 				cert.KeyPath = newCert.KeyPath
 				cert.Issuer = newCert.Issuer
+				for j := range cfg.Presets {
+					p := &cfg.Presets[j]
+					if p.Mode == config.ModeHysteria2 && (strings.EqualFold(p.SkinDomain, cert.Domain) || strings.EqualFold(p.SNI, cert.Domain)) {
+						_ = cfg.UpdateHysteria2Credentials(p, cert.Domain)
+					}
+				}
 				renewed = append(renewed, cert.Domain)
 				renewSuccess = true
 			}
@@ -386,20 +392,6 @@ func RemoveCertificate(cfg *config.UserConfig, domain string) (disabledPresets [
 		return nil, fmt.Errorf("domain %s is not registered", domain)
 	}
 
-	// Disable dependent presets
-	for i := range cfg.Presets {
-		p := &cfg.Presets[i]
-		isBound := strings.EqualFold(p.SkinDomain, d) || (p.Skin != "" && strings.EqualFold(p.SNI, d))
-		if isBound {
-			if p.Enabled {
-				p.Enabled = false
-			}
-			p.Skin = ""
-			p.SkinDomain = ""
-			disabledPresets = append(disabledPresets, i+1)
-		}
-	}
-
 	// Remove files
 	certDir := filepath.Dir(cert.CertPath)
 	if certDir != "" && certDir != "/" && certDir != "." {
@@ -407,5 +399,30 @@ func RemoveCertificate(cfg *config.UserConfig, domain string) (disabledPresets [
 	}
 
 	cfg.RemoveCert(d)
+
+	// Disable dependent presets
+	for i := range cfg.Presets {
+		p := &cfg.Presets[i]
+		isBound := strings.EqualFold(p.SkinDomain, d) || (p.Skin != "" && strings.EqualFold(p.SNI, d)) || (p.Mode == config.ModeHysteria2 && strings.EqualFold(p.SNI, d))
+		if isBound {
+			if p.Enabled {
+				p.Enabled = false
+			}
+			p.Skin = ""
+			p.SkinDomain = ""
+			if strings.HasPrefix(p.Dest, "127.0.0.1:") && p.SNI != "" {
+				p.Dest = net.JoinHostPort(p.SNI, "443")
+			}
+			if p.Mode == config.ModeHysteria2 {
+				if strings.EqualFold(p.SNI, d) || p.SNI == "" {
+					p.SNI = "www.bing.com"
+					p.Dest = "www.bing.com:443"
+				}
+				_ = cfg.UpdateHysteria2Credentials(p, p.SNI)
+			}
+			disabledPresets = append(disabledPresets, i+1)
+		}
+	}
+
 	return disabledPresets, nil
 }

@@ -2083,16 +2083,67 @@ func (cfg *UserConfig) backfillHysteria2(m *ModeInfo) []string {
 		m.Settings.Password = randomHexString(16)
 		changes = append(changes, "backfilled password for preset "+string(m.Mode))
 	}
-	if m.Settings.CertPEM == "" || m.Settings.PrivateKey == "" || m.Settings.PublicKey == "" {
-		certPEM, keyPEM, sha256Hex, err := GenerateSelfSignedCert(m.SNI)
-		if err == nil {
-			m.Settings.CertPEM = certPEM
-			m.Settings.PrivateKey = keyPEM
-			m.Settings.PublicKey = sha256Hex
-			changes = append(changes, "generated self-signed cert for preset "+string(m.Mode))
+	hasManaged := cfg != nil && (cfg.FindCert(m.SNI) != nil || (m.Skin != "" && m.SkinDomain != "" && cfg.FindCert(m.SkinDomain) != nil))
+	needCredUpdate := m.Settings.CertPEM == "" || m.Settings.PrivateKey == "" || (hasManaged && m.Settings.PublicKey != "") || (!hasManaged && m.Settings.PublicKey == "")
+	if needCredUpdate {
+		if err := cfg.UpdateHysteria2Credentials(m, m.SNI); err == nil {
+			changes = append(changes, "synchronized TLS credentials for preset "+string(m.Mode))
 		}
 	}
 	return changes
+}
+
+// UpdateHysteria2Credentials synchronizes Hysteria 2 TLS credentials for the target domain.
+// If a managed certificate exists in cfg.Certs for targetDomain (or m.SkinDomain / m.SNI)
+// and its certificate/key files are readable on disk, it loads them into m.Settings
+// and clears m.Settings.PublicKey (disabling SHA256 pinning for authentic CA verification).
+// Otherwise, it generates or restores a valid self-signed certificate and SHA256 pin.
+func (cfg *UserConfig) UpdateHysteria2Credentials(m *ModeInfo, targetDomain string) error {
+	if m == nil {
+		return errors.New("nil mode info")
+	}
+	domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(targetDomain)), ".")
+	if domain == "" {
+		if m.Skin != "" && m.SkinDomain != "" {
+			domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SkinDomain)), ".")
+		} else if m.SNI != "" {
+			domain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(m.SNI)), ".")
+		} else {
+			domain = "www.bing.com"
+		}
+	}
+
+	var cert *ManagedCert
+	if cfg != nil {
+		cert = cfg.FindCert(domain)
+		if cert == nil && m.Skin != "" && m.SkinDomain != "" {
+			cert = cfg.FindCert(m.SkinDomain)
+		}
+		if cert == nil && m.SNI != "" {
+			cert = cfg.FindCert(m.SNI)
+		}
+	}
+
+	if cert != nil && cert.CertPath != "" && cert.KeyPath != "" {
+		cBytes, err1 := os.ReadFile(cert.CertPath)
+		kBytes, err2 := os.ReadFile(cert.KeyPath)
+		if err1 == nil && err2 == nil && len(cBytes) > 0 && len(kBytes) > 0 {
+			m.Settings.CertPEM = string(cBytes)
+			m.Settings.PrivateKey = string(kBytes)
+			m.Settings.PublicKey = ""
+			return nil
+		}
+	}
+
+	// Fallback to self-signed certificate
+	certPEM, keyPEM, sha256Hex, err := GenerateSelfSignedCert(domain)
+	if err != nil {
+		return err
+	}
+	m.Settings.CertPEM = certPEM
+	m.Settings.PrivateKey = keyPEM
+	m.Settings.PublicKey = sha256Hex
+	return nil
 }
 
 // migrateLegacyPath moves the former global, enabled Gateway PathLink
