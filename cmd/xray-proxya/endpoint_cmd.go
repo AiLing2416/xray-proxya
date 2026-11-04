@@ -20,8 +20,9 @@ var (
 	endpointListJSON     bool
 	endpointShowJSON     bool
 	endpointTestJSON     bool
-	endpointRotateJSON   bool
-	endpointSetHost      string
+	endpointRotateJSON     bool
+	endpointRotateConsumer string
+	endpointSetHost        string
 	endpointSetAuto      bool
 	endpointSetV4        bool
 	endpointSetV6        bool
@@ -60,9 +61,10 @@ type EndpointDetailView struct {
 	Profile        string                  `json:"profile,omitempty"`
 	TTL            string                  `json:"ttl,omitempty"`
 	ResolvedIP     string                  `json:"resolved_ip"`
-	ActivePool     []endpoint.AddressEntry `json:"active_pool,omitempty"`
-	DeprecatedPool []endpoint.AddressEntry `json:"deprecated_pool,omitempty"`
-	References     []string                `json:"references"`
+	ActivePool     []endpoint.AddressEntry            `json:"active_pool,omitempty"`
+	DeprecatedPool []endpoint.AddressEntry            `json:"deprecated_pool,omitempty"`
+	Consumers      map[string]*endpoint.ConsumerState `json:"consumers,omitempty"`
+	References     []string                           `json:"references"`
 }
 
 type EndpointTestResult struct {
@@ -76,6 +78,7 @@ type EndpointTestResult struct {
 
 type EndpointRotateResult struct {
 	Name            string `json:"name"`
+	Consumer        string `json:"consumer,omitempty"`
 	RotatedAddress  string `json:"rotated_address"`
 	ActiveCount     int    `json:"active_count"`
 	DeprecatedCount int    `json:"deprecated_count"`
@@ -496,11 +499,13 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 	}
 
 	var activePool, deprecatedPool []endpoint.AddressEntry
+	var consumers map[string]*endpoint.ConsumerState
 	if ep.Type == config.EndpointTypeDynamicV6 {
 		st, _ := endpoint.LoadRotationState(name)
 		if st != nil {
 			activePool = st.ActivePool
 			deprecatedPool = st.DeprecatedPool
+			consumers = st.Consumers
 		}
 	}
 
@@ -517,6 +522,7 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 			ResolvedIP:     resolvedStr,
 			ActivePool:     activePool,
 			DeprecatedPool: deprecatedPool,
+			Consumers:      consumers,
 			References:     refs,
 		}
 		if ep.Type == config.EndpointTypeDynamicV6 {
@@ -592,6 +598,39 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 				fmt.Printf("  * %s (expires in %s)\n", dep.Address, remaining.Round(time.Second))
 			}
 		}
+
+		if len(consumers) > 0 {
+			fmt.Printf("\nConsumers (%d):\n", len(consumers))
+			var cNames []string
+			for cName := range consumers {
+				cNames = append(cNames, cName)
+			}
+			sort.Strings(cNames)
+			for _, cName := range cNames {
+				cs := consumers[cName]
+				if cs == nil {
+					continue
+				}
+				activeStr := "(none)"
+				if len(cs.ActivePool) > 0 {
+					var acts []string
+					for _, act := range cs.ActivePool {
+						acts = append(acts, fmt.Sprintf("%s (leased %s ago)", act.Address, time.Since(act.CreatedAt).Round(time.Second)))
+					}
+					activeStr = strings.Join(acts, ", ")
+				}
+				fmt.Printf("  • %s: %s\n", cName, activeStr)
+				if len(cs.DeprecatedPool) > 0 {
+					for _, dep := range cs.DeprecatedPool {
+						rem := 1*time.Hour - time.Since(dep.DeprecatedAt)
+						if rem < 0 {
+							rem = 0
+						}
+						fmt.Printf("    └─ deprecated: %s (expires in %s)\n", dep.Address, rem.Round(time.Second))
+					}
+				}
+			}
+		}
 		fmt.Println()
 		return nil
 	}
@@ -638,9 +677,18 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 
 		if ep.Type == config.EndpointTypeDynamicV6 {
 			st, _ := endpoint.LoadRotationState(name)
-			if st != nil && len(st.ActivePool) > 0 {
-				for _, act := range st.ActivePool {
-					ipsToTest = append(ipsToTest, act.Address)
+			if st != nil {
+				if len(st.ActivePool) > 0 {
+					for _, act := range st.ActivePool {
+						ipsToTest = append(ipsToTest, act.Address)
+					}
+				}
+				for _, cs := range st.Consumers {
+					if cs != nil {
+						for _, act := range cs.ActivePool {
+							ipsToTest = append(ipsToTest, act.Address)
+						}
+					}
 				}
 			}
 		}
@@ -689,12 +737,9 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 					})
 				}
 			} else {
-				// IPv4 probe
-				start := time.Now()
-				conn, dialErr := net.DialTimeout("tcp", "1.1.1.1:53", 3*time.Second)
-				if dialErr == nil {
-					rtt := time.Since(start)
-					conn.Close()
+				// Host / IPv4 probe on actual host
+				ok, rtt, pErr := endpoint.TestHostReachability(cleanIP, 3*time.Second)
+				if ok {
 					results = append(results, EndpointTestResult{
 						Name:    name,
 						Type:    string(ep.Type),
@@ -703,12 +748,16 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 						RTTMs:   rtt.Milliseconds(),
 					})
 				} else {
+					errMsg := "reachability check failed"
+					if pErr != nil {
+						errMsg = pErr.Error()
+					}
 					results = append(results, EndpointTestResult{
 						Name:    name,
 						Type:    string(ep.Type),
 						Address: cleanIP,
 						Status:  "FAIL",
-						Error:   dialErr.Error(),
+						Error:   errMsg,
 					})
 				}
 			}
@@ -775,7 +824,8 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	newIP, err := endpoint.NextAddress(name, ep)
+	consumer := strings.TrimSpace(endpointRotateConsumer)
+	newIP, err := endpoint.NextAddressForConsumer(name, ep, consumer)
 	if err != nil {
 		return fmt.Errorf("❌ Failed to rotate endpoint '%s': %w", name, err)
 	}
@@ -784,13 +834,21 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 	activeCount := 1
 	deprecatedCount := 0
 	if st != nil {
-		activeCount = len(st.ActivePool)
-		deprecatedCount = len(st.DeprecatedPool)
+		if consumer != "" {
+			if cs, ok := st.Consumers[consumer]; ok && cs != nil {
+				activeCount = len(cs.ActivePool)
+				deprecatedCount = len(cs.DeprecatedPool)
+			}
+		} else {
+			activeCount = len(st.ActivePool)
+			deprecatedCount = len(st.DeprecatedPool)
+		}
 	}
 
 	if endpointRotateJSON {
 		res := EndpointRotateResult{
 			Name:            name,
+			Consumer:        consumer,
 			RotatedAddress:  newIP,
 			ActiveCount:     activeCount,
 			DeprecatedCount: deprecatedCount,
@@ -801,6 +859,9 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Printf("\n✅ Endpoint '%s' rotated successfully!\n", name)
+	if consumer != "" {
+		fmt.Printf("   - Consumer:           %s\n", consumer)
+	}
 	fmt.Printf("   - New Active Address: %s\n", newIP)
 	fmt.Printf("   - Active Pool:        %d/%d\n", activeCount, ep.MaxAddresses)
 	fmt.Printf("   - Deprecated Pool:    %d\n\n", deprecatedCount)
@@ -851,6 +912,7 @@ func init() {
 	endpointTestCmd.Flags().BoolVar(&endpointTestJSON, "json", false, "Output in JSON format")
 
 	endpointRotateCmd.Flags().BoolVar(&endpointRotateJSON, "json", false, "Output in JSON format")
+	endpointRotateCmd.Flags().StringVar(&endpointRotateConsumer, "consumer", "", "Specific consumer/tenant to rotate in isolated mode (e.g. guest:alice)")
 
 	endpointSetCmd.Flags().Bool("help", false, "Help for set")
 	endpointSetCmd.Flags().StringVarP(&endpointSetHost, "host", "h", "", "Static hostname(s) or IP(s), comma-separated")

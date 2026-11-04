@@ -526,16 +526,109 @@ func resolveDynamicV6Locked(endpointName string, ep config.EndpointConfig, consu
 // updates the active pool, softly deprecates old addresses in compliance with RFC 4941,
 // cleans expired addresses, and persists state.
 func NextAddress(endpointName string, ep config.EndpointConfig) (string, error) {
+	return NextAddressForConsumer(endpointName, ep, "")
+}
+
+// NextAddressForConsumer rotates the dynamic IPv6 address for a specific consumer (in isolated mode)
+// or the global active pool (in turtle/proactive mode).
+func NextAddressForConsumer(endpointName string, ep config.EndpointConfig, consumer string) (string, error) {
 	rotationMutex.Lock()
 	defer rotationMutex.Unlock()
 
 	var ip string
 	err := withFileLock(endpointName, func() error {
 		var err error
-		ip, err = nextAddressLocked(endpointName, ep)
+		ip, err = nextAddressForConsumerLocked(endpointName, ep, consumer)
 		return err
 	})
 	return ip, err
+}
+
+func nextAddressForConsumerLocked(endpointName string, ep config.EndpointConfig, consumer string) (string, error) {
+	profile := NormalizeProfile(ep.Profile)
+	if consumer != "" || profile == config.RotationProfileIsolated {
+		subnet := strings.TrimSpace(ep.Subnet)
+		if subnet == "" {
+			return "", fmt.Errorf("dynamic-v6 endpoint '%s' has no subnet configured", endpointName)
+		}
+		iface := strings.TrimSpace(ep.Interface)
+		if iface == "" {
+			return "", fmt.Errorf("dynamic-v6 endpoint '%s' has no network interface configured", endpointName)
+		}
+
+		st, _ := LoadRotationState(endpointName)
+		if st == nil {
+			st = &RotationState{
+				ActivePool:     []AddressEntry{},
+				DeprecatedPool: []AddressEntry{},
+				Consumers:      make(map[string]*ConsumerState),
+			}
+		}
+		if st.Consumers == nil {
+			st.Consumers = make(map[string]*ConsumerState)
+		}
+
+		cKey := strings.TrimSpace(consumer)
+		if cKey == "" {
+			cKey = "admin"
+		}
+		cs, exists := st.Consumers[cKey]
+		if !exists || cs == nil {
+			cs = &ConsumerState{
+				ActivePool:     []AddressEntry{},
+				DeprecatedPool: []AddressEntry{},
+			}
+			st.Consumers[cKey] = cs
+		}
+
+		isColliding := func(candidate string) bool {
+			for _, a := range st.ActivePool {
+				if a.Address == candidate {
+					return true
+				}
+			}
+			for _, a := range st.DeprecatedPool {
+				if a.Address == candidate {
+					return true
+				}
+			}
+			for _, c := range st.Consumers {
+				for _, a := range c.ActivePool {
+					if a.Address == candidate {
+						return true
+					}
+				}
+				for _, a := range c.DeprecatedPool {
+					if a.Address == candidate {
+						return true
+					}
+				}
+			}
+			return false
+		}
+
+		newIP, err := allocateAndVerifyAddress(subnet, iface, ep.EnableNDP, isColliding)
+		if err != nil {
+			return "", err
+		}
+
+		now := time.Now()
+		for _, old := range cs.ActivePool {
+			cs.DeprecatedPool = append(cs.DeprecatedPool, demoteAddress(iface, old, now))
+		}
+		cs.ActivePool = []AddressEntry{{
+			Address:   newIP,
+			State:     "active",
+			CreatedAt: now,
+		}}
+		cs.DeprecatedPool = pruneDeprecated(iface, ep.EnableNDP, cs.DeprecatedPool, now)
+		if err := SaveRotationState(endpointName, st); err != nil {
+			return newIP, fmt.Errorf("address allocated (%s) but failed to save state: %w", newIP, err)
+		}
+		return newIP, nil
+	}
+
+	return nextAddressLocked(endpointName, ep)
 }
 
 func nextAddressLocked(endpointName string, ep config.EndpointConfig) (string, error) {

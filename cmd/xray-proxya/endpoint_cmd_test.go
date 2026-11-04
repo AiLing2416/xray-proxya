@@ -482,13 +482,20 @@ func TestEndpointShowDynamicV6_TextAndJSON(t *testing.T) {
 	}
 	_ = cfg.SaveEx(true)
 
-	// Populate a mock rotation state file
+	// Populate a mock rotation state file with Consumers
 	mockState := endpoint.RotationState{
 		ActivePool: []endpoint.AddressEntry{
 			{Address: "2001:470:1f0b:692::1234", State: "active", CreatedAt: time.Now()},
 		},
 		DeprecatedPool: []endpoint.AddressEntry{
 			{Address: "2001:470:1f0b:692::5678", State: "deprecated", CreatedAt: time.Now().Add(-2 * time.Hour), DeprecatedAt: time.Now().Add(-10 * time.Minute)},
+		},
+		Consumers: map[string]*endpoint.ConsumerState{
+			"guest:alice": {
+				ActivePool: []endpoint.AddressEntry{
+					{Address: "2001:470:1f0b:692::aaaa", State: "active", CreatedAt: time.Now()},
+				},
+			},
 		},
 	}
 	_ = endpoint.SaveRotationState("he-pool", &mockState)
@@ -505,6 +512,9 @@ func TestEndpointShowDynamicV6_TextAndJSON(t *testing.T) {
 	}
 	if !strings.Contains(out, "2001:470:1f0b:692::5678") {
 		t.Errorf("expected deprecated IP in show output, got: %s", out)
+	}
+	if !strings.Contains(out, "Consumers (1):") || !strings.Contains(out, "guest:alice") {
+		t.Errorf("expected Consumers list in show output, got: %s", out)
 	}
 	if !strings.Contains(out, "Subnet:      2001:470:1f0b:692::/64") {
 		t.Errorf("expected subnet in show output, got: %s", out)
@@ -534,6 +544,9 @@ func TestEndpointShowDynamicV6_TextAndJSON(t *testing.T) {
 	if len(detail.DeprecatedPool) != 1 || detail.DeprecatedPool[0].Address != "2001:470:1f0b:692::5678" {
 		t.Errorf("unexpected DeprecatedPool in JSON: %+v", detail.DeprecatedPool)
 	}
+	if len(detail.Consumers) != 1 || detail.Consumers["guest:alice"] == nil || len(detail.Consumers["guest:alice"].ActivePool) != 1 {
+		t.Errorf("unexpected Consumers in JSON: %+v", detail.Consumers)
+	}
 }
 
 func TestEndpointTestCmd(t *testing.T) {
@@ -545,15 +558,33 @@ func TestEndpointTestCmd(t *testing.T) {
 				Type: config.EndpointTypeStatic,
 				Host: "127.0.0.1",
 			},
+			"iso-test": {
+				Type:      config.EndpointTypeDynamicV6,
+				Subnet:    "2001:db8:7777::/64",
+				Interface: "he-ipv6",
+				Profile:   config.RotationProfileIsolated,
+			},
 		},
 	}
 	_ = cfg.SaveEx(true)
+
+	// Mock rotation state for iso-test with consumer tenant IP
+	_ = endpoint.SaveRotationState("iso-test", &endpoint.RotationState{
+		ActivePool: []endpoint.AddressEntry{},
+		Consumers: map[string]*endpoint.ConsumerState{
+			"guest:tenant1": {
+				ActivePool: []endpoint.AddressEntry{
+					{Address: "2001:db8:7777::beef", State: "active", CreatedAt: time.Now()},
+				},
+			},
+		},
+	})
 
 	endpointTestJSON = true
 	defer func() { endpointTestJSON = false }()
 
 	jsonOut := captureStdout(t, func() {
-		err := endpointTestCmd.RunE(endpointTestCmd, []string{"static-test"})
+		err := endpointTestCmd.RunE(endpointTestCmd, []string{"iso-test"})
 		if err != nil {
 			t.Fatalf("endpoint test failed: %v", err)
 		}
@@ -563,8 +594,8 @@ func TestEndpointTestCmd(t *testing.T) {
 	if err := json.Unmarshal([]byte(jsonOut), &results); err != nil {
 		t.Fatalf("failed to unmarshal JSON: %v, out: %s", err, jsonOut)
 	}
-	if len(results) == 0 || results[0].Name != "static-test" {
-		t.Fatalf("unexpected test results: %+v", results)
+	if len(results) == 0 || results[0].Address != "2001:db8:7777::beef" {
+		t.Fatalf("expected test result for isolated consumer IP 2001:db8:7777::beef, got: %+v", results)
 	}
 }
 
@@ -630,6 +661,32 @@ func TestEndpointRotateCmd(t *testing.T) {
 	}
 	if rotRes.Name != "he-pool" || rotRes.RotatedAddress == "" {
 		t.Errorf("unexpected rotate result: %+v", rotRes)
+	}
+
+	// 3. Rotate dynamic-v6 with --consumer in isolated mode
+	cfg.Endpoints["iso-ep"] = config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:aaaa::/64",
+		Interface: "he-ipv6",
+		Profile:   config.RotationProfileIsolated,
+	}
+	_ = cfg.SaveEx(true)
+	endpointRotateConsumer = "guest:alice"
+	defer func() { endpointRotateConsumer = "" }()
+
+	jsonOutConsumer := captureStdout(t, func() {
+		err := endpointRotateCmd.RunE(endpointRotateCmd, []string{"iso-ep"})
+		if err != nil {
+			t.Fatalf("endpoint rotate with --consumer failed: %v", err)
+		}
+	})
+
+	var rotResConsumer EndpointRotateResult
+	if err := json.Unmarshal([]byte(jsonOutConsumer), &rotResConsumer); err != nil {
+		t.Fatalf("failed to unmarshal rotate consumer JSON: %v, out: %s", err, jsonOutConsumer)
+	}
+	if rotResConsumer.Name != "iso-ep" || rotResConsumer.Consumer != "guest:alice" || rotResConsumer.RotatedAddress == "" {
+		t.Errorf("unexpected rotate consumer result: %+v", rotResConsumer)
 	}
 }
 
