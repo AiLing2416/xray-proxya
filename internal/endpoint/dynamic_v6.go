@@ -195,9 +195,39 @@ func execCmd(name string, arg ...string) {
 	_, _ = cmdRunner(name, arg...)
 }
 
+// IsTunnelInterface reports whether iface represents a point-to-point or tunnel interface
+// (such as WireGuard, GRE, SIT, TUN, TAP, ip6tnl) that does not use or need Neighbor Discovery (Proxy NDP).
+// It checks sysfs /sys/class/net/<iface>/type if available, and uses prefix matching to avoid
+// substring false positives (e.g. interfaces containing "tun" or "sit" like "fortune0" or "transit0").
+func IsTunnelInterface(iface string) bool {
+	lower := strings.ToLower(strings.TrimSpace(iface))
+	if lower == "" {
+		return false
+	}
+
+	// 1. Check sysfs device type if running on Linux
+	if data, err := os.ReadFile(filepath.Join("/sys/class/net", lower, "type")); err == nil {
+		devType := strings.TrimSpace(string(data))
+		// ARPHRD_ETHER is 1. Tunnels / Wireguard / SIT are 65534 (ARPHRD_NONE), 776 (SIT), 778 (GRE), 768 (IP6TNL), etc.
+		if devType != "" && devType != "1" {
+			return true
+		}
+	}
+
+	// 2. Exact prefix matching
+	prefixes := []string{
+		"tun", "tap", "sit", "wg", "gre", "gretap", "ip6tnl", "ip6gre", "he-", "dummy", "wireguard",
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
 func isTunnelInterface(iface string) bool {
-	lower := strings.ToLower(iface)
-	return strings.Contains(lower, "sit") || strings.Contains(lower, "he-") || strings.Contains(lower, "tun")
+	return IsTunnelInterface(iface)
 }
 
 // NormalizeProfile returns a canonical rotation profile name. Defaults to "turtle".

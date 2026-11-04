@@ -9,7 +9,14 @@ import (
 	"time"
 
 	"xray-proxya/internal/config"
+	"xray-proxya/pkg/utils"
 )
+
+func TestMain(m *testing.M) {
+	restoreSmartIP := utils.SetSmartIPForTest("198.51.100.1", "2001:db8::1")
+	defer restoreSmartIP()
+	os.Exit(m.Run())
+}
 
 func TestResolveStaticSingleAndMultiple(t *testing.T) {
 	cfg := &config.UserConfig{
@@ -1183,6 +1190,29 @@ func TestCleanupDynamicV6(t *testing.T) {
 		t.Errorf("expected lock file to be deleted, got err: %v", err)
 	}
 }
+
+func TestIsTunnelInterface(t *testing.T) {
+	tunnels := []string{
+		"tun0", "tun-he", "tap1", "sit0", "sit-tunnel", "wg0", "wg-client",
+		"gre0", "gretap0", "ip6tnl0", "ip6gre0", "he-ipv6", "dummy0", "wireguard0",
+	}
+	for _, iface := range tunnels {
+		if !IsTunnelInterface(iface) {
+			t.Errorf("expected IsTunnelInterface(%q) to be true", iface)
+		}
+	}
+
+	nonTunnels := []string{
+		"eth0", "enp3s0", "wlan0", "virbr82",
+		"fortune0", "transit0", "stunt0",
+	}
+	for _, iface := range nonTunnels {
+		if IsTunnelInterface(iface) {
+			t.Errorf("expected IsTunnelInterface(%q) to be false (prevent substring false positives)", iface)
+		}
+	}
+}
+
 
 
 

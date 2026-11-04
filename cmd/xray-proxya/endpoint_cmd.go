@@ -348,8 +348,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		} else if hasExisting {
 			enableNDP = existingEp.EnableNDP
 		} else {
-			lowerIface := strings.ToLower(ifaceVal)
-			if strings.Contains(lowerIface, "sit") || strings.Contains(lowerIface, "he-") || strings.Contains(lowerIface, "tun") {
+			if endpoint.IsTunnelInterface(ifaceVal) {
 				enableNDP = false
 			} else {
 				enableNDP = true

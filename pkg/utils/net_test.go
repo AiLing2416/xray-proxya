@@ -1,6 +1,9 @@
 package utils
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestIsWildcardIP(t *testing.T) {
 	tests := []struct {
@@ -101,3 +104,32 @@ func TestGetInterfaceByIP(t *testing.T) {
 		t.Errorf("expected error for invalid IP")
 	}
 }
+
+func TestSmartIPCacheAndTestOverride(t *testing.T) {
+	ResetSmartIPCache()
+	defer ResetSmartIPCache()
+
+	// 1. Test override
+	restore := SetSmartIPForTest("198.51.100.1", "2001:db8::1")
+	if ip4 := GetSmartIP(false); ip4 != "198.51.100.1" {
+		t.Errorf("expected mock IPv4 198.51.100.1, got %q", ip4)
+	}
+	if ip6 := GetSmartIP(true); ip6 != "2001:db8::1" {
+		t.Errorf("expected mock IPv6 2001:db8::1, got %q", ip6)
+	}
+	restore()
+
+	// 2. Test manual cache population & TTL
+	smartIPMutex.Lock()
+	cachedIPv4 = "203.0.113.50"
+	cachedIPv4At = time.Now()
+	smartIPMutex.Unlock()
+
+	if ip := GetPublicIPv4(); ip != "203.0.113.50" {
+		t.Errorf("expected cached IPv4 203.0.113.50, got %q", ip)
+	}
+
+	// 3. Reset
+	ResetSmartIPCache()
+}
+

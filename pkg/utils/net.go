@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"time"
 	"xray-proxya/pkg/units"
 )
@@ -154,19 +155,89 @@ func GetLocalIP() string {
 	return "127.0.0.1"
 }
 
+var (
+	smartIPMutex  sync.RWMutex
+	cachedIPv4    string
+	cachedIPv4At  time.Time
+	cachedIPv6    string
+	cachedIPv6At  time.Time
+	smartIPTTL    = 5 * time.Minute
+	testSmartIPv4 string
+	testSmartIPv6 string
+)
+
+// SetSmartIPForTest overrides public IP detection for automated unit tests.
+// It returns a restore function that resets the test overrides.
+func SetSmartIPForTest(ipv4, ipv6 string) func() {
+	smartIPMutex.Lock()
+	testSmartIPv4 = ipv4
+	testSmartIPv6 = ipv6
+	smartIPMutex.Unlock()
+	return func() {
+		smartIPMutex.Lock()
+		testSmartIPv4 = ""
+		testSmartIPv6 = ""
+		smartIPMutex.Unlock()
+	}
+}
+
+// ResetSmartIPCache resets the cached public IP values.
+func ResetSmartIPCache() {
+	smartIPMutex.Lock()
+	cachedIPv4 = ""
+	cachedIPv4At = time.Time{}
+	cachedIPv6 = ""
+	cachedIPv6At = time.Time{}
+	smartIPMutex.Unlock()
+}
+
 func GetPublicIPv4() string {
-	client := &http.Client{Timeout: 5 * time.Second}
+	smartIPMutex.RLock()
+	if testSmartIPv4 != "" {
+		ip := testSmartIPv4
+		smartIPMutex.RUnlock()
+		return ip
+	}
+	if cachedIPv4 != "" && time.Since(cachedIPv4At) < smartIPTTL {
+		ip := cachedIPv4
+		smartIPMutex.RUnlock()
+		return ip
+	}
+	smartIPMutex.RUnlock()
+
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("http://api.ipify.org")
 	if err != nil {
 		return ""
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-	return strings.TrimSpace(string(body))
+	ip := strings.TrimSpace(string(body))
+
+	if ip != "" && net.ParseIP(ip) != nil {
+		smartIPMutex.Lock()
+		cachedIPv4 = ip
+		cachedIPv4At = time.Now()
+		smartIPMutex.Unlock()
+	}
+	return ip
 }
 
 func GetPublicIPv6() string {
-	client := &http.Client{Timeout: 5 * time.Second}
+	smartIPMutex.RLock()
+	if testSmartIPv6 != "" {
+		ip := testSmartIPv6
+		smartIPMutex.RUnlock()
+		return ip
+	}
+	if cachedIPv6 != "" && time.Since(cachedIPv6At) < smartIPTTL {
+		ip := cachedIPv6
+		smartIPMutex.RUnlock()
+		return ip
+	}
+	smartIPMutex.RUnlock()
+
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get("http://api64.ipify.org")
 	if err != nil {
 		return ""
@@ -174,7 +245,11 @@ func GetPublicIPv6() string {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 	ip := strings.TrimSpace(string(body))
-	if strings.Contains(ip, ":") {
+	if strings.Contains(ip, ":") && net.ParseIP(ip) != nil {
+		smartIPMutex.Lock()
+		cachedIPv6 = ip
+		cachedIPv6At = time.Now()
+		smartIPMutex.Unlock()
 		return ip
 	}
 	return ""

@@ -9,9 +9,14 @@ import (
 
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/endpoint"
+	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 )
+
+func init() {
+	utils.SetSmartIPForTest("198.51.100.1", "2001:db8::1")
+}
 
 func resetEndpointFlags(cmd *cobra.Command) {
 	for _, name := range []string{"host", "auto", "v4", "v6", "type", "subnet", "interface", "max", "ndp", "no-ndp", "profile", "ttl"} {

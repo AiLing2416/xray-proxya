@@ -124,22 +124,31 @@ var runCmd = &cobra.Command{
 		}
 
 		startProcess := func(currentCfg *config.UserConfig) (*exec.Cmd, chan error, error) {
-			// Reconcile dynamic-v6 endpoints before generating configuration and starting Xray
+			// Reconcile dynamic-v6 endpoints asynchronously in the background so Xray starts immediately.
+			// Endpoints only provide addresses for subscription links and are not consumed directly by Xray core.
+			endpointsToReconcile := make(map[string]config.EndpointConfig)
 			for epName, ep := range currentCfg.Endpoints {
 				if ep.Type == config.EndpointTypeDynamicV6 {
-					if err := endpoint.ReconcileOnStartup(epName, ep); err != nil {
-						fmt.Printf("⚠️  Failed to reconcile dynamic-v6 endpoint '%s': %v\n", epName, err)
-					} else {
-						st, _ := endpoint.LoadRotationState(epName)
-						activeCount := 0
-						deprecatedCount := 0
-						if st != nil {
-							activeCount = len(st.ActivePool)
-							deprecatedCount = len(st.DeprecatedPool)
-						}
-						fmt.Printf("🔄 Reconciled dynamic-v6 endpoint '%s' (active: %d, deprecated: %d)\n", epName, activeCount, deprecatedCount)
-					}
+					endpointsToReconcile[epName] = ep
 				}
+			}
+			if len(endpointsToReconcile) > 0 {
+				go func(eps map[string]config.EndpointConfig) {
+					for epName, ep := range eps {
+						if err := endpoint.ReconcileOnStartup(epName, ep); err != nil {
+							fmt.Printf("⚠️  Failed to reconcile dynamic-v6 endpoint '%s': %v\n", epName, err)
+						} else {
+							st, _ := endpoint.LoadRotationState(epName)
+							activeCount := 0
+							deprecatedCount := 0
+							if st != nil {
+								activeCount = len(st.ActivePool)
+								deprecatedCount = len(st.DeprecatedPool)
+							}
+							fmt.Printf("🔄 Reconciled dynamic-v6 endpoint '%s' (active: %d, deprecated: %d)\n", epName, activeCount, deprecatedCount)
+						}
+					}
+				}(endpointsToReconcile)
 			}
 
 			fmt.Println("🔍 Generating configuration...")
