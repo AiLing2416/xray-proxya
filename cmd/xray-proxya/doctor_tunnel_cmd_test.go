@@ -255,7 +255,7 @@ iface he-ipv6 inet6 v4tunnel
 	if !strings.Contains(out, "💡 Next step: To use this tunnel for dynamic IPv6 rotation, run:") {
 		t.Errorf("expected dynamic-v6 hint in output:\n%s", out)
 	}
-	if !strings.Contains(out, "xray-proxya endpoint dynamic-v6 add --interface he-ipv6 --cidr 2001:db8:1f0a:692::/64") {
+	if !strings.Contains(out, "xray-proxya endpoint set <name> --type dynamic-v6 --interface he-ipv6 --subnet 2001:db8:1f0a:692::/64") {
 		t.Errorf("expected dynamic-v6 command in output:\n%s", out)
 	}
 

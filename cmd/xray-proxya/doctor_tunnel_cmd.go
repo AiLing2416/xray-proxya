@@ -544,7 +544,7 @@ WantedBy=multi-user.target
 		if spec.RoutedSubnet != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), "")
 			fmt.Fprintln(cmd.OutOrStdout(), "💡 Next step: To use this tunnel for dynamic IPv6 rotation, run:")
-			fmt.Fprintf(cmd.OutOrStdout(), "   xray-proxya endpoint dynamic-v6 add --interface %s --cidr %s\n", spec.Interface, spec.RoutedSubnet)
+			fmt.Fprintf(cmd.OutOrStdout(), "   xray-proxya endpoint set <name> --type dynamic-v6 --interface %s --subnet %s\n", spec.Interface, spec.RoutedSubnet)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "")
 

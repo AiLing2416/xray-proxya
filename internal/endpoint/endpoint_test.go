@@ -895,5 +895,199 @@ func TestResolveTargetsWithDefaultIP(t *testing.T) {
 	}
 }
 
+func TestValidateEndpointSpec(t *testing.T) {
+	cfg := &config.UserConfig{
+		Endpoints: map[string]config.EndpointConfig{
+			"static-ok": {
+				Type: config.EndpointTypeStatic,
+				Host: "198.51.100.1",
+			},
+			"static-bad": {
+				Type: config.EndpointTypeStatic,
+				Host: "",
+			},
+			"auto-ok": {
+				Type: config.EndpointTypeAuto,
+			},
+			"dyn-ok": {
+				Type:      config.EndpointTypeDynamicV6,
+				Subnet:    "2001:db8::/64",
+				Interface: "dummy0",
+			},
+			"dyn-no-subnet": {
+				Type:      config.EndpointTypeDynamicV6,
+				Interface: "dummy0",
+			},
+		},
+	}
+
+	// Valid cases
+	if err := ValidateEndpointSpec(cfg, ""); err != nil {
+		t.Errorf("empty spec should be valid (defaults to default): %v", err)
+	}
+	if err := ValidateEndpointSpec(cfg, "default"); err != nil {
+		t.Errorf("default should be valid: %v", err)
+	}
+	if err := ValidateEndpointSpec(cfg, "static-ok,auto-ok,dyn-ok"); err != nil {
+		t.Errorf("valid endpoints should pass: %v", err)
+	}
+	if err := ValidateEndpointSpec(cfg, "1.2.3.4,node.example.com"); err != nil {
+		t.Errorf("raw IP and valid domain should pass: %v", err)
+	}
+
+	// Invalid cases
+	if err := ValidateEndpointSpec(cfg, "static-ok,,auto-ok"); err == nil {
+		t.Errorf("expected error for empty comma item")
+	}
+	if err := ValidateEndpointSpec(cfg, "static-bad"); err == nil {
+		t.Errorf("expected error for static endpoint with empty host")
+	}
+	if err := ValidateEndpointSpec(cfg, "dyn-no-subnet"); err == nil {
+		t.Errorf("expected error for dynamic-v6 endpoint without subnet")
+	}
+	if err := ValidateEndpointSpec(cfg, "unknown-token"); err == nil {
+		t.Errorf("expected error for non-existent endpoint name")
+	}
+	if err := ValidateEndpointSpec(cfg, "invalid..domain"); err == nil {
+		t.Errorf("expected error for invalid dotted domain")
+	}
+}
+
+func TestResolveDynamicV6_ProactiveReadOnlyNoRotate(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-proactive-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	origCmdRunner := cmdRunner
+	origProbeFunc := probeFunc
+	defer func() {
+		cmdRunner = origCmdRunner
+		probeFunc = origProbeFunc
+	}()
+
+	cmdRunner = func(name string, arg ...string) ([]byte, error) {
+		return []byte("ok"), nil
+	}
+	probeFunc = func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 5 * time.Millisecond, nil
+	}
+
+	ep := config.EndpointConfig{
+		Type:         config.EndpointTypeDynamicV6,
+		Subnet:       "2001:db8:abc::/64",
+		Interface:    "dummy0",
+		Profile:      config.RotationProfileProactive,
+		TTL:          "10ms",
+		MaxAddresses: 2,
+	}
+
+	// Initial resolution creates active IP
+	ip1, err := ResolveDynamicV6Address("pro-ep", ep, "", true)
+	if err != nil {
+		t.Fatalf("initial resolve failed: %v", err)
+	}
+
+	// Age the active address past TTL
+	st, err := LoadRotationState("pro-ep")
+	if err != nil || len(st.ActivePool) == 0 {
+		t.Fatalf("load rotation state failed: %v", err)
+	}
+	st.ActivePool[0].CreatedAt = time.Now().Add(-1 * time.Hour)
+	_ = SaveRotationState("pro-ep", st)
+
+	// Read-only query (forSubscription = false) MUST NOT rotate despite expired TTL
+	ipReadOnly, err := ResolveDynamicV6Address("pro-ep", ep, "", false)
+	if err != nil {
+		t.Fatalf("read-only query failed: %v", err)
+	}
+	if ipReadOnly != ip1 {
+		t.Fatalf("expected read-only query to return current IP %s, but got rotated IP %s", ip1, ipReadOnly)
+	}
+
+	// Subscription query (forSubscription = true) MUST rotate
+	ipSub, err := ResolveDynamicV6Address("pro-ep", ep, "", true)
+	if err != nil {
+		t.Fatalf("subscription query failed: %v", err)
+	}
+	if ipSub == ip1 {
+		t.Fatalf("expected subscription query to rotate, but got same IP %s", ipSub)
+	}
+}
+
+func TestReconcileOnStartup_IsolatedMode(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "endpoint-isolated-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	oldConfigDir := os.Getenv("XRAY_PROXYA_CONFIG_DIR")
+	os.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+	defer os.Setenv("XRAY_PROXYA_CONFIG_DIR", oldConfigDir)
+
+	var replayedAddrs []string
+	origCmdRunner := cmdRunner
+	origProbeFunc := probeFunc
+	restoreChecker := SetTestInterfaceChecker(func(string) bool { return true }, 10*time.Millisecond, time.Millisecond)
+	defer func() {
+		cmdRunner = origCmdRunner
+		probeFunc = origProbeFunc
+		restoreChecker()
+	}()
+
+	cmdRunner = func(name string, arg ...string) ([]byte, error) {
+		if len(arg) >= 4 && arg[0] == "-6" && arg[1] == "addr" && arg[2] == "replace" {
+			replayedAddrs = append(replayedAddrs, arg[3])
+		}
+		return []byte("ok"), nil
+	}
+	probeFunc = func(sourceIPv6 string, timeout time.Duration) (bool, time.Duration, error) {
+		return true, 5 * time.Millisecond, nil
+	}
+
+	ep := config.EndpointConfig{
+		Type:      config.EndpointTypeDynamicV6,
+		Subnet:    "2001:db8:8888::/64",
+		Interface: "dummy0",
+		Profile:   config.RotationProfileIsolated,
+	}
+
+	// Seed isolated rotation state with 2 consumers
+	seedState := &RotationState{
+		ActivePool:     []AddressEntry{},
+		DeprecatedPool: []AddressEntry{},
+		Consumers: map[string]*ConsumerState{
+			"guest:alice": {
+				ActivePool: []AddressEntry{
+					{Address: "2001:db8:8888::1", State: "active", CreatedAt: time.Now()},
+				},
+			},
+			"guest:bob": {
+				ActivePool: []AddressEntry{
+					{Address: "2001:db8:8888::2", State: "active", CreatedAt: time.Now()},
+				},
+			},
+		},
+	}
+	if err := SaveRotationState("iso-recon", seedState); err != nil {
+		t.Fatalf("failed to seed state: %v", err)
+	}
+
+	if err := ReconcileOnStartup("iso-recon", ep); err != nil {
+		t.Fatalf("ReconcileOnStartup failed: %v", err)
+	}
+
+	if len(replayedAddrs) != 2 {
+		t.Fatalf("expected 2 replayed addresses into kernel for isolated consumers, got %d: %v", len(replayedAddrs), replayedAddrs)
+	}
+}
+
+
 
 

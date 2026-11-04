@@ -336,7 +336,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 		if epVal == "" {
 			return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 		}
-		if _, err := endpoint.ResolveTargets(cfg, epVal, "guest:"+alias, false); err != nil {
+		if err := endpoint.ValidateEndpointSpec(cfg, epVal); err != nil {
 			return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
 		}
 		newG.Endpoint = epVal
@@ -575,7 +575,7 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 		if epVal == "" {
 			return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 		}
-		if _, err := endpoint.ResolveTargets(cfg, epVal, "guest:"+alias, false); err != nil {
+		if err := endpoint.ValidateEndpointSpec(cfg, epVal); err != nil {
 			return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
 		}
 		cfg.Guests[idx].Endpoint = epVal

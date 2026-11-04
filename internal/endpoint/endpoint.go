@@ -17,7 +17,8 @@ type Target struct {
 	Address string
 }
 
-func isValidHost(h string) bool {
+// IsValidHost reports whether h is a valid IP address or domain name.
+func IsValidHost(h string) bool {
 	h = strings.TrimSpace(h)
 	if h == "" {
 		return false
@@ -46,6 +47,93 @@ func isValidHost(h string) bool {
 		}
 	}
 	return true
+}
+
+func isValidHost(h string) bool {
+	return IsValidHost(h)
+}
+
+// ValidateEndpointSpec performs static syntax and specification validation on an endpoint specification
+// (single endpoint name, comma-separated list of endpoints/IPs/domains) without triggering any dynamic
+// address allocations, network reachability probes, or kernel mutations.
+func ValidateEndpointSpec(cfg *config.UserConfig, endpointSpec string) error {
+	spec := strings.TrimSpace(endpointSpec)
+	if spec == "" {
+		spec = "default"
+	}
+
+	parts := strings.Split(spec, ",")
+	validCount := 0
+
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			return fmt.Errorf("invalid endpoint list: contains empty item")
+		}
+
+		if cfg != nil && cfg.Endpoints != nil {
+			if ep, exists := cfg.Endpoints[token]; exists {
+				switch ep.Type {
+				case config.EndpointTypeStatic:
+					subParts := strings.Split(ep.Host, ",")
+					validHost := false
+					for _, sp := range subParts {
+						sAddr := strings.TrimSpace(sp)
+						if sAddr != "" {
+							validHost = true
+							break
+						}
+					}
+					if !validHost {
+						return fmt.Errorf("endpoint '%s' (static) has no valid host configured", token)
+					}
+					validCount++
+					continue
+
+				case config.EndpointTypeAuto:
+					validCount++
+					continue
+
+				case config.EndpointTypeDynamicV6:
+					if strings.TrimSpace(ep.Subnet) == "" {
+						return fmt.Errorf("endpoint '%s' (dynamic-v6) has no subnet configured", token)
+					}
+					if strings.TrimSpace(ep.Interface) == "" {
+						return fmt.Errorf("endpoint '%s' (dynamic-v6) has no interface configured", token)
+					}
+					validCount++
+					continue
+
+				default:
+					if ep.Host != "" {
+						validCount++
+						continue
+					}
+					return fmt.Errorf("unsupported endpoint type '%s' for endpoint '%s'", ep.Type, token)
+				}
+			}
+		}
+
+		if token == "default" {
+			validCount++
+			continue
+		}
+
+		if IsValidHost(token) {
+			validCount++
+			continue
+		}
+
+		if strings.Contains(token, ".") {
+			return fmt.Errorf("unknown endpoint or invalid address '%s'", token)
+		}
+		return fmt.Errorf("endpoint '%s' not found", token)
+	}
+
+	if validCount == 0 {
+		return fmt.Errorf("endpoint '%s' resolved to no addresses", spec)
+	}
+	return nil
 }
 
 // ResolveTargets resolves an endpoint specification (single endpoint name, comma-separated list of

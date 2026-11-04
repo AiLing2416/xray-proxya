@@ -448,6 +448,10 @@ func resolveDynamicV6Locked(endpointName string, ep config.EndpointConfig, consu
 		}
 
 		current := st.ActivePool[len(st.ActivePool)-1]
+		if !forSubscription {
+			return current.Address, nil
+		}
+
 		if now.Sub(current.CreatedAt) < ttl {
 			return current.Address, nil
 		}
@@ -639,13 +643,18 @@ func reconcileOnStartupLocked(endpointName string, ep config.EndpointConfig) err
 
 	now := time.Now()
 
-	// 2. Prewarm empty active pool
-	if len(st.ActivePool) == 0 {
-		_, err := nextAddressLocked(endpointName, ep)
-		if err != nil {
+	profile := NormalizeProfile(ep.Profile)
+
+	// 2. Prewarm empty active pool (non-isolated mode only)
+	if profile != config.RotationProfileIsolated && len(st.ActivePool) == 0 {
+		if _, err := nextAddressLocked(endpointName, ep); err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Cold-start prewarm failed for dynamic-v6 endpoint '%s': %v\n", endpointName, err)
+		} else if reloaded, err := LoadRotationState(endpointName); err == nil && reloaded != nil {
+			st = reloaded
+			if st.Consumers == nil {
+				st.Consumers = make(map[string]*ConsumerState)
+			}
 		}
-		return err
 	}
 
 	// 3. Replay active pool into kernel
