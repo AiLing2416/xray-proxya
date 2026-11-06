@@ -16,9 +16,9 @@ Under SELinux Enforcing mode, root does not automatically possess all privileges
 - Read and write its own configuration, runtime state, and logs;
 - Spawn the Xray core binary running within the same domain;
 - Bind to Server inbound ports and establish outbound relay connections;
-- Create and manage the TUN device under Gateway mode.
+- Run transparent proxying (TProxy / TUN) under Gateway mode.
 
-System network modifications for the Gateway (`nft`, `ip`, `sysctl`, etc.) are intentionally not executed by the long-running proxy service. When root explicitly executes `gateway up`, `gateway down`, or synchronizes the gateway via `apply`, the CLI re-executes briefly into the `xray_proxya_gateway_t` management domain, which exits immediately upon completion. This domain is strictly confined to reading the project's internal state, restarting the designated `xray-proxya` systemd unit, and invoking specific networking binaries. It cannot function as a long-running proxy service, nor can it modify systemd unit files. This architecture guarantees that the long-running daemon handling external network traffic never permanently holds firewall or policy routing alteration capabilities.
+System network modifications for the Gateway (`nft`, `ip`, `sysctl`, etc.) are intentionally not executed by the long-running proxy service. When root explicitly executes `gateway up`, `gateway down`, or synchronizes the gateway via `apply`, the CLI re-executes briefly into the `xray_proxya_gateway_t` management domain, which exits immediately upon completion. This domain is strictly confined to reading the project's internal state, restarting the designated `xray-proxya` systemd unit, and invoking specific networking binaries. It cannot function as a long-running proxy service, nor can it modify systemd unit files. This architecture guarantees that the long-running daemon handling external network traffic never permanently holds firewall or policy routing alteration capabilities. In addition, a companion oneshot unit (`xray-proxya-gateway-restore.service`) ensures that transparent routing and firewall rules self-heal cleanly across reboots under SELinux confinement.
 
 ## Installing the Policy
 
@@ -97,16 +97,16 @@ xray-proxya apply
 xray-proxya gateway up
 ```
 
-`gateway up` runs within the short-lived `xray_proxya_gateway_t` management domain, restarting the service to create `proxya-tun`, confirming device readiness, and then configuring nftables rules, policy routing, and runtime sysctl parameters. The main service domain does not execute these system utilities; manual `runcon` invocation is not required.
+`gateway up` runs within the short-lived `xray_proxya_gateway_t` management domain, restarting the service and then configuring nftables rules, policy routing, and runtime sysctl parameters. The main service domain does not execute these system utilities; manual `runcon` invocation is not required.
 
 Verify transparent forwarding:
 
 ```bash
 xray-proxya gateway check
 xray-proxya gateway test
-ip link show proxya-tun
 nft list table inet xray_proxya
 ip rule show
+ip route show table 101
 ```
 
 Always clean up after testing:

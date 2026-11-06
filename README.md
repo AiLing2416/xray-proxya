@@ -1,6 +1,6 @@
 # Xray-Proxya
 
-Xray-Proxya is a Go-based manager for two primary roles: deploying proxy servers with authentic web camouflage and running Linux TUN-based transparent gateways. It features a staging-first configuration workflow, relay routing, multi-tenant isolation, and operational safety mechanisms tailored for Linux systems.
+Xray-Proxya is a Go-based manager for two primary roles: deploying proxy servers with authentic web camouflage and running Linux transparent gateways (nftables TProxy & TUN). It features a staging-first configuration workflow, relay routing, multi-tenant isolation, and operational safety mechanisms tailored for Linux systems.
 
 ## Key Features
 
@@ -9,15 +9,18 @@ Xray-Proxya is a Go-based manager for two primary roles: deploying proxy servers
   - `diff` (or `config diff`) inspects structured pending modifications before committing with `apply`.
 - **Role-Based Deployment**:
   - `server`: Inbound protocol termination, web camouflage, and relay distribution.
-  - `gateway`: Transparent proxy forwarding via dedicated TUN devices and policy routing.
+  - `gateway`: High-performance transparent proxying via Linux native TProxy / TUN and declarative policy routing.
 - **Authentic Web Camouflage**:
   - Embedded decoy web applications (**Nextcloud**, **File Browser**, and **Seafile**) bundled directly via Go `embed.FS`.
   - Built-in timing-attack defense simulating password evaluation latency to resist active probing.
   - Automated Let's Encrypt TLS certificate issuance and renewals on port 80 ([Architecture Guide](WIKI/skin-en.md)).
 - **Transparent Gateway**:
-  - Single-core TUN mode (`proxya-tun`) with automated `nftables` rules and policy routing (Table 100).
-  - Bidirectional SSH safety: prevents interception of inbound SSH listeners while permitting gateway outbound SSH connections.
-  - Optional geographical country bypass and custom DNS diversion ([Gateway Guide](WIKI/gateway_en.md)).
+  - Declarative configuration (`gateway.conf`) with live syntax validation, linting, and staging workflow.
+  - Linux native TProxy dataplane by default with fallback to standalone TUN (`proxya-tun`).
+  - Multi-LAN support, guest zone isolation (`isolate=true`), semantic aliases (devices, groups, zones), and declarative port forwarding.
+  - Built-in DNS resolver with static A/AAAA records and client-traversed proxy relay routing.
+  - Bidirectional SSH safety: prevents interception of inbound SSH listeners while permitting gateway outbound SSH connections, with interactive lockout protection.
+  - Optional geographical country bypass ([Gateway Guide](WIKI/gateway_en.md)).
 - **Relay Testing & Diagnostics**:
   - `relay test`: Diagnostic checks covering exit IPs, DNS resolution, and modern transports (H2, gRPC, WebSocket, XHTTP).
   - `relay info`: Exit node profile inspection, streaming platform unlocks, and regional attributes.
@@ -82,7 +85,7 @@ xray-proxya show --all
 ### Scenario B: Setting up a Transparent Gateway
 
 ```bash
-# 1. Initialize gateway role (in a root shell via sudo -i, su -, or direct root login)
+# 1. Initialize gateway role (generates gateway.conf template in a root shell)
 xray-proxya init --role gateway
 
 # 2. Import an upstream relay node and verify connectivity
@@ -90,11 +93,15 @@ xray-proxya relay add upstream "vless://..."
 xray-proxya apply
 xray-proxya relay test upstream
 
-# 3. Bind upstream relay and LAN interface, then apply
-xray-proxya gateway set upstream --lan eth0
+# 3. Edit declarative gateway configuration (or configure via CLI)
+xray-proxya gateway edit
+# Or via CLI: xray-proxya gateway set upstream --lan eth0
+
+# 4. Preview differences and apply staged configuration
+xray-proxya diff
 xray-proxya apply
 
-# 4. Bring up transparent proxying and inspect state
+# 5. Bring up transparent proxying and inspect state
 xray-proxya gateway up
 xray-proxya gateway status
 xray-proxya gateway check
@@ -148,16 +155,16 @@ xray-proxya purge -i config,core,service --dry-run
 - `diff`: Display structured differences between active and staging configurations.
 - `doctor`: Automated environment diagnostics (`check`), SELinux management, backup/rollback, and user linger checks.
 - `endpoint`: Manage connection endpoints and address providers for proxy nodes.
-- `gateway`: Manage TUN-based transparent proxy forwarding, bypass routing, and runtime state.
+- `gateway`: Manage declarative transparent gateway configuration (`gateway.conf`), TProxy/TUN dataplanes, DNS, and runtime routing state.
 - `guests`: Manage multi-tenant users, bandwidth quotas, alert triggers, and relay bindings.
-- `logs`: Inspect unified systemd journal logs across managed services.
+- `logs`: Inspect unified journal or service logs across managed services.
 - `path`: Manage loopback PathLink ICMP diagnostic agent and probe tools (root-only).
 - `presets`: Configure inbound protocol slots (Reality, Vision, KEM) and web camouflage.
 - `proxy`: Manage and run local SOCKS/HTTP proxy listeners, probe egress IPs, and export shell variables.
 - `purge`: Safely delete and purge specified resources (`config`, `service`, `core`, `selinux`, `all`).
 - `relay`: Manage relay nodes, upstream subscriptions (`relay sub`), and test suites (`test`, `info`, `speed`).
 - `run`: Run Xray core in the foreground for debugging.
-- `service`: Install and control systemd units (`xray-proxya`, `xray-proxya-pathd`, `xray-proxya-he-tunnel`, `xray-proxya-sub@<instance>`).
+- `service`: Install and control system services across Systemd, OpenRC, and Procd init systems.
 - `show`: Display client connection links, guest subscriptions, and QR codes.
 - `status`: Display systemd service overview, network state, and real-time traffic statistics.
 - `sub`: Configure and control server subscription distribution services.

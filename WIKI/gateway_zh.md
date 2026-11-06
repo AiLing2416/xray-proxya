@@ -35,6 +35,9 @@ sudo -i
 su -
 ```
 
+> [!NOTE]
+> 涉及网络规则与服务变更的特权操作（如 `gateway up`、`down`、`set`、`apply`）需要 root 环境。所有只读审计类命令（如 `gateway status`、`diff`、`export`、`rule list`、`dns list`、`check`）均已支持普通非特权用户直接运行。
+
 ## 准备上游节点
 
 在上游服务器上初始化并启动服务：
@@ -237,6 +240,29 @@ forward 8080 -> 192.168.1.50:80
 ```
 配置端口映射后，nftables 会自动在 prerouting 链应用 DNAT 规则，并在 forward 链放行 `ct status dnat accept`。
 
+### 6. DNS 与局域网静态解析
+支持在 `gateway.conf` 中声明内置 DNS 服务参数、上游解析节点与局域网静态 A/AAAA 记录：
+```text
+# --- 全局 DNS 参数设置 ---
+# 监听端口（提供给局域网客户端使用，缺省时 LAN 请求自动经 TProxy 拦截至代理内核）
+set dns_listen :53
+
+# 查询策略 (UseIP: IPv4+IPv6 双栈, 也可选 UseIPv4 / UseIPv6)
+set dns_strategy UseIP
+
+# 上游 DNS 列表 (支持标准 IP、DoH、DoT，按顺序匹配回退)
+set dns_servers 223.5.5.5, 1.1.1.1, https://1.1.1.1/dns-query, tls://8.8.8.8:853
+
+# 直连上游 DNS IP (防止 DNS 查询自身进入代理死循环)
+set bypass_dns 223.5.5.5, 1.1.1.1, 8.8.8.8
+
+# --- 局域网静态解析记录 (A/AAAA) ---
+dns router.lan -> 10.0.82.1
+dns gateway.local -> 10.0.82.1, fd00:82::1
+dns nas.lan -> 10.0.82.50, fd00:82::50
+```
+此外，在分流规则中支持指定 `dns=relay`（例如 `local -> hk-relay dns=relay`），使客户端 DNS 解析穿透至对应 Relay 节点，彻底杜绝 DNS 泄漏。
+
 ---
 
 ## 原生三层 IP/CIDR 规则下沉
@@ -436,40 +462,46 @@ xray-proxya gateway down
 
 ## 常见问题
 
-### `gateway check` 提示 `proxya-tun` 不存在
+### 1. 如何确认 TProxy 运行态是否正常工作？
 
-确认 Xray 服务正在运行：
-
-```bash
-systemctl status xray-proxya
-journalctl -u xray-proxya --no-pager -n 80
-```
-
-`proxya-tun` 由 Xray TUN inbound 创建，服务未启动或配置无效时不会出现。
-
-### `gateway check` 提示 TUN 缺少 IPv4 地址
-
-重新执行：
+在默认的 TProxy 模式下，系统不创建 `proxya-tun` 网卡，流量直接由内核 nftables mangle 表透明分流：
 
 ```bash
-xray-proxya gateway up
+# 1. 检查 nftables 规则是否载入
+nft list table inet xray_proxya
+
+# 2. 检查策略路由规则与 table 101
+ip rule show
+ip route show table 101
+
+# 3. 检查 Xray TProxy 端口是否处于监听状态
+ss -tulpn | grep 53905
+
+# 4. 查看网关健康诊断
+xray-proxya gateway check
 ```
 
-### 上游可用，但透明代理超时
+### 2. 使用 TUN 兼容模式时提示 `proxya-tun` 异常
+
+若在 `gateway.conf` 中配置了 `set mode tun`：
+- 确认 Xray 服务正常启动且加载了 TUN 配置：`xray-proxya logs`
+- 若提示设备或 IP 丢失，重新执行：`xray-proxya gateway up`
+
+### 3. 上游可用，但透明代理客户端请求超时
 
 检查：
-
 ```bash
-ip addr show proxya-tun
-ip route get 1.1.1.1 mark 1
-journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
+# 检查网关机器针对上游的连通性
+xray-proxya relay test <upstream-relay>
+
+# 观察是否有针对本地 SSH 或私有网段的误拦截
+xray-proxya gateway status
+xray-proxya logs --lines 50
 ```
 
-`ip route get ... mark 1` 应显示流量进入 `proxya-tun`，并且源地址应是 `172.16.255.1`。
+### 4. SSH 连接会不会被透明代理影响
 
-### SSH 连接会不会被透明代理影响
-
-`gateway up` 会探测当前 SSH 监听端口，并在 nftables output 规则中排除这些端口。同时 LAN 网段也会被排除。
+`gateway up` 会自动探测当前活跃的 SSH 管理端口与连接会话，并在 nftables prerouting/output 链中对 SSH 端口及局域网段进行显式豁免；添加危险规则时系统具备交互式防锁死拦截。
 
 ## 命令速查
 
@@ -485,6 +517,13 @@ xray-proxya gateway export            # 导出声明式配置至控制台 (stdou
 xray-proxya gateway export -w         # 将当前活跃/暂存配置写回 gateway.conf 文件
 xray-proxya apply                     # 自动编译 gateway.conf 并热重载运行态
 
+# DNS 与静态解析管理 (STAGING)
+xray-proxya gateway dns set --servers 223.5.5.5,1.1.1.1 --listen :53
+xray-proxya gateway dns record set nas.lan 10.0.82.50 fd00:82::50
+xray-proxya gateway dns record list
+xray-proxya gateway dns record del nas.lan
+xray-proxya gateway dns status
+
 # CLI 命令行交互配置
 xray-proxya gateway set --relay remote-v029 --lan eth0
 xray-proxya gateway rule set --ip 192.168.1.95 --to remote-v029
@@ -493,7 +532,7 @@ xray-proxya gateway rule list
 xray-proxya gateway enable
 xray-proxya apply
 
-# 运行态控制与诊断
+# 运行态控制与诊断 (status/check 支持非特权执行)
 xray-proxya gateway up
 xray-proxya gateway check
 xray-proxya gateway status

@@ -35,6 +35,9 @@ sudo -i
 su -
 ```
 
+> [!NOTE]
+> Privileged operations modifying system firewall rules, interfaces, or services (such as `gateway up`, `down`, `set`, `apply`) require root. Read-only inspection commands (such as `gateway status`, `diff`, `export`, `rule list`, `dns list`, `check`) support direct execution by unprivileged standard users.
+
 ## Prepare An Upstream Node
 
 On the upstream server:
@@ -237,6 +240,29 @@ forward 8080 -> 192.168.1.50:80
 ```
 nftables automatically applies DNAT rules in the prerouting chain and allows forwarded flows via `ct status dnat accept`.
 
+### 6. DNS and Local Domain Resolution
+Declaratively configure internal DNS listeners, upstream query resolvers, and static A/AAAA mapping records inside `gateway.conf`:
+```text
+# --- Global DNS Settings ---
+# DNS listen port (offered to LAN clients; omitted defaults to TProxy interception)
+set dns_listen :53
+
+# Query strategy (UseIP: dual-stack, or UseIPv4 / UseIPv6)
+set dns_strategy UseIP
+
+# Upstream DNS server chain (supports plain IP, DoH, DoT, ordered fallback)
+set dns_servers 223.5.5.5, 1.1.1.1, https://1.1.1.1/dns-query, tls://8.8.8.8:853
+
+# Bypass upstream DNS IPs (prevents recursive proxying loops)
+set bypass_dns 223.5.5.5, 1.1.1.1, 8.8.8.8
+
+# --- Static LAN DNS Records (A/AAAA) ---
+dns router.lan -> 10.0.82.1
+dns gateway.local -> 10.0.82.1, fd00:82::1
+dns nas.lan -> 10.0.82.50, fd00:82::50
+```
+Additionally, routing rules support the `dns=relay` option (e.g., `local -> hk-relay dns=relay`) to route client DNS queries through the matching relay outbound, eliminating DNS leakage.
+
 ---
 
 ## Native Layer-3 IP & CIDR Rules
@@ -436,40 +462,46 @@ xray-proxya gateway down
 
 ## Troubleshooting
 
-### `gateway check` Reports That `proxya-tun` Is Missing
+### 1. How to verify TProxy runtime operation?
 
-Check that the Xray service is running:
-
-```bash
-systemctl status xray-proxya
-journalctl -u xray-proxya --no-pager -n 80
-```
-
-`proxya-tun` is created by the Xray TUN inbound. It will not exist if the service is stopped or the active config is invalid.
-
-### `gateway check` Reports That TUN Is Missing Its IPv4 Address
-
-Run:
+Under the default TProxy mode, no `proxya-tun` interface is created; traffic is transparently intercepted via the kernel nftables mangle table:
 
 ```bash
-xray-proxya gateway up
+# 1. Inspect loaded nftables rules
+nft list table inet xray_proxya
+
+# 2. Verify policy routing rules and Table 101
+ip rule show
+ip route show table 101
+
+# 3. Check Xray TProxy listener port
+ss -tulpn | grep 53905
+
+# 4. Run automated gateway diagnostics
+xray-proxya gateway check
 ```
 
-### The Upstream Works But Transparent Proxying Times Out
+### 2. Standalone TUN mode issues with `proxya-tun`
+
+If running in standalone TUN mode (`set mode tun` in `gateway.conf`):
+- Ensure Xray service is running with active TUN configuration: `xray-proxya logs`
+- If device or addresses are missing, re-run: `xray-proxya gateway up`
+
+### 3. Upstream is active but transparent proxy requests time out
 
 Check:
-
 ```bash
-ip addr show proxya-tun
-ip route get 1.1.1.1 mark 1
-journalctl -u xray-proxya --since "5 min ago" --no-pager -o cat
+# Test direct upstream node connectivity
+xray-proxya relay test <upstream-relay>
+
+# Inspect active intercept status and logs for dropped or bypassed traffic
+xray-proxya gateway status
+xray-proxya logs --lines 50
 ```
 
-`ip route get ... mark 1` should route traffic into `proxya-tun`, and the source address should be `172.16.255.1`.
+### 4. Will SSH management be interrupted by transparent proxying?
 
-### Will SSH Be Captured By The Gateway?
-
-`gateway up` detects active SSH listener ports and excludes them in the nftables output chain. The LAN subnet is also excluded.
+`gateway up` automatically detects active SSH listener ports and client connection sessions, excluding SSH traffic and local LAN subnets in nftables prerouting and output chains. Potentially destructive rule changes also prompt for confirmation via interactive lockout detection.
 
 ## Command Summary
 
@@ -485,6 +517,13 @@ xray-proxya gateway export            # Export declarative configuration to stdo
 xray-proxya gateway export -w         # Write active/staged configuration back to gateway.conf
 xray-proxya apply                     # Compile gateway.conf and hot-reload runtime
 
+# DNS & Static Record Management (STAGING)
+xray-proxya gateway dns set --servers 223.5.5.5,1.1.1.1 --listen :53
+xray-proxya gateway dns record set nas.lan 10.0.82.50 fd00:82::50
+xray-proxya gateway dns record list
+xray-proxya gateway dns record del nas.lan
+xray-proxya gateway dns status
+
 # Interactive CLI configuration
 xray-proxya gateway set --relay remote-v029 --lan eth0
 xray-proxya gateway rule set --ip 192.168.1.95 --to remote-v029
@@ -493,7 +532,7 @@ xray-proxya gateway rule list
 xray-proxya gateway enable
 xray-proxya apply
 
-# Runtime control and diagnostics
+# Runtime control and diagnostics (status/check support unprivileged execution)
 xray-proxya gateway up
 xray-proxya gateway check
 xray-proxya gateway status
