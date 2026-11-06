@@ -210,23 +210,46 @@ case "$XRAY_CHOICE" in
         curl -fL --retry 3 --retry-delay 1 "$XRAY_URL" -o "$WORK_DIR/$XRAY_ZIP" || fail "Failed to download $XRAY_URL"
         curl -fL --retry 3 --retry-delay 1 "$XRAY_URL.dgst" -o "$WORK_DIR/$XRAY_ZIP.dgst" || fail "Failed to download $XRAY_URL.dgst"
 
-        EXPECTED_XRAY_HASH=$(awk '/SHA2-256|SHA256/ { for (i=1; i<=NF; i++) if ($i ~ /^[0-9a-fA-F]{64}$/) { print tolower($i); exit } }' "$WORK_DIR/$XRAY_ZIP.dgst")
+        EXPECTED_XRAY_HASH=""
+        if grep -qi -E 'SHA2-256|SHA256' "$WORK_DIR/$XRAY_ZIP.dgst" 2>/dev/null; then
+            for word in $(grep -i -E 'SHA2-256|SHA256' "$WORK_DIR/$XRAY_ZIP.dgst" | tr -d '\r' | tr '=()' '   '); do
+                if [ ${#word} -eq 64 ] && [[ "$word" =~ ^[0-9a-fA-F]+$ ]]; then
+                    EXPECTED_XRAY_HASH=$(echo "$word" | tr 'A-F' 'a-f')
+                    break
+                fi
+            done
+        fi
+        if [ -z "$EXPECTED_XRAY_HASH" ]; then
+            for word in $(tr -d '\r' < "$WORK_DIR/$XRAY_ZIP.dgst" 2>/dev/null | tr '=()' '   '); do
+                if [ ${#word} -eq 64 ] && [[ "$word" =~ ^[0-9a-fA-F]+$ ]]; then
+                    EXPECTED_XRAY_HASH=$(echo "$word" | tr 'A-F' 'a-f')
+                    break
+                fi
+            done
+        fi
         [[ "$EXPECTED_XRAY_HASH" =~ ^[[:xdigit:]]{64}$ ]] || fail "Cannot extract valid SHA256 digest for $XRAY_ZIP"
 
         ACTUAL_XRAY_HASH=$(sha256sum "$WORK_DIR/$XRAY_ZIP" | awk '{print $1}')
         [ "$ACTUAL_XRAY_HASH" = "$EXPECTED_XRAY_HASH" ] || fail "Integrity check failed for $XRAY_ZIP (expected $EXPECTED_XRAY_HASH, got $ACTUAL_XRAY_HASH)"
 
         echo "📦 Extracting Xray-core into $SHARE_BIN_DIR..."
+        XRAY_TMP_DIR="$WORK_DIR/xray_extracted"
+        mkdir -p "$XRAY_TMP_DIR"
         if command -v unzip >/dev/null 2>&1; then
-            unzip -q -o "$WORK_DIR/$XRAY_ZIP" "xray" "geoip.dat" "geosite.dat" -d "$SHARE_BIN_DIR"
+            unzip -q -o "$WORK_DIR/$XRAY_ZIP" "xray" "geoip.dat" "geosite.dat" -d "$XRAY_TMP_DIR"
         elif command -v python3 >/dev/null 2>&1; then
-            python3 -c "import zipfile, sys; z=zipfile.ZipFile(sys.argv[1]); [z.extract(m, sys.argv[2]) for m in z.namelist() if m in ['xray', 'geoip.dat', 'geosite.dat']]" "$WORK_DIR/$XRAY_ZIP" "$SHARE_BIN_DIR"
+            python3 -c "import zipfile, sys; z=zipfile.ZipFile(sys.argv[1]); [z.extract(m, sys.argv[2]) for m in z.namelist() if m in ['xray', 'geoip.dat', 'geosite.dat']]" "$WORK_DIR/$XRAY_ZIP" "$XRAY_TMP_DIR"
         else
             fail "Neither unzip nor python3 is available to extract Xray-core."
         fi
-        chmod 0755 "$SHARE_BIN_DIR/xray"
-        [ -f "$SHARE_BIN_DIR/geoip.dat" ] && chmod 0644 "$SHARE_BIN_DIR/geoip.dat" || true
-        [ -f "$SHARE_BIN_DIR/geosite.dat" ] && chmod 0644 "$SHARE_BIN_DIR/geosite.dat" || true
+        chmod 0755 "$XRAY_TMP_DIR/xray"
+        [ -f "$XRAY_TMP_DIR/geoip.dat" ] && chmod 0644 "$XRAY_TMP_DIR/geoip.dat" || true
+        [ -f "$XRAY_TMP_DIR/geosite.dat" ] && chmod 0644 "$XRAY_TMP_DIR/geosite.dat" || true
+
+        # Atomic replacement: rename(2) replaces the directory entry without opening the running binary for writing, preventing ETXTBSY (Text file busy).
+        mv -f "$XRAY_TMP_DIR/xray" "$SHARE_BIN_DIR/xray"
+        [ -f "$XRAY_TMP_DIR/geoip.dat" ] && mv -f "$XRAY_TMP_DIR/geoip.dat" "$SHARE_BIN_DIR/geoip.dat" || true
+        [ -f "$XRAY_TMP_DIR/geosite.dat" ] && mv -f "$XRAY_TMP_DIR/geosite.dat" "$SHARE_BIN_DIR/geosite.dat" || true
         echo -e "${GREEN}✅ Xray-core ($XRAY_VERSION) installed to: $SHARE_BIN_DIR/xray${NC}"
         ;;
 esac
