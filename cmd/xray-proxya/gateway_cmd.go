@@ -57,15 +57,16 @@ var (
 	runGatewayManagementFunc = runGatewayManagement
 )
 
+var gatewayRequireRoot = func(op string) error {
+	return utils.RequireRootShell(op)
+}
+
 var gatewayCmd = &cobra.Command{
 	Use:   "gateway",
 	Short: "Manage transparent proxy gateway (STAGING)",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		_ = cmd.Help()
-	},
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return utils.RequireRootShell("gateway")
 	},
 }
 
@@ -356,10 +357,17 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 }
 
 var gatewayStateCmd = &cobra.Command{
-	Use:   "state",
-	Short: "View or set gateway state (--proxy, --forward-only, --disabled)",
-	Args:  cobra.NoArgs,
-	RunE:  runGatewayState,
+	Use:        "state",
+	Short:      "View or set gateway state (--proxy, --forward-only, --disabled)",
+	Args:       cobra.NoArgs,
+	Deprecated: "use 'gateway set --state ...' instead",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if gatewayStateProxy || gatewayStateForwardOnly || gatewayStateDisabled {
+			return gatewayRequireRoot("gateway state")
+		}
+		return nil
+	},
+	RunE:       runGatewayState,
 }
 
 func runGatewayState(cmd *cobra.Command, args []string) error {
@@ -436,6 +444,19 @@ var gatewayTProxyCmd = &cobra.Command{
 	Short:             "Configure or inspect TProxy transparent gateway settings",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
+	Deprecated:        "use 'gateway set' instead",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		hasChanged := len(args) > 0
+		cmd.Flags().Visit(func(f *pflag.Flag) {
+			if f.Changed && f.Name != "json" {
+				hasChanged = true
+			}
+		})
+		if hasChanged {
+			return gatewayRequireRoot("gateway set")
+		}
+		return nil
+	},
 	RunE:              runGatewayTProxy,
 }
 
@@ -536,11 +557,13 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 
 	err := gatewayconf.ModifyGatewayConf(func(content string) string {
 		if gatewayTProxyEnable {
+			content = gatewayconf.UpdateSet(content, "state", "proxy")
 			content = gatewayconf.UpdateSet(content, "local", "true")
 			content = gatewayconf.UpdateSet(content, "lan", "true")
 			content = gatewayconf.UpdateSet(content, "mode", "tproxy")
 		}
 		if gatewayTProxyDisable {
+			content = gatewayconf.UpdateSet(content, "state", "disabled")
 			content = gatewayconf.UpdateSet(content, "local", "false")
 			content = gatewayconf.UpdateSet(content, "lan", "false")
 		}
@@ -645,10 +668,6 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 
 	now := gatewayTProxyNow || gatewayEnableNow || gatewayDisableNow
 	if now {
-		op := "system-up"
-		if gatewayTProxyDisable || gatewayDisableNow {
-			op = "system-down"
-		}
 		lines, err := applyPendingFunc(applyops.Options{Start: true})
 		for _, line := range lines {
 			fmt.Println(line)
@@ -656,8 +675,9 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to apply configuration: %w", err)
 		}
-		if err := runGatewayManagementFunc(op); err != nil {
-			return fmt.Errorf("failed to sync gateway runtime: %w", err)
+		op := "system-up"
+		if gatewayTProxyDisable || gatewayDisableNow {
+			op = "system-down"
 		}
 		fmt.Printf("✅ Gateway parameters updated and runtime rules synced (%s).\n", op)
 		return nil
@@ -669,10 +689,17 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 }
 
 var gatewayTunCmd = &cobra.Command{
-	Use:   "tun",
-	Short: "Configure or inspect standalone TUN adapter settings",
-	Args:  cobra.NoArgs,
-	RunE:  runGatewayTun,
+	Use:        "tun",
+	Short:      "Configure or inspect standalone TUN adapter settings",
+	Args:       cobra.NoArgs,
+	Deprecated: "use 'gateway set --tun' instead",
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if gatewayTunEnable || gatewayTunDisable {
+			return gatewayRequireRoot("gateway tun")
+		}
+		return nil
+	},
+	RunE:       runGatewayTun,
 }
 
 func runGatewayTun(cmd *cobra.Command, args []string) error {
@@ -748,6 +775,9 @@ var gatewayEnableCmd = &cobra.Command{
 	Use:   "enable",
 	Short: "Turn on transparent gateway (local & lan) in staging",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway enable")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gatewayTProxyEnable = true
 		gatewayTProxyNow = gatewayEnableNow
@@ -759,6 +789,9 @@ var gatewayDisableCmd = &cobra.Command{
 	Use:   "disable",
 	Short: "Turn off transparent gateway (local & lan) in staging",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway disable")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gatewayTProxyDisable = true
 		gatewayTProxyNow = gatewayDisableNow
@@ -771,6 +804,9 @@ var gatewaySetCmd = &cobra.Command{
 	Short:             "Configure gateway parameters in STAGING",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway set")
+	},
 	RunE:              runGatewayTProxy,
 }
 
@@ -778,6 +814,9 @@ var gatewayUpCmd = &cobra.Command{
 	Use:   "up",
 	Short: "Bring transparent gateway interception rules up and sync runtime",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway up")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGatewayManagement("system-up")
 	},
@@ -838,6 +877,7 @@ var gatewayCheckCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
+		hasSyntaxErr := false
 		if config.GatewayConfExists() {
 			confPath := config.GetGatewayConfPath()
 			data, err := os.ReadFile(confPath)
@@ -845,13 +885,18 @@ var gatewayCheckCmd = &cobra.Command{
 				fmt.Printf("⚠️  Failed to read gateway.conf: %v\n", err)
 			} else if ast, parseErr := gatewayconf.Parse(string(data)); parseErr != nil {
 				fmt.Printf("❌ gateway.conf syntax error: %v\n", parseErr)
+				hasSyntaxErr = true
 			} else {
 				if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(cfg)); compileErr != nil {
-					fmt.Printf("⚠️  gateway.conf semantic warning: %v\n", compileErr)
+					fmt.Printf("❌ gateway.conf semantic error: %v\n", compileErr)
+					hasSyntaxErr = true
 				} else {
 					fmt.Println("✅ gateway.conf declarative configuration syntax is valid.")
 				}
 			}
+		}
+		if hasSyntaxErr {
+			os.Exit(1)
 		}
 
 		problems := gateway.Verify(cfg)
@@ -871,6 +916,9 @@ var gatewayDownCmd = &cobra.Command{
 	Use:   "down",
 	Short: "Tear down transparent gateway interception rules and clear runtime",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway down")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runGatewayManagement("system-down")
 	},
@@ -969,6 +1017,9 @@ var gatewayTestCmd = &cobra.Command{
 	Use:   "test",
 	Short: "Observe enabled gateway paths through non-bypassed endpoints",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway test")
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
 		if err != nil {
@@ -1027,7 +1078,23 @@ var gatewayExportCmd = &cobra.Command{
 			}
 		}
 
-		content := gatewayconf.GenerateFromUserConfig(cfg)
+		var content string
+		var readPath string
+		if config.GatewayConfStaged() {
+			readPath = config.GetGatewayConfPathEx(true)
+		} else if config.GatewayConfExists() {
+			readPath = config.GetGatewayConfPathEx(false)
+		}
+		if readPath != "" {
+			if data, err := os.ReadFile(readPath); err == nil {
+				if ast, parseErr := gatewayconf.Parse(string(data)); parseErr == nil && ast != nil {
+					content = gatewayconf.GenerateFromAST(ast)
+				}
+			}
+		}
+		if content == "" {
+			content = gatewayconf.GenerateFromUserConfig(cfg)
+		}
 
 		targetPath := gatewayExportOut
 		if len(args) == 1 {
@@ -1056,6 +1123,9 @@ var gatewayEditCmd = &cobra.Command{
 	Use:   "edit",
 	Short: "Edit gateway.conf interactively with syntax validation",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway edit")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		confPath := config.GetGatewayConfPath()
 

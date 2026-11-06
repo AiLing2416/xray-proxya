@@ -273,20 +273,13 @@ func TestGatewayEnableDisableNowFlags(t *testing.T) {
 		f.Changed = false
 	})
 	applyCalled := false
-	mgmtOp := ""
 	origApply := applyPendingFunc
-	origMgmt := runGatewayManagementFunc
 	defer func() {
 		applyPendingFunc = origApply
-		runGatewayManagementFunc = origMgmt
 	}()
 	applyPendingFunc = func(opts applyops.Options) ([]string, error) {
 		applyCalled = true
 		return []string{"applied"}, nil
-	}
-	runGatewayManagementFunc = func(op string) error {
-		mgmtOp = op
-		return nil
 	}
 
 	if err := gatewayEnableCmd.RunE(gatewayEnableCmd, nil); err != nil {
@@ -296,8 +289,8 @@ func TestGatewayEnableDisableNowFlags(t *testing.T) {
 		t.Error("applyPendingFunc called when --now was not set")
 	}
 	loaded, err := config.LoadConfigEx(true)
-	if err != nil || !loaded.Gateway.LocalEnabled || !loaded.Gateway.LANEnabled {
-		t.Errorf("expected LocalEnabled and LANEnabled to be true, got %+v", loaded.Gateway)
+	if err != nil || !loaded.Gateway.LocalEnabled || !loaded.Gateway.LANEnabled || loaded.Gateway.State != "proxy" {
+		t.Errorf("expected LocalEnabled/LANEnabled true and State proxy, got %+v", loaded.Gateway)
 	}
 
 	// 2. Enable with --now
@@ -308,13 +301,9 @@ func TestGatewayEnableDisableNowFlags(t *testing.T) {
 	if !applyCalled {
 		t.Error("expected applyPendingFunc to be called with --now")
 	}
-	if mgmtOp != "system-up" {
-		t.Errorf("expected mgmtOp 'system-up', got %q", mgmtOp)
-	}
 
 	// 3. Disable without --now
 	applyCalled = false
-	mgmtOp = ""
 	gatewayDisableCmd.Flags().VisitAll(func(f *pflag.Flag) {
 		_ = f.Value.Set(f.DefValue)
 		f.Changed = false
@@ -326,8 +315,8 @@ func TestGatewayEnableDisableNowFlags(t *testing.T) {
 		t.Error("applyPendingFunc called when --now was not set")
 	}
 	loaded, err = config.LoadConfigEx(true)
-	if err != nil || loaded.Gateway.LocalEnabled || loaded.Gateway.LANEnabled {
-		t.Errorf("expected LocalEnabled and LANEnabled to be false, got %+v", loaded.Gateway)
+	if err != nil || loaded.Gateway.LocalEnabled || loaded.Gateway.LANEnabled || loaded.Gateway.State != "disabled" {
+		t.Errorf("expected LocalEnabled/LANEnabled false and State disabled, got %+v", loaded.Gateway)
 	}
 
 	// 4. Disable with --now
@@ -337,9 +326,6 @@ func TestGatewayEnableDisableNowFlags(t *testing.T) {
 	}
 	if !applyCalled {
 		t.Error("expected applyPendingFunc to be called with --now")
-	}
-	if mgmtOp != "system-down" {
-		t.Errorf("expected mgmtOp 'system-down', got %q", mgmtOp)
 	}
 }
 

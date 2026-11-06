@@ -7,7 +7,6 @@ import (
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gatewayconf"
-	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -32,10 +31,15 @@ var gatewayDNSCmd = &cobra.Command{
 	Use:   "dns",
 	Short: "Manage gateway internal DNS resolution and static records (STAGING)",
 	Args:  cobra.ArbitraryArgs,
-	RunE:  runGatewayDNS,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return utils.RequireRootShell("gateway dns")
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if cmd.Flags().Changed("record-add") || cmd.Flags().Changed("record-del") || cmd.Flags().Changed("record-clear") ||
+			cmd.Flags().Changed("listen") || cmd.Flags().Changed("port") || cmd.Flags().Changed("off") ||
+			cmd.Flags().Changed("servers") || cmd.Flags().Changed("strategy") || cmd.Flags().Changed("reset") {
+			return gatewayRequireRoot("gateway dns")
+		}
+		return nil
 	},
+	RunE:  runGatewayDNS,
 }
 
 func runGatewayDNS(cmd *cobra.Command, args []string) error {
@@ -289,6 +293,9 @@ var gatewayDNSSetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Configure gateway DNS settings in STAGING",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway dns set")
+	},
 	RunE:  runGatewayDNSSet,
 }
 
@@ -371,6 +378,9 @@ var gatewayDNSRecordSetCmd = &cobra.Command{
 	Short:             "Set static A/AAAA record(s) for a domain in STAGING",
 	Args:              cobra.MinimumNArgs(2),
 	ValidArgsFunction: completeDNSRecordDomains,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway dns record set")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain, err := config.NormalizeDNSRecordDomain(args[0])
 		if err != nil {
@@ -398,6 +408,9 @@ var gatewayDNSRecordDelCmd = &cobra.Command{
 	Short:             "Remove static record for a domain in STAGING",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeDNSRecordDomains,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway dns record del")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain, err := config.NormalizeDNSRecordDomain(args[0])
 		if err != nil {
@@ -453,6 +466,9 @@ var gatewayDNSRecordClearCmd = &cobra.Command{
 	Use:   "clear",
 	Short: "Clear all static DNS records in STAGING",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway dns record clear")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		err := gatewayconf.ModifyGatewayConf(func(content string) string {
 			return gatewayconf.ClearDNSRecords(content)

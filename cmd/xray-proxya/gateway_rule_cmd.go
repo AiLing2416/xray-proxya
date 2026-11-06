@@ -50,10 +50,14 @@ var gatewayRuleCmd = &cobra.Command{
 	Aliases: []string{"rules"},
 	Short:   "Manage gateway per-MAC, per-IP/CIDR, and per-interface routing rules (STAGING)",
 	Args:    cobra.ArbitraryArgs,
-	RunE:    runGatewayRule,
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		return utils.RequireRootShell("gateway rule")
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if ruleClear || ruleDel || ruleTarget != "" || ruleSetTo != "" || ruleSetTarget != "" ||
+			cmd.Flags().Changed("to") || cmd.Flags().Changed("target") || cmd.Flags().Changed("clear") || cmd.Flags().Changed("del") {
+			return gatewayRequireRoot("gateway rule")
+		}
+		return nil
 	},
+	RunE:    runGatewayRule,
 }
 
 type GatewayRuleItemJSON struct {
@@ -164,6 +168,9 @@ var gatewayRuleSetCmd = &cobra.Command{
 	Aliases: []string{"add"},
 	Short:   "Add or update a gateway routing rule in STAGING",
 	Args:    cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway rule set")
+	},
 	RunE:    runGatewayRuleSet,
 }
 
@@ -455,6 +462,9 @@ var gatewayRuleDelCmd = &cobra.Command{
 	Short:             "Delete a gateway routing rule from STAGING",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeRuleIndicesArg,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway rule del")
+	},
 	RunE:              runGatewayRuleDel,
 }
 
@@ -505,6 +515,9 @@ var gatewayRuleClearCmd = &cobra.Command{
 	Use:   "clear",
 	Short: "Clear all gateway routing rules in STAGING",
 	Args:  cobra.NoArgs,
+	PreRunE: func(cmd *cobra.Command, args []string) error {
+		return gatewayRequireRoot("gateway rule clear")
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ruleClear = true
 		return runGatewayRule(cmd, args)

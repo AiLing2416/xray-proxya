@@ -155,11 +155,28 @@ func RunSimulatedLANTest(cfg *config.UserConfig) (string, error) {
 	_ = exec.Command("ip", "netns", "del", nsName).Run()
 	_ = exec.Command("ip", "link", "del", vethGateway).Run()
 
+	deleteTemporaryRule := func() {
+		out, err := exec.Command("nft", "-a", "list", "chain", "inet", tableName, "prerouting").CombinedOutput()
+		if err == nil {
+			for _, line := range strings.Split(string(out), "\n") {
+				if strings.Contains(line, vethGateway) {
+					fields := strings.Fields(line)
+					for i, f := range fields {
+						if f == "handle" && i+1 < len(fields) {
+							handle := fields[i+1]
+							_ = exec.Command("nft", "delete", "rule", "inet", tableName, "prerouting", "handle", handle).Run()
+						}
+					}
+				}
+			}
+		}
+	}
+
 	// Ensure full cleanup on return
 	defer func() {
 		_ = exec.Command("ip", "netns", "del", nsName).Run()
 		_ = exec.Command("ip", "link", "del", vethGateway).Run()
-		_ = ApplyFirewall(cfg)
+		deleteTemporaryRule()
 	}()
 
 	// 1. Create network namespace

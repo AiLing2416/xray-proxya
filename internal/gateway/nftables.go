@@ -923,6 +923,13 @@ func hasDefaultRoute(table, device string, ipv6 bool) (bool, error) {
 	}
 	out, err := execCommandCombinedOutput("ip", args...)
 	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
+			return false, nil
+		}
+		if strings.Contains(string(out), "FIB table does not exist") {
+			return false, nil
+		}
 		return false, fmt.Errorf("%w (output: %q)", err, strings.TrimSpace(string(out)))
 	}
 	for _, line := range strings.Split(string(out), "\n") {
@@ -1056,6 +1063,10 @@ func verifyNoManagedRuntime(state string) []string {
 			}
 			out, err := execCommandCombinedOutput("ip", args...)
 			if err != nil {
+				var exitErr *exec.ExitError
+				if (errors.As(err, &exitErr) && exitErr.ExitCode() == 2) || strings.Contains(string(out), "FIB table does not exist") {
+					continue
+				}
 				problems = append(problems, fmt.Sprintf("cannot inspect %s policy table %s: %v", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], table, err))
 			} else if strings.TrimSpace(string(out)) != "" {
 				problems = append(problems, fmt.Sprintf("%s policy table %s still contains routes", map[bool]string{true: "IPv6", false: "IPv4"}[ipv6], table))

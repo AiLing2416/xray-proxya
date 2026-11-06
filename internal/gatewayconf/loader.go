@@ -3,6 +3,7 @@ package gatewayconf
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -96,6 +97,25 @@ func init() {
 				if len(gw.DNSServers) > 0 {
 					content = UpdateSetIfExists(content, "dns_servers", strings.Join(gw.DNSServers, ", "))
 				}
+
+				// Rules and DNS records are declarative and edited in gateway.conf
+				// directly. The compiled GatewayConfig expands them (device/group ->
+				// mac rules), so writing them back unconditionally would duplicate
+				// lines. Only rewrite them when the caller actually changed them.
+				curRules, curDNS := compiledRulesAndDNS(content)
+				if !reflect.DeepEqual(curRules, gw.Rules) {
+					content = ClearRules(content)
+					for _, r := range gw.Rules {
+						content = UpdateRule(content, r)
+					}
+				}
+				if !reflect.DeepEqual(curDNS, gw.DNSRecords) {
+					content = ClearDNSRecords(content)
+					for d, ips := range gw.DNSRecords {
+						content = UpdateDNSRecord(content, d, ips)
+					}
+				}
+
 				return content
 			})
 		}
