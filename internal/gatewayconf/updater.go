@@ -213,6 +213,7 @@ func UpdateRule(content string, rule config.GatewayRule) string {
 	normRule, _ := config.ValidateGatewayRule(rule)
 	formatted := formatGatewayRule(normRule)
 
+	ctx := buildRuleParseContext(content)
 	lines := splitLines(content)
 	found := false
 	for i, line := range lines {
@@ -220,11 +221,16 @@ func UpdateRule(content string, rule config.GatewayRule) string {
 		if strings.HasPrefix(trimmed, "#") || trimmed == "" || isDefLine(trimmed) {
 			continue
 		}
-		match, _ := parseRuleMatchCriteria(trimmed)
-		if match != nil && matchRuleEqual(*match, normRule) {
-			leadingWS := getLeadingWhitespace(line)
-			lines[i] = leadingWS + formatted
-			found = true
+		criteriaList, _ := parseRuleMatchCriteria(trimmed, ctx)
+		for _, criteria := range criteriaList {
+			if matchRuleEqual(criteria, normRule) {
+				leadingWS := getLeadingWhitespace(line)
+				lines[i] = leadingWS + formatted
+				found = true
+				break
+			}
+		}
+		if found {
 			break
 		}
 	}
@@ -250,6 +256,8 @@ func DeleteRule(content string, rule config.GatewayRule) string {
 		}
 	}
 	normRule.Interface = strings.TrimSpace(normRule.Interface)
+
+	ctx := buildRuleParseContext(content)
 	lines := splitLines(content)
 	var result []string
 	for _, line := range lines {
@@ -258,8 +266,15 @@ func DeleteRule(content string, rule config.GatewayRule) string {
 			result = append(result, line)
 			continue
 		}
-		match, _ := parseRuleMatchCriteria(trimmed)
-		if match != nil && matchRuleEqual(*match, normRule) {
+		criteriaList, _ := parseRuleMatchCriteria(trimmed, ctx)
+		matched := false
+		for _, criteria := range criteriaList {
+			if matchRuleEqual(criteria, normRule) {
+				matched = true
+				break
+			}
+		}
+		if matched {
 			continue
 		}
 		result = append(result, line)
@@ -267,8 +282,9 @@ func DeleteRule(content string, rule config.GatewayRule) string {
 	return joinLines(result)
 }
 
-// ClearRules removes all client rule lines (mac, ip, interface, rule), preserving local and zone rules.
+// ClearRules removes all client rule lines (mac, ip, interface, rule, device, group, zone), preserving local rules and defs.
 func ClearRules(content string) string {
+	ctx := buildRuleParseContext(content)
 	lines := splitLines(content)
 	var result []string
 	for _, line := range lines {
@@ -277,8 +293,8 @@ func ClearRules(content string) string {
 			result = append(result, line)
 			continue
 		}
-		match, isClient := parseRuleMatchCriteria(trimmed)
-		if match != nil && isClient {
+		_, isClient := parseRuleMatchCriteria(trimmed, ctx)
+		if isClient {
 			continue
 		}
 		result = append(result, line)
@@ -368,8 +384,35 @@ func formatGatewayRule(r config.GatewayRule) string {
 	return fmt.Sprintf("rule -> %s", target)
 }
 
+type ruleParseContext struct {
+	devices map[string]*DeviceDef
+	zones   map[string]*ZoneDef
+	groups  map[string]*GroupDef
+}
+
+func buildRuleParseContext(content string) *ruleParseContext {
+	ast, _ := Parse(content)
+	ctx := &ruleParseContext{
+		devices: make(map[string]*DeviceDef),
+		zones:   make(map[string]*ZoneDef),
+		groups:  make(map[string]*GroupDef),
+	}
+	if ast != nil {
+		for i := range ast.Devices {
+			ctx.devices[strings.ToLower(ast.Devices[i].Name)] = &ast.Devices[i]
+		}
+		for i := range ast.Zones {
+			ctx.zones[strings.ToLower(ast.Zones[i].Name)] = &ast.Zones[i]
+		}
+		for i := range ast.Groups {
+			ctx.groups[strings.ToLower(ast.Groups[i].Name)] = &ast.Groups[i]
+		}
+	}
+	return ctx
+}
+
 // parseRuleMatchCriteria extracts match criteria (MAC, IP, Interface) and reports if it is a client rule.
-func parseRuleMatchCriteria(line string) (*config.GatewayRule, bool) {
+func parseRuleMatchCriteria(line string, ctx *ruleParseContext) ([]config.GatewayRule, bool) {
 	arrowIdx := strings.Index(line, "->")
 	if arrowIdx < 0 {
 		arrowIdx = strings.Index(line, "=>")
@@ -432,24 +475,88 @@ func parseRuleMatchCriteria(line string) (*config.GatewayRule, bool) {
 				}
 			}
 		}
-		return &config.GatewayRule{MAC: m, IP: ip, Interface: iface}, true
+		return []config.GatewayRule{{MAC: m, IP: ip, Interface: iface}}, true
 
 	case "mac":
 		if len(tokens) >= 2 {
 			m, _ := config.NormalizeMAC(tokens[1])
 			iface := extractInterfaceOption(right)
-			return &config.GatewayRule{MAC: m, Interface: iface}, true
+			return []config.GatewayRule{{MAC: m, Interface: iface}}, true
 		}
 	case "ip":
 		if len(tokens) >= 2 {
 			ip, _ := config.NormalizeIPOrCIDR(tokens[1])
 			iface := extractInterfaceOption(right)
-			return &config.GatewayRule{IP: ip, Interface: iface}, true
+			return []config.GatewayRule{{IP: ip, Interface: iface}}, true
 		}
 	case "interface", "iface":
 		if len(tokens) >= 2 {
 			m := extractMACOption(right)
-			return &config.GatewayRule{Interface: tokens[1], MAC: m}, true
+			return []config.GatewayRule{{Interface: tokens[1], MAC: m}}, true
+		}
+	case "device", "dev":
+		if len(tokens) >= 2 {
+			devName := strings.ToLower(tokens[1])
+			optIface := extractInterfaceOption(right)
+			if ctx != nil && ctx.devices[devName] != nil {
+				d := ctx.devices[devName]
+				var ifaces []string
+				if optIface != "" {
+					ifaces = append(ifaces, optIface)
+				} else if d.Zone != "" && ctx.zones[strings.ToLower(d.Zone)] != nil {
+					ifaces = append(ifaces, ctx.zones[strings.ToLower(d.Zone)].Interfaces...)
+				}
+				if len(ifaces) == 0 {
+					return []config.GatewayRule{{MAC: d.MAC, IP: d.IP}}, true
+				}
+				var rules []config.GatewayRule
+				for _, iface := range ifaces {
+					rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP, Interface: iface})
+				}
+				return rules, true
+			}
+			return []config.GatewayRule{{Interface: optIface}}, true
+		}
+	case "group":
+		if len(tokens) >= 2 {
+			grpName := strings.ToLower(tokens[1])
+			optIface := extractInterfaceOption(right)
+			if ctx != nil && ctx.groups[grpName] != nil {
+				grp := ctx.groups[grpName]
+				var rules []config.GatewayRule
+				for _, item := range grp.Items {
+					if d := ctx.devices[strings.ToLower(item)]; d != nil {
+						var ifaces []string
+						if optIface != "" {
+							ifaces = append(ifaces, optIface)
+						} else if d.Zone != "" && ctx.zones[strings.ToLower(d.Zone)] != nil {
+							ifaces = append(ifaces, ctx.zones[strings.ToLower(d.Zone)].Interfaces...)
+						}
+						if len(ifaces) == 0 {
+							rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP})
+						} else {
+							for _, iface := range ifaces {
+								rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP, Interface: iface})
+							}
+						}
+					}
+				}
+				return rules, true
+			}
+			return nil, true
+		}
+	case "zone":
+		if len(tokens) >= 2 {
+			zoneName := strings.ToLower(tokens[1])
+			if ctx != nil && ctx.zones[zoneName] != nil {
+				z := ctx.zones[zoneName]
+				var rules []config.GatewayRule
+				for _, iface := range z.Interfaces {
+					rules = append(rules, config.GatewayRule{Interface: iface})
+				}
+				return rules, true
+			}
+			return nil, true
 		}
 	}
 	return nil, false
@@ -482,10 +589,20 @@ func extractMACOption(optsStr string) string {
 	return ""
 }
 
-func matchRuleEqual(a, b config.GatewayRule) bool {
-	return strings.EqualFold(a.MAC, b.MAC) &&
-		strings.EqualFold(a.IP, b.IP) &&
-		strings.EqualFold(a.Interface, b.Interface)
+func matchRuleEqual(criteria, selector config.GatewayRule) bool {
+	if selector.MAC == "" && selector.IP == "" && selector.Interface == "" {
+		return false
+	}
+	if selector.MAC != "" && !strings.EqualFold(criteria.MAC, selector.MAC) {
+		return false
+	}
+	if selector.IP != "" && !strings.EqualFold(criteria.IP, selector.IP) {
+		return false
+	}
+	if selector.Interface != "" && !strings.EqualFold(criteria.Interface, selector.Interface) {
+		return false
+	}
+	return true
 }
 
 func isDefLine(line string) bool {

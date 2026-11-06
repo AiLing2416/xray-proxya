@@ -171,3 +171,77 @@ local -> direct
 		t.Fatalf("def directives were modified:\n%s", res)
 	}
 }
+
+func TestClearRules_ClearsAliasesAndPreservesDefs(t *testing.T) {
+	initial := `# Complex config with rules and defs
+def zone wan eth0
+def zone lan eth1
+def zone guest eth2
+def device tv mac=52:54:00:11:22:33 zone=lan
+def group streaming tv
+
+set state proxy
+local -> direct
+zone guest -> direct
+device tv -> proxy
+group streaming -> proxy
+mac 52:54:00:99:99:99 -> block
+ip 10.0.0.0/24 -> direct
+interface eth1 -> proxy
+`
+	res := ClearRules(initial)
+
+	// Verify defs, sets, comments, and local rule are preserved
+	if !strings.Contains(res, "def zone wan eth0") ||
+		!strings.Contains(res, "def zone lan eth1") ||
+		!strings.Contains(res, "def zone guest eth2") ||
+		!strings.Contains(res, "def device tv mac=52:54:00:11:22:33 zone=lan") ||
+		!strings.Contains(res, "def group streaming tv") ||
+		!strings.Contains(res, "set state proxy") ||
+		!strings.Contains(res, "local -> direct") {
+		t.Fatalf("defs or local were unexpectedly removed:\n%s", res)
+	}
+
+	// Verify alias and client rules are cleared
+	for _, removed := range []string{
+		"zone guest -> direct",
+		"device tv -> proxy",
+		"group streaming -> proxy",
+		"mac 52:54:00:99:99:99 -> block",
+		"ip 10.0.0.0/24 -> direct",
+		"interface eth1 -> proxy",
+	} {
+		if strings.Contains(res, removed) {
+			t.Errorf("expected %q to be cleared from config, but it remains:\n%s", removed, res)
+		}
+	}
+}
+
+func TestDeleteRule_Aliases(t *testing.T) {
+	initial := `def zone lan eth1
+def zone guest eth2
+def device tv mac=52:54:00:11:22:33 zone=lan
+def group streaming tv
+
+device tv -> proxy
+zone guest -> direct
+mac 52:54:00:99:99:99 -> block
+`
+	// Delete device tv by MAC selector
+	res1 := DeleteRule(initial, config.GatewayRule{MAC: "52:54:00:11:22:33"})
+	if strings.Contains(res1, "device tv -> proxy") {
+		t.Fatalf("expected device tv rule to be deleted by MAC selector:\n%s", res1)
+	}
+	if !strings.Contains(res1, "zone guest -> direct") {
+		t.Fatalf("zone rule should remain:\n%s", res1)
+	}
+
+	// Delete zone guest by interface selector
+	res2 := DeleteRule(res1, config.GatewayRule{Interface: "eth2"})
+	if strings.Contains(res2, "zone guest -> direct") {
+		t.Fatalf("expected zone guest rule to be deleted by interface selector:\n%s", res2)
+	}
+	if !strings.Contains(res2, "mac 52:54:00:99:99:99 -> block") {
+		t.Fatalf("mac rule should remain:\n%s", res2)
+	}
+}
