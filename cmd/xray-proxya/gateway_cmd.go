@@ -86,7 +86,10 @@ type GatewayConfigJSON struct {
 	DNSStrategy   string                   `json:"dns_strategy,omitempty"`
 	DNSServers    []string                 `json:"dns_servers,omitempty"`
 	DNSRecords    map[string][]string      `json:"dns_records,omitempty"`
-	PortForwards  []config.PortForwardRule `json:"port_forwards,omitempty"`
+	PortForwards       []config.PortForwardRule `json:"port_forwards,omitempty"`
+	BypassCountries    []string                 `json:"bypass_countries,omitempty"`
+	BypassDNS          []string                 `json:"bypass_dns,omitempty"`
+	IsolatedInterfaces []string                 `json:"isolated_interfaces,omitempty"`
 }
 
 type GatewayRuntimeJSON struct {
@@ -116,22 +119,25 @@ func toGatewayConfigJSON(cfg *config.UserConfig) *GatewayConfigJSON {
 		lanInterface = strings.Join(effectiveLANs, ",")
 	}
 	return &GatewayConfigJSON{
-		Mode:          cfg.Gateway.EffectiveMode(),
-		TUNEnabled:    cfg.Gateway.EffectiveTUNEnabled(),
-		LocalEnabled:  cfg.Gateway.LocalEnabled,
-		LANEnabled:    cfg.Gateway.LANEnabled,
-		Relay:         cfg.Gateway.RelayAlias,
-		Interface:     lanInterface,
-		LANInterfaces: effectiveLANs,
-		WANInterface:  cfg.Gateway.WANInterface,
-		NATDisabled:   cfg.Gateway.NATDisabled,
-		Rules:         cfg.Gateway.Rules,
-		State:         state,
-		DNSListen:     cfg.Gateway.DNSListen,
-		DNSStrategy:   cfg.Gateway.DNSStrategy,
-		DNSServers:    cfg.Gateway.DNSServers,
-		DNSRecords:    cfg.Gateway.DNSRecords,
-		PortForwards:  cfg.Gateway.PortForwards,
+		Mode:               cfg.Gateway.EffectiveMode(),
+		TUNEnabled:         cfg.Gateway.EffectiveTUNEnabled(),
+		LocalEnabled:       cfg.Gateway.LocalEnabled,
+		LANEnabled:         cfg.Gateway.LANEnabled,
+		Relay:              cfg.Gateway.RelayAlias,
+		Interface:          lanInterface,
+		LANInterfaces:      effectiveLANs,
+		WANInterface:       cfg.Gateway.WANInterface,
+		NATDisabled:        cfg.Gateway.NATDisabled,
+		Rules:              cfg.Gateway.Rules,
+		State:              state,
+		DNSListen:          cfg.Gateway.DNSListen,
+		DNSStrategy:        cfg.Gateway.DNSStrategy,
+		DNSServers:         cfg.Gateway.DNSServers,
+		DNSRecords:         cfg.Gateway.DNSRecords,
+		PortForwards:       cfg.Gateway.PortForwards,
+		BypassCountries:    cfg.Gateway.BypassCountries,
+		BypassDNS:          cfg.Gateway.BypassDNS,
+		IsolatedInterfaces: cfg.Gateway.EffectiveIsolatedInterfaces(),
 	}
 }
 
@@ -246,6 +252,12 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 		}
 		if len(activeCfg.Gateway.DNSRecords) > 0 {
 			fmt.Printf("  DNS Records: %d domain(s)\n", len(activeCfg.Gateway.DNSRecords))
+		}
+		if len(activeCfg.Gateway.BypassDNS) > 0 {
+			fmt.Printf("  Bypass DNS:  %s\n", strings.Join(activeCfg.Gateway.BypassDNS, ", "))
+		}
+		if len(activeCfg.Gateway.BypassCountries) > 0 {
+			fmt.Printf("  Bypass Geo:  %s\n", strings.Join(activeCfg.Gateway.BypassCountries, ", "))
 		}
 	} else {
 		fmt.Println("ACTIVE:      (not initialized)")

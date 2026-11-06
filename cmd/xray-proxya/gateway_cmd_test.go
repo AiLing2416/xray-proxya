@@ -339,12 +339,15 @@ func TestGatewayStatusJSON(t *testing.T) {
 	activeCfg := &config.UserConfig{
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
-			Mode:         "tun",
-			LocalEnabled: true,
-			LANEnabled:   true,
-			RelayAlias:   "hk-01",
-			LANInterface: "eth0",
-			State:        "proxy",
+			Mode:               "tun",
+			LocalEnabled:       true,
+			LANEnabled:         true,
+			RelayAlias:         "hk-01",
+			LANInterface:       "eth0",
+			State:              "proxy",
+			BypassCountries:    []string{"cn"},
+			BypassDNS:          []string{"223.5.5.5"},
+			IsolatedInterfaces: []string{"eth2"},
 		},
 	}
 	if err := activeCfg.SaveEx(false); err != nil {
@@ -353,6 +356,18 @@ func TestGatewayStatusJSON(t *testing.T) {
 	if err := activeCfg.SaveEx(true); err != nil {
 		t.Fatalf("save staging config: %v", err)
 	}
+
+	confText := `def zone wan eth0
+def zone lan eth1
+def zone guest eth2 isolate
+local -> hk-01
+zone lan -> hk-01
+set state proxy
+set bypass_countries CN
+set bypass_dns 223.5.5.5
+`
+	_ = os.WriteFile(config.GetGatewayConfPathEx(false), []byte(confText), 0600)
+	_ = os.WriteFile(config.GetGatewayConfPathEx(true), []byte(confText), 0600)
 
 	gatewayStatusCmd.Flags().VisitAll(func(f *pflag.Flag) {
 		_ = f.Value.Set(f.DefValue)
@@ -377,8 +392,17 @@ func TestGatewayStatusJSON(t *testing.T) {
 	if parsed.Active == nil || !parsed.Active.LocalEnabled || !parsed.Active.LANEnabled {
 		t.Errorf("unexpected active config: %+v", parsed.Active)
 	}
-	if parsed.Active.Relay != "hk-01" || parsed.Active.Interface != "eth0" || parsed.Active.State != "proxy" {
+	if parsed.Active.Relay != "hk-01" || parsed.Active.Interface != "eth1" || parsed.Active.State != "proxy" {
 		t.Errorf("unexpected active fields: %+v", parsed.Active)
+	}
+	if len(parsed.Active.BypassCountries) != 1 || parsed.Active.BypassCountries[0] != "CN" {
+		t.Errorf("unexpected active BypassCountries: %+v", parsed.Active.BypassCountries)
+	}
+	if len(parsed.Active.BypassDNS) != 1 || parsed.Active.BypassDNS[0] != "223.5.5.5" {
+		t.Errorf("unexpected active BypassDNS: %+v", parsed.Active.BypassDNS)
+	}
+	if len(parsed.Active.IsolatedInterfaces) != 1 || parsed.Active.IsolatedInterfaces[0] != "eth2" {
+		t.Errorf("unexpected active IsolatedInterfaces: %+v", parsed.Active.IsolatedInterfaces)
 	}
 	if parsed.Staging == nil || parsed.Staging.Relay != "hk-01" {
 		t.Errorf("unexpected staging fields: %+v", parsed.Staging)
@@ -387,7 +411,7 @@ func TestGatewayStatusJSON(t *testing.T) {
 		t.Error("expected runtime.problems to not be nil (must be empty array or filled)")
 	}
 
-	// Also verify non-JSON output does not crash
+	// Also verify non-JSON output does not crash and displays Bypass DNS/Geo for ACTIVE
 	gatewayStatusCmd.Flags().Set("json", "false")
 	humanOut := captureStdout(t, func() {
 		if err := gatewayStatusCmd.RunE(gatewayStatusCmd, nil); err != nil {
@@ -396,6 +420,16 @@ func TestGatewayStatusJSON(t *testing.T) {
 	})
 	if !strings.Contains(humanOut, "GATEWAY CONFIGURATION") || !strings.Contains(humanOut, "RUNTIME STATE") {
 		t.Errorf("expected human readable headers in output, got: %s", humanOut)
+	}
+	activeSection := humanOut
+	if idx := strings.Index(humanOut, "STAGING:"); idx != -1 {
+		activeSection = humanOut[:idx]
+	}
+	if !strings.Contains(activeSection, "Bypass DNS:  223.5.5.5") {
+		t.Errorf("expected Bypass DNS in ACTIVE section, got:\n%s", activeSection)
+	}
+	if !strings.Contains(activeSection, "Bypass Geo:  CN") {
+		t.Errorf("expected Bypass Geo in ACTIVE section, got:\n%s", activeSection)
 	}
 }
 

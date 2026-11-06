@@ -515,3 +515,89 @@ device test-dev -> relay-b
 		t.Errorf("expected rule MAC 52:54:00:84:00:11 -> relay-b, got: %+v", rule)
 	}
 }
+
+func TestApplyPending_GatewayConfNonGatewayRoleNotice(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tmpDir)
+
+	active := &config.UserConfig{
+		Role: config.RoleServer,
+	}
+	if err := active.SaveEx(false); err != nil {
+		t.Fatalf("failed to save active config: %v", err)
+	}
+
+	confText := `def zone wan eth0
+def zone lan eth1
+local -> direct
+`
+	confPath := config.GetGatewayConfPathEx(false)
+	if err := os.WriteFile(confPath, []byte(confText), 0600); err != nil {
+		t.Fatalf("failed to write gateway.conf: %v", err)
+	}
+
+	// 1. Clean staging: apply pending should return warning along with clean message
+	lines, err := ApplyPending(Options{})
+	if err != nil {
+		t.Fatalf("ApplyPending failed: %v", err)
+	}
+	joined := strings.Join(lines, "\n")
+	expectedNotice := "⚠️  gateway.conf is present but current role is server (not gateway); gateway configuration will not be compiled/applied."
+	if !strings.Contains(joined, expectedNotice) {
+		t.Errorf("expected notice %q in clean apply output, got:\n%s", expectedNotice, joined)
+	}
+
+	// 2. Staged server change + dry-run: notice should be present in preview
+	stg := &config.UserConfig{
+		Role: config.RoleServer,
+		Path: config.PathConfig{Listen: "127.0.0.1:19090", Token: "abc"},
+	}
+	if err := stg.SaveEx(true); err != nil {
+		t.Fatalf("failed to save staging config: %v", err)
+	}
+
+	dryLines, err := ApplyPending(Options{DryRun: true})
+	if err != nil {
+		t.Fatalf("ApplyPending dry-run failed: %v", err)
+	}
+	joinedDry := strings.Join(dryLines, "\n")
+	if !strings.Contains(joinedDry, expectedNotice) {
+		t.Errorf("expected notice %q in dry-run preview, got:\n%s", expectedNotice, joinedDry)
+	}
+
+	// 3. Actual apply: notice should be in apply output
+	applyLines, err := ApplyPending(Options{Force: true})
+	if err != nil {
+		t.Fatalf("ApplyPending force failed: %v", err)
+	}
+	joinedApply := strings.Join(applyLines, "\n")
+	if !strings.Contains(joinedApply, expectedNotice) {
+		t.Errorf("expected notice %q in apply output, got:\n%s", expectedNotice, joinedApply)
+	}
+
+	// 4. Role client notice
+	activeClient := &config.UserConfig{Role: config.AppRole("client")}
+	_ = activeClient.SaveEx(false)
+	_ = config.ClearStaging()
+	clientLines, err := ApplyPending(Options{})
+	if err != nil {
+		t.Fatalf("ApplyPending client role failed: %v", err)
+	}
+	joinedClient := strings.Join(clientLines, "\n")
+	if !strings.Contains(joinedClient, "current role is client (not gateway)") {
+		t.Errorf("expected client role notice, got:\n%s", joinedClient)
+	}
+
+	// 5. Uninitialized config notice
+	_ = os.Remove(config.GetConfigPath())
+	_ = os.Remove(config.GetConfigPath() + ".staging")
+	uninitLines, err := ApplyPending(Options{})
+	if err != nil {
+		t.Fatalf("ApplyPending uninitialized failed: %v", err)
+	}
+	joinedUninit := strings.Join(uninitLines, "\n")
+	if !strings.Contains(joinedUninit, "configuration is uninitialized") {
+		t.Errorf("expected uninitialized notice, got:\n%s", joinedUninit)
+	}
+}
+

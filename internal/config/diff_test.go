@@ -222,3 +222,116 @@ func TestDiffUserConfigGatewayRouter(t *testing.T) {
 		t.Errorf("expected Isolated Interfaces diff, got: %s", joinedIso)
 	}
 }
+
+func TestDiffUserConfigGranularRulesAndForwards(t *testing.T) {
+	// 1. Rules: modify target and remove rule
+	active := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "direct"},
+				{MAC: "52:54:00:83:00:11", Target: "block"},
+			},
+			PortForwards: []PortForwardRule{
+				{WANPort: 80, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
+				{WANPort: 2222, TargetIP: "192.168.1.20", TargetPort: 22, Proto: "tcp"},
+			},
+		},
+	}
+	staging := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "relay-us"},            // modified target
+				{IP: "10.0.82.50", Target: "direct"},               // added
+			},                                                       // MAC rule removed
+			PortForwards: []PortForwardRule{
+				{WANPort: 80, TargetIP: "192.168.1.101", TargetPort: 8080, Proto: "tcp"}, // modified target
+				{WANPort: 443, TargetIP: "192.168.1.100", TargetPort: 443, Proto: "tcp"},  // added
+			},                                                                              // WANPort 2222 removed
+		},
+	}
+
+	diffs := DiffUserConfig(active, staging)
+	joined := strings.Join(diffs, "\n")
+
+	// Gateway Rules assertions
+	if !strings.Contains(joined, "~ Rule: interface eth1 (target: direct -> relay-us)") {
+		t.Errorf("expected modified rule diff, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "+ Rule: ip 10.0.82.50 -> direct") {
+		t.Errorf("expected added rule diff, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "- Rule: mac 52:54:00:83:00:11 -> block") {
+		t.Errorf("expected removed rule diff, got:\n%s", joined)
+	}
+
+	// Port Forwards assertions
+	if !strings.Contains(joined, "~ Forward: wan:80 (proto: tcp): target 192.168.1.100:80 -> 192.168.1.101:8080") {
+		t.Errorf("expected modified forward diff, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "+ Forward: wan:443 -> 192.168.1.100:443 (proto: tcp)") {
+		t.Errorf("expected added forward diff, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "- Forward: wan:2222 -> 192.168.1.20:22 (proto: tcp)") {
+		t.Errorf("expected removed forward diff, got:\n%s", joined)
+	}
+}
+
+func TestDiffUserConfigNormalizedMatchingAndOrdering(t *testing.T) {
+	// 1. MAC normalization with dash and lowercase/uppercase
+	// 2. Proto normalization: udp,tcp should match tcp,udp or empty
+	// 3. IPv6 target normalization: bracketed vs unbracketed
+	active := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{
+				{MAC: "52-54-00-83-00-11", Target: "direct"},
+				{Interface: "eth1", Target: "relay-1"},
+			},
+			PortForwards: []PortForwardRule{
+				{WANPort: 8080, TargetIP: "fd00::100", TargetPort: 80, Proto: "udp,tcp"},
+			},
+		},
+	}
+	staging := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{
+				{MAC: "52:54:00:83:00:11", Target: "block"}, // target changed, MAC normalized
+				{Interface: "eth1", Target: "relay-1"},       // unchanged
+			},
+			PortForwards: []PortForwardRule{
+				{WANPort: 8080, TargetIP: "[fd00::100]", TargetPort: 8080, Proto: "tcp,udp"}, // target port changed, target IP format matches, proto normalized
+			},
+		},
+	}
+
+	diffs := DiffUserConfig(active, staging)
+	joined := strings.Join(diffs, "\n")
+
+	if !strings.Contains(joined, "~ Rule: mac 52:54:00:83:00:11 (target: direct -> block)") {
+		t.Errorf("expected normalized MAC modified target diff, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "~ Forward: wan:8080 (proto: tcp,udp): target [fd00::100]:80 -> [fd00::100]:8080") {
+		t.Errorf("expected normalized proto and bracketed IPv6 forward diff, got:\n%s", joined)
+	}
+
+	// 4. Test rule reordering
+	stgReordered := &UserConfig{
+		Role: RoleGateway,
+		Gateway: GatewayConfig{
+			Rules: []GatewayRule{
+				{Interface: "eth1", Target: "relay-1"},
+				{MAC: "52:54:00:83:00:11", Target: "direct"},
+			},
+		},
+	}
+	reorderDiffs := DiffUserConfig(active, stgReordered)
+	joinedReorder := strings.Join(reorderDiffs, "\n")
+	if !strings.Contains(joinedReorder, "~ Rule order changed") {
+		t.Errorf("expected rule order changed, got:\n%s", joinedReorder)
+	}
+}
+
+

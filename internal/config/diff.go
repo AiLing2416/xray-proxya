@@ -237,9 +237,110 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 	}
 	if !reflect.DeepEqual(active.Gateway.Rules, staging.Gateway.Rules) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Gateway Rules: %d rule(s) -> %d rule(s)", len(active.Gateway.Rules), len(staging.Gateway.Rules)))
+		activeUsed := make([]bool, len(active.Gateway.Rules))
+		var ruleDiffs []string
+
+		for _, stg := range staging.Gateway.Rules {
+			stgKey := gatewayRuleSelectorKey(stg)
+			matchedIdx := -1
+			for i, act := range active.Gateway.Rules {
+				if !activeUsed[i] && gatewayRuleSelectorKey(act) == stgKey && act.Target == stg.Target {
+					matchedIdx = i
+					break
+				}
+			}
+			if matchedIdx == -1 {
+				for i, act := range active.Gateway.Rules {
+					if !activeUsed[i] && gatewayRuleSelectorKey(act) == stgKey {
+						matchedIdx = i
+						break
+					}
+				}
+			}
+
+			if matchedIdx != -1 {
+				activeUsed[matchedIdx] = true
+				act := active.Gateway.Rules[matchedIdx]
+				actTarget := act.Target
+				if actTarget == "" {
+					actTarget = "direct"
+				}
+				stgTarget := stg.Target
+				if stgTarget == "" {
+					stgTarget = "direct"
+				}
+				if actTarget != stgTarget {
+					ruleDiffs = append(ruleDiffs, fmt.Sprintf("    ~ Rule: %s (target: %s -> %s)", formatRuleSelector(stg), actTarget, stgTarget))
+				}
+			} else {
+				ruleDiffs = append(ruleDiffs, fmt.Sprintf("    + Rule: %s", formatGatewayRuleDesc(stg)))
+			}
+		}
+
+		for i, act := range active.Gateway.Rules {
+			if !activeUsed[i] {
+				ruleDiffs = append(ruleDiffs, fmt.Sprintf("    - Rule: %s", formatGatewayRuleDesc(act)))
+			}
+		}
+
+		if len(ruleDiffs) == 0 && len(active.Gateway.Rules) > 0 {
+			ruleDiffs = append(ruleDiffs, "    ~ Rule order changed")
+		}
+		gwDiffs = append(gwDiffs, ruleDiffs...)
 	}
 	if !reflect.DeepEqual(active.Gateway.PortForwards, staging.Gateway.PortForwards) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Port Forwarding: %d rule(s) -> %d rule(s)", len(active.Gateway.PortForwards), len(staging.Gateway.PortForwards)))
+		activeUsed := make([]bool, len(active.Gateway.PortForwards))
+		var pfDiffs []string
+
+		for _, stg := range staging.Gateway.PortForwards {
+			stgKey := portForwardSelectorKey(stg)
+			stgTarget := formatPortForwardTarget(stg)
+			matchedIdx := -1
+			for i, act := range active.Gateway.PortForwards {
+				if !activeUsed[i] && portForwardSelectorKey(act) == stgKey && formatPortForwardTarget(act) == stgTarget {
+					matchedIdx = i
+					break
+				}
+			}
+			if matchedIdx == -1 {
+				for i, act := range active.Gateway.PortForwards {
+					if !activeUsed[i] && portForwardSelectorKey(act) == stgKey {
+						matchedIdx = i
+						break
+					}
+				}
+			}
+
+			if matchedIdx != -1 {
+				activeUsed[matchedIdx] = true
+				act := active.Gateway.PortForwards[matchedIdx]
+				actTarget := formatPortForwardTarget(act)
+				if actTarget != stgTarget {
+					proto, err := NormalizePortForwardProto(stg.Proto)
+					if err != nil || proto == "" {
+						proto = stg.Proto
+						if proto == "" {
+							proto = "tcp,udp"
+						}
+					}
+					pfDiffs = append(pfDiffs, fmt.Sprintf("    ~ Forward: wan:%d (proto: %s): target %s -> %s", stg.WANPort, proto, actTarget, stgTarget))
+				}
+			} else {
+				pfDiffs = append(pfDiffs, fmt.Sprintf("    + Forward: %s", formatPortForwardDesc(stg)))
+			}
+		}
+
+		for i, act := range active.Gateway.PortForwards {
+			if !activeUsed[i] {
+				pfDiffs = append(pfDiffs, fmt.Sprintf("    - Forward: %s", formatPortForwardDesc(act)))
+			}
+		}
+
+		if len(pfDiffs) == 0 && len(active.Gateway.PortForwards) > 0 {
+			pfDiffs = append(pfDiffs, "    ~ Forward rule order changed")
+		}
+		gwDiffs = append(gwDiffs, pfDiffs...)
 	}
 	if !reflect.DeepEqual(active.Gateway.BypassCountries, staging.Gateway.BypassCountries) {
 		gwDiffs = append(gwDiffs, fmt.Sprintf("  ~ Bypass Countries: %v -> %v", active.Gateway.BypassCountries, staging.Gateway.BypassCountries))
@@ -305,3 +406,72 @@ func DiffUserConfig(active, staging *UserConfig) []string {
 
 	return lines
 }
+
+func formatRuleSelector(r GatewayRule) string {
+	var parts []string
+	if r.MAC != "" {
+		parts = append(parts, "mac "+r.MAC)
+	}
+	if r.IP != "" {
+		parts = append(parts, "ip "+r.IP)
+	}
+	if r.Interface != "" {
+		parts = append(parts, "interface "+r.Interface)
+	}
+	if len(parts) == 0 {
+		return "(all)"
+	}
+	return strings.Join(parts, " ")
+}
+
+func formatGatewayRuleDesc(r GatewayRule) string {
+	target := r.Target
+	if target == "" {
+		target = "direct"
+	}
+	return fmt.Sprintf("%s -> %s", formatRuleSelector(r), target)
+}
+
+func gatewayRuleSelectorKey(r GatewayRule) string {
+	mac := strings.ToLower(strings.TrimSpace(r.MAC))
+	if norm, err := NormalizeMAC(mac); err == nil {
+		mac = norm
+	}
+	ip := strings.ToLower(strings.TrimSpace(r.IP))
+	if norm, err := NormalizeIPOrCIDR(ip); err == nil {
+		ip = norm
+	}
+	iface := strings.TrimSpace(r.Interface)
+	return fmt.Sprintf("mac=%s|ip=%s|iface=%s", mac, ip, iface)
+}
+
+func formatPortForwardTarget(pf PortForwardRule) string {
+	ip := strings.Trim(strings.TrimSpace(pf.TargetIP), "[]")
+	if strings.Contains(ip, ":") {
+		return fmt.Sprintf("[%s]:%d", ip, pf.TargetPort)
+	}
+	return fmt.Sprintf("%s:%d", ip, pf.TargetPort)
+}
+
+func formatPortForwardDesc(pf PortForwardRule) string {
+	proto, err := NormalizePortForwardProto(pf.Proto)
+	if err != nil || proto == "" {
+		proto = pf.Proto
+		if proto == "" {
+			proto = "tcp,udp"
+		}
+	}
+	return fmt.Sprintf("wan:%d -> %s (proto: %s)", pf.WANPort, formatPortForwardTarget(pf), proto)
+}
+
+func portForwardSelectorKey(pf PortForwardRule) string {
+	proto, err := NormalizePortForwardProto(pf.Proto)
+	if err != nil || proto == "" {
+		proto = strings.ToLower(strings.TrimSpace(pf.Proto))
+		if proto == "" {
+			proto = "tcp,udp"
+		}
+	}
+	return fmt.Sprintf("wan=%d|proto=%s", pf.WANPort, proto)
+}
+

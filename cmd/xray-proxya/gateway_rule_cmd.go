@@ -453,6 +453,19 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 }
 
 func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
+	target := ruleSetTo
+	if target == "" {
+		target = ruleSetTarget
+	}
+	if target == "" {
+		target = ruleTo
+	}
+	if target == "" {
+		target = ruleTarget
+	}
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("❌ --to / -t must be specified when adding or updating a rule")
+	}
 	return runGatewayRule(cmd, args)
 }
 

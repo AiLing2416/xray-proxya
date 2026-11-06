@@ -849,3 +849,69 @@ func TestGatewayRuleDirectFlags_MultiCriteria(t *testing.T) {
 		t.Fatalf("expected 0 rules after --del, got: %+v", stg.Gateway.Rules)
 	}
 }
+
+func TestGatewayRuleSetRequiresTo(t *testing.T) {
+	setupTestConfigDir(t)
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:  "tproxy",
+			State: "proxy",
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx(true) failed: %v", err)
+	}
+
+	// 1. gateway rule set without --to should fail with specific error
+	resetCmdFlags(gatewayRuleSetCmd)
+	ruleSetInterface = "eth1"
+	ruleSetTo = ""
+	ruleSetTarget = ""
+	err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when running gateway rule set without --to, got nil")
+	}
+	expectedErr := "❌ --to / -t must be specified when adding or updating a rule"
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Fatalf("expected error containing %q, got: %v", expectedErr, err)
+	}
+
+	// 2. Setting a rule with --to direct should succeed
+	resetCmdFlags(gatewayRuleSetCmd)
+	ruleSetInterface = "eth1"
+	ruleSetTo = "direct"
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err != nil {
+		t.Fatalf("expected gateway rule set --interface eth1 --to direct to succeed, got: %v", err)
+	}
+
+	// 3. Calling gateway rule set without --to should fail
+	ruleSetTo = ""
+	ruleSetTarget = ""
+	err = gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
+	if err == nil {
+		t.Fatal("expected error when running gateway rule set without --to, got nil")
+	}
+	if !strings.Contains(err.Error(), expectedErr) {
+		t.Fatalf("expected error containing %q, got: %v", expectedErr, err)
+	}
+
+	// 4. bare gateway rule should succeed and display rule list
+	resetCmdFlags(gatewayRuleCmd)
+	ruleTo = ""
+	ruleTarget = ""
+	ruleClear = false
+	ruleDel = false
+	err = gatewayRuleCmd.RunE(gatewayRuleCmd, []string{})
+	if err != nil {
+		t.Fatalf("expected bare gateway rule to succeed, got: %v", err)
+	}
+
+	// 5. gateway rule list should also succeed
+	err = gatewayRuleListCmd.RunE(gatewayRuleListCmd, []string{})
+	if err != nil {
+		t.Fatalf("expected gateway rule list to succeed, got: %v", err)
+	}
+}
+

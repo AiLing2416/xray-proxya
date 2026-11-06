@@ -44,6 +44,7 @@ func ApplyPending(opts Options) ([]string, error) {
 func applyPendingLocked(opts Options) ([]string, error) {
 	var dryRunInMemoryCfg *config.UserConfig
 	var directConfCfg *config.UserConfig
+	var gatewayWarning string
 	if config.GatewayConfStaged() || config.GatewayConfExists() {
 		confPath := config.GetGatewayConfPathEx(true)
 		if !config.GatewayConfStaged() {
@@ -56,33 +57,49 @@ func applyPendingLocked(opts Options) ([]string, error) {
 			cp := *activeCfg
 			baseCfg = &cp
 		}
-		if baseCfg != nil && baseCfg.Role == config.RoleGateway {
-			data, err := os.ReadFile(confPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read %s: %w", confPath, err)
-			}
-			ast, err := gatewayconf.Parse(string(data))
-			if err != nil {
-				return nil, fmt.Errorf("syntax error in %s: %w", confPath, err)
-			}
-			compiledGw, err := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(baseCfg))
-			if err != nil {
-				return nil, fmt.Errorf("compile error in %s: %w", confPath, err)
-			}
-
-			gatewayChanged := activeCfg == nil || !reflect.DeepEqual(activeCfg.Gateway, *compiledGw)
-			if gatewayChanged || config.StagingExists() {
-				baseCfg.Gateway = *compiledGw
-				if opts.DryRun && !config.StagingExists() {
-					dryRunInMemoryCfg = baseCfg
-				} else if !config.StagingExists() && gatewayChanged {
-					directConfCfg = baseCfg
+		if baseCfg != nil {
+			if baseCfg.Role == config.RoleGateway {
+				data, err := os.ReadFile(confPath)
+				if err != nil {
+					return nil, fmt.Errorf("failed to read %s: %w", confPath, err)
 				}
+				ast, err := gatewayconf.Parse(string(data))
+				if err != nil {
+					return nil, fmt.Errorf("syntax error in %s: %w", confPath, err)
+				}
+				compiledGw, err := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(baseCfg))
+				if err != nil {
+					return nil, fmt.Errorf("compile error in %s: %w", confPath, err)
+				}
+
+				gatewayChanged := activeCfg == nil || !reflect.DeepEqual(activeCfg.Gateway, *compiledGw)
+				if gatewayChanged || config.StagingExists() {
+					baseCfg.Gateway = *compiledGw
+					if opts.DryRun && !config.StagingExists() {
+						dryRunInMemoryCfg = baseCfg
+					} else if !config.StagingExists() && gatewayChanged {
+						directConfCfg = baseCfg
+					}
+				}
+			} else {
+				roleDesc := string(baseCfg.Role)
+				if roleDesc == "" {
+					roleDesc = "unset"
+				}
+				gatewayWarning = fmt.Sprintf("⚠️  gateway.conf is present but current role is %s (not gateway); gateway configuration will not be compiled/applied.", roleDesc)
 			}
+		} else {
+			gatewayWarning = "⚠️  gateway.conf is present but configuration is uninitialized (not gateway role); gateway configuration will not be compiled/applied."
 		}
 	}
 
 	if !config.StagingExists() && dryRunInMemoryCfg == nil && directConfCfg == nil {
+		if gatewayWarning != "" {
+			return []string{
+				gatewayWarning,
+				"ℹ️  No pending changes in STAGING (working configuration is clean).",
+			}, nil
+		}
 		return []string{"ℹ️  No pending changes in STAGING (working configuration is clean)."}, nil
 	}
 
@@ -128,7 +145,11 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	impact := BuildImpact(activeCfg, cfg)
 
 	if opts.DryRun {
-		return BuildDryRunPreview(activeCfg, cfg, impact, opts), nil
+		preview := BuildDryRunPreview(activeCfg, cfg, impact, opts)
+		if gatewayWarning != "" {
+			preview = append([]string{gatewayWarning}, preview...)
+		}
+		return preview, nil
 	}
 
 	if err := presets.RegenerateMarkedModes(cfg); err != nil {
@@ -147,6 +168,9 @@ func applyPendingLocked(opts Options) ([]string, error) {
 		Impact:              impact,
 		GatewaySyncRequired: gatewaySyncRequired,
 		Lines:               make([]string, 0, 16),
+	}
+	if gatewayWarning != "" {
+		actx.AppendLine(gatewayWarning)
 	}
 
 	// Record validation hints
