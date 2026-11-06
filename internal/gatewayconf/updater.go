@@ -522,22 +522,52 @@ func parseRuleMatchCriteria(line string, ctx *ruleParseContext) ([]config.Gatewa
 			grpName := strings.ToLower(tokens[1])
 			optIface := extractInterfaceOption(right)
 			if ctx != nil && ctx.groups[grpName] != nil {
-				grp := ctx.groups[grpName]
-				var rules []config.GatewayRule
-				for _, item := range grp.Items {
-					if d := ctx.devices[strings.ToLower(item)]; d != nil {
-						var ifaces []string
-						if optIface != "" {
-							ifaces = append(ifaces, optIface)
-						} else if d.Zone != "" && ctx.zones[strings.ToLower(d.Zone)] != nil {
-							ifaces = append(ifaces, ctx.zones[strings.ToLower(d.Zone)].Interfaces...)
-						}
-						if len(ifaces) == 0 {
-							rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP})
-						} else {
-							for _, iface := range ifaces {
-								rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP, Interface: iface})
+				var resolveGroupDevs func(name string, visited map[string]bool) []*DeviceDef
+				resolveGroupDevs = func(name string, visited map[string]bool) []*DeviceDef {
+					k := strings.ToLower(name)
+					if visited[k] {
+						return nil
+					}
+					visited[k] = true
+					g := ctx.groups[k]
+					if g == nil {
+						return nil
+					}
+					var res []*DeviceDef
+					for _, item := range g.Items {
+						itemLow := strings.ToLower(item)
+						if d := ctx.devices[itemLow]; d != nil {
+							res = append(res, d)
+						} else if ctx.groups[itemLow] != nil {
+							subVisited := make(map[string]bool, len(visited)+1)
+							for vk, vv := range visited {
+								subVisited[vk] = vv
 							}
+							res = append(res, resolveGroupDevs(itemLow, subVisited)...)
+						}
+					}
+					return res
+				}
+
+				devs := resolveGroupDevs(grpName, make(map[string]bool))
+				var rules []config.GatewayRule
+				seenMACs := make(map[string]bool)
+				for _, d := range devs {
+					if seenMACs[d.MAC] {
+						continue
+					}
+					seenMACs[d.MAC] = true
+					var ifaces []string
+					if optIface != "" {
+						ifaces = append(ifaces, optIface)
+					} else if d.Zone != "" && ctx.zones[strings.ToLower(d.Zone)] != nil {
+						ifaces = append(ifaces, ctx.zones[strings.ToLower(d.Zone)].Interfaces...)
+					}
+					if len(ifaces) == 0 {
+						rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP})
+					} else {
+						for _, iface := range ifaces {
+							rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP, Interface: iface})
 						}
 					}
 				}
@@ -591,7 +621,7 @@ func extractMACOption(optsStr string) string {
 
 func matchRuleEqual(criteria, selector config.GatewayRule) bool {
 	if selector.MAC == "" && selector.IP == "" && selector.Interface == "" {
-		return false
+		return criteria.MAC == "" && criteria.IP == "" && criteria.Interface == ""
 	}
 	if selector.MAC != "" && !strings.EqualFold(criteria.MAC, selector.MAC) {
 		return false

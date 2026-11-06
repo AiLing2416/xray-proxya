@@ -3,6 +3,7 @@ package gatewayconf
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
 )
@@ -95,5 +96,78 @@ func TestCommitStaging_PreservesGatewayConf(t *testing.T) {
 	}
 	if got.Gateway.WANInterface != "eth0" || !got.Gateway.LANEnabled {
 		t.Fatalf("active gateway config clobbered by commit: %+v", got.Gateway)
+	}
+}
+
+func TestGatewayConfigSaver_DoesNotCreatePhantomStagingOrDestroyAST(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", dir)
+
+	customConf := `# Handcrafted declarative gateway configuration
+def zone wan eth0
+def zone lan eth1
+def device myphone mac=52:54:00:84:00:11 zone=lan
+def group family myphone
+
+set state proxy
+local -> direct
+device myphone -> direct
+`
+	initCfg := &config.UserConfig{Role: config.RoleGateway}
+	if err := initCfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.GetGatewayConfPath(), []byte(customConf), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Load config from active
+	cfg, err := config.LoadConfigEx(false)
+	if err != nil {
+		t.Fatalf("LoadConfigEx failed: %v", err)
+	}
+
+	// 1. Calling SaveEx(true) without modifying gateway settings should NOT create gateway.conf.staging
+	cfg.Guests = append(cfg.Guests, config.GuestConfig{Alias: "alice"})
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx(true) failed: %v", err)
+	}
+
+	if config.GatewayConfStaged() {
+		t.Fatalf("gateway.conf.staging was unexpectedly created when gateway configuration was unchanged")
+	}
+
+	// Active gateway.conf must be completely untouched
+	activeBytes, err := os.ReadFile(config.GetGatewayConfPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(activeBytes) != customConf {
+		t.Fatalf("active gateway.conf was altered:\n%s", string(activeBytes))
+	}
+
+	// 2. Calling SaveEx(true) with modified gateway settings SHOULD create staging,
+	// but based on active gateway.conf (preserving AST defs & comments)
+	cfg.Gateway.State = "disabled"
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx(true) with state change failed: %v", err)
+	}
+	if !config.GatewayConfStaged() {
+		t.Fatalf("expected gateway.conf.staging to be created when gateway settings changed")
+	}
+
+	stgBytes, err := os.ReadFile(config.GetGatewayConfPathEx(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stgStr := string(stgBytes)
+	if !strings.Contains(stgStr, "def device myphone") || !strings.Contains(stgStr, "def group family") {
+		t.Fatalf("staging configuration clobbered AST defs:\n%s", stgStr)
+	}
+	if !strings.Contains(stgStr, "Handcrafted declarative gateway configuration") {
+		t.Fatalf("staging configuration clobbered header comment:\n%s", stgStr)
+	}
+	if !strings.Contains(stgStr, "set state disabled") {
+		t.Fatalf("staging configuration missing 'set state disabled':\n%s", stgStr)
 	}
 }

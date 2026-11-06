@@ -245,3 +245,44 @@ mac 52:54:00:99:99:99 -> block
 		t.Fatalf("mac rule should remain:\n%s", res2)
 	}
 }
+
+func TestDeleteRule_CatchAllRule(t *testing.T) {
+	initial := `def zone lan eth1
+local -> direct
+rule -> block
+mac 52:54:00:11:22:33 -> proxy
+`
+	// Delete catch-all rule using empty selector
+	res := DeleteRule(initial, config.GatewayRule{})
+	if strings.Contains(res, "rule -> block") {
+		t.Fatalf("expected catch-all 'rule -> block' to be deleted:\n%s", res)
+	}
+	if !strings.Contains(res, "local -> direct") {
+		t.Errorf("local rule should remain:\n%s", res)
+	}
+	if !strings.Contains(res, "mac 52:54:00:11:22:33 -> proxy") {
+		t.Errorf("mac rule should remain:\n%s", res)
+	}
+}
+
+func TestDeleteRule_NestedAndCircularGroup(t *testing.T) {
+	initial := `def zone lan eth1
+def device phone mac=52:54:00:11:22:33 zone=lan
+def group mobile phone
+def group all mobile
+def group loop1 loop2
+def group loop2 loop1
+
+group all -> proxy
+group loop1 -> direct
+`
+	// Delete nested group rule by member MAC
+	res := DeleteRule(initial, config.GatewayRule{MAC: "52:54:00:11:22:33"})
+	if strings.Contains(res, "group all -> proxy") {
+		t.Fatalf("expected nested group rule to be deleted by member MAC:\n%s", res)
+	}
+	// Circular group should not hang and loop1 should remain
+	if !strings.Contains(res, "group loop1 -> direct") {
+		t.Fatalf("loop1 should remain:\n%s", res)
+	}
+}

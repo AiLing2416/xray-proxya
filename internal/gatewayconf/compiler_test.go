@@ -289,8 +289,8 @@ ip 192.168.1.96 -> direct interface=eth1
 	if cfg.Rules[0].MAC != "52:54:00:84:00:11" || cfg.Rules[0].Target != "relay-jp" {
 		t.Errorf("rule[0] = %+v, want tv MAC", cfg.Rules[0])
 	}
-	if cfg.Rules[1].Interface != "eth2" || cfg.Rules[1].Target != "block" {
-		t.Errorf("rule[1] = %+v, want eth2 from iot subnet", cfg.Rules[1])
+	if cfg.Rules[1].Interface != "eth2" || cfg.Rules[1].IP != "192.168.2.0/24" || cfg.Rules[1].Target != "block" {
+		t.Errorf("rule[1] = %+v, want eth2 and 192.168.2.0/24 from iot subnet", cfg.Rules[1])
 	}
 	if cfg.Rules[2].IP != "192.168.1.95" || cfg.Rules[2].Target != "direct" {
 		t.Errorf("rule[2] = %+v, want pure IP direct", cfg.Rules[2])

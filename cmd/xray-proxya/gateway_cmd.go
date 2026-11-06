@@ -734,8 +734,7 @@ func runGatewayTun(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to apply configuration: %w", err)
 			}
-			_ = runGatewayManagementFunc("system-up")
-			fmt.Println("✅ Gateway TUN updated and runtime rules are UP.")
+			fmt.Println("✅ Gateway TUN updated and runtime rules synced.")
 			return nil
 		}
 
@@ -845,7 +844,10 @@ var gatewayDiffCmd = &cobra.Command{
 	Short: "Show gateway runtime rules that would be applied",
 	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
-		cfg, _ := config.LoadConfig()
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			cfg, _ = config.LoadConfigEx(false)
+		}
 		if cfg == nil {
 			return
 		}
@@ -878,22 +880,42 @@ var gatewayCheckCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, _ := config.LoadConfig()
 		hasSyntaxErr := false
-		if config.GatewayConfExists() {
-			confPath := config.GetGatewayConfPath()
-			data, err := os.ReadFile(confPath)
+
+		checkConf := func(path string, isStaging bool) {
+			data, err := os.ReadFile(path)
+			label := "gateway.conf"
+			if isStaging {
+				label = "gateway.conf.staging"
+			}
 			if err != nil {
-				fmt.Printf("⚠️  Failed to read gateway.conf: %v\n", err)
-			} else if ast, parseErr := gatewayconf.Parse(string(data)); parseErr != nil {
-				fmt.Printf("❌ gateway.conf syntax error: %v\n", parseErr)
+				fmt.Printf("⚠️  Failed to read %s: %v\n", label, err)
+				return
+			}
+			ast, parseErr := gatewayconf.Parse(string(data))
+			if parseErr != nil {
+				fmt.Printf("❌ %s syntax error: %v\n", label, parseErr)
 				hasSyntaxErr = true
-			} else {
-				if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(cfg)); compileErr != nil {
-					fmt.Printf("❌ gateway.conf semantic error: %v\n", compileErr)
-					hasSyntaxErr = true
-				} else {
-					fmt.Println("✅ gateway.conf declarative configuration syntax is valid.")
+				return
+			}
+			checkCfg := cfg
+			if isStaging {
+				if stgCfg, _ := config.LoadConfigEx(true); stgCfg != nil {
+					checkCfg = stgCfg
 				}
 			}
+			if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(checkCfg)); compileErr != nil {
+				fmt.Printf("❌ %s semantic error: %v\n", label, compileErr)
+				hasSyntaxErr = true
+				return
+			}
+			fmt.Printf("✅ %s declarative configuration syntax is valid.\n", label)
+		}
+
+		if config.GatewayConfExists() {
+			checkConf(config.GetGatewayConfPathEx(false), false)
+		}
+		if config.GatewayConfStaged() {
+			checkConf(config.GetGatewayConfPathEx(true), true)
 		}
 		if hasSyntaxErr {
 			os.Exit(1)
@@ -1127,22 +1149,27 @@ var gatewayEditCmd = &cobra.Command{
 		return gatewayRequireRoot("gateway edit")
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		confPath := config.GetGatewayConfPath()
+		confPath := config.GetGatewayConfPathEx(true)
 
-		if !config.GatewayConfExists() {
-			cfg, _ := config.LoadConfigEx(true)
-			if cfg == nil {
-				cfg, _ = config.LoadConfigEx(false)
-			}
+		if !config.GatewayConfStaged() {
+			actPath := config.GetGatewayConfPathEx(false)
 			var content string
-			if cfg != nil {
-				content = gatewayconf.GenerateFromUserConfig(cfg)
+			if actData, err := os.ReadFile(actPath); err == nil {
+				content = string(actData)
 			} else {
-				content = gatewayconf.Generate(&config.GatewayConfig{
-					Mode:         "tproxy",
-					LocalEnabled: true,
-					LANEnabled:   true,
-				})
+				cfg, _ := config.LoadConfigEx(true)
+				if cfg == nil {
+					cfg, _ = config.LoadConfigEx(false)
+				}
+				if cfg != nil {
+					content = gatewayconf.GenerateFromUserConfig(cfg)
+				} else {
+					content = gatewayconf.Generate(&config.GatewayConfig{
+						Mode:         "tproxy",
+						LocalEnabled: true,
+						LANEnabled:   true,
+					})
+				}
 			}
 			if err := os.MkdirAll(filepath.Dir(confPath), 0700); err != nil {
 				return fmt.Errorf("❌ Failed to create config directory: %w", err)
@@ -1150,7 +1177,7 @@ var gatewayEditCmd = &cobra.Command{
 			if err := os.WriteFile(confPath, []byte(content), 0600); err != nil {
 				return fmt.Errorf("❌ Failed to create initial %s: %w", confPath, err)
 			}
-			fmt.Printf("ℹ️  Created initial gateway.conf at %s\n", confPath)
+			fmt.Printf("ℹ️  Initialized staging gateway configuration at %s\n", confPath)
 		}
 
 		editor := os.Getenv("EDITOR")
@@ -1190,7 +1217,7 @@ var gatewayEditCmd = &cobra.Command{
 
 			ast, parseErr := gatewayconf.Parse(string(data))
 			if parseErr != nil {
-				fmt.Printf("\n❌ Syntax error in gateway.conf:\n   %v\n", parseErr)
+				fmt.Printf("\n❌ Syntax error in gateway.conf.staging:\n   %v\n", parseErr)
 				if !isTerm {
 					return parseErr
 				}
@@ -1208,7 +1235,7 @@ var gatewayEditCmd = &cobra.Command{
 				userCfg, _ = config.LoadConfigEx(false)
 			}
 			if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(userCfg)); compileErr != nil {
-				fmt.Printf("\n⚠️  Compilation warning in gateway.conf:\n   %v\n", compileErr)
+				fmt.Printf("\n⚠️  Compilation warning in gateway.conf.staging:\n   %v\n", compileErr)
 				if !isTerm {
 					return compileErr
 				}
@@ -1221,8 +1248,8 @@ var gatewayEditCmd = &cobra.Command{
 				continue
 			}
 
-			fmt.Println("✅ gateway.conf syntax validated successfully.")
-			fmt.Println("ℹ️  Run 'xray-proxya apply' to compile and apply changes.")
+			fmt.Println("✅ gateway.conf.staging syntax validated successfully.")
+			fmt.Println("ℹ️  Run 'xray-proxya apply' to compile and apply changes, or 'xray-proxya undo' to discard.")
 			break
 		}
 

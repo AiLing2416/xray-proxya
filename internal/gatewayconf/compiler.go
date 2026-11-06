@@ -449,33 +449,35 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				continue
 			}
 
-			// 2. Exact match with a zone subnet
-			var matchedZone *ZoneDef
-			for _, z := range zoneMap {
-				for _, s := range z.Subnets {
-					if s == ipStr {
-						matchedZone = z
-						break
-					}
-				}
-				if matchedZone != nil {
-					break
-				}
-			}
-			if matchedZone != nil {
-				for _, iface := range matchedZone.Interfaces {
-					if err := addRule(config.GatewayRule{Interface: iface, Target: r.Target}, r.Line); err != nil {
-						return nil, err
-					}
-				}
-				continue
-			}
-
-			// 3. Native L3 IP or CIDR rule (not bound to any device MAC)
+			// 2. Zone subnet match: bind interface constraint while retaining L3 IP/subnet
 			ruleIface, _ := r.Option("interface")
 			if ruleIface == "" {
 				ruleIface, _ = r.Option("iface")
 			}
+			if ruleIface == "" {
+				var matchedZone *ZoneDef
+				for _, z := range zoneMap {
+					for _, s := range z.Subnets {
+						if s == ipStr {
+							matchedZone = z
+							break
+						}
+					}
+					if matchedZone != nil {
+						break
+					}
+				}
+				if matchedZone != nil && len(matchedZone.Interfaces) > 0 {
+					for _, iface := range matchedZone.Interfaces {
+						if err := addRule(config.GatewayRule{IP: ipStr, Interface: iface, Target: r.Target}, r.Line); err != nil {
+							return nil, err
+						}
+					}
+					continue
+				}
+			}
+
+			// 3. Native L3 IP or CIDR rule (not bound to any device MAC)
 			if err := addRule(config.GatewayRule{IP: ipStr, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
 				return nil, err
 			}
