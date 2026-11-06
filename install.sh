@@ -12,17 +12,24 @@ REPO="AiLing2416/xray-proxya"
 
 ASSUME_YES=false
 ASSUME_NO=false
+INSTALL_XRAY=""
+XRAY_PINNED_VERSION="v26.10.31"
+XRAY_VERSION="${XRAY_VERSION:-$XRAY_PINNED_VERSION}"
 
 for arg in "$@"; do
     case "$arg" in
         -y|--yes) ASSUME_YES=true ;;
         -n|--no) ASSUME_NO=true ;;
+        --with-xray|--xray) INSTALL_XRAY=true ;;
+        --without-xray|--no-xray) INSTALL_XRAY=false ;;
         -h|--help)
             echo "Usage: $0 [options]"
             echo "Options:"
-            echo "  -y, --yes      Automatically confirm overwrite if existing binary is found"
-            echo "  -n, --no       Abort installation if existing binary is found"
-            echo "  -h, --help     Show this help message"
+            echo "  -y, --yes          Automatically confirm overwrite if existing binary is found"
+            echo "  -n, --no           Abort installation if existing binary is found"
+            echo "      --with-xray    Install/update Xray-core without prompting"
+            echo "      --without-xray Skip Xray-core installation/update without prompting"
+            echo "  -h, --help         Show this help message"
             exit 0
             ;;
     esac
@@ -43,8 +50,14 @@ command -v curl >/dev/null 2>&1 || fail "curl is required."
 command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required."
 
 case "$(uname -m)" in
-    x86_64) BIN_ARCH="amd64" ;;
-    aarch64|arm64) BIN_ARCH="arm64" ;;
+    x86_64)
+        BIN_ARCH="amd64"
+        XRAY_ARCH="64"
+        ;;
+    aarch64|arm64)
+        BIN_ARCH="arm64"
+        XRAY_ARCH="arm64-v8a"
+        ;;
     *) fail "Unsupported architecture: $(uname -m)" ;;
 esac
 
@@ -151,6 +164,72 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
     echo -e "${GREEN}✅ Added $INSTALL_DIR to PATH in $RC_FILE${NC}"
 fi
 export PATH="$PATH:$INSTALL_DIR"
+
+# Optional Xray-core installation or update
+XRAY_BIN="$SHARE_BIN_DIR/xray"
+XRAY_PROMPT="Install Xray-core ($XRAY_VERSION)? [Y/n]: "
+if [ -f "$XRAY_BIN" ]; then
+    CURRENT_XRAY_VER=$("$XRAY_BIN" version 2>/dev/null | head -n1 | awk '{print $2}') || CURRENT_XRAY_VER=""
+    if [ -n "$CURRENT_XRAY_VER" ]; then
+        XRAY_PROMPT="Update Xray-core ($CURRENT_XRAY_VER -> $XRAY_VERSION)? [Y/n]: "
+    else
+        XRAY_PROMPT="Update existing Xray-core to $XRAY_VERSION? [Y/n]: "
+    fi
+fi
+
+XRAY_CHOICE=""
+if [ -n "$INSTALL_XRAY" ]; then
+    if [ "$INSTALL_XRAY" = true ]; then
+        XRAY_CHOICE="y"
+    else
+        XRAY_CHOICE="n"
+    fi
+elif [ -c /dev/tty ] && [ -r /dev/tty ]; then
+    echo
+    read -r -p "$XRAY_PROMPT" XRAY_CHOICE < /dev/tty || XRAY_CHOICE=""
+elif [ -t 0 ]; then
+    echo
+    read -r -p "$XRAY_PROMPT" XRAY_CHOICE || XRAY_CHOICE=""
+else
+    if [ "$ASSUME_YES" = true ]; then
+        XRAY_CHOICE="y"
+    else
+        echo "ℹ️ Non-interactive shell detected; skipped Xray-core installation prompt."
+        XRAY_CHOICE="n"
+    fi
+fi
+
+case "$XRAY_CHOICE" in
+    [Nn]*)
+        echo "Skipped Xray-core installation."
+        ;;
+    *)
+        echo -e "⬇️ Downloading Xray-core ${YELLOW}$XRAY_VERSION${NC} for $BIN_ARCH..."
+        XRAY_ZIP="Xray-linux-$XRAY_ARCH.zip"
+        XRAY_URL="https://github.com/XTLS/Xray-core/releases/download/$XRAY_VERSION/$XRAY_ZIP"
+        curl -fL --retry 3 --retry-delay 1 "$XRAY_URL" -o "$WORK_DIR/$XRAY_ZIP" || fail "Failed to download $XRAY_URL"
+        curl -fL --retry 3 --retry-delay 1 "$XRAY_URL.dgst" -o "$WORK_DIR/$XRAY_ZIP.dgst" || fail "Failed to download $XRAY_URL.dgst"
+
+        EXPECTED_XRAY_HASH=$(awk '/SHA2-256|SHA256/ { for (i=1; i<=NF; i++) if ($i ~ /^[0-9a-fA-F]{64}$/) { print tolower($i); exit } }' "$WORK_DIR/$XRAY_ZIP.dgst")
+        [[ "$EXPECTED_XRAY_HASH" =~ ^[[:xdigit:]]{64}$ ]] || fail "Cannot extract valid SHA256 digest for $XRAY_ZIP"
+
+        ACTUAL_XRAY_HASH=$(sha256sum "$WORK_DIR/$XRAY_ZIP" | awk '{print $1}')
+        [ "$ACTUAL_XRAY_HASH" = "$EXPECTED_XRAY_HASH" ] || fail "Integrity check failed for $XRAY_ZIP (expected $EXPECTED_XRAY_HASH, got $ACTUAL_XRAY_HASH)"
+
+        echo "📦 Extracting Xray-core into $SHARE_BIN_DIR..."
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -q -o "$WORK_DIR/$XRAY_ZIP" "xray" "geoip.dat" "geosite.dat" -d "$SHARE_BIN_DIR"
+        elif command -v python3 >/dev/null 2>&1; then
+            python3 -c "import zipfile, sys; z=zipfile.ZipFile(sys.argv[1]); [z.extract(m, sys.argv[2]) for m in z.namelist() if m in ['xray', 'geoip.dat', 'geosite.dat']]" "$WORK_DIR/$XRAY_ZIP" "$SHARE_BIN_DIR"
+        else
+            fail "Neither unzip nor python3 is available to extract Xray-core."
+        fi
+        chmod 0755 "$SHARE_BIN_DIR/xray"
+        [ -f "$SHARE_BIN_DIR/geoip.dat" ] && chmod 0644 "$SHARE_BIN_DIR/geoip.dat" || true
+        [ -f "$SHARE_BIN_DIR/geosite.dat" ] && chmod 0644 "$SHARE_BIN_DIR/geosite.dat" || true
+        echo -e "${GREEN}✅ Xray-core ($XRAY_VERSION) installed to: $SHARE_BIN_DIR/xray${NC}"
+        ;;
+esac
 
 echo -e "\n${GREEN}✨ Installation successful.${NC}"
 echo "Run 'xray-proxya init' to get started. Existing services keep their current binary until restarted."
