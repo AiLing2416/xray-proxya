@@ -105,7 +105,7 @@ if [ -z "$VERSION" ]; then
         VERSION=$(grep 'const Version =' "$VERSION_FILE" | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
     fi
     if [ -z "$VERSION" ]; then
-        VERSION="0.5.3"
+        VERSION="0.5.4"
     fi
 fi
 
