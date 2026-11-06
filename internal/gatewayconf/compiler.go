@@ -353,8 +353,20 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 			if ruleIface == "" {
 				ruleIface, _ = r.Option("iface")
 			}
-			if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
-				return nil, err
+			if ruleIface != "" {
+				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+					return nil, err
+				}
+			} else if d.Zone != "" && zoneMap[strings.ToLower(d.Zone)] != nil && len(zoneMap[strings.ToLower(d.Zone)].Interfaces) > 0 {
+				for _, iface := range zoneMap[strings.ToLower(d.Zone)].Interfaces {
+					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: iface, Target: r.Target}, r.Line); err != nil {
+						return nil, err
+					}
+				}
+			} else {
+				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: "", Target: r.Target}, r.Line); err != nil {
+					return nil, err
+				}
 			}
 
 		case SubjectGroup:
@@ -372,8 +384,20 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 					continue
 				}
 				seenMACs[d.MAC] = true
-				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
-					return nil, err
+				if ruleIface != "" {
+					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+						return nil, err
+					}
+				} else if d.Zone != "" && zoneMap[strings.ToLower(d.Zone)] != nil && len(zoneMap[strings.ToLower(d.Zone)].Interfaces) > 0 {
+					for _, iface := range zoneMap[strings.ToLower(d.Zone)].Interfaces {
+						if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: iface, Target: r.Target}, r.Line); err != nil {
+							return nil, err
+						}
+					}
+				} else {
+					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: "", Target: r.Target}, r.Line); err != nil {
+						return nil, err
+					}
 				}
 			}
 
@@ -407,8 +431,20 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				if ruleIface == "" {
 					ruleIface, _ = r.Option("iface")
 				}
-				if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
-					return nil, err
+				if ruleIface != "" {
+					if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+						return nil, err
+					}
+				} else if matchedDev.Zone != "" && zoneMap[strings.ToLower(matchedDev.Zone)] != nil && len(zoneMap[strings.ToLower(matchedDev.Zone)].Interfaces) > 0 {
+					for _, iface := range zoneMap[strings.ToLower(matchedDev.Zone)].Interfaces {
+						if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: iface, Target: r.Target}, r.Line); err != nil {
+							return nil, err
+						}
+					}
+				} else {
+					if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: "", Target: r.Target}, r.Line); err != nil {
+						return nil, err
+					}
 				}
 				continue
 			}
@@ -435,32 +471,7 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				continue
 			}
 
-			// 3. CIDR match containing device IPs
-			if _, ipNet, err := net.ParseCIDR(ipStr); err == nil {
-				var matchedDevices []*DeviceDef
-				for _, d := range devMap {
-					if d.IP != "" {
-						if parsed := net.ParseIP(d.IP); parsed != nil && ipNet.Contains(parsed) {
-							matchedDevices = append(matchedDevices, d)
-						}
-					}
-				}
-				if len(matchedDevices) > 0 {
-					seenMACs := make(map[string]bool)
-					for _, d := range matchedDevices {
-						if seenMACs[d.MAC] {
-							continue
-						}
-						seenMACs[d.MAC] = true
-						if err := addRule(config.GatewayRule{MAC: d.MAC, Target: r.Target}, r.Line); err != nil {
-							return nil, err
-						}
-					}
-					continue
-				}
-			}
-
-			// 4. Native L3 IP or CIDR rule (not bound to any device MAC)
+			// 3. Native L3 IP or CIDR rule (not bound to any device MAC)
 			ruleIface, _ := r.Option("interface")
 			if ruleIface == "" {
 				ruleIface, _ = r.Option("iface")

@@ -69,8 +69,8 @@ device pad -> direct interface=eth1
 	}
 
 	r0 := cfg.Rules[0]
-	if r0.MAC != "52:54:00:84:00:11" || r0.Interface != "" || r0.Target != "relay-jp" {
-		t.Errorf("r0 = %+v, want MAC=52:54:00:84:00:11, Interface='', Target=relay-jp", r0)
+	if r0.MAC != "52:54:00:84:00:11" || r0.Interface != "eth1" || r0.Target != "relay-jp" {
+		t.Errorf("r0 = %+v, want MAC=52:54:00:84:00:11, Interface='eth1', Target=relay-jp", r0)
 	}
 
 	r1 := cfg.Rules[1]
@@ -300,6 +300,32 @@ ip 192.168.1.96 -> direct interface=eth1
 	}
 	if cfg.Rules[4].IP != "192.168.1.96" || cfg.Rules[4].Interface != "eth1" || cfg.Rules[4].Target != "direct" {
 		t.Errorf("rule[4] = %+v, want IP+Interface direct", cfg.Rules[4])
+	}
+}
+
+func TestCompile_CIDRDoesNotDegradeToMAC(t *testing.T) {
+	input := `
+def zone lan eth1
+def device tv mac=52:54:00:84:00:11 ip=10.0.82.50
+def device pad mac=52:54:00:84:00:12 ip=10.0.82.60
+
+ip 10.0.82.0/24 -> direct
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	cfg, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	if len(cfg.Rules) != 1 {
+		t.Fatalf("expected 1 native CIDR rule, got %d rules: %+v", len(cfg.Rules), cfg.Rules)
+	}
+	if cfg.Rules[0].IP != "10.0.82.0/24" || cfg.Rules[0].Target != "direct" {
+		t.Errorf("rule = %+v, want IP=10.0.82.0/24 -> direct", cfg.Rules[0])
 	}
 }
 
