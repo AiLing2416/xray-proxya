@@ -2,7 +2,6 @@ package applyops
 
 import (
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -482,9 +481,9 @@ local -> relay-a
 zone lan -> relay-a
 device test-dev -> relay-b
 `
-	confPath := filepath.Join(tmpDir, "gateway.conf")
+	confPath := config.GetGatewayConfPathEx(true)
 	if err := os.WriteFile(confPath, []byte(confText), 0600); err != nil {
-		t.Fatalf("failed to write gateway.conf: %v", err)
+		t.Fatalf("failed to write gateway.conf.staging: %v", err)
 	}
 
 	// 3. DryRun test: must detect changes without committing

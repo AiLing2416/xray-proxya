@@ -1,7 +1,6 @@
 package config
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -2245,23 +2244,29 @@ func GetGatewayConfPath() string {
 	return filepath.Join(GetConfigDir(), "gateway.conf")
 }
 
+func GetGatewayConfPathEx(staging bool) string {
+	if staging {
+		return filepath.Join(GetConfigDir(), "gateway.conf.staging")
+	}
+	return filepath.Join(GetConfigDir(), "gateway.conf")
+}
+
 func GatewayConfExists() bool {
 	info, err := os.Stat(GetGatewayConfPath())
 	return err == nil && !info.IsDir()
 }
 
 func GetGatewayActiveConfPath() string {
-	return filepath.Join(GetConfigDir(), "gateway.active.conf")
+	return GetGatewayConfPath()
 }
 
 func GatewayActiveConfExists() bool {
-	info, err := os.Stat(GetGatewayActiveConfPath())
-	return err == nil && !info.IsDir()
+	return GatewayConfExists()
 }
 
 func CommitGatewayConf() error {
-	src := GetGatewayConfPath()
-	dst := GetGatewayActiveConfPath()
+	src := GetGatewayConfPathEx(true)
+	dst := GetGatewayConfPathEx(false)
 	if _, err := os.Stat(src); os.IsNotExist(err) {
 		return nil
 	}
@@ -2269,7 +2274,10 @@ func CommitGatewayConf() error {
 	if err != nil {
 		return err
 	}
-	return writeFileAtomic(dst, data, 0600)
+	if err := writeFileAtomic(dst, data, 0600); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
 
 // writeFileAtomic writes data to a temporary sibling file and renames it over
@@ -2299,7 +2307,7 @@ func migrateLegacyGateway(cfg *UserConfig) error {
 	if cfg == nil || !cfg.legacyGateway || cfg.Role != RoleGateway || GatewayConfigGenerator == nil {
 		return nil
 	}
-	if GatewayConfExists() || GatewayActiveConfExists() {
+	if GatewayConfExists() {
 		return nil
 	}
 	if strings.EqualFold(strings.TrimSpace(cfg.Gateway.Mode), "tun") {
@@ -2312,11 +2320,6 @@ func migrateLegacyGateway(cfg *UserConfig) error {
 	if err := os.MkdirAll(GetConfigDir(), 0700); err != nil {
 		return fmt.Errorf("migrate legacy gateway config: %w", err)
 	}
-	// Active first: a crash in between leaves a valid active file and the
-	// staging file is simply recreated from it on the next load.
-	if err := writeFileAtomic(GetGatewayActiveConfPath(), content, 0600); err != nil {
-		return fmt.Errorf("migrate legacy gateway config: %w", err)
-	}
 	if err := writeFileAtomic(GetGatewayConfPath(), content, 0600); err != nil {
 		return fmt.Errorf("migrate legacy gateway config: %w", err)
 	}
@@ -2324,19 +2327,11 @@ func migrateLegacyGateway(cfg *UserConfig) error {
 }
 
 func RollbackGatewayConf() error {
-	active := GetGatewayActiveConfPath()
-	stg := GetGatewayConfPath()
-	if _, err := os.Stat(active); os.IsNotExist(err) {
-		if err := os.Remove(stg); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-		return nil
-	}
-	data, err := os.ReadFile(active)
-	if err != nil {
+	stg := GetGatewayConfPathEx(true)
+	if err := os.Remove(stg); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	return writeFileAtomic(stg, data, 0600)
+	return nil
 }
 
 // GatewayTunDisabledPath is a runtime-only marker. It lets a gateway be
@@ -2387,17 +2382,8 @@ func SetPathTunDisabled(disabled bool) error {
 }
 
 func GatewayConfStaged() bool {
-	stgPath := GetGatewayConfPath()
-	actPath := GetGatewayActiveConfPath()
-	stgBytes, err1 := os.ReadFile(stgPath)
-	if err1 != nil {
-		return false
-	}
-	actBytes, err2 := os.ReadFile(actPath)
-	if err2 != nil {
-		return len(stgBytes) > 0
-	}
-	return !bytes.Equal(stgBytes, actBytes)
+	info, err := os.Stat(GetGatewayConfPathEx(true))
+	return err == nil && !info.IsDir()
 }
 
 func StagingExists() bool {
@@ -2440,20 +2426,17 @@ func defaultGatewayConfLoader(staging bool, userCfg *UserConfig) (*GatewayConfig
 	// the full parser lives there (config cannot import it without a cycle).
 	var confPath string
 	if staging {
-		confPath = GetGatewayConfPath()
-		if !GatewayConfExists() && GatewayActiveConfExists() {
-			confPath = GetGatewayActiveConfPath()
+		confPath = GetGatewayConfPathEx(true)
+		if !GatewayConfStaged() {
+			confPath = GetGatewayConfPathEx(false)
 		}
 	} else {
-		if !GatewayActiveConfExists() {
-			return &GatewayConfig{Mode: "tproxy"}, nil
-		}
-		confPath = GetGatewayActiveConfPath()
+		confPath = GetGatewayConfPathEx(false)
 	}
 	data, err := os.ReadFile(confPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, nil
+			return &GatewayConfig{Mode: "tproxy"}, nil
 		}
 		return nil, fmt.Errorf("read gateway configuration: %w", err)
 	}
@@ -2610,15 +2593,13 @@ func (cfg *UserConfig) SaveEx(staging bool) error {
 // files are committed as a unit: if the JSON commit fails, the previous active
 // gateway.conf is restored so the pair never ends up mismatched.
 func CommitStaging() error {
-	prevGW, prevErr := os.ReadFile(GetGatewayActiveConfPath())
+	prevGW, prevErr := os.ReadFile(GetGatewayConfPath())
 	if err := CommitGatewayConf(); err != nil {
 		return fmt.Errorf("commit gateway configuration: %w", err)
 	}
 	if err := commitStagingJSON(); err != nil {
 		if prevErr == nil {
-			_ = writeFileAtomic(GetGatewayActiveConfPath(), prevGW, 0600)
-		} else if os.IsNotExist(prevErr) {
-			_ = os.Remove(GetGatewayActiveConfPath())
+			_ = writeFileAtomic(GetGatewayConfPath(), prevGW, 0600)
 		}
 		return err
 	}

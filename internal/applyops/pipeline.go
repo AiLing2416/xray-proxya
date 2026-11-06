@@ -63,7 +63,7 @@ func (p *ApplyPipeline) Execute(actx *ApplyContext) error {
 						_ = os.WriteFile(config.GetConfigPathEx(true), actx.StagingBackupRaw, 0600)
 					}
 					if len(actx.GatewayActiveBackupRaw) > 0 {
-						_ = os.WriteFile(config.GetGatewayActiveConfPath(), actx.GatewayActiveBackupRaw, 0644)
+						_ = os.WriteFile(config.GetGatewayConfPath(), actx.GatewayActiveBackupRaw, 0644)
 					}
 					actx.AppendLine("⚠️ Apply failed after commit. Automatically rolled back active configuration to protect system state.")
 				}

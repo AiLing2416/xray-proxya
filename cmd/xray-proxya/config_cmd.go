@@ -214,9 +214,9 @@ var configShowCmd = &cobra.Command{
 			filterKey := strings.TrimSpace(configShowFilter)
 			if strings.EqualFold(filterKey, "gateway") {
 				if configShowRaw {
-					confPath := config.GetGatewayConfPath()
-					if !configShowStaging && config.GatewayActiveConfExists() {
-						confPath = config.GetGatewayActiveConfPath()
+					confPath := config.GetGatewayConfPathEx(configShowStaging)
+					if configShowStaging && !config.GatewayConfStaged() {
+						confPath = config.GetGatewayConfPathEx(false)
 					}
 					gwBytes, _ := os.ReadFile(confPath)
 					fmt.Println(strings.TrimRight(string(gwBytes), "\n"))

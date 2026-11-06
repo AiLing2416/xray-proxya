@@ -121,7 +121,7 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 	if data, err := os.ReadFile(config.GetConfigPathEx(true)); err == nil {
 		ctx.StagingBackupRaw = data
 	}
-	if data, err := os.ReadFile(config.GetGatewayActiveConfPath()); err == nil {
+	if data, err := os.ReadFile(config.GetGatewayConfPath()); err == nil {
 		ctx.GatewayActiveBackupRaw = data
 	}
 

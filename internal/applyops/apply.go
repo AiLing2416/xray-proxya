@@ -43,8 +43,12 @@ func ApplyPending(opts Options) ([]string, error) {
 
 func applyPendingLocked(opts Options) ([]string, error) {
 	var dryRunInMemoryCfg *config.UserConfig
-	if config.GatewayConfExists() {
-		confPath := config.GetGatewayConfPath()
+	var directConfCfg *config.UserConfig
+	if config.GatewayConfStaged() || config.GatewayConfExists() {
+		confPath := config.GetGatewayConfPathEx(true)
+		if !config.GatewayConfStaged() {
+			confPath = config.GetGatewayConfPathEx(false)
+		}
 		activeCfg, _ := config.LoadConfigEx(false)
 		stagingCfg, _ := config.LoadConfigEx(true)
 		baseCfg := stagingCfg
@@ -71,16 +75,14 @@ func applyPendingLocked(opts Options) ([]string, error) {
 				baseCfg.Gateway = *compiledGw
 				if opts.DryRun && !config.StagingExists() {
 					dryRunInMemoryCfg = baseCfg
-				} else {
-					if err := baseCfg.SaveEx(true); err != nil {
-						return nil, fmt.Errorf("failed to stage compiled gateway config: %w", err)
-					}
+				} else if !config.StagingExists() && gatewayChanged {
+					directConfCfg = baseCfg
 				}
 			}
 		}
 	}
 
-	if !config.StagingExists() && dryRunInMemoryCfg == nil {
+	if !config.StagingExists() && dryRunInMemoryCfg == nil && directConfCfg == nil {
 		return []string{"ℹ️  No pending changes in STAGING (working configuration is clean)."}, nil
 	}
 
@@ -91,6 +93,8 @@ func applyPendingLocked(opts Options) ([]string, error) {
 	var cfg *config.UserConfig
 	if dryRunInMemoryCfg != nil {
 		cfg = dryRunInMemoryCfg
+	} else if directConfCfg != nil {
+		cfg = directConfCfg
 	} else {
 		cfg, err = config.LoadConfigEx(true)
 		if err != nil {

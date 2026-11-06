@@ -3,7 +3,6 @@ package gatewayconf
 import (
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -13,15 +12,12 @@ func init() {
 	config.GatewayConfigLoader = func(staging bool, userCfg *config.UserConfig) (*config.GatewayConfig, error) {
 		var confPath string
 		if staging {
-			confPath = config.GetGatewayConfPath()
-			if _, err := os.Stat(confPath); os.IsNotExist(err) && config.GatewayActiveConfExists() {
-				confPath = config.GetGatewayActiveConfPath()
+			confPath = config.GetGatewayConfPathEx(true)
+			if _, err := os.Stat(confPath); os.IsNotExist(err) {
+				confPath = config.GetGatewayConfPathEx(false)
 			}
 		} else {
-			if !config.GatewayActiveConfExists() {
-				return &config.GatewayConfig{Mode: "tproxy"}, nil
-			}
-			confPath = config.GetGatewayActiveConfPath()
+			confPath = config.GetGatewayConfPathEx(false)
 		}
 
 		if _, err := os.Stat(confPath); os.IsNotExist(err) {
@@ -45,108 +41,64 @@ func init() {
 		if gw == nil {
 			return nil
 		}
-		var confPath string
-		if staging {
-			confPath = config.GetGatewayConfPath()
-		} else {
-			confPath = config.GetGatewayActiveConfPath()
-		}
-
+		confPath := config.GetGatewayConfPathEx(staging)
 		if _, err := os.Stat(confPath); err == nil {
 			return InPlaceUpdateFile(confPath, func(content string) string {
 				if gw.State != "" {
-					content = UpdateSet(content, "state", gw.State)
-				} else {
-					content = DeleteSet(content, "state")
+					content = UpdateSetIfExists(content, "state", gw.State)
 				}
 				if gw.Mode != "" {
-					content = UpdateSet(content, "mode", gw.Mode)
+					content = UpdateSetIfExists(content, "mode", gw.Mode)
 				}
 				if gw.TUNEnabled {
-					content = UpdateSet(content, "tun", "true")
+					content = UpdateSetIfExists(content, "tun", "true")
 				} else {
-					content = UpdateSet(content, "tun", "false")
+					content = UpdateSetIfExists(content, "tun", "false")
 				}
 				if gw.LocalEnabled {
-					content = UpdateSet(content, "local", "true")
+					content = UpdateSetIfExists(content, "local", "true")
 				} else {
-					content = UpdateSet(content, "local", "false")
+					content = UpdateSetIfExists(content, "local", "false")
 				}
 				if gw.LANEnabled {
-					content = UpdateSet(content, "lan", "true")
+					content = UpdateSetIfExists(content, "lan", "true")
 				} else {
-					content = UpdateSet(content, "lan", "false")
+					content = UpdateSetIfExists(content, "lan", "false")
 				}
 				if gw.NATDisabled {
-					content = UpdateSet(content, "nat", "false")
+					content = UpdateSetIfExists(content, "nat", "false")
 				} else {
-					content = UpdateSet(content, "nat", "true")
+					content = UpdateSetIfExists(content, "nat", "true")
 				}
 				if gw.RelayAlias != "" {
-					content = UpdateSet(content, "relay", gw.RelayAlias)
-				} else {
-					content = DeleteSet(content, "relay")
+					content = UpdateSetIfExists(content, "relay", gw.RelayAlias)
 				}
 				if gw.WANInterface != "" {
-					content = UpdateSet(content, "wan", gw.WANInterface)
-				} else {
-					content = DeleteSet(content, "wan")
+					content = UpdateSetIfExists(content, "wan", gw.WANInterface)
 				}
 				if len(gw.LANInterfaces) > 0 {
-					content = UpdateSet(content, "lan_interfaces", strings.Join(gw.LANInterfaces, ","))
+					content = UpdateSetIfExists(content, "lan_interfaces", strings.Join(gw.LANInterfaces, ","))
 				} else if gw.LANInterface != "" {
-					content = UpdateSet(content, "lan_interfaces", gw.LANInterface)
-				} else {
-					content = DeleteSet(content, "lan_interfaces")
+					content = UpdateSetIfExists(content, "lan_interfaces", gw.LANInterface)
 				}
 				if len(gw.BypassCountries) > 0 {
-					content = UpdateSet(content, "bypass_countries", strings.Join(gw.BypassCountries, ","))
-				} else {
-					content = DeleteSet(content, "bypass_countries")
+					content = UpdateSetIfExists(content, "bypass_countries", strings.Join(gw.BypassCountries, ","))
 				}
 				if len(gw.BypassDNS) > 0 {
-					content = UpdateSet(content, "bypass_dns", strings.Join(gw.BypassDNS, ","))
-				} else {
-					content = DeleteSet(content, "bypass_dns")
+					content = UpdateSetIfExists(content, "bypass_dns", strings.Join(gw.BypassDNS, ","))
 				}
 				if gw.DNSListen != "" {
-					content = UpdateSet(content, "dns_listen", gw.DNSListen)
-				} else {
-					content = DeleteSet(content, "dns_listen")
+					content = UpdateSetIfExists(content, "dns_listen", gw.DNSListen)
 				}
 				if gw.DNSStrategy != "" {
-					content = UpdateSet(content, "dns_strategy", gw.DNSStrategy)
-				} else {
-					content = DeleteSet(content, "dns_strategy")
+					content = UpdateSetIfExists(content, "dns_strategy", gw.DNSStrategy)
 				}
 				if len(gw.DNSServers) > 0 {
-					content = UpdateSet(content, "dns_servers", strings.Join(gw.DNSServers, ", "))
-				} else {
-					content = DeleteSet(content, "dns_servers")
+					content = UpdateSetIfExists(content, "dns_servers", strings.Join(gw.DNSServers, ", "))
 				}
-
-				// Rules and DNS records are declarative and edited in gateway.conf
-				// directly. The compiled GatewayConfig expands them (device/group ->
-				// mac rules), so writing them back unconditionally would duplicate
-				// lines. Only rewrite them when the caller actually changed them.
-				curRules, curDNS := compiledRulesAndDNS(content)
-				if !reflect.DeepEqual(curRules, gw.Rules) {
-					content = ClearRules(content)
-					for _, r := range gw.Rules {
-						content = UpdateRule(content, r)
-					}
-				}
-				if !reflect.DeepEqual(curDNS, gw.DNSRecords) {
-					content = ClearDNSRecords(content)
-					for d, ips := range gw.DNSRecords {
-						content = UpdateDNSRecord(content, d, ips)
-					}
-				}
-
 				return content
 			})
 		}
-
 		content := Generate(gw)
 		if err := os.MkdirAll(filepath.Dir(confPath), 0700); err != nil {
 			return err

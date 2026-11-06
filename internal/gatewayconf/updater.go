@@ -49,6 +49,37 @@ func UpdateSet(content string, key string, value string) string {
 	return joinLines(lines)
 }
 
+// UpdateSetIfExists updates an existing 'set <key> <value>' directive in-place.
+// If the directive does not already exist, it returns content untouched without appending.
+func UpdateSetIfExists(content string, key string, value string) string {
+	if strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") {
+		return content
+	}
+	targetKey := strings.ToLower(strings.TrimSpace(key))
+	targetVal := strings.TrimSpace(value)
+	newLine := fmt.Sprintf("set %s %s", targetKey, targetVal)
+
+	lines := splitLines(content)
+	found := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || trimmed == "" || isDefLine(trimmed) {
+			continue
+		}
+		fields := strings.Fields(trimmed)
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && strings.EqualFold(fields[1], targetKey) {
+			leadingWS := getLeadingWhitespace(line)
+			lines[i] = leadingWS + newLine
+			found = true
+			break
+		}
+	}
+	if !found {
+		return content
+	}
+	return joinLines(lines)
+}
+
 // DeleteSet removes any active 'set <key> ...' directive.
 func DeleteSet(content string, key string) string {
 	targetKey := strings.ToLower(strings.TrimSpace(key))
@@ -272,9 +303,25 @@ func InPlaceUpdateFile(path string, fn func(string) string) error {
 	return os.Rename(tmpFile, path)
 }
 
-// ModifyGatewayConf performs an in-place update on the default gateway.conf file.
+// ModifyGatewayConf performs an in-place update on the staging gateway.conf file (gateway.conf.staging).
+// If gateway.conf.staging does not exist, it loads active gateway.conf as initial base content.
 func ModifyGatewayConf(fn func(string) string) error {
-	return InPlaceUpdateFile(config.GetGatewayConfPath(), fn)
+	stgPath := config.GetGatewayConfPathEx(true)
+	var content string
+	if data, err := os.ReadFile(stgPath); err == nil {
+		content = string(data)
+	} else if data, err := os.ReadFile(config.GetGatewayConfPathEx(false)); err == nil {
+		content = string(data)
+	}
+	updated := fn(content)
+	if err := os.MkdirAll(filepath.Dir(stgPath), 0700); err != nil {
+		return err
+	}
+	tmpFile := fmt.Sprintf("%s.tmp.%d", stgPath, time.Now().UnixNano())
+	if err := os.WriteFile(tmpFile, []byte(updated), 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmpFile, stgPath)
 }
 
 // formatGatewayRule formats a config.GatewayRule into the appropriate gateway.conf line syntax.
