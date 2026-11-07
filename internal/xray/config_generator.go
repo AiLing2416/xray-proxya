@@ -829,6 +829,18 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			})
 		}
 	}
+	for _, co := range userCfg.CustomOutbounds {
+		if !co.Enabled || !co.AllowPrivateTargets {
+			continue
+		}
+		if tags, ok := relayInboundTags[co.Alias]; ok {
+			rules = append(rules, map[string]interface{}{
+				"type":        "field",
+				"inboundTag":  tags,
+				"outboundTag": "outbound-" + co.Alias,
+			})
+		}
+	}
 
 	// geoip:private guard
 	rules = append(rules,
@@ -847,7 +859,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 	}
 	for _, co := range userCfg.CustomOutbounds {
-		if !co.Enabled {
+		if !co.Enabled || co.AllowPrivateTargets {
 			continue
 		}
 		if tags, ok := relayInboundTags[co.Alias]; ok {

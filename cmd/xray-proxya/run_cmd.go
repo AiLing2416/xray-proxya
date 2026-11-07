@@ -50,33 +50,9 @@ var runCmd = &cobra.Command{
 		// v0.2.4 Port Policy:
 		// By default (especially as a service), we are STRICT.
 		// We only allow port drift if --audit is explicitly provided.
-		changed := false
-		auditPort := func(label string, current *int) error {
-			if *current <= 0 {
-				return nil
-			}
-			if !utils.IsPortFree(*current) {
-				if runAudit {
-					newP, _ := xray.GetFreePort()
-					fmt.Printf("⚠️  Warning: %s Port %d occupied, switched to %d\n", label, *current, newP)
-					*current = newP
-					changed = true
-				} else {
-					return fmt.Errorf("%s port %d is occupied; use --audit to allow dynamic port selection", label, *current)
-				}
-			}
-			return nil
-		}
-
-		if err := auditPort("API", &cfg.APIInbound); err != nil {
+		changed, err := auditConfigPorts(cfg, runAudit)
+		if err != nil {
 			return err
-		}
-		for i := range cfg.Presets {
-			if cfg.Presets[i].Enabled {
-				if err := auditPort(string(cfg.Presets[i].Mode), &cfg.Presets[i].Port); err != nil {
-					return err
-				}
-			}
 		}
 
 		if changed {
@@ -466,6 +442,79 @@ var runCmd = &cobra.Command{
 			}
 		}
 	},
+}
+
+// auditConfigPorts checks that the API inbound port and enabled preset ports are free.
+// For hysteria2 (UDP), it verifies using utils.IsUDPPortFree and reallocates with xray.GetFreeUDPPort().
+// For other presets and API (TCP), it verifies using utils.IsPortFree and reallocates with xray.GetFreePort().
+// It also tracks claimed ports across presets to prevent intra-configuration collisions.
+func auditConfigPorts(cfg *config.UserConfig, runAudit bool) (bool, error) {
+	if cfg == nil {
+		return false, nil
+	}
+	changed := false
+	claimed := make(map[string]bool)
+
+	auditPort := func(label string, current *int, isUDP bool) error {
+		if *current <= 0 {
+			return nil
+		}
+		proto := "tcp"
+		if isUDP {
+			proto = "udp"
+		}
+		key := fmt.Sprintf("%s:%d", proto, *current)
+
+		free := false
+		if !claimed[key] {
+			if isUDP {
+				free = utils.IsUDPPortFree(*current)
+			} else {
+				free = utils.IsPortFree(*current)
+			}
+		}
+
+		if !free {
+			if runAudit {
+				var newP int
+				var err error
+				for {
+					if isUDP {
+						newP, err = xray.GetFreeUDPPort()
+					} else {
+						newP, err = xray.GetFreePort()
+					}
+					if err != nil {
+						return fmt.Errorf("failed to allocate free port for %s: %w", label, err)
+					}
+					newKey := fmt.Sprintf("%s:%d", proto, newP)
+					if !claimed[newKey] {
+						break
+					}
+				}
+				fmt.Printf("⚠️  Warning: %s Port %d occupied, switched to %d\n", label, *current, newP)
+				*current = newP
+				changed = true
+			} else {
+				return fmt.Errorf("%s port %d is occupied; use --audit to allow dynamic port selection", label, *current)
+			}
+		}
+		claimed[fmt.Sprintf("%s:%d", proto, *current)] = true
+		return nil
+	}
+
+	if err := auditPort("API", &cfg.APIInbound, false); err != nil {
+		return false, err
+	}
+	for i := range cfg.Presets {
+		if cfg.Presets[i].Enabled {
+			isUDP := cfg.Presets[i].Mode == config.ModeHysteria2
+			if err := auditPort(string(cfg.Presets[i].Mode), &cfg.Presets[i].Port, isUDP); err != nil {
+				return false, err
+			}
+		}
+	}
+	return changed, nil
 }
 
 func init() {

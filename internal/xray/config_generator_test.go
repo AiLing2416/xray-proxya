@@ -1157,6 +1157,53 @@ func TestGenerateXrayJSONInternalProxy(t *testing.T) {
 	}
 }
 
+func TestGenerateXrayJSONInternalProxyAllowPrivateTargets(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		allowPrivate bool
+		wantBefore   bool
+	}{
+		{name: "blocked by default", allowPrivate: false, wantBefore: false},
+		{name: "explicitly allowed", allowPrivate: true, wantBefore: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := &config.UserConfig{
+				Role: config.RoleServer,
+				CustomOutbounds: []config.CustomOutbound{
+					{
+						Alias:               "relay-p",
+						Enabled:             true,
+						InternalProxyPort:   1080,
+						InternalHttpPort:    8080,
+						InternalListenAddr:  "127.0.0.1",
+						AllowPrivateTargets: test.allowPrivate,
+						Config:              map[string]interface{}{"protocol": "freedom"},
+					},
+				},
+			}
+
+			parsed := generateAndDecodeXrayConfig(t, cfg, "")
+			rules := parsed["routing"].(map[string]interface{})["rules"].([]interface{})
+			inboundIndex, privateIndex := -1, -1
+			for index, rawRule := range rules {
+				rule := rawRule.(map[string]interface{})
+				if inboundIndex < 0 && rule["outboundTag"] == "outbound-relay-p" && containsString(rule["inboundTag"], "relay-socks-relay-p") {
+					inboundIndex = index
+				}
+				if rule["outboundTag"] == "direct" && containsString(rule["ip"], "geoip:private") {
+					privateIndex = index
+				}
+			}
+			if inboundIndex < 0 || privateIndex < 0 {
+				t.Fatalf("missing inboundTag or private-IP rule: inbound=%d private=%d", inboundIndex, privateIndex)
+			}
+			if got := inboundIndex < privateIndex; got != test.wantBefore {
+				t.Fatalf("relay inbound rule before private-IP guard = %t, want %t (inbound=%d private=%d)", got, test.wantBefore, inboundIndex, privateIndex)
+			}
+		})
+	}
+}
+
 func TestGenerateXrayJSONInboundPortConflict(t *testing.T) {
 	// Outbound proxy port conflicting with another outbound proxy port
 	cfg := &config.UserConfig{

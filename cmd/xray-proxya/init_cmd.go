@@ -163,8 +163,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if s.mode == config.ModeHysteria2 {
 			if !utils.IsUDPPortFree(actualPort) {
 				for {
-					p, _ := xray.GetFreePort()
-					if p >= 10000 && utils.IsUDPPortFree(p) {
+					p, _ := xray.GetFreeUDPPort()
+					if p >= 10000 {
 						actualPort = p
 						break
 					}

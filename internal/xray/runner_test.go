@@ -48,6 +48,16 @@ func TestGetFreePortReturnsValidPort(t *testing.T) {
 	}
 }
 
+func TestGetFreeUDPPortReturnsValidPort(t *testing.T) {
+	port, err := GetFreeUDPPort()
+	if err != nil {
+		t.Fatalf("GetFreeUDPPort failed: %v", err)
+	}
+	if port <= 0 || port > 65535 {
+		t.Fatalf("invalid port returned: %d", port)
+	}
+}
+
 func TestStartXrayTempWithOutput(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd, cleanup, err := StartXrayTempWithOutput([]byte("{}"), &stderr)

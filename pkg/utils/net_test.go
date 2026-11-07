@@ -133,3 +133,37 @@ func TestSmartIPCacheAndTestOverride(t *testing.T) {
 	ResetSmartIPCache()
 }
 
+func TestGetFreeUDPPort(t *testing.T) {
+	port, err := GetFreeUDPPort()
+	if err != nil {
+		t.Fatalf("GetFreeUDPPort failed: %v", err)
+	}
+	if port <= 0 || port > 65535 {
+		t.Fatalf("invalid UDP port: %d", port)
+	}
+	if !IsUDPPortFree(port) {
+		t.Fatalf("allocated UDP port %d is not free", port)
+	}
+}
+
+func TestGetFreeUDPPortsDistinct(t *testing.T) {
+	count := 4
+	ports, err := GetFreeUDPPorts(count)
+	if err != nil {
+		t.Fatalf("GetFreeUDPPorts(%d) failed: %v", count, err)
+	}
+	if len(ports) != count {
+		t.Fatalf("got %d ports, want %d", len(ports), count)
+	}
+	seen := make(map[int]bool)
+	for _, p := range ports {
+		if p <= 0 || p > 65535 {
+			t.Fatalf("invalid UDP port: %d", p)
+		}
+		if seen[p] {
+			t.Fatalf("duplicate port %d in GetFreeUDPPorts output", p)
+		}
+		seen[p] = true
+	}
+}
+

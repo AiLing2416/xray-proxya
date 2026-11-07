@@ -343,6 +343,10 @@ func GetFreePort() (int, error) {
 	return utils.GetFreePort()
 }
 
+func GetFreeUDPPort() (int, error) {
+	return utils.GetFreeUDPPort()
+}
+
 func GetXrayProxyaPath() string {
 	path, err := os.Executable()
 	if err != nil || path == "" {

@@ -113,6 +113,40 @@ func GetFreePort() (int, error) {
 	return ports[0], nil
 }
 
+// GetFreeUDPPorts allocates 'count' distinct, collision-free UDP ports by keeping all listeners
+// open simultaneously until the full batch has been assigned.
+func GetFreeUDPPorts(count int) ([]int, error) {
+	if count <= 0 {
+		return nil, nil
+	}
+	udpListeners := make([]*net.UDPConn, 0, count)
+	defer func() {
+		for _, u := range udpListeners {
+			_ = u.Close()
+		}
+	}()
+
+	ports := make([]int, 0, count)
+	for len(ports) < count {
+		u, err := net.ListenUDP("udp", &net.UDPAddr{Port: 0})
+		if err != nil {
+			return nil, err
+		}
+		port := u.LocalAddr().(*net.UDPAddr).Port
+		udpListeners = append(udpListeners, u)
+		ports = append(ports, port)
+	}
+	return ports, nil
+}
+
+func GetFreeUDPPort() (int, error) {
+	ports, err := GetFreeUDPPorts(1)
+	if err != nil {
+		return 0, err
+	}
+	return ports[0], nil
+}
+
 // WaitForTCPPort waits for a TCP port/address to accept connections within timeout or context cancellation.
 func WaitForTCPPort(ctx context.Context, address string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
