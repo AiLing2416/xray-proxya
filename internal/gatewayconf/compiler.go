@@ -240,6 +240,8 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 	}
 
 	// 4. Process Global Settings (set ...)
+	var localExplicit *bool
+	var lanExplicit *bool
 	for _, s := range ast.Sets {
 		k := strings.ToLower(strings.TrimSpace(s.Key))
 		v := strings.TrimSpace(s.Value)
@@ -361,12 +363,14 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid local value %q: %v", v, err)}
 			}
 			gwConfig.LocalEnabled = b
+			localExplicit = &b
 		case "lan", "lan_enabled":
 			b, err := parseBoolValue(v)
 			if err != nil {
 				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid lan value %q: %v", v, err)}
 			}
 			gwConfig.LANEnabled = b
+			lanExplicit = &b
 		case "lan_interfaces", "lan_interface":
 			parts := strings.Split(v, ",")
 			var ifaces []string
@@ -713,6 +717,13 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 		})
 	}
 	gwConfig.PortForwards = portForwards
+
+	if localExplicit != nil {
+		gwConfig.LocalEnabled = *localExplicit
+	}
+	if lanExplicit != nil {
+		gwConfig.LANEnabled = *lanExplicit
+	}
 
 	// Final verification if UserConfig was provided
 	if options.UserConfig != nil {

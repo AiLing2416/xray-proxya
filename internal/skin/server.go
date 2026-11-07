@@ -117,9 +117,12 @@ func StartSkinServer(addr string, skinType string, certFile, keyFile string) (*h
 	}), func(r *http.Request) string { return skinType }))
 
 	server := &http.Server{
-		Addr:     addr,
-		Handler:  wrapped,
-		ErrorLog: newSkinErrorLogger(),
+		Addr:              addr,
+		Handler:           wrapped,
+		ErrorLog:          newSkinErrorLogger(),
+		ReadHeaderTimeout: 20 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		WriteTimeout:      0,
 	}
 
 	if certFile != "" && keyFile != "" {
@@ -403,10 +406,13 @@ func StartMultiSkinServer(addr string, mappings []DomainSkinMapping, defaultSkin
 		return nil, err
 	}
 	server := &http.Server{
-		Addr:      addr,
-		Handler:   handler,
-		TLSConfig: tlsConfig,
-		ErrorLog:  newSkinErrorLogger(),
+		Addr:              addr,
+		Handler:           handler,
+		TLSConfig:         tlsConfig,
+		ErrorLog:          newSkinErrorLogger(),
+		ReadHeaderTimeout: 20 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		WriteTimeout:      0,
 	}
 	return server, nil
 }
@@ -453,12 +459,80 @@ func StartMultiSkinServers(addr string, mappings []DomainSkinMapping, defaultSki
 // Fingerprint Hiding & Error Decoys
 // -----------------------------------------------------------------------------------------
 
+// staticFileModTime is a fixed modification time for embedded static assets
+// so embed.FS zero-time does not suppress Last-Modified headers.
+var staticFileModTime = time.Date(2026, 9, 4, 5, 12, 32, 0, time.UTC)
+
+const nginx416HTML = `<html>
+<head><title>416 Requested Range Not Satisfiable</title></head>
+<body>
+<center><h1>416 Requested Range Not Satisfiable</h1></center>
+<hr><center>nginx</center>
+</body>
+</html>
+`
+
+const filebrowser416HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>416 Requested Range Not Satisfiable</title>
+</head>
+<body>
+<center><h1>416 Requested Range Not Satisfiable</h1></center>
+</body>
+</html>
+`
+
+func apache416HTML(serverName, port string) []byte {
+	return []byte(fmt.Sprintf(`<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">
+<html><head>
+<title>416 Range Not Satisfiable</title>
+</head><body>
+<h1>Range Not Satisfiable</h1>
+<p>None of the range-specifier values in the Range
+request-header field overlap the current extent
+of the selected resource.</p>
+<hr>
+<address>Apache/2.4.68 (Debian) Server at %s Port %s</address>
+</body></html>
+`, html.EscapeString(serverName), html.EscapeString(port)))
+}
+
+func getSkin416Body(skinType string, r *http.Request, port int) []byte {
+	switch skinType {
+	case config.SkinNextcloud:
+		host := "localhost"
+		if r != nil && r.Host != "" {
+			host = r.Host
+		}
+		serverName := host
+		portStr := "443"
+		if h, p, err := net.SplitHostPort(host); err == nil {
+			serverName = h
+			portStr = p
+		} else if port > 0 {
+			portStr = strconv.Itoa(port)
+		}
+		return apache416HTML(serverName, portStr)
+	case config.SkinSeafile:
+		return []byte(nginx416HTML)
+	case config.SkinFilebrowser:
+		return []byte(filebrowser416HTML)
+	default:
+		return []byte(filebrowser416HTML)
+	}
+}
+
 type sanitizingResponseWriter struct {
 	http.ResponseWriter
-	req         *http.Request
-	skinType    string
-	port        int
-	headerWrote bool
+	req          *http.Request
+	skinType     string
+	port         int
+	headerWrote  bool
+	is416        bool
+	body416      []byte
+	wrote416Body bool
 }
 
 func (s *sanitizingResponseWriter) WriteHeader(code int) {
@@ -466,6 +540,26 @@ func (s *sanitizingResponseWriter) WriteHeader(code int) {
 		return
 	}
 	s.headerWrote = true
+	if code == http.StatusRequestedRangeNotSatisfiable {
+		s.is416 = true
+		s.body416 = getSkin416Body(s.skinType, s.req, s.port)
+		s.sanitizeHeaders()
+		switch s.skinType {
+		case config.SkinNextcloud:
+			s.Header().Set("Content-Type", "text/html; charset=iso-8859-1")
+			s.Header().Set("Server", "Apache/2.4.68 (Debian)")
+		case config.SkinSeafile:
+			s.Header().Set("Content-Type", "text/html")
+			s.Header().Set("Server", "nginx")
+		case config.SkinFilebrowser:
+			s.Header().Set("Content-Type", "text/html; charset=utf-8")
+		default:
+			s.Header().Set("Content-Type", "text/html; charset=utf-8")
+		}
+		s.Header().Set("Content-Length", strconv.Itoa(len(s.body416)))
+		s.ResponseWriter.WriteHeader(code)
+		return
+	}
 	s.sanitizeHeaders()
 	s.ResponseWriter.WriteHeader(code)
 }
@@ -474,7 +568,40 @@ func (s *sanitizingResponseWriter) Write(b []byte) (int, error) {
 	if !s.headerWrote {
 		s.WriteHeader(http.StatusOK)
 	}
+	if s.req != nil && s.req.Method == http.MethodHead {
+		return len(b), nil
+	}
+	if s.is416 {
+		if !s.wrote416Body {
+			s.wrote416Body = true
+			_, err := s.ResponseWriter.Write(s.body416)
+			return len(b), err
+		}
+		return len(b), nil
+	}
 	return s.ResponseWriter.Write(b)
+}
+
+func (s *sanitizingResponseWriter) ReadFrom(r io.Reader) (int64, error) {
+	if !s.headerWrote {
+		s.WriteHeader(http.StatusOK)
+	}
+	if s.req != nil && s.req.Method == http.MethodHead {
+		return io.Copy(io.Discard, r)
+	}
+	if s.is416 {
+		_, _ = io.Copy(io.Discard, r)
+		if !s.wrote416Body {
+			s.wrote416Body = true
+			n, err := s.ResponseWriter.Write(s.body416)
+			return int64(n), err
+		}
+		return 0, nil
+	}
+	if rf, ok := s.ResponseWriter.(io.ReaderFrom); ok {
+		return rf.ReadFrom(r)
+	}
+	return io.Copy(s.ResponseWriter, r)
 }
 
 func (s *sanitizingResponseWriter) sanitizeHeaders() {
@@ -506,21 +633,6 @@ func (s *sanitizingResponseWriter) sanitizeHeaders() {
 		case config.SkinSeafile:
 			h.Set("Server", "nginx")
 		}
-	}
-	if h.Get("Alt-Svc") == "" {
-		advertisedPort := "443"
-		if s.req != nil {
-			if xfp := s.req.Header.Get("X-Forwarded-Port"); xfp != "" {
-				advertisedPort = xfp
-			} else if _, p, err := net.SplitHostPort(s.req.Host); err == nil && p != "" {
-				advertisedPort = p
-			} else if host := strings.TrimSpace(s.req.Host); (host == "127.0.0.1" || host == "localhost") && s.port > 0 {
-				advertisedPort = strconv.Itoa(s.port)
-			}
-		} else if s.port > 0 {
-			advertisedPort = strconv.Itoa(s.port)
-		}
-		h.Set("Alt-Svc", fmt.Sprintf(`h3=":%s"; ma=2592000`, advertisedPort))
 	}
 }
 
@@ -662,7 +774,7 @@ func serveFilebrowserStatic404(w http.ResponseWriter, isGet bool) {
 }
 
 func serveFilebrowserStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		serveFilebrowserStatic404(w, false)
 		return
 	}
@@ -715,21 +827,29 @@ func serveFilebrowserStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 		ctype = "application/octet-stream"
 	}
 
-	data, err := io.ReadAll(f)
-	if err != nil {
-		serveFilebrowserStatic404(w, true)
-		return
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			serveFilebrowserStatic404(w, true)
+			return
+		}
+		rs = bytes.NewReader(data)
 	}
 
-	if ext != ".js" && ext != ".mjs" {
-		w.Header().Set("Accept-Ranges", "bytes")
+	modTime := fi.ModTime()
+	if modTime.IsZero() || modTime.Year() < 2020 {
+		modTime = staticFileModTime
 	}
+	etag := fmt.Sprintf(`"%x-%x"`, fi.Size(), modTime.UnixNano())
+
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Header().Set("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline';")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	w.Header().Set("ETag", etag)
+
+	http.ServeContent(w, r, path.Base(relPath), modTime, rs)
 }
 
 func addFilebrowserHeaders(next http.Handler) http.Handler {
@@ -1010,13 +1130,11 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request, not
 		return
 	}
 
-	etag := fmt.Sprintf(`"%x-%x"`, fi.Size(), fi.ModTime().UnixNano())
-	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
-		w.Header().Set("Server", "Apache/2.4.68 (Debian)")
-		w.Header().Set("ETag", etag)
-		w.WriteHeader(http.StatusNotModified)
-		return
+	modTime := fi.ModTime()
+	if modTime.IsZero() || modTime.Year() < 2020 {
+		modTime = staticFileModTime
 	}
+	etag := fmt.Sprintf(`"%x-%x"`, fi.Size(), modTime.UnixNano())
 
 	ext := strings.ToLower(filepath.Ext(relPath))
 	var ctype string
@@ -1053,10 +1171,14 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request, not
 		}
 	}
 
-	data, err := io.ReadAll(f)
-	if err != nil {
-		serveNextcloud404(w, r, notFoundTemplate)
-		return
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			serveNextcloud404(w, r, notFoundTemplate)
+			return
+		}
+		rs = bytes.NewReader(data)
 	}
 
 	cacheControl := "max-age=15778463"
@@ -1068,14 +1190,13 @@ func serveNextcloudStatic(sub fs.FS, w http.ResponseWriter, r *http.Request, not
 	w.Header().Set("Content-Type", ctype)
 	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Vary", "Accept-Encoding")
-	w.Header().Set("Last-Modified", "Fri, 04 Sep 2026 05:12:32 GMT")
 	w.Header().Set("ETag", etag)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "SAMEORIGIN")
 	w.Header().Set("X-Permitted-Cross-Domain-Policies", "none")
 	w.Header().Set("Referrer-Policy", "no-referrer")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+
+	http.ServeContent(w, r, path.Base(relPath), modTime, rs)
 }
 
 func newNextcloudHandler() (http.Handler, error) {
@@ -1634,35 +1755,11 @@ func serveSeafileStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := io.ReadAll(f)
-	if err != nil {
-		serveNginx404(w)
-		return
-	}
-
 	modTime := fi.ModTime()
 	if modTime.IsZero() || modTime.Year() < 2020 {
-		modTime = time.Date(2023, 8, 16, 9, 9, 4, 0, time.UTC)
+		modTime = staticFileModTime
 	}
-	etag := fmt.Sprintf(`"%x-%x"`, modTime.Unix(), fi.Size())
-	lastModified := modTime.UTC().Format(http.TimeFormat)
-
-	if match := r.Header.Get("If-None-Match"); match != "" && strings.Contains(match, etag) {
-		w.Header().Set("Server", "nginx")
-		w.Header().Set("ETag", etag)
-		w.Header().Set("Last-Modified", lastModified)
-		w.WriteHeader(http.StatusNotModified)
-		return
-	}
-	if ifModSince := r.Header.Get("If-Modified-Since"); ifModSince != "" {
-		if t, err := http.ParseTime(ifModSince); err == nil && !modTime.After(t) {
-			w.Header().Set("Server", "nginx")
-			w.Header().Set("ETag", etag)
-			w.Header().Set("Last-Modified", lastModified)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-	}
+	etag := fmt.Sprintf(`"%x-%x"`, fi.Size(), modTime.UnixNano())
 
 	ext := strings.ToLower(filepath.Ext(relPath))
 	var ctype string
@@ -1693,13 +1790,21 @@ func serveSeafileStatic(sub fs.FS, w http.ResponseWriter, r *http.Request) {
 		ctype = "application/octet-stream"
 	}
 
+	rs, ok := f.(io.ReadSeeker)
+	if !ok {
+		data, err := io.ReadAll(f)
+		if err != nil {
+			serveNginx404(w)
+			return
+		}
+		rs = bytes.NewReader(data)
+	}
+
 	w.Header().Set("Server", "nginx")
 	w.Header().Set("Content-Type", ctype)
-	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("ETag", etag)
-	w.Header().Set("Last-Modified", lastModified)
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+
+	http.ServeContent(w, r, path.Base(relPath), modTime, rs)
 }
 
 var reCsrfToken = regexp.MustCompile(`name="csrfmiddlewaretoken" value="[^"]*"`)

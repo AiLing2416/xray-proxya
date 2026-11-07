@@ -18,6 +18,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1240,26 +1241,25 @@ func TestStartMultiSkinH3Server(t *testing.T) {
 		t.Errorf("H3 handler /status.php failed: %d, body: %s", rec.Code, rec.Body.String())
 	}
 
-	// Verify Alt-Svc header and Server header
+	// Verify Alt-Svc header is not forced and Server header is authentic
 	if srvHdr := rec.Header().Get("Server"); srvHdr != "Apache/2.4.68 (Debian)" {
 		t.Errorf("Server header = %q, want Apache/2.4.68 (Debian)", srvHdr)
 	}
-	// For public domain name requests, Alt-Svc advertises standard public port 443, not internal loopback port
-	if altSvc := rec.Header().Get("Alt-Svc"); !strings.Contains(altSvc, `h3=":443"`) {
-		t.Errorf("Alt-Svc header for domain = %q, want h3=\":443\"", altSvc)
+	if altSvc := rec.Header().Get("Alt-Svc"); altSvc != "" {
+		t.Errorf("Alt-Svc header should not be forced, got %q", altSvc)
 	}
 	// Nextcloud authentic PHP header must not be stripped
 	if xpb := rec.Header().Get("X-Powered-By"); xpb != "PHP/8.5.10" {
 		t.Errorf("Nextcloud X-Powered-By = %q, want PHP/8.5.10", xpb)
 	}
 
-	// For loopback IP requests, Alt-Svc advertises the specific internal port
+	// For loopback IP requests, verify handler serves correctly without forced Alt-Svc
 	reqLoopback := httptest.NewRequest("GET", "/status.php", nil)
 	reqLoopback.Host = "127.0.0.1"
 	recLoopback := httptest.NewRecorder()
 	h3Srv.Handler.ServeHTTP(recLoopback, reqLoopback)
-	if altSvc := recLoopback.Header().Get("Alt-Svc"); !strings.Contains(altSvc, `h3=":9443"`) {
-		t.Errorf("Alt-Svc header for loopback = %q, want h3=\":9443\"", altSvc)
+	if altSvc := recLoopback.Header().Get("Alt-Svc"); altSvc != "" {
+		t.Errorf("Alt-Svc header for loopback should not be forced, got %q", altSvc)
 	}
 }
 
@@ -1424,8 +1424,8 @@ func TestGoFingerprintMasking(t *testing.T) {
 	if srv := rec.Header().Get("Server"); srv != "nginx" {
 		t.Errorf("Server header = %q, want nginx", srv)
 	}
-	if altSvc := rec.Header().Get("Alt-Svc"); altSvc != `h3=":8443"; ma=2592000` {
-		t.Errorf("Alt-Svc header = %q, want h3=\":8443\"; ma=2592000", altSvc)
+	if altSvc := rec.Header().Get("Alt-Svc"); altSvc != "" {
+		t.Errorf("Alt-Svc header should not be forced, got %q", altSvc)
 	}
 
 	// Verify authentic PHP X-Powered-By is preserved for Nextcloud
@@ -1445,8 +1445,8 @@ func TestGoFingerprintMasking(t *testing.T) {
 	if srv := recPHP.Header().Get("Server"); srv != "Apache/2.4.68 (Debian)" {
 		t.Errorf("Server header = %q, want Apache/2.4.68 (Debian)", srv)
 	}
-	if altSvc := recPHP.Header().Get("Alt-Svc"); altSvc != `h3=":443"; ma=2592000` {
-		t.Errorf("Alt-Svc for domain = %q, want h3=\":443\"; ma=2592000", altSvc)
+	if altSvc := recPHP.Header().Get("Alt-Svc"); altSvc != "" {
+		t.Errorf("Alt-Svc for domain should not be forced, got %q", altSvc)
 	}
 
 	// 3. Panic recovery does not leak Go stack trace and outputs skin-specific 500 error
@@ -1515,4 +1515,257 @@ func TestSkinDisabledInSlim(t *testing.T) {
 		t.Errorf("expected ErrSkinDisabled from StartMultiSkinH3Server, got %v", err)
 	}
 }
+
+func TestSkinServerHTTPTimeouts(t *testing.T) {
+	if !Enabled {
+		t.Skip("Only tested in full build")
+	}
+
+	srv, err := StartSkinServer("127.0.0.1:0", config.SkinNextcloud, "", "")
+	if err != nil {
+		t.Fatalf("StartSkinServer error: %v", err)
+	}
+	if srv.ReadHeaderTimeout != 20*time.Second {
+		t.Errorf("StartSkinServer ReadHeaderTimeout = %v, want 20s", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != 60*time.Second {
+		t.Errorf("StartSkinServer IdleTimeout = %v, want 60s", srv.IdleTimeout)
+	}
+	if srv.WriteTimeout != 0 {
+		t.Errorf("StartSkinServer WriteTimeout = %v, want 0", srv.WriteTimeout)
+	}
+
+	multiSrv, err := StartMultiSkinServer("127.0.0.1:0", nil, config.SkinNextcloud)
+	if err != nil {
+		t.Fatalf("StartMultiSkinServer error: %v", err)
+	}
+	if multiSrv.ReadHeaderTimeout != 20*time.Second {
+		t.Errorf("StartMultiSkinServer ReadHeaderTimeout = %v, want 20s", multiSrv.ReadHeaderTimeout)
+	}
+	if multiSrv.IdleTimeout != 60*time.Second {
+		t.Errorf("StartMultiSkinServer IdleTimeout = %v, want 60s", multiSrv.IdleTimeout)
+	}
+	if multiSrv.WriteTimeout != 0 {
+		t.Errorf("StartMultiSkinServer WriteTimeout = %v, want 0", multiSrv.WriteTimeout)
+	}
+}
+
+func TestStaticStreamingAnd416RangeRewriting(t *testing.T) {
+	if !Enabled {
+		t.Skip("Only tested in full build")
+	}
+
+	positiveHexRegex := regexp.MustCompile(`^"[0-9a-f]+-[0-9a-f]+"$$`)
+
+	// 1. Nextcloud
+	ncSrv, err := StartSkinServer("127.0.0.1:0", config.SkinNextcloud, "", "")
+	if err != nil {
+		t.Fatalf("StartSkinServer(nextcloud) error: %v", err)
+	}
+
+	// 1a. Normal GET
+	req := httptest.NewRequest("GET", "/dist/core-common.js", nil)
+	req.Host = "cloud.example.com"
+	rec := httptest.NewRecorder()
+	ncSrv.Handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("Nextcloud GET /dist/core-common.js code = %d, want 200", rec.Code)
+	}
+	etag := rec.Header().Get("ETag")
+	if !positiveHexRegex.MatchString(etag) {
+		t.Errorf("Nextcloud ETag %q does not match positive hex regex %s", etag, positiveHexRegex.String())
+	}
+	if rec.Header().Get("Last-Modified") != "Fri, 04 Sep 2026 05:12:32 GMT" {
+		t.Errorf("Nextcloud Last-Modified = %q, want 'Fri, 04 Sep 2026 05:12:32 GMT'", rec.Header().Get("Last-Modified"))
+	}
+	if rec.Header().Get("Accept-Ranges") != "bytes" {
+		t.Errorf("Nextcloud Accept-Ranges = %q, want 'bytes'", rec.Header().Get("Accept-Ranges"))
+	}
+
+	// 1b. Range request (Partial Content)
+	reqRange := httptest.NewRequest("GET", "/dist/core-common.js", nil)
+	reqRange.Host = "cloud.example.com"
+	reqRange.Header.Set("Range", "bytes=0-15")
+	recRange := httptest.NewRecorder()
+	ncSrv.Handler.ServeHTTP(recRange, reqRange)
+	if recRange.Code != http.StatusPartialContent {
+		t.Fatalf("Nextcloud Range request code = %d, want 206", recRange.Code)
+	}
+	if !strings.HasPrefix(recRange.Header().Get("Content-Range"), "bytes 0-15/") {
+		t.Errorf("Nextcloud Content-Range = %q, want 'bytes 0-15/...'", recRange.Header().Get("Content-Range"))
+	}
+	if recRange.Body.Len() != 16 {
+		t.Errorf("Nextcloud Range body length = %d, want 16", recRange.Body.Len())
+	}
+
+	// 1c. Unsatisfiable range request (HTTP 416)
+	reqInvalid := httptest.NewRequest("GET", "/dist/core-common.js", nil)
+	reqInvalid.Host = "cloud.example.com"
+	reqInvalid.Header.Set("Range", "bytes=99999999-99999999")
+	recInvalid := httptest.NewRecorder()
+	ncSrv.Handler.ServeHTTP(recInvalid, reqInvalid)
+	if recInvalid.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("Nextcloud invalid range code = %d, want 416", recInvalid.Code)
+	}
+	body416 := recInvalid.Body.String()
+	if strings.Contains(body416, "failed to overlap") {
+		t.Errorf("Nextcloud leaked Go signature: %q", body416)
+	}
+	if !strings.Contains(body416, "<title>416 Range Not Satisfiable</title>") {
+		t.Errorf("Nextcloud 416 body missing Apache title, got: %s", body416)
+	}
+	if !strings.Contains(body416, "Apache/2.4.68 (Debian) Server at cloud.example.com Port 443") {
+		t.Errorf("Nextcloud 416 body missing Apache server footer, got: %s", body416)
+	}
+	if recInvalid.Header().Get("Server") != "Apache/2.4.68 (Debian)" {
+		t.Errorf("Nextcloud 416 Server header = %q, want Apache/2.4.68 (Debian)", recInvalid.Header().Get("Server"))
+	}
+	if !strings.HasPrefix(recInvalid.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("Nextcloud 416 Content-Type = %q, want text/html...", recInvalid.Header().Get("Content-Type"))
+	}
+
+	// 1d. HEAD with unsatisfiable range (HTTP 416)
+	reqHead := httptest.NewRequest("HEAD", "/dist/core-common.js", nil)
+	reqHead.Host = "cloud.example.com"
+	reqHead.Header.Set("Range", "bytes=99999999-99999999")
+	recHead := httptest.NewRecorder()
+	ncSrv.Handler.ServeHTTP(recHead, reqHead)
+	if recHead.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("Nextcloud HEAD invalid range code = %d, want 416", recHead.Code)
+	}
+	if recHead.Body.Len() != 0 {
+		t.Errorf("Nextcloud HEAD 416 body should be empty, got length %d", recHead.Body.Len())
+	}
+	if recHead.Header().Get("Content-Length") != strconv.Itoa(len(body416)) {
+		t.Errorf("Nextcloud HEAD Content-Length = %q, want %d", recHead.Header().Get("Content-Length"), len(body416))
+	}
+
+	// 2. Seafile
+	seaSrv, err := StartSkinServer("127.0.0.1:0", config.SkinSeafile, "", "")
+	if err != nil {
+		t.Fatalf("StartSkinServer(seafile) error: %v", err)
+	}
+	reqSea := httptest.NewRequest("GET", "/media/css/seafile-ui.css", nil)
+	recSea := httptest.NewRecorder()
+	seaSrv.Handler.ServeHTTP(recSea, reqSea)
+	if recSea.Code != http.StatusOK {
+		t.Fatalf("Seafile GET /media/css/seafile-ui.css code = %d, want 200", recSea.Code)
+	}
+	seaEtag := recSea.Header().Get("ETag")
+	if !positiveHexRegex.MatchString(seaEtag) {
+		t.Errorf("Seafile ETag %q does not match positive hex regex", seaEtag)
+	}
+	if recSea.Header().Get("Accept-Ranges") != "bytes" {
+		t.Errorf("Seafile Accept-Ranges = %q, want 'bytes'", recSea.Header().Get("Accept-Ranges"))
+	}
+
+	// 2b. Seafile unsatisfiable range
+	reqSeaInvalid := httptest.NewRequest("GET", "/media/css/seafile-ui.css", nil)
+	reqSeaInvalid.Header.Set("Range", "bytes=99999999-99999999")
+	recSeaInvalid := httptest.NewRecorder()
+	seaSrv.Handler.ServeHTTP(recSeaInvalid, reqSeaInvalid)
+	if recSeaInvalid.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("Seafile invalid range code = %d, want 416", recSeaInvalid.Code)
+	}
+	bodySea416 := recSeaInvalid.Body.String()
+	if strings.Contains(bodySea416, "failed to overlap") {
+		t.Errorf("Seafile leaked Go signature: %q", bodySea416)
+	}
+	if !strings.Contains(bodySea416, "<title>416 Requested Range Not Satisfiable</title>") {
+		t.Errorf("Seafile 416 body missing Nginx title, got: %s", bodySea416)
+	}
+	if !strings.Contains(bodySea416, "<center>nginx</center>") {
+		t.Errorf("Seafile 416 body missing Nginx center tag, got: %s", bodySea416)
+	}
+	if recSeaInvalid.Header().Get("Server") != "nginx" {
+		t.Errorf("Seafile 416 Server header = %q, want nginx", recSeaInvalid.Header().Get("Server"))
+	}
+	if recSeaInvalid.Header().Get("Content-Type") != "text/html" {
+		t.Errorf("Seafile 416 Content-Type = %q, want text/html", recSeaInvalid.Header().Get("Content-Type"))
+	}
+
+	// 3. Filebrowser
+	fbSrv, err := StartSkinServer("127.0.0.1:0", config.SkinFilebrowser, "", "")
+	if err != nil {
+		t.Fatalf("StartSkinServer(filebrowser) error: %v", err)
+	}
+	reqFb := httptest.NewRequest("GET", "/static/assets/index-BOEsmRAc.css", nil)
+	recFb := httptest.NewRecorder()
+	fbSrv.Handler.ServeHTTP(recFb, reqFb)
+	if recFb.Code != http.StatusOK {
+		t.Fatalf("Filebrowser GET static asset code = %d, want 200", recFb.Code)
+	}
+	fbEtag := recFb.Header().Get("ETag")
+	if !positiveHexRegex.MatchString(fbEtag) {
+		t.Errorf("Filebrowser ETag %q does not match positive hex regex", fbEtag)
+	}
+
+	// 3b. Filebrowser unsatisfiable range
+	reqFbInvalid := httptest.NewRequest("GET", "/static/assets/index-BOEsmRAc.css", nil)
+	reqFbInvalid.Header.Set("Range", "bytes=99999999-99999999")
+	recFbInvalid := httptest.NewRecorder()
+	fbSrv.Handler.ServeHTTP(recFbInvalid, reqFbInvalid)
+	if recFbInvalid.Code != http.StatusRequestedRangeNotSatisfiable {
+		t.Fatalf("Filebrowser invalid range code = %d, want 416", recFbInvalid.Code)
+	}
+	bodyFb416 := recFbInvalid.Body.String()
+	if strings.Contains(bodyFb416, "failed to overlap") {
+		t.Errorf("Filebrowser leaked Go signature: %q", bodyFb416)
+	}
+	if !strings.Contains(bodyFb416, "416 Requested Range Not Satisfiable") {
+		t.Errorf("Filebrowser 416 body missing title, got: %s", bodyFb416)
+	}
+}
+
+func TestSanitizingResponseWriterReadFrom416(t *testing.T) {
+	if !Enabled {
+		t.Skip("Only tested in full build")
+	}
+
+	// 1. GET with 416 written via io.Copy (ReadFrom path)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/test", nil)
+	sw := &sanitizingResponseWriter{
+		ResponseWriter: rec,
+		req:            req,
+		skinType:       config.SkinNextcloud,
+		port:           443,
+	}
+	sw.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+
+	dummyData := strings.NewReader("dummy payload")
+	n, err := io.Copy(sw, dummyData)
+	if err != nil {
+		t.Fatalf("io.Copy error: %v", err)
+	}
+	if n == 0 {
+		t.Errorf("expected non-zero bytes written for 416 body via ReadFrom, got 0")
+	}
+	if !strings.Contains(rec.Body.String(), "<title>416 Range Not Satisfiable</title>") {
+		t.Errorf("expected Apache 416 HTML body, got: %s", rec.Body.String())
+	}
+
+	// 2. HEAD with 416 via io.Copy (ReadFrom path) should suppress body
+	recHead := httptest.NewRecorder()
+	reqHead := httptest.NewRequest("HEAD", "/test", nil)
+	swHead := &sanitizingResponseWriter{
+		ResponseWriter: recHead,
+		req:            reqHead,
+		skinType:       config.SkinNextcloud,
+		port:           443,
+	}
+	swHead.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+
+	nHead, err := io.Copy(swHead, strings.NewReader("dummy payload"))
+	if err != nil {
+		t.Fatalf("io.Copy HEAD error: %v", err)
+	}
+	if recHead.Body.Len() != 0 {
+		t.Errorf("expected 0 bytes written to recorder for HEAD 416 body, got len=%d", recHead.Body.Len())
+	}
+	if nHead != int64(len("dummy payload")) {
+		t.Errorf("expected %d bytes consumed from reader, got %d", len("dummy payload"), nHead)
+	}
+}
+
 

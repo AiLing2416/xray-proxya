@@ -286,7 +286,10 @@ var runCmd = &cobra.Command{
 			// Start port 80 HTTP -> HTTPS redirect server with ACME challenge delegation
 			if hasFileCert {
 				httpRedirectServer := &http.Server{
-					Addr: ":80",
+					Addr:              ":80",
+					ReadHeaderTimeout: 20 * time.Second,
+					IdleTimeout:       60 * time.Second,
+					WriteTimeout:      0,
 					Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 						if certmanager.HandleChallenge(w, r) {
 							return
