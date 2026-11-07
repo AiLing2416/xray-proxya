@@ -239,7 +239,165 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 		}
 	}
 
-	// 4. Process Rules
+	// 4. Process Global Settings (set ...)
+	for _, s := range ast.Sets {
+		k := strings.ToLower(strings.TrimSpace(s.Key))
+		v := strings.TrimSpace(s.Value)
+		switch k {
+		case "state":
+			vLower := strings.ToLower(v)
+			if vLower != "disabled" && vLower != "forward-only" && vLower != "proxy" {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid gateway state %q (allowed: disabled, forward-only, proxy)", v)}
+			}
+			gwConfig.State = vLower
+		case "mode":
+			vLower := strings.ToLower(v)
+			if vLower != "tproxy" && vLower != "tun" {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid gateway mode %q (allowed: tproxy, tun)", v)}
+			}
+			gwConfig.Mode = vLower
+			if vLower == "tun" {
+				gwConfig.TUNEnabled = true
+			}
+		case "tun", "tun_enabled":
+			b, err := parseBoolValue(v)
+			if err != nil {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid tun value %q: %v", v, err)}
+			}
+			gwConfig.TUNEnabled = b
+		case "nat":
+			b, err := parseBoolValue(v)
+			if err != nil {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid nat value %q: %v", v, err)}
+			}
+			gwConfig.NATDisabled = !b
+		case "nat_disabled":
+			b, err := parseBoolValue(v)
+			if err != nil {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid nat_disabled value %q: %v", v, err)}
+			}
+			gwConfig.NATDisabled = b
+		case "wan", "wan_interface":
+			if strings.EqualFold(v, "auto") || v == "" {
+				gwConfig.WANInterface = ""
+			} else {
+				if err := config.ValidateInterfaceName(v); err != nil {
+					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid wan interface %q: %v", v, err)}
+				}
+				gwConfig.WANInterface = v
+			}
+		case "tproxy_port", "tproxy":
+			port, err := strconv.Atoi(v)
+			if err != nil || port < 1 || port > 65535 {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid tproxy_port %q: must be between 1 and 65535", v)}
+			}
+			gwConfig.TProxyPort = port
+		case "bypass_countries":
+			parts := strings.Split(v, ",")
+			var countries []string
+			for _, p := range parts {
+				for _, c := range strings.Fields(p) {
+					c = strings.ToUpper(strings.TrimSpace(c))
+					if c != "" {
+						countries = append(countries, c)
+					}
+				}
+			}
+			gwConfig.BypassCountries = countries
+		case "bypass_dns":
+			parts := strings.Split(v, ",")
+			var bypass []string
+			for _, p := range parts {
+				for _, item := range strings.Fields(p) {
+					item = strings.TrimSpace(item)
+					if item != "" {
+						bypass = append(bypass, item)
+					}
+				}
+			}
+			gwConfig.BypassDNS = bypass
+		case "dns_listen":
+			if strings.EqualFold(v, "off") || strings.EqualFold(v, "none") || strings.EqualFold(v, "disabled") || v == "" {
+				gwConfig.DNSListen = ""
+			} else {
+				_, _, norm, err := config.ParseDNSListen(v)
+				if err != nil {
+					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid dns_listen %q: %v", v, err)}
+				}
+				gwConfig.DNSListen = norm
+			}
+		case "dns_strategy":
+			norm, ok := config.NormalizeDNSQueryStrategy(v)
+			if !ok {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid dns_strategy %q (must be UseIP, UseIPv4, or UseIPv6)", v)}
+			}
+			gwConfig.DNSStrategy = norm
+		case "dns_servers":
+			parts := strings.Split(v, ",")
+			var servers []string
+			for _, p := range parts {
+				p = strings.TrimSpace(p)
+				if p == "" {
+					continue
+				}
+				norm, err := config.ValidateDNSServerEntry(p)
+				if err != nil {
+					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid dns_server %q: %v", p, err)}
+				}
+				servers = append(servers, norm)
+			}
+			gwConfig.DNSServers = servers
+		case "relay", "relay_alias":
+			vTrim := strings.TrimSpace(v)
+			if vTrim != "" {
+				if err := validateTarget(vTrim, s.Line); err != nil {
+					return nil, err
+				}
+			}
+			gwConfig.RelayAlias = vTrim
+		case "local", "local_enabled":
+			b, err := parseBoolValue(v)
+			if err != nil {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid local value %q: %v", v, err)}
+			}
+			gwConfig.LocalEnabled = b
+		case "lan", "lan_enabled":
+			b, err := parseBoolValue(v)
+			if err != nil {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid lan value %q: %v", v, err)}
+			}
+			gwConfig.LANEnabled = b
+		case "lan_interfaces", "lan_interface":
+			parts := strings.Split(v, ",")
+			var ifaces []string
+			for _, p := range parts {
+				iface := strings.TrimSpace(p)
+				if iface == "" {
+					continue
+				}
+				if err := config.ValidateInterfaceName(iface); err != nil {
+					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid lan interface %q: %v", iface, err)}
+				}
+				ifaces = append(ifaces, iface)
+			}
+			gwConfig.LANInterfaces = ifaces
+			if len(ifaces) > 0 {
+				gwConfig.LANInterface = ifaces[0]
+			}
+		default:
+			return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("unknown configuration parameter %q in set directive", s.Key)}
+		}
+	}
+
+	if gwConfig.WANInterface != "" {
+		for _, lan := range gwConfig.LANInterfaces {
+			if lan == gwConfig.WANInterface {
+				return nil, &CompileError{Msg: fmt.Sprintf("WAN interface %q cannot also be configured as a LAN interface", lan)}
+			}
+		}
+	}
+
+	// 5. Process Rules
 	var rules []config.GatewayRule
 	addRule := func(r config.GatewayRule, line int) error {
 		norm, err := config.ValidateGatewayRule(r)
@@ -491,158 +649,6 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 	gwConfig.Rules = rules
 	sort.Strings(isolatedIfaces)
 	gwConfig.IsolatedInterfaces = isolatedIfaces
-
-	// 5. Process Global Settings (set ...)
-	for _, s := range ast.Sets {
-		k := strings.ToLower(strings.TrimSpace(s.Key))
-		v := strings.TrimSpace(s.Value)
-		switch k {
-		case "state":
-			vLower := strings.ToLower(v)
-			if vLower != "disabled" && vLower != "forward-only" && vLower != "proxy" {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid gateway state %q (allowed: disabled, forward-only, proxy)", v)}
-			}
-			gwConfig.State = vLower
-		case "mode":
-			vLower := strings.ToLower(v)
-			if vLower != "tproxy" && vLower != "tun" {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid gateway mode %q (allowed: tproxy, tun)", v)}
-			}
-			gwConfig.Mode = vLower
-			if vLower == "tun" {
-				gwConfig.TUNEnabled = true
-			}
-		case "tun", "tun_enabled":
-			b, err := parseBoolValue(v)
-			if err != nil {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid tun value %q: %v", v, err)}
-			}
-			gwConfig.TUNEnabled = b
-		case "nat":
-			b, err := parseBoolValue(v)
-			if err != nil {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid nat value %q: %v", v, err)}
-			}
-			gwConfig.NATDisabled = !b
-		case "nat_disabled":
-			b, err := parseBoolValue(v)
-			if err != nil {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid nat_disabled value %q: %v", v, err)}
-			}
-			gwConfig.NATDisabled = b
-		case "wan", "wan_interface":
-			if strings.EqualFold(v, "auto") || v == "" {
-				gwConfig.WANInterface = ""
-			} else {
-				if err := config.ValidateInterfaceName(v); err != nil {
-					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid wan interface %q: %v", v, err)}
-				}
-				gwConfig.WANInterface = v
-			}
-		case "tproxy_port", "tproxy":
-			port, err := strconv.Atoi(v)
-			if err != nil || port < 1 || port > 65535 {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid tproxy_port %q: must be between 1 and 65535", v)}
-			}
-			gwConfig.TProxyPort = port
-		case "bypass_countries":
-			parts := strings.Split(v, ",")
-			var countries []string
-			for _, p := range parts {
-				for _, c := range strings.Fields(p) {
-					c = strings.ToUpper(strings.TrimSpace(c))
-					if c != "" {
-						countries = append(countries, c)
-					}
-				}
-			}
-			gwConfig.BypassCountries = countries
-		case "bypass_dns":
-			parts := strings.Split(v, ",")
-			var bypass []string
-			for _, p := range parts {
-				for _, item := range strings.Fields(p) {
-					item = strings.TrimSpace(item)
-					if item != "" {
-						bypass = append(bypass, item)
-					}
-				}
-			}
-			gwConfig.BypassDNS = bypass
-		case "dns_listen":
-			if strings.EqualFold(v, "off") || strings.EqualFold(v, "none") || strings.EqualFold(v, "disabled") || v == "" {
-				gwConfig.DNSListen = ""
-			} else {
-				_, _, norm, err := config.ParseDNSListen(v)
-				if err != nil {
-					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid dns_listen %q: %v", v, err)}
-				}
-				gwConfig.DNSListen = norm
-			}
-		case "dns_strategy":
-			norm, ok := config.NormalizeDNSQueryStrategy(v)
-			if !ok {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid dns_strategy %q (must be UseIP, UseIPv4, or UseIPv6)", v)}
-			}
-			gwConfig.DNSStrategy = norm
-		case "dns_servers":
-			parts := strings.Split(v, ",")
-			var servers []string
-			for _, p := range parts {
-				p = strings.TrimSpace(p)
-				if p == "" {
-					continue
-				}
-				norm, err := config.ValidateDNSServerEntry(p)
-				if err != nil {
-					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid dns_server %q: %v", p, err)}
-				}
-				servers = append(servers, norm)
-			}
-			gwConfig.DNSServers = servers
-		case "relay", "relay_alias":
-			gwConfig.RelayAlias = v
-		case "local", "local_enabled":
-			b, err := parseBoolValue(v)
-			if err != nil {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid local value %q: %v", v, err)}
-			}
-			gwConfig.LocalEnabled = b
-		case "lan", "lan_enabled":
-			b, err := parseBoolValue(v)
-			if err != nil {
-				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid lan value %q: %v", v, err)}
-			}
-			gwConfig.LANEnabled = b
-		case "lan_interfaces", "lan_interface":
-			parts := strings.Split(v, ",")
-			var ifaces []string
-			for _, p := range parts {
-				iface := strings.TrimSpace(p)
-				if iface == "" {
-					continue
-				}
-				if err := config.ValidateInterfaceName(iface); err != nil {
-					return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid lan interface %q: %v", iface, err)}
-				}
-				ifaces = append(ifaces, iface)
-			}
-			gwConfig.LANInterfaces = ifaces
-			if len(ifaces) > 0 {
-				gwConfig.LANInterface = ifaces[0]
-			}
-		default:
-			return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("unknown configuration parameter %q in set directive", s.Key)}
-		}
-	}
-
-	if gwConfig.WANInterface != "" {
-		for _, lan := range gwConfig.LANInterfaces {
-			if lan == gwConfig.WANInterface {
-				return nil, &CompileError{Msg: fmt.Sprintf("WAN interface %q cannot also be configured as a LAN interface", lan)}
-			}
-		}
-	}
 
 	// 6. Process Static DNS Records
 	if len(ast.DNSRecords) > 0 {

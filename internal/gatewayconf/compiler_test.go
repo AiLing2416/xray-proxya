@@ -664,3 +664,69 @@ rule ip=10.0.0.1 mac=52:54:00:83:00:11 interface=eth1 -> relay-node1
 		t.Errorf("unexpected compiled rule: %+v", r)
 	}
 }
+
+func TestCompile_ZoneOutboundOverridesDefaultRelay(t *testing.T) {
+	input := `
+def zone wan eth0
+def zone lan eno1
+
+set state proxy
+set mode tproxy
+set local true
+set lan true
+set relay sub/DI-55-HY
+set tun true
+
+local -> sub/RB-94-RL
+zone lan -> sub/RB-94-RL
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	validRelays := []string{"sub/DI-55-HY", "sub/RB-94-RL"}
+	gw, err := Compile(ast, WithValidRelays(validRelays))
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	if gw.RelayAlias != "sub/DI-55-HY" {
+		t.Errorf("expected default RelayAlias = sub/DI-55-HY, got %q", gw.RelayAlias)
+	}
+	if !gw.LANEnabled {
+		t.Errorf("expected LANEnabled = true")
+	}
+	if !gw.LocalEnabled {
+		t.Errorf("expected LocalEnabled = true")
+	}
+	if len(gw.Rules) != 1 {
+		t.Fatalf("expected 1 rule overriding default relay for lan zone, got %d: %+v", len(gw.Rules), gw.Rules)
+	}
+	r := gw.Rules[0]
+	if r.Interface != "eno1" || r.Target != "sub/RB-94-RL" {
+		t.Errorf("expected rule Interface=eno1 Target=sub/RB-94-RL, got: %+v", r)
+	}
+}
+
+func TestCompile_SetRelayTargetValidation(t *testing.T) {
+	input := `
+def zone wan eth0
+def zone lan eth1
+set relay invalid-relay
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+
+	validRelays := []string{"relay-ok"}
+	_, err = Compile(ast, WithValidRelays(validRelays))
+	if err == nil {
+		t.Fatalf("expected error for non-existent relay in set relay, got nil")
+	}
+	if !strings.Contains(err.Error(), "target relay \"invalid-relay\" does not exist") {
+		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
