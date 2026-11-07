@@ -151,7 +151,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 		switch mode.Mode {
 		case config.ModeVLESSReality:
 			fp := mode.Fingerprint
-			if fp == "" {
+			if fp == "" || !config.IsAllowedRealityFingerprint(fp) {
 				fp = "chrome"
 			}
 			ps := fmt.Sprintf("VLess-XHTTP-Reality-%d%s", mode.Port, psSuffix)
@@ -160,7 +160,7 @@ func generateAllLinks(cfg *config.UserConfig, ip string, userUUID string, suffix
 
 		case config.ModeVLESSVision:
 			fp := mode.Fingerprint
-			if fp == "" {
+			if fp == "" || !config.IsAllowedRealityFingerprint(fp) {
 				fp = "chrome"
 			}
 			ps := fmt.Sprintf("VLess-Vision-Reality-%d%s", mode.Port, psSuffix)

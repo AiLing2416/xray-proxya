@@ -42,9 +42,26 @@ var runCmd = &cobra.Command{
 			return fmt.Errorf("Xray-Proxya has not been initialized; run 'xray-proxya init' first")
 		}
 
+		rawCfg, err := config.LoadConfigFile(config.GetConfigPath(), false)
+		if err != nil {
+			return fmt.Errorf("load config: %w", err)
+		}
+		backfillChanges := rawCfg.BackfillDefaults()
+
 		cfg, err := config.LoadConfig()
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
+		}
+		// Preserve deterministic backfill results (e.g. migrated reality fingerprint or skin_port) from rawCfg
+		if len(backfillChanges) > 0 {
+			for i := range cfg.Presets {
+				if i < len(rawCfg.Presets) {
+					cfg.Presets[i].Fingerprint = rawCfg.Presets[i].Fingerprint
+				}
+			}
+			if cfg.SkinPort == 0 && rawCfg.SkinPort > 0 {
+				cfg.SkinPort = rawCfg.SkinPort
+			}
 		}
 
 		// v0.2.4 Port Policy:
@@ -55,7 +72,7 @@ var runCmd = &cobra.Command{
 			return err
 		}
 
-		if changed {
+		if changed || len(backfillChanges) > 0 {
 			if err := cfg.Save(); err != nil {
 				return fmt.Errorf("save audited config: %w", err)
 			}
@@ -186,79 +203,9 @@ var runCmd = &cobra.Command{
 			_ = os.Remove(pathRuntimePath())
 		}
 
-		process, waitCh, err := startProcess(cfg)
-		if err != nil {
-			return fmt.Errorf("start Xray: %w", err)
-		}
-		if pathdEnabled {
-			idle := time.Duration(pathEndpoint.IdleSeconds) * time.Second
-			if idle <= 0 {
-				idle = 15 * time.Second
-			}
-			pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathEndpoint.Listen, pathEndpoint.Token, idle)
-			pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte, dontFragment bool) pathd.ProbeResult {
-				result, err := pathClient.RelayEcho(destination, ttl, echoData, dontFragment)
-				if err != nil {
-					return pathd.ProbeResult{}
-				}
-				return result
-			})
-			if err != nil {
-				if markerErr := config.SetPathTunDisabled(true); markerErr != nil {
-					_ = stopProcess(process, waitCh)
-					cleanup()
-					return fmt.Errorf("create PathLink TUN: %w (record runtime state: %v)", err, markerErr)
-				}
-				_ = pathClient.Close()
-				pathClient = nil
-				fmt.Printf("⚠️  PathLink disabled for this runtime: %v\n", err)
-			} else {
-				if markerErr := config.SetPathTunDisabled(false); markerErr != nil {
-					_ = pathTunManager.Close()
-					pathTunManager = nil
-					_ = pathClient.Close()
-					pathClient = nil
-					_ = stopProcess(process, waitCh)
-					cleanup()
-					return fmt.Errorf("record PathLink TUN runtime state: %w", markerErr)
-				}
-				if pathTunManager != nil {
-					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", pathRelayAlias)
-				}
-			}
-			if pathClient != nil {
-				pathRuntimeStop = make(chan struct{})
-				writePathRuntime(pathClient)
-				go func(client *pathd.IdleClient, stop <-chan struct{}) {
-					ticker := time.NewTicker(time.Second)
-					defer ticker.Stop()
-					for {
-						select {
-						case <-ticker.C:
-							writePathRuntime(client)
-						case <-stop:
-							return
-						}
-					}
-				}(pathClient, pathRuntimeStop)
-			}
-		}
-		// The long-running service must not acquire MAC-transition privileges
-		// merely to repair gateway state. Under enforcing SELinux, gateway up,
-		// down, and root-initiated restarts delegate those mutations to the
-		// short-lived xray_proxya_gateway_t domain. A direct service start is
-		// intentionally limited to starting Xray/TUN; the operator then runs
-		// `gateway up` to install interception rules.
-		if !(cfg.Role == config.RoleGateway && proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain()) {
-			if err := gateway.RestoreTunState(cfg); err != nil {
-				fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
-				_ = stopProcess(process, waitCh)
-				cleanup()
-				return fmt.Errorf("restore gateway runtime state: %w", err)
-			}
-		}
-
-		// Start Web skin servers only for presets that have a skin explicitly configured
+		// Start Web skin servers BEFORE starting Xray so that Xray REALITY's startup
+		// post-handshake record detector (DetectPostHandshakeRecordsLens) can immediately
+		// connect to 127.0.0.1:<skinPort> without racing against listener initialization.
 		var skinMappings []skin.DomainSkinMapping
 		for _, m := range cfg.Presets {
 			if !m.Enabled || m.Skin == "" {
@@ -359,6 +306,79 @@ var runCmd = &cobra.Command{
 				} else {
 					fmt.Printf("⚠️  Port 80 redirect listener not started: %v\n", err)
 				}
+			}
+		}
+
+		process, waitCh, err := startProcess(cfg)
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("start Xray: %w", err)
+		}
+		if pathdEnabled {
+			idle := time.Duration(pathEndpoint.IdleSeconds) * time.Second
+			if idle <= 0 {
+				idle = 15 * time.Second
+			}
+			pathClient = pathd.NewIdleClient(fmt.Sprintf("127.0.0.1:%d", pathdPort), pathEndpoint.Listen, pathEndpoint.Token, idle)
+			pathTunManager, err = pathtun.Start(func(destination net.IP, ttl int, echoData []byte, dontFragment bool) pathd.ProbeResult {
+				result, err := pathClient.RelayEcho(destination, ttl, echoData, dontFragment)
+				if err != nil {
+					return pathd.ProbeResult{}
+				}
+				return result
+			})
+			if err != nil {
+				if markerErr := config.SetPathTunDisabled(true); markerErr != nil {
+					_ = stopProcess(process, waitCh)
+					cleanup()
+					return fmt.Errorf("create PathLink TUN: %w (record runtime state: %v)", err, markerErr)
+				}
+				_ = pathClient.Close()
+				pathClient = nil
+				fmt.Printf("⚠️  PathLink disabled for this runtime: %v\n", err)
+			} else {
+				if markerErr := config.SetPathTunDisabled(false); markerErr != nil {
+					_ = pathTunManager.Close()
+					pathTunManager = nil
+					_ = pathClient.Close()
+					pathClient = nil
+					_ = stopProcess(process, waitCh)
+					cleanup()
+					return fmt.Errorf("record PathLink TUN runtime state: %w", markerErr)
+				}
+				if pathTunManager != nil {
+					fmt.Printf("📡 ICMP PathLink TUN enabled through relay %s\n", pathRelayAlias)
+				}
+			}
+			if pathClient != nil {
+				pathRuntimeStop = make(chan struct{})
+				writePathRuntime(pathClient)
+				go func(client *pathd.IdleClient, stop <-chan struct{}) {
+					ticker := time.NewTicker(time.Second)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-ticker.C:
+							writePathRuntime(client)
+						case <-stop:
+							return
+						}
+					}
+				}(pathClient, pathRuntimeStop)
+			}
+		}
+		// The long-running service must not acquire MAC-transition privileges
+		// merely to repair gateway state. Under enforcing SELinux, gateway up,
+		// down, and root-initiated restarts delegate those mutations to the
+		// short-lived xray_proxya_gateway_t domain. A direct service start is
+		// intentionally limited to starting Xray/TUN; the operator then runs
+		// `gateway up` to install interception rules.
+		if !(cfg.Role == config.RoleGateway && proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain()) {
+			if err := gateway.RestoreTunState(cfg); err != nil {
+				fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
+				_ = stopProcess(process, waitCh)
+				cleanup()
+				return fmt.Errorf("restore gateway runtime state: %w", err)
 			}
 		}
 

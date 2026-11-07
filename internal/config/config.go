@@ -61,8 +61,6 @@ var AllowedRealityFingerprints = []string{
 	"chrome",
 	"firefox",
 	"safari",
-	"ios",
-	"edge",
 }
 
 // DefaultRealityFingerprints contains browser fingerprints with optimal TLS 1.3/REALITY compatibility.

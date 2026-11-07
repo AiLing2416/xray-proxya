@@ -358,8 +358,30 @@ func TestRealityFingerprintAllowlist(t *testing.T) {
 		}
 	}
 
-	if IsAllowedRealityFingerprint("random") || IsAllowedRealityFingerprint("randomized") || IsAllowedRealityFingerprint("") {
+	if IsAllowedRealityFingerprint("random") || IsAllowedRealityFingerprint("randomized") || IsAllowedRealityFingerprint("") || IsAllowedRealityFingerprint("ios") || IsAllowedRealityFingerprint("edge") {
 		t.Errorf("IsAllowedRealityFingerprint accepted forbidden fingerprint")
+	}
+}
+
+func TestBackfillDefaultsMigratesLegacyEdgeAndIOSFingerprints(t *testing.T) {
+	for _, legacyFP := range []string{"edge", "ios", "random", "360", "qq"} {
+		cfg := &UserConfig{
+			Role: RoleServer,
+			Presets: []ModeInfo{
+				{
+					Mode:        ModeVLESSVision,
+					Enabled:     true,
+					SNI:         "test.domain.com",
+					Dest:        "test.domain.com:443",
+					Fingerprint: legacyFP,
+				},
+			},
+		}
+		cfg.BackfillDefaults()
+		got := cfg.Presets[0].Fingerprint
+		if !IsAllowedRealityFingerprint(got) {
+			t.Errorf("legacy fingerprint %q was not migrated to an allowed fingerprint, got %q", legacyFP, got)
+		}
 	}
 }
 
