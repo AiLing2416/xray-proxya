@@ -203,6 +203,8 @@ type Model struct {
 	infoSelectTitle    string
 	infoSelectChoices  []string
 	infoSelectIdx      int
+	infoSelectMulti    bool         // checkbox mode: Space toggles, Enter confirms
+	infoSelectChecked  map[int]bool // checked choice indices in multi mode
 	infoSelectTarget   string // "guest-outbound-choice", "guest-endpoint-choice", "gw-state", "gw-iface", "gw-relay"
 
 	// Logs in info bar
@@ -704,6 +706,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch s {
 			case "esc":
 				m.infoSelectMode = false
+				m.infoSelectMulti = false
+				return m, nil
+			case " ":
+				if m.infoSelectMulti && m.infoSelectIdx >= 0 && m.infoSelectIdx < len(m.infoSelectChoices) {
+					if m.infoSelectChecked == nil {
+						m.infoSelectChecked = map[int]bool{}
+					}
+					m.infoSelectChecked[m.infoSelectIdx] = !m.infoSelectChecked[m.infoSelectIdx]
+				}
 				return m, nil
 			case "up", "k", "left", "h":
 				if len(m.infoSelectChoices) > 0 {
@@ -1415,14 +1426,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "down", "j":
-				if m.cursor < 7 {
+				if m.cursor < gwRowMax {
 					m.cursor++
 					m.overrideMsg = ""
 				}
 				return m, nil
 
 			case " ":
-				if m.cursor == 1 {
+				if m.cursor == gwRowRules {
 					isActive := m.gwNftables && m.gwTProxy && m.gwForward
 					if isActive {
 						noticeCmd := m.setNotice("Applying 'gateway down' runtime rules...")
@@ -1431,19 +1442,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						noticeCmd := m.setNotice("Applying 'gateway up' runtime rules...")
 						return m, tea.Batch(runGatewayUp(m.active), noticeCmd)
 					}
-				} else if m.cursor == 2 && m.staging != nil {
+				} else if m.cursor == gwRowTUN && m.staging != nil {
 					m.staging.Gateway.TUNEnabled = !m.staging.Gateway.EffectiveTUNEnabled()
 					m.staging.Gateway.Mode = ""
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
 					return m, nil
-				} else if m.cursor == 3 && m.staging != nil {
+				} else if m.cursor == gwRowLocal && m.staging != nil {
 					m.staging.Gateway.LocalEnabled = !m.staging.Gateway.LocalEnabled
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
 					return m, nil
-				} else if m.cursor == 4 && m.staging != nil {
+				} else if m.cursor == gwRowLAN && m.staging != nil {
 					m.staging.Gateway.LANEnabled = !m.staging.Gateway.LANEnabled
+					m.staging.SaveEx(true)
+					m.overrideMsg = ""
+					return m, nil
+				} else if m.cursor == gwRowNAT && m.staging != nil {
+					m.staging.Gateway.NATDisabled = !m.staging.Gateway.NATDisabled
 					m.staging.SaveEx(true)
 					m.overrideMsg = ""
 					return m, nil
@@ -1451,7 +1467,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 
 			case "enter":
-				if m.cursor == 0 && m.staging != nil {
+				if m.cursor == gwRowState && m.staging != nil {
 					choices := []string{"disabled", "forward-only", "proxy"}
 					m.infoSelectMode = true
 					m.infoSelectTitle = "Gateway State"
@@ -1465,27 +1481,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-				} else if m.cursor == 5 && m.staging != nil {
-					ifaces, _ := net.Interfaces()
-					choices := []string{"none"}
-					for _, iface := range ifaces {
-						if iface.Name != "proxya-tun" && iface.Name != "path-tun" {
-							choices = append(choices, iface.Name)
-						}
-					}
+				} else if m.cursor == gwRowLANIface && m.staging != nil {
+					choices, checked := interfaceChoices(localInterfaceNames(), m.staging.Gateway.EffectiveLANInterfaces())
 					m.infoSelectMode = true
+					m.infoSelectMulti = true
+					m.infoSelectChecked = checked
 					m.infoSelectTitle = "LAN Interface"
 					m.infoSelectChoices = choices
 					m.infoSelectTarget = "gw-iface"
 					m.infoSelectIdx = 0
 					m.overrideMsg = ""
+				} else if m.cursor == gwRowWANIface && m.staging != nil {
+					cur := normalizeWAN(m.staging.Gateway.WANInterface)
+					choices := []string{wanAuto}
+					choices = append(choices, localInterfaceNames()...)
+					m.infoSelectMulti = false
+					m.infoSelectIdx = 0
+					found := false
 					for i, c := range choices {
-						if c == m.staging.Gateway.LANInterface {
+						if c == cur {
 							m.infoSelectIdx = i
+							found = true
 							break
 						}
 					}
-				} else if m.cursor == 6 && m.staging != nil {
+					if !found {
+						choices = append(choices, cur+missingSuffix)
+						m.infoSelectIdx = len(choices) - 1
+					}
+					m.infoSelectMode = true
+					m.infoSelectTitle = "WAN Interface"
+					m.infoSelectChoices = choices
+					m.infoSelectTarget = "gw-wan"
+					m.overrideMsg = ""
+				} else if m.cursor == gwRowRelay && m.staging != nil {
 					choices := []string{"direct"}
 					for _, co := range m.staging.CustomOutbounds {
 						choices = append(choices, co.Alias)
@@ -1502,18 +1531,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							break
 						}
 					}
-				} else if m.cursor == 7 && m.staging != nil {
+				} else if m.cursor == gwRowBypass && m.staging != nil {
 					m.startInput(inputBypassCountries, "Bypass Countries (comma separated, e.g. CN)", strings.Join(m.staging.Gateway.BypassCountries, ", "))
 				}
 				return m, nil
 
 			case "t", "T":
-				if m.cursor == 3 {
+				if m.cursor == gwRowLocal {
 					m.gwLocalTestIP = "testing..."
 					noticeCmd := m.setNotice("Testing local proxy IP...")
 					return m, tea.Batch(testLocalProxy(m.active), noticeCmd)
 				}
-				if m.cursor == 4 {
+				if m.cursor == gwRowLAN {
 					m.gwLANTestIP = "testing..."
 					noticeCmd := m.setNotice("Testing simulated LAN IP...")
 					return m, tea.Batch(testLANGateway(m.active), noticeCmd)
@@ -1777,6 +1806,20 @@ func (m Model) submitInput() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
+	if m.infoSelectMulti {
+		target := m.infoSelectTarget
+		names := joinChecked(m.infoSelectChoices, m.infoSelectChecked)
+		m.infoSelectMode = false
+		m.infoSelectMulti = false
+		m.infoSelectChecked = nil
+		m.overrideMsg = ""
+		if target == "gw-iface" && m.staging != nil {
+			m.staging.Gateway.LANInterface = strings.Join(names, ",")
+			m.staging.Gateway.LANInterfaces = nil
+			m.staging.SaveEx(true)
+		}
+		return m, nil
+	}
 	if m.infoSelectIdx < 0 || m.infoSelectIdx >= len(m.infoSelectChoices) {
 		m.infoSelectMode = false
 		return m, nil
@@ -1830,12 +1873,13 @@ func (m Model) confirmInfoSelect() (tea.Model, tea.Cmd) {
 			m.staging.Gateway.State = choice
 			m.staging.SaveEx(true)
 		}
-	case "gw-iface":
+	case "gw-wan":
 		if m.staging != nil {
-			if choice == "none" {
+			choice = trimMissing(choice)
+			if choice == wanAuto {
 				choice = ""
 			}
-			m.staging.Gateway.LANInterface = choice
+			m.staging.Gateway.WANInterface = choice
 			m.staging.SaveEx(true)
 		}
 	case "gw-relay":
@@ -2134,7 +2178,7 @@ func (m Model) getSelectedDetailContent() string {
 		}
 		return strings.TrimSpace(b.String())
 	}
-	if m.currentTab == tabGateway && m.staging != nil && m.cursor >= 0 && m.cursor <= 7 {
+	if m.currentTab == tabGateway && m.staging != nil && m.cursor >= 0 && m.cursor <= gwRowMax {
 		return BuildGatewayReport(m.active, m.staging, m.cursor, m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
 	}
 	return ""
@@ -2245,7 +2289,11 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	} else if m.inputMode != inputNone {
 		rawLines = append(rawLines, "  "+m.textInput.View())
 	} else if m.infoSelectMode {
-		rawLines = append(rawLines, RenderVerticalChoiceList(m.infoSelectChoices, m.infoSelectIdx, height-1)...)
+		if m.infoSelectMulti {
+			rawLines = append(rawLines, RenderMultiChoiceList(m.infoSelectChoices, m.infoSelectChecked, m.infoSelectIdx, height-1)...)
+		} else {
+			rawLines = append(rawLines, RenderVerticalChoiceList(m.infoSelectChoices, m.infoSelectIdx, height-1)...)
+		}
 	} else if time.Now().Before(m.transientUntil) && m.transientMsg != "" {
 		for _, l := range strings.Split(strings.TrimSpace(m.transientMsg), "\n") {
 			rawLines = append(rawLines, "  "+l)
@@ -2405,7 +2453,11 @@ func (m Model) renderFooter() string {
 			badges = []string{"[↑/↓] Select", "[Enter] Edit", "[Space] Toggle", "[Esc] Back"}
 		}
 	} else if m.infoSelectMode {
-		badges = []string{"[↑/↓] Select", "[Enter] Confirm", "[Esc] Cancel"}
+		if m.infoSelectMulti {
+			badges = []string{"[↑/↓] Move", "[Space] Toggle", "[Enter] Confirm", "[Esc] Cancel"}
+		} else {
+			badges = []string{"[↑/↓] Select", "[Enter] Confirm", "[Esc] Cancel"}
+		}
 	} else if m.inputMode != inputNone {
 		badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
 	} else {
@@ -2421,12 +2473,16 @@ func (m Model) renderFooter() string {
 		case tabGuests:
 			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy")
 		case tabGateway:
-			if m.cursor == 1 {
+			if m.cursor == gwRowRules {
 				badges = append(badges, "[Space] Toggle Rules")
-			} else if m.cursor == 2 {
+			} else if m.cursor == gwRowTUN {
 				badges = append(badges, "[Space] Toggle TUN")
-			} else if m.cursor == 3 || m.cursor == 4 {
+			} else if m.cursor == gwRowLocal || m.cursor == gwRowLAN {
 				badges = append(badges, "[Space] Toggle", "[T] Test Route")
+			} else if m.cursor == gwRowNAT {
+				badges = append(badges, "[Space] Toggle NAT")
+			} else if m.cursor == gwRowRuleList {
+				badges = append(badges, "Read-only (use CLI: gateway rule)")
 			} else {
 				badges = append(badges, "[Enter] Edit")
 			}
