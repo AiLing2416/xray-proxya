@@ -11,7 +11,9 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -203,6 +205,27 @@ func TestGetRandomRealityDomain(t *testing.T) {
 	d := GetRandomRealityDomain()
 	if d == "" {
 		t.Fatalf("expected random domain, got empty")
+	}
+}
+
+func TestGenerateRandomProbePath(t *testing.T) {
+	seen := make(map[string]bool)
+	for i := 0; i < 50; i++ {
+		p := generateRandomProbePath()
+		if !strings.HasPrefix(p, "/") {
+			t.Fatalf("path %q does not start with /", p)
+		}
+		parts := strings.Split(p, "/")
+		if len(parts) != 3 || parts[0] != "" {
+			t.Fatalf("path %q does not have 2 segments: got %v", p, parts)
+		}
+		if len(parts[1]) != 8 || len(parts[2]) != 12 {
+			t.Fatalf("path %q segment lengths mismatch (want 8 and 12): %v", p, parts)
+		}
+		if seen[p] {
+			t.Fatalf("duplicate random path generated: %q", p)
+		}
+		seen[p] = true
 	}
 }
 
@@ -538,6 +561,127 @@ func TestValidateSkinTarget_Hermetic(t *testing.T) {
 			expectSuccess: false,
 			errContains:   "certificate",
 		},
+		{
+			name: "Success: Deep path probe returns 404 Not Found",
+			tlsConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{"h2"},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("User-Agent") != DefaultBrowserUserAgent {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if r.URL.Path == "/" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("OK"))
+					return
+				}
+				w.WriteHeader(http.StatusNotFound)
+			}),
+			target:        testHost + ":443",
+			targetHost:    testHost,
+			expectSuccess: true,
+		},
+		{
+			name: "Success: Correct User-Agent sent on both root and deep path probes",
+			tlsConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{"h2"},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("User-Agent") != DefaultBrowserUserAgent {
+					w.WriteHeader(http.StatusForbidden)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}),
+			target:        testHost + ":443",
+			targetHost:    testHost,
+			expectSuccess: true,
+		},
+		{
+			name: "Reject: Deep path probe returns 500 Server Error",
+			tlsConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{"h2"},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("OK"))
+					return
+				}
+				w.WriteHeader(http.StatusInternalServerError)
+			}),
+			target:        testHost + ":443",
+			targetHost:    testHost,
+			expectSuccess: false,
+			errContains:   "deep path probe returned server error (500)",
+		},
+		{
+			name: "Reject: Deep path probe returns 502 Bad Gateway",
+			tlsConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{"h2"},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("OK"))
+					return
+				}
+				w.WriteHeader(http.StatusBadGateway)
+			}),
+			target:        testHost + ":443",
+			targetHost:    testHost,
+			expectSuccess: false,
+			errContains:   "deep path probe returned server error (502)",
+		},
+		{
+			name: "Reject: Deep path probe returns 503 Service Unavailable",
+			tlsConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{"h2"},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("OK"))
+					return
+				}
+				w.WriteHeader(http.StatusServiceUnavailable)
+			}),
+			target:        testHost + ":443",
+			targetHost:    testHost,
+			expectSuccess: false,
+			errContains:   "deep path probe returned server error (503)",
+		},
+		{
+			name: "Success: Deep path probe returns 301 Redirect (AWS trailing slash style)",
+			tlsConfig: &tls.Config{
+				Certificates: []tls.Certificate{cert},
+				MinVersion:   tls.VersionTLS13,
+				NextProtos:   []string{"h2"},
+			},
+			handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte("OK"))
+					return
+				}
+				// 301 on deep path should be accepted (< 500)
+				http.Redirect(w, r, r.URL.Path+"/", http.StatusMovedPermanently)
+			}),
+			target:        testHost + ":443",
+			targetHost:    testHost,
+			expectSuccess: true,
+		},
 	}
 
 	for _, tc := range tests {
@@ -573,6 +717,110 @@ func TestValidateSkinTarget_Hermetic(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateSkinTarget_TimeoutEnforced(t *testing.T) {
+	testHost := "test.target.local"
+	cert, rootCAs := generateTestCert(t, testHost)
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h2"},
+	}
+
+	// Handler responds quickly on /, but blocks for 1s on deep path
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+		time.Sleep(1 * time.Second)
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	listener, cleanup := startMockServer(t, tlsConfig, handler)
+	defer cleanup()
+
+	serverAddr := listener.Addr().String()
+	opts := targetValidatorOptions{
+		rootCAs: rootCAs,
+		dialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialer := &net.Dialer{Timeout: 500 * time.Millisecond}
+			return dialer.DialContext(ctx, "tcp", serverAddr)
+		},
+	}
+
+	start := time.Now()
+	// Call with 200ms overall timeout
+	_, err := validateSkinTargetInternal(testHost+":443", 200*time.Millisecond, opts)
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
+	}
+	// The call must finish well before the handler's 1s sleep (e.g. within 600ms)
+	if elapsed > 600*time.Millisecond {
+		t.Fatalf("validateSkinTargetInternal took %v (expected < 600ms due to timeout enforcement)", elapsed)
+	}
+}
+
+func TestValidateSkinTarget_SeveredConnectionFallback(t *testing.T) {
+	testHost := "test.target.local"
+	cert, rootCAs := generateTestCert(t, testHost)
+	tlsConfig := &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+		NextProtos:   []string{"h2"},
+	}
+
+	var dialCount atomic.Int32
+	var conn1 net.Conn
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	listener, cleanup := startMockServer(t, tlsConfig, handler)
+	defer cleanup()
+
+	serverAddr := listener.Addr().String()
+	opts := targetValidatorOptions{
+		rootCAs: rootCAs,
+		dialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			count := dialCount.Add(1)
+			conn, err := net.Dial("tcp", serverAddr)
+			if err != nil {
+				return nil, err
+			}
+			if count == 1 {
+				conn1 = conn
+			}
+			return conn, nil
+		},
+		onRootRead: func() {
+			// Once root request has finished reading, sever connection 1 to simulate server/proxy teardown
+			if conn1 != nil {
+				_ = conn1.Close()
+			}
+		},
+	}
+
+	rtt, err := validateSkinTargetInternal(testHost+":443", 2*time.Second, opts)
+	if err != nil {
+		t.Fatalf("expected fallback connection to succeed, got error: %v", err)
+	}
+	if rtt <= 0 {
+		t.Fatalf("expected positive RTT, got %v", rtt)
+	}
+	if dialCount.Load() < 2 {
+		t.Fatalf("expected at least 2 dials (initial + fallback), got %d", dialCount.Load())
 	}
 }
 
@@ -648,3 +896,59 @@ func TestBenchmarkDomains_Hermetic(t *testing.T) {
 		t.Errorf("BenchmarkDomains with only failing domains expected error, got nil")
 	}
 }
+
+func TestValidateRealityLiveTargets(t *testing.T) {
+	if os.Getenv("XRAY_TEST_LIVE") != "1" {
+		t.Skip("skipping live target validation; set XRAY_TEST_LIVE=1 to run")
+	}
+
+	validTargets := []string{
+		"ubuntu.com:443",
+		"pkg.go.dev:443",
+		"kernel.org:443",
+	}
+
+	for _, target := range validTargets {
+		t.Run("Valid_"+target, func(t *testing.T) {
+			rtt, err := ValidateRealityTarget(target, 5*time.Second)
+			if err != nil {
+				t.Fatalf("ValidateRealityTarget(%q) failed unexpectedly: %v", target, err)
+			}
+			if rtt <= 0 {
+				t.Fatalf("ValidateRealityTarget(%q) reported non-positive RTT: %v", target, rtt)
+			}
+			t.Logf("✅ Target %s passed qualification with RTT %v", target, rtt)
+		})
+	}
+
+	invalidTargets := []struct {
+		name        string
+		target      string
+		errContains string
+	}{
+		{
+			name:        "Reject_Redirect_Google",
+			target:      "google.com:443",
+			errContains: "redirect",
+		},
+		{
+			name:        "Reject_NonExistent_Domain",
+			target:      "nonexistent-domain-404-xyz123.org:443",
+			errContains: "connection",
+		},
+	}
+
+	for _, tc := range invalidTargets {
+		t.Run("Invalid_"+tc.name, func(t *testing.T) {
+			_, err := ValidateRealityTarget(tc.target, 5*time.Second)
+			if err == nil {
+				t.Fatalf("ValidateRealityTarget(%q) expected error containing %q, got nil", tc.target, tc.errContains)
+			}
+			if tc.errContains != "" && !strings.Contains(strings.ToLower(err.Error()), strings.ToLower(tc.errContains)) {
+				t.Fatalf("ValidateRealityTarget(%q) error %q does not contain %q", tc.target, err.Error(), tc.errContains)
+			}
+			t.Logf("✅ Invalid target %s correctly rejected: %v", tc.target, err)
+		})
+	}
+}
+

@@ -330,9 +330,24 @@ func ValidateRealitySNIAndDest(sni, dest string) (string, string, error) {
 	return normSNI, normDest, nil
 }
 
+// DefaultBrowserUserAgent is a modern browser User-Agent string used for Reality qualification probes.
+const DefaultBrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36"
+
+// generateRandomProbePath generates a randomized deep path with two segments,
+// e.g. /d3f1a8b2/c4e5f6a7b8c9.
+func generateRandomProbePath() string {
+	b := make([]byte, 10)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("/probe-%d/test", time.Now().UnixNano())
+	}
+	hexStr := fmt.Sprintf("%x", b)
+	return "/" + hexStr[:8] + "/" + hexStr[8:]
+}
+
 type targetValidatorOptions struct {
 	dialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	rootCAs     *x509.CertPool
+	onRootRead  func()
 }
 
 var defaultTargetValidatorOpts = targetValidatorOptions{}
@@ -344,6 +359,7 @@ var defaultTargetValidatorOpts = targetValidatorOptions{}
 // 4. Valid certificate matching hostname (no InsecureSkipVerify)
 // 5. ALPN negotiation of HTTP/2 ("h2")
 // 6. HTTP/2 GET request to "/" confirming non-redirect (rejects any 3xx) and valid status (2xx, 401, 403, 404; rejects 5xx).
+// 7. HTTP/2 GET request to a randomized deep path confirming the server handles unknown paths without failing or returning server errors (>= 500).
 // Returns measured handshake RTT on success.
 func ValidateRealityTarget(target string, timeout time.Duration) (time.Duration, error) {
 	return validateSkinTargetInternal(target, timeout, defaultTargetValidatorOpts)
@@ -420,16 +436,18 @@ func validateSkinTargetInternal(target string, timeout time.Duration, opts targe
 	if err != nil {
 		return 0, fmt.Errorf("failed to create HTTP/2 request: %w", err)
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", DefaultBrowserUserAgent)
 
 	resp, err := clientConn.RoundTrip(req)
 	if err != nil {
 		return 0, fmt.Errorf("HTTP/2 request failed for %s: %w", host, err)
 	}
-	defer resp.Body.Close()
-
-	// Read limited body to release stream properly
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
+	// Read response body up to 512KB to cleanly release stream without sending RST_STREAM
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 512*1024))
+	_ = resp.Body.Close()
+	if opts.onRootRead != nil {
+		opts.onRootRead()
+	}
 
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		return 0, fmt.Errorf("target %s returned HTTP redirect (%d), expected non-redirect response", host, resp.StatusCode)
@@ -442,6 +460,67 @@ func validateSkinTargetInternal(target string, timeout time.Duration, opts targe
 		resp.StatusCode == http.StatusForbidden ||
 		resp.StatusCode == http.StatusNotFound) {
 		return 0, fmt.Errorf("target %s returned unexpected HTTP status %d (expected 2xx, 401, 403, or 404)", host, resp.StatusCode)
+	}
+
+	// Secondary deep path probe with bounded timeout respecting overall context deadline
+	deepPath := generateRandomProbePath()
+	deepTimeout := 3 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		if remaining := time.Until(deadline); remaining < deepTimeout {
+			deepTimeout = remaining
+		}
+	}
+	if deepTimeout <= 0 {
+		return 0, fmt.Errorf("probe deadline exceeded before deep path probe for %s", host)
+	}
+	deepCtx, deepCancel := context.WithTimeout(ctx, deepTimeout)
+	defer deepCancel()
+
+	deepReq, err := http.NewRequestWithContext(deepCtx, "GET", "https://"+targetAddr+deepPath, nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create HTTP/2 deep path request: %w", err)
+	}
+	deepReq.Header.Set("User-Agent", DefaultBrowserUserAgent)
+
+	var deepResp *http.Response
+	if clientConn.CanTakeNewRequest() {
+		deepResp, err = clientConn.RoundTrip(deepReq)
+	}
+
+	// If the existing connection was closed or unable to take a new request,
+	// dial a fresh TLS 1.3 / HTTP/2 connection to verify the deep path,
+	// provided the deep context has not expired.
+	if (!clientConn.CanTakeNewRequest() || err != nil) && deepCtx.Err() == nil {
+		fallbackRawConn, dialErr := dialFn(deepCtx, "tcp", targetAddr)
+		if dialErr != nil {
+			if err != nil {
+				return 0, fmt.Errorf("HTTP/2 deep path probe failed for %s: %w", host, err)
+			}
+			return 0, fmt.Errorf("HTTP/2 deep path reconnect failed for %s: %w", host, dialErr)
+		}
+		defer fallbackRawConn.Close()
+
+		fallbackTLS := tls.Client(fallbackRawConn, tlsConfig)
+		if hsErr := fallbackTLS.HandshakeContext(deepCtx); hsErr != nil {
+			return 0, fmt.Errorf("HTTP/2 deep path TLS handshake failed for %s: %w", host, hsErr)
+		}
+		fallbackClientConn, connErr := t.NewClientConn(fallbackTLS)
+		if connErr != nil {
+			return 0, fmt.Errorf("HTTP/2 deep path client init failed for %s: %w", host, connErr)
+		}
+		defer fallbackClientConn.Close()
+
+		deepResp, err = fallbackClientConn.RoundTrip(deepReq)
+	}
+
+	if err != nil {
+		return 0, fmt.Errorf("HTTP/2 deep path probe failed for %s: %w", host, err)
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(deepResp.Body, 64*1024))
+	_ = deepResp.Body.Close()
+
+	if deepResp.StatusCode >= 500 {
+		return 0, fmt.Errorf("target %s deep path probe returned server error (%d)", host, deepResp.StatusCode)
 	}
 
 	return rtt, nil
