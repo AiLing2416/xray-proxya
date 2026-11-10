@@ -246,8 +246,23 @@ var certRemoveCmd = &cobra.Command{
 }
 
 var certRenewCmd = &cobra.Command{
-	Use:   "renew",
+	Use:   "renew [domain]",
 	Short: "Check and renew certificates expiring within 7 days (or force with --force)",
+	Args:  cobra.MaximumNArgs(1),
+	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		cfg, _ := config.LoadConfigEx(true)
+		if cfg == nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		domains := make([]string, 0, len(cfg.Certs))
+		for _, c := range cfg.Certs {
+			domains = append(domains, c.Domain)
+		}
+		return domains, cobra.ShellCompDirectiveNoFileComp
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
@@ -259,7 +274,34 @@ var certRenewCmd = &cobra.Command{
 			return nil
 		}
 
-		renewed, expiredFailed, err := certmanager.CheckAndRenewCerts(cfg, certForce)
+		var targetDomain string
+		if len(args) > 0 {
+			targetDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(args[0])), ".")
+			if cfg.FindCert(targetDomain) == nil {
+				return fmt.Errorf("certificate for domain '%s' is not registered", targetDomain)
+			}
+		}
+
+		if targetDomain != "" {
+			if certForce {
+				fmt.Printf("🔄 Force renewing certificate for %s...\n", targetDomain)
+			} else {
+				fmt.Printf("🔍 Checking certificate for %s...\n", targetDomain)
+			}
+		} else {
+			if certForce {
+				fmt.Println("🔄 Force renewing all managed certificates...")
+			} else {
+				fmt.Println("🔍 Checking all managed certificates for renewal...")
+			}
+		}
+
+		var targets []string
+		if targetDomain != "" {
+			targets = append(targets, targetDomain)
+		}
+
+		renewed, failed, expiredFailed, err := certmanager.CheckAndRenewCerts(cfg, certForce, targets...)
 		if err != nil {
 			return err
 		}
@@ -267,19 +309,29 @@ var certRenewCmd = &cobra.Command{
 		for _, d := range renewed {
 			fmt.Printf("✅ Successfully renewed certificate for %s.\n", d)
 		}
+		for _, f := range failed {
+			fmt.Printf("❌ Failed to renew certificate for %s: %v\n", f.Domain, f.Err)
+		}
 		for _, d := range expiredFailed {
 			fmt.Printf("🚨 Alert: Certificate for %s expired and renewal failed. Dependent presets have been disabled.\n", d)
 		}
 
-		if len(renewed) == 0 && len(expiredFailed) == 0 {
+		if len(renewed) == 0 && len(failed) == 0 && len(expiredFailed) == 0 {
 			fmt.Println("All certificates are healthy (no renewals required).")
 			return nil
 		}
 
-		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("save config: %w", err)
+		if len(renewed) > 0 || len(expiredFailed) > 0 {
+			if err := cfg.SaveEx(true); err != nil {
+				return fmt.Errorf("save config: %w", err)
+			}
+			fmt.Println("🚀 Run 'apply' to commit changes.")
 		}
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+
+		if len(failed) > 0 && len(renewed) == 0 {
+			return fmt.Errorf("failed to renew certificate(s)")
+		}
+
 		return nil
 	},
 }

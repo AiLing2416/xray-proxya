@@ -9,6 +9,8 @@ import (
 	"crypto/x509/pkix"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -111,7 +113,7 @@ func TestCheckAndRenewCerts(t *testing.T) {
 		}, nil
 	}
 
-	renewed, expired, err := CheckAndRenewCerts(cfg, false)
+	renewed, failed, expired, err := CheckAndRenewCerts(cfg, false)
 	if err != nil {
 		t.Fatalf("CheckAndRenewCerts error = %v", err)
 	}
@@ -121,11 +123,46 @@ func TestCheckAndRenewCerts(t *testing.T) {
 	if len(renewed) != 1 || renewed[0] != "sea.ailing.dev" {
 		t.Fatalf("renewed = %v, want [sea.ailing.dev]", renewed)
 	}
+	if len(failed) != 0 {
+		t.Fatalf("failed = %v, want empty", failed)
+	}
 	if len(expired) != 0 {
 		t.Fatalf("expired = %v, want empty", expired)
 	}
 	if !cfg.Presets[0].Enabled {
 		t.Fatalf("Preset 0 should remain enabled after successful renewal")
+	}
+
+	// Test force renewal on a specific domain
+	renewCalls = 0
+	renewed, failed, expired, err = CheckAndRenewCerts(cfg, true, "nonexistent.domain")
+	if err != nil {
+		t.Fatalf("CheckAndRenewCerts filter error = %v", err)
+	}
+	if renewCalls != 0 || len(renewed) != 0 {
+		t.Fatalf("should not renew when filtered out")
+	}
+
+	// Test renewal failure before expiration (reported in failed list, not expiredFailed)
+	cfg.Certs[0].ExpiresAt = time.Now().Add(20 * 24 * time.Hour) // Not expired yet!
+	issueACMEFunc = func(ctx context.Context, domain, email, certDir string) (*config.ManagedCert, error) {
+		return nil, os.ErrDeadlineExceeded // renewal fails
+	}
+	renewed, failed, expired, err = CheckAndRenewCerts(cfg, true) // Force renewal
+	if err != nil {
+		t.Fatalf("CheckAndRenewCerts error = %v", err)
+	}
+	if len(renewed) != 0 {
+		t.Fatalf("renewed = %v, want 0", renewed)
+	}
+	if len(failed) != 1 || failed[0].Domain != "sea.ailing.dev" {
+		t.Fatalf("failed = %v, want [sea.ailing.dev]", failed)
+	}
+	if len(expired) != 0 {
+		t.Fatalf("expired = %v, want empty (cert not expired yet)", expired)
+	}
+	if !cfg.Presets[0].Enabled {
+		t.Fatalf("Preset 0 should remain enabled because cert has not expired yet")
 	}
 
 	// Now test expiration fuse: expired cert and renewal failure
@@ -134,12 +171,15 @@ func TestCheckAndRenewCerts(t *testing.T) {
 		return nil, os.ErrDeadlineExceeded // renewal fails
 	}
 
-	renewed, expired, err = CheckAndRenewCerts(cfg, false)
+	renewed, failed, expired, err = CheckAndRenewCerts(cfg, false)
 	if err != nil {
 		t.Fatalf("CheckAndRenewCerts error = %v", err)
 	}
 	if len(renewed) != 0 {
 		t.Fatalf("renewed = %v, want 0", renewed)
+	}
+	if len(failed) != 1 {
+		t.Fatalf("failed = %v, want 1", failed)
 	}
 	if len(expired) != 1 || expired[0] != "sea.ailing.dev" {
 		t.Fatalf("expired = %v, want [sea.ailing.dev]", expired)
@@ -257,5 +297,46 @@ func TestSaveCertificateFilesPermissions(t *testing.T) {
 	}
 	if perm := keyInfo.Mode().Perm(); perm != 0600 {
 		t.Fatalf("key file perm = %o, want 0600", perm)
+	}
+}
+
+func TestChallengeSharedFileHandling(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	token := "test-token-12345"
+	path := "/.well-known/acme-challenge/" + token
+	response := "test-challenge-response-abcde"
+
+	// 1. Register challenge -> should populate memory map and create disk file
+	RegisterChallenge(path, response)
+
+	filePath := filepath.Join(tempDir, "acme-challenges", token)
+	if data, err := os.ReadFile(filePath); err != nil || string(data) != response {
+		t.Fatalf("expected file content %q, got err=%v, content=%q", response, err, string(data))
+	}
+
+	// 2. Simulate cross-process daemon: clear in-memory map so only disk file remains
+	challengesMu.Lock()
+	delete(activeChallenges, path)
+	challengesMu.Unlock()
+
+	req, _ := http.NewRequest("GET", path, nil)
+	rr := httptest.NewRecorder()
+	handled := HandleChallenge(rr, req)
+	if !handled {
+		t.Fatalf("HandleChallenge should return true from disk file fallback")
+	}
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200", rr.Code)
+	}
+	if rr.Body.String() != response {
+		t.Fatalf("body = %q, want %q", rr.Body.String(), response)
+	}
+
+	// 3. Unregister challenge -> file should be deleted
+	UnregisterChallenge(path)
+	if _, err := os.Stat(filePath); !os.IsNotExist(err) {
+		t.Fatalf("challenge file should have been deleted after unregister")
 	}
 }

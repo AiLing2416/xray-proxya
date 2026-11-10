@@ -31,33 +31,72 @@ var (
 	activeChallenges = make(map[string]string)
 )
 
-// RegisterChallenge records an active ACME HTTP-01 challenge response for a given path.
-func RegisterChallenge(path, response string) {
-	challengesMu.Lock()
-	defer challengesMu.Unlock()
-	activeChallenges[path] = response
+func getChallengeDir() string {
+	return filepath.Join(config.GetConfigDir(), "acme-challenges")
 }
 
-// UnregisterChallenge removes an active ACME challenge path.
+// RegisterChallenge records an active ACME HTTP-01 challenge response for a given path.
+// In addition to in-memory registration, it writes the challenge token to a shared directory
+// on disk so background service listeners (different OS process) can answer HTTP-01 challenges.
+func RegisterChallenge(path, response string) {
+	challengesMu.Lock()
+	activeChallenges[path] = response
+	challengesMu.Unlock()
+
+	if strings.HasPrefix(path, "/.well-known/acme-challenge/") {
+		token := strings.TrimPrefix(path, "/.well-known/acme-challenge/")
+		if token != "" && !strings.Contains(token, "/") && !strings.Contains(token, "..") {
+			dir := getChallengeDir()
+			if err := os.MkdirAll(dir, 0700); err == nil {
+				_ = os.WriteFile(filepath.Join(dir, token), []byte(response), 0600)
+			}
+		}
+	}
+}
+
+// UnregisterChallenge removes an active ACME challenge path and deletes the challenge file from disk.
 func UnregisterChallenge(path string) {
 	challengesMu.Lock()
-	defer challengesMu.Unlock()
 	delete(activeChallenges, path)
+	challengesMu.Unlock()
+
+	if strings.HasPrefix(path, "/.well-known/acme-challenge/") {
+		token := strings.TrimPrefix(path, "/.well-known/acme-challenge/")
+		if token != "" && !strings.Contains(token, "/") && !strings.Contains(token, "..") {
+			_ = os.Remove(filepath.Join(getChallengeDir(), token))
+		}
+	}
 }
 
 // HandleChallenge checks whether an incoming HTTP request matches an active ACME challenge.
+// It checks in-memory activeChallenges first, then falls back to reading the shared challenge
+// directory on disk (enabling cross-process challenge resolution between CLI and background daemon).
 // Returns true if the request was handled.
 func HandleChallenge(w http.ResponseWriter, r *http.Request) bool {
 	challengesMu.RLock()
 	resp, ok := activeChallenges[r.URL.Path]
 	challengesMu.RUnlock()
-	if !ok {
-		return false
+	if ok {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(resp))
+		return true
 	}
-	w.Header().Set("Content-Type", "text/plain")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte(resp))
-	return true
+
+	if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
+		token := strings.TrimPrefix(r.URL.Path, "/.well-known/acme-challenge/")
+		if token != "" && !strings.Contains(token, "/") && !strings.Contains(token, "..") {
+			filePath := filepath.Join(getChallengeDir(), token)
+			if data, err := os.ReadFile(filePath); err == nil {
+				w.Header().Set("Content-Type", "text/plain")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(data)
+				return true
+			}
+		}
+	}
+
+	return false
 }
 
 // Hookable dependencies for testing.
@@ -327,22 +366,43 @@ func getOrCreatePrivateKey(keyPath string) (crypto.Signer, error) {
 	return key, nil
 }
 
-// CheckAndRenewCerts inspects all managed certs and triggers renewal for certs expiring within 7 days.
+// RenewFailure captures a domain whose certificate renewal failed, along with the underlying error.
+type RenewFailure struct {
+	Domain string
+	Err    error
+}
+
+// CheckAndRenewCerts inspects managed certs and triggers renewal for certs expiring within 7 days.
+// If force is true, certs are renewed regardless of expiration date.
+// If targetDomains are specified, only those domains are evaluated.
 // If a certificate is expired and cannot be renewed, any presets depending on this certificate are disabled.
-func CheckAndRenewCerts(cfg *config.UserConfig, force bool) (renewed []string, expiredFailed []string, err error) {
+func CheckAndRenewCerts(cfg *config.UserConfig, force bool, targetDomains ...string) (renewed []string, failed []RenewFailure, expiredFailed []string, err error) {
 	if cfg == nil {
-		return nil, nil, errors.New("nil config")
+		return nil, nil, nil, errors.New("nil config")
+	}
+
+	domainFilter := make(map[string]bool)
+	for _, td := range targetDomains {
+		td = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(td)), ".")
+		if td != "" {
+			domainFilter[td] = true
+		}
 	}
 
 	now := time.Now()
 	for i := range cfg.Certs {
 		cert := &cfg.Certs[i]
-		needsRenew := force || cert.AutoRenew && time.Until(cert.ExpiresAt) <= RenewalThreshold
+		cDomain := strings.ToLower(cert.Domain)
+		if len(domainFilter) > 0 && !domainFilter[cDomain] {
+			continue
+		}
+
+		needsRenew := force || (cert.AutoRenew && time.Until(cert.ExpiresAt) <= RenewalThreshold)
 
 		renewSuccess := false
 		if needsRenew {
-			newCert, err := IssueCertificate(cert.Domain, "")
-			if err == nil {
+			newCert, renewErr := IssueCertificate(cert.Domain, "")
+			if renewErr == nil {
 				cert.IssuedAt = newCert.IssuedAt
 				cert.ExpiresAt = newCert.ExpiresAt
 				cert.CertPath = newCert.CertPath
@@ -356,6 +416,11 @@ func CheckAndRenewCerts(cfg *config.UserConfig, force bool) (renewed []string, e
 				}
 				renewed = append(renewed, cert.Domain)
 				renewSuccess = true
+			} else {
+				failed = append(failed, RenewFailure{
+					Domain: cert.Domain,
+					Err:    renewErr,
+				})
 			}
 		}
 
@@ -376,7 +441,7 @@ func CheckAndRenewCerts(cfg *config.UserConfig, force bool) (renewed []string, e
 		}
 	}
 
-	return renewed, expiredFailed, nil
+	return renewed, failed, expiredFailed, nil
 }
 
 // RemoveCertificate deregisters a domain's certificate, deletes local files,

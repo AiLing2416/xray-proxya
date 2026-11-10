@@ -396,9 +396,12 @@ var runCmd = &cobra.Command{
 		for {
 			select {
 			case <-certTicker.C:
-				renewed, expiredFailed, err := certmanager.CheckAndRenewCerts(cfg, false)
+				renewed, failed, expiredFailed, err := certmanager.CheckAndRenewCerts(cfg, false)
 				if err != nil {
 					fmt.Printf("⚠️  Cert auto-renewal check error: %v\n", err)
+				}
+				for _, f := range failed {
+					fmt.Printf("⚠️  Cert auto-renewal failed for %s: %v\n", f.Domain, f.Err)
 				}
 				for _, d := range renewed {
 					fmt.Printf("✅ Auto-renewed certificate for %s\n", d)
