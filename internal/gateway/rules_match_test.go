@@ -10,26 +10,34 @@ import (
 )
 
 func TestRuleSpecificity(t *testing.T) {
-	ruleIPIface := config.GatewayRule{IP: "192.168.1.95", Interface: "eth1"}
+	ruleIfaceMACIP := config.GatewayRule{IP: "192.168.1.95", MAC: "52:54:00:83:00:11", Interface: "eth1"}
 	ruleMACIface := config.GatewayRule{MAC: "52:54:00:83:00:11", Interface: "eth1"}
-	rulePureIP := config.GatewayRule{IP: "192.168.1.95"}
+	ruleIPIface := config.GatewayRule{IP: "192.168.1.95", Interface: "eth1"}
+	ruleMACIP := config.GatewayRule{MAC: "52:54:00:83:00:11", IP: "192.168.1.95"}
 	rulePureMAC := config.GatewayRule{MAC: "52:54:00:83:00:11"}
+	rulePureIP := config.GatewayRule{IP: "192.168.1.95"}
 	rulePureIface := config.GatewayRule{Interface: "eth1"}
 
-	if s := ruleSpecificity(ruleIPIface); s != 0 {
-		t.Errorf("ruleSpecificity(IP+Interface) = %d, want 0", s)
+	if s := ruleSpecificity(ruleIfaceMACIP); s != 0 {
+		t.Errorf("ruleSpecificity(Interface+MAC+IP) = %d, want 0", s)
 	}
-	if s := ruleSpecificity(ruleMACIface); s != 0 {
-		t.Errorf("ruleSpecificity(MAC+Interface) = %d, want 0", s)
+	if s := ruleSpecificity(ruleMACIface); s != 1 {
+		t.Errorf("ruleSpecificity(Interface+MAC) = %d, want 1", s)
 	}
-	if s := ruleSpecificity(rulePureIP); s != 1 {
-		t.Errorf("ruleSpecificity(pure IP) = %d, want 1", s)
+	if s := ruleSpecificity(ruleIPIface); s != 2 {
+		t.Errorf("ruleSpecificity(Interface+IP) = %d, want 2", s)
 	}
-	if s := ruleSpecificity(rulePureMAC); s != 1 {
-		t.Errorf("ruleSpecificity(pure MAC) = %d, want 1", s)
+	if s := ruleSpecificity(ruleMACIP); s != 3 {
+		t.Errorf("ruleSpecificity(MAC+IP) = %d, want 3", s)
 	}
-	if s := ruleSpecificity(rulePureIface); s != 2 {
-		t.Errorf("ruleSpecificity(pure Interface) = %d, want 2", s)
+	if s := ruleSpecificity(rulePureMAC); s != 4 {
+		t.Errorf("ruleSpecificity(pure MAC) = %d, want 4", s)
+	}
+	if s := ruleSpecificity(rulePureIP); s != 5 {
+		t.Errorf("ruleSpecificity(pure IP) = %d, want 5", s)
+	}
+	if s := ruleSpecificity(rulePureIface); s != 6 {
+		t.Errorf("ruleSpecificity(pure Interface) = %d, want 6", s)
 	}
 }
 
@@ -71,37 +79,48 @@ func TestMatchTokens(t *testing.T) {
 	}
 }
 
-func TestBlockMatchTokens_WithIP(t *testing.T) {
+func TestBlockGuardEntries_WithIPAndCIDRPriority(t *testing.T) {
 	cfg := &config.UserConfig{
 		Gateway: config.GatewayConfig{
 			Rules: []config.GatewayRule{
-				{IP: "192.168.1.95", Interface: "eth1", Target: "direct"}, // rank 0
-				{IP: "192.168.1.95", Target: "block"},                     // rank 1 block -> yields to eth1
-				{Interface: "eth2", Target: "block"},                      // rank 2 block
-				{IP: "10.0.84.50", Interface: "eth2", Target: "relay-hk"}, // rank 0 non-block -> eth2 block yields
-				{IP: "fd00:84::50", Target: "direct"},                     // rank 1 non-block -> eth2 block yields
+				{IP: "10.0.84.0/24", Target: "block"},
+				{IP: "10.0.84.50", Target: "direct"},
+				{IP: "192.168.1.95", Interface: "eth1", Target: "direct"},
+				{IP: "192.168.1.95", Target: "block"},
+				{Interface: "eth2", Target: "block"},
+				{IP: "fd00:84::50", Target: "direct"},
 			},
 		},
 	}
 
-	// 1. IP-only block yields to interface+IP rule of the same IP
-	bTokens := blockMatchTokens(cfg, cfg.Gateway.Rules[1])
-	bStr := strings.Join(bTokens, " ")
-	if !strings.Contains(bStr, `ip saddr 192.168.1.95`) || !strings.Contains(bStr, `iifname != "eth1"`) {
-		t.Errorf("expected IP block to yield to eth1 rule, got %q", bStr)
+	entries := blockGuardEntries(cfg)
+	if len(entries) != 6 {
+		t.Fatalf("expected 6 block guard entries, got %d: %+v", len(entries), entries)
 	}
-
-	// 2. Interface-only block on eth2 yields to rules naming an IP on it
-	bIfaceTokens := blockMatchTokens(cfg, cfg.Gateway.Rules[2])
-	bIfaceStr := strings.Join(bIfaceTokens, " ")
-	if !strings.Contains(bIfaceStr, `iifname "eth2"`) {
-		t.Errorf("expected iifname eth2, got %q", bIfaceStr)
+	// Highest specificity first: Interface+IP return before pure IP /128, /32, /24;
+	// at equal specificity+prefixLen (/32), block precedes non-block, and both precede /24 block.
+	if got := strings.Join(entries[0].Tokens, " ") + " " + entries[0].Verdict; got != `iifname "eth1" ip saddr 192.168.1.95 return` {
+		t.Errorf("entry[0] = %q, want eth1+192.168.1.95 return", got)
 	}
-	if !strings.Contains(bIfaceStr, `ip saddr != 10.0.84.50`) {
-		t.Errorf("expected yield to 10.0.84.50, got %q", bIfaceStr)
+	if got := strings.Join(entries[1].Tokens, " ") + " " + entries[1].Verdict; got != `ip6 saddr fd00:84::50 return` {
+		t.Errorf("entry[1] = %q, want fd00:84::50 return", got)
 	}
-	if !strings.Contains(bIfaceStr, `ip6 saddr != fd00:84::50`) {
-		t.Errorf("expected yield to fd00:84::50, got %q", bIfaceStr)
+	if got := strings.Join(entries[2].Tokens, " ") + " " + entries[2].Verdict; got != `ip saddr 192.168.1.95 drop` {
+		t.Errorf("entry[2] = %q, want ip saddr 192.168.1.95 drop", got)
+	}
+	if got := strings.Join(entries[3].Tokens, " ") + " " + entries[3].Verdict; got != `ip saddr 10.0.84.50 return` {
+		t.Errorf("entry[3] = %q, want 10.0.84.50 return", got)
+	}
+	if got := strings.Join(entries[4].Tokens, " ") + " " + entries[4].Verdict; got != `ip saddr 10.0.84.0/24 drop` {
+		t.Errorf("entry[4] = %q, want 10.0.84.0/24 drop", got)
+	}
+	if got := strings.Join(entries[5].Tokens, " ") + " " + entries[5].Verdict; got != `iifname "eth2" drop` {
+		t.Errorf("entry[5] = %q, want iifname eth2 drop", got)
+	}
+	for _, e := range entries {
+		if strings.Contains(strings.Join(e.Tokens, " "), "!=") {
+			t.Errorf("blockGuardEntries must not emit negative single-family tokens: %+v", e)
+		}
 	}
 }
 

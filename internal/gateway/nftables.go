@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,7 +67,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return err
 	}
 	lanIfaces := cfg.Gateway.EffectiveLANInterfaces()
-	if len(lanIfaces) == 0 {
+	if (state == "forward-only" || cfg.Gateway.LANEnabled) && len(lanIfaces) == 0 {
 		return fmt.Errorf("gateway LAN interface is not configured; run 'gateway set --lan <iface>'")
 	}
 
@@ -78,10 +79,13 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		if !cfg.Gateway.LANEnabled {
 			setupErr = setupLANForwardingBlock(lanIfaces...)
 		} else {
-			setupErr = setupDirectLANForwarding(lanIfaces...)
+			setupErr = setupDirectLANForwardingWithConfig(cfg, lanIfaces...)
 		}
 		if setupErr == nil {
 			setupErr = installBlockFilterRules(cfg)
+		}
+		if setupErr == nil {
+			setupErr = installIsolatedFilterRules(cfg, lanIfaces)
 		}
 		if setupErr != nil {
 			return errors.Join(setupErr, CleanupFirewall())
@@ -94,6 +98,9 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			return err
 		}
 		if err := installBlockFilterRules(cfg); err != nil {
+			return errors.Join(err, CleanupFirewall())
+		}
+		if err := installIsolatedFilterRules(cfg, lanIfaces); err != nil {
 			return errors.Join(err, CleanupFirewall())
 		}
 		return nil
@@ -158,17 +165,19 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return fmt.Errorf("close temp nft file: %w", err)
 	}
 
-	if err := CleanupFirewall(); err != nil {
-		return fmt.Errorf("clean up existing gateway state: %w", err)
+	// Atomically replace firewall rules without clearing existing protection
+	// beforehand. On error, default Fail-Closed mode installs/retains strict
+	// drop protection instead of leaking traffic direct; FailOpen cleans up.
+	failGuard := func() error {
+		if !cfg.Gateway.FailOpen {
+			return applyFailClosedFirewall(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
+		}
+		return CleanupFirewall()
 	}
-	// From here until the managed nftables table is installed, every failure
-	// must undo the addresses, routes, policy rules and temporary sysctls that
-	// may already have been applied.  This keeps a failed TUN creation from
-	// leaving traffic marked towards a disappeared interface.
 	rollback := true
 	defer func() {
 		if err != nil && rollback {
-			err = errors.Join(err, CleanupFirewall())
+			err = errors.Join(err, failGuard())
 		}
 	}()
 	if err := SetupKernel(lanIfaces...); err != nil {
@@ -234,73 +243,64 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		}
 	}
 
+	oldRules, _ := loadPolicyRules()
 	rulesToAdd := policyRulesMulti(cfg, lanCIDRs, lanIPv6CIDRs, ipv6Supported)
 	if err := savePolicyRules(rulesToAdd); err != nil {
 		return err
 	}
-	for _, rule := range rulesToAdd {
-		if err := addPolicyRule(rule); err != nil {
-			return errors.Join(err, CleanupFirewall())
-		}
+	if err := syncPolicyRules(oldRules, rulesToAdd); err != nil {
+		return err
 	}
 
 	// Table 100 default destination is always local dev lo for primary TProxy socket redirection
 	if err := run("ip", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
-		return errors.Join(err, CleanupFirewall())
+		return err
 	}
 	if ipv6Supported {
 		if err := run("ip", "-6", "route", "replace", "local", "default", "dev", "lo", "table", policyTable); err != nil {
-			return errors.Join(err, CleanupFirewall())
+			return err
 		}
 	}
 
-	/*
-	RESERVED AS FALLBACK: Standalone TUN Table 100 routing takeover
-	Preserved as reference if TUN is ever required to intercept table 100 directly without TProxy:
-
-	if isTun {
-		if err := run("ip", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
-			return errors.Join(err, CleanupFirewall())
-		}
-		if ipv6Supported {
-			if err := run("ip", "-6", "route", "replace", "default", "dev", tunName, "table", policyTable); err != nil {
-				return errors.Join(err, CleanupFirewall())
-			}
-		}
-	}
-	*/
 	if pathTunnelEnabled(cfg) {
 		if err := run("ip", "route", "replace", "default", "dev", pathTunName, "table", pathPolicyTable); err != nil {
-			return errors.Join(err, CleanupFirewall())
+			return err
 		}
 		if ipv6Supported {
 			if err := run("ip", "-6", "route", "replace", "default", "dev", pathTunName, "table", pathPolicyTable); err != nil {
-				return errors.Join(err, CleanupFirewall())
+				return err
 			}
 		}
+	} else {
+		_ = runDelete("ip", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable)
+		_ = runDelete("ip", "-6", "route", "del", "default", "dev", pathTunName, "table", pathPolicyTable)
 	}
+
+	oldForwardHandles, _ := listFilterManagedHandles("forward")
+	oldInputHandles, _ := listFilterManagedHandles("input")
+	oldPostroutingHandles, _ := listFilterManagedHandles("postrouting")
 
 	if err := run("nft", "-f", tmpFile); err != nil {
 		return err
 	}
+	if err := cleanupPathTTLRules(); err != nil {
+		return err
+	}
 	if pathTunnelEnabled(cfg) && len(lanIfaces) > 0 {
 		if err := installPathTTLRules(lanIfaces, ipv6Supported); err != nil {
-			return errors.Join(fmt.Errorf("preserve ICMP TTL through path-tun: %w", err), CleanupFirewall())
+			return fmt.Errorf("preserve ICMP TTL through path-tun: %w", err)
 		}
 	}
 
-	// Ensure system filter table, forward and input chains exist. Rules are
-	// inserted at the head of the chains (not appended) so that they are not
-	// shadowed by pre-existing drop/reject rules, and failures are reported.
+	// Ensure system filter table, forward and input chains exist. New rules are
+	// inserted ahead of previous managed handles and old handles removed
+	// afterwards so firewall updates never leave an unprotected window.
 	_ = run("nft", "add", "table", "inet", "filter")
 	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
 	_ = run("nft", "add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; }")
 
 	var inputRules [][]string
 	inputRules = append(inputRules, []string{"meta", "mark", tunMark, "accept"})
-	for _, iso := range cfg.Gateway.EffectiveIsolatedInterfaces() {
-		inputRules = append(inputRules, []string{"iifname", iso, "tcp", "dport", "22", "drop"})
-	}
 	if cfg.Gateway.DNSListen != "" {
 		if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
 			if !isLoopbackDNSListenHost(host) {
@@ -314,6 +314,12 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		if err := insertFilterRules("input", inputRules...); err != nil {
 			return err
 		}
+	}
+
+	isoSet := make(map[string]bool)
+	isoIfaces := cfg.Gateway.EffectiveIsolatedInterfaces()
+	for _, iso := range isoIfaces {
+		isoSet[iso] = true
 	}
 
 	var forwardRules [][]string
@@ -333,9 +339,6 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		}
 		if wanDistinct {
 			managedNATInstalled = true
-			for _, tk := range blockRuleTokens(cfg) {
-				forwardRules = append(forwardRules, filterRuleArgs(tk, "drop"))
-			}
 		}
 	}
 	if pathTunnelEnabled(cfg) {
@@ -344,17 +347,23 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			[]string{"oifname", pathTunName, "accept"})
 	}
 	for _, liface := range lanIfaces {
-		forwardRules = append(forwardRules, []string{"iifname", liface, "oifname", liface, "accept"})
+		if isoSet[liface] {
+			forwardRules = append(forwardRules, []string{"iifname", liface, "oifname", liface, "drop"})
+		} else {
+			forwardRules = append(forwardRules, []string{"iifname", liface, "oifname", liface, "accept"})
+		}
 	}
-	if len(cfg.Gateway.EffectiveIsolatedInterfaces()) > 0 {
-		forwardRules = append(forwardRules, []string{"ct", "state", "established,related", "accept"})
-		for _, iso := range cfg.Gateway.EffectiveIsolatedInterfaces() {
+	if len(isoIfaces) > 0 {
+		for _, iso := range isoIfaces {
 			for _, liface := range lanIfaces {
 				if liface != iso {
-					forwardRules = append(forwardRules, []string{"iifname", iso, "oifname", liface, "drop"})
+					forwardRules = append(forwardRules,
+						[]string{"iifname", iso, "oifname", liface, "drop"},
+						[]string{"iifname", liface, "oifname", iso, "ct", "state", "new", "drop"})
 				}
 			}
 		}
+		forwardRules = append(forwardRules, []string{"ct", "state", "established,related", "accept"})
 	}
 	if managedNATInstalled {
 		for _, liface := range lanIfaces {
@@ -363,14 +372,21 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 				[]string{"iifname", wanIface, "oifname", liface, "ct", "state", "established,related", "accept"})
 		}
 	}
-	if err := insertFilterRules("forward", forwardRules...); err != nil {
-		return err
-	}
-	if cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled && !managedNATInstalled && !cfg.Gateway.NATDisabled {
-		if err := installDirectLANForwardRules(lanIfaces...); err != nil {
-			return errors.Join(err, CleanupFirewall())
+	if len(forwardRules) > 0 {
+		if err := insertFilterRules("forward", forwardRules...); err != nil {
+			return err
 		}
 	}
+	if cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled && !managedNATInstalled && !cfg.Gateway.NATDisabled && len(lanIfaces) > 0 {
+		if err := installDirectLANForwardRulesWithConfig(cfg, lanIfaces...); err != nil {
+			return err
+		}
+	}
+
+	_ = deleteFilterHandles("forward", oldForwardHandles)
+	_ = deleteFilterHandles("input", oldInputHandles)
+	_ = deleteFilterHandles("postrouting", oldPostroutingHandles)
+	_ = runDelete("nft", "delete", "chain", "inet", "filter", "block_guard")
 
 	rollback = false
 	return nil
@@ -392,6 +408,7 @@ func CleanupFirewall() error {
 	record("filter forward rules", cleanupFilterForwardRules())
 	record("filter input rules", cleanupFilterInputRules())
 	record("filter postrouting rules", cleanupFilterManagedRules("postrouting"))
+	record("filter block_guard chain", runDelete("nft", "delete", "chain", "inet", "filter", "block_guard"))
 
 	rules, rulesErr := loadPolicyRules()
 	if rulesErr != nil {
@@ -543,7 +560,7 @@ func policyRulesMulti(cfg *config.UserConfig, lanCIDRs, lanIPv6CIDRs []string, i
 		{Args: []string{"fwmark", tunMark, "table", policyTable, "pref", prefTun}},
 		{Args: []string{"fwmark", xrayMark, "table", "main", "pref", prefXray}},
 	}
-	for i, cidr := range lanCIDRs {
+	for i, cidr := range flattenCIDRs(lanCIDRs) {
 		if cidr != "" {
 			pref := fmt.Sprintf("%d", 10010+i)
 			rules = append(rules, policyRuleSpec{Args: []string{"to", cidr, "table", "main", "pref", pref}})
@@ -724,14 +741,11 @@ func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
 	if !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled {
 		return "", nil
 	}
-	if cfg.Gateway.LANInterface == "" {
-		return "", fmt.Errorf("gateway LAN interface is not configured")
-	}
 	lanIfaces := cfg.Gateway.EffectiveLANInterfaces()
-	if len(lanIfaces) == 0 {
+	if cfg.Gateway.LANEnabled && len(lanIfaces) == 0 {
 		return "", fmt.Errorf("gateway LAN interface is not configured")
 	}
-	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, true)
+	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, cfg.Gateway.LANEnabled)
 	if err != nil {
 		return "", err
 	}
@@ -751,20 +765,21 @@ func Verify(cfg *config.UserConfig) []string {
 	if mode != "tproxy" && mode != "tun" {
 		problems = append(problems, "gateway mode must be 'tproxy' or 'tun'")
 	}
+	state := cfg.Gateway.State
+	if state == "" {
+		state = "proxy"
+	}
 	lanIfaces := cfg.Gateway.EffectiveLANInterfaces()
 	if len(lanIfaces) == 0 {
-		problems = append(problems, "LAN interface is not configured")
+		if cfg.Gateway.LANEnabled || state == "forward-only" {
+			problems = append(problems, "LAN interface is not configured")
+		}
 	} else {
 		for _, iface := range lanIfaces {
 			if _, err := net.InterfaceByName(iface); err != nil {
 				problems = append(problems, fmt.Sprintf("LAN interface %s not found", iface))
 			}
 		}
-	}
-
-	state := cfg.Gateway.State
-	if state == "" {
-		state = "proxy"
 	}
 
 	expectForwarding := false
@@ -830,6 +845,14 @@ func Verify(cfg *config.UserConfig) []string {
 				problems = append(problems, "IPv6 policy table "+policyTable+" has no default route via lo")
 			}
 		}
+
+		lanCIDRs, lanIPv6CIDRs, cidrsErr := collectLANCIDRs(lanIfaces, cfg.Gateway.LANEnabled)
+		if cidrsErr != nil && cfg.Gateway.LANEnabled {
+			problems = append(problems, "cannot determine LAN CIDR for policy rules")
+		} else {
+			expected := policyRulesMulti(cfg, lanCIDRs, lanIPv6CIDRs, ipv6Configured)
+			problems = append(problems, verifyPolicyRules(expected)...)
+		}
 	}
 
 	// 2. Pure TUN Adapter Verification (if enabled or mode == tun)
@@ -880,22 +903,6 @@ func Verify(cfg *config.UserConfig) []string {
 				problems = append(problems, "IPv6 policy table "+pathPolicyTable+" has no default route via "+pathTunName)
 			}
 		}
-	}
-
-	var lanCIDRs, lanIPv6CIDRs []string
-	for _, iface := range lanIfaces {
-		if c4, err := getInterfaceCIDR(iface); err == nil {
-			lanCIDRs = append(lanCIDRs, c4)
-		}
-		if c6s, err := getInterfaceIPv6CIDRs(iface); err == nil {
-			lanIPv6CIDRs = append(lanIPv6CIDRs, strings.Join(c6s, ","))
-		}
-	}
-	if len(lanCIDRs) == 0 && cfg.Gateway.LANEnabled {
-		problems = append(problems, "cannot determine LAN CIDR for policy rules")
-	} else {
-		expected := policyRulesMulti(cfg, lanCIDRs, lanIPv6CIDRs, ipv6Configured)
-		problems = append(problems, verifyPolicyRules(expected)...)
 	}
 	return problems
 }
@@ -1172,28 +1179,6 @@ func isLoopbackDNSListenHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func hasActiveRelayAllowingPrivateTargets(cfg *config.UserConfig) bool {
-	if cfg == nil {
-		return false
-	}
-	activeRelays := make(map[string]bool)
-	if cfg.Gateway.RelayAlias != "" && !strings.EqualFold(cfg.Gateway.RelayAlias, "direct") && !strings.EqualFold(cfg.Gateway.RelayAlias, "block") {
-		activeRelays[cfg.Gateway.RelayAlias] = true
-	}
-	for _, r := range cfg.Gateway.Rules {
-		target := strings.TrimSpace(r.Target)
-		if target != "" && !strings.EqualFold(target, "direct") && !strings.EqualFold(target, "block") {
-			activeRelays[target] = true
-		}
-	}
-	for _, co := range cfg.CustomOutbounds {
-		if activeRelays[co.Alias] && co.AllowPrivateTargets {
-			return true
-		}
-	}
-	return false
-}
-
 func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) string {
 	var lanIfaces []string
 	if cfg != nil {
@@ -1213,11 +1198,164 @@ func buildNFT(cfg *config.UserConfig, lanIface, lanCIDR, lanIPv6CIDR string) str
 	return buildNFTMulti(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
 }
 
+func resolveLocalProxyPort(cfg *config.UserConfig, tproxyPorts map[string]int, basePort int) (int, bool) {
+	if cfg == nil || !cfg.Gateway.LocalEnabled {
+		return 0, false
+	}
+	localRelay := cfg.Gateway.EffectiveLocalRelay()
+	if localRelay == "" || !config.GatewayRelayActive(cfg, localRelay) {
+		return 0, false
+	}
+	port := tproxyPorts[localRelay]
+	if port <= 0 && localRelay == strings.TrimSpace(cfg.Gateway.RelayAlias) {
+		port = basePort
+	}
+	if port <= 0 {
+		return 0, false
+	}
+	return port, true
+}
+
+func resolveZoneDNSPort(cfg *config.UserConfig, iface string, tproxyPorts map[string]int, basePort int) int {
+	if cfg == nil {
+		return 0
+	}
+	if zRelay := cfg.Gateway.EffectiveRelayForInterface(iface); zRelay != "" && config.GatewayRelayActive(cfg, zRelay) {
+		if p := tproxyPorts[zRelay]; p > 0 {
+			return p
+		}
+		if zRelay == strings.TrimSpace(cfg.Gateway.RelayAlias) {
+			return basePort
+		}
+	}
+	if gRelay := strings.TrimSpace(cfg.Gateway.RelayAlias); gRelay != "" &&
+		!strings.EqualFold(gRelay, "direct") && !strings.EqualFold(gRelay, "block") &&
+		config.GatewayRelayActive(cfg, gRelay) {
+		if p := tproxyPorts[gRelay]; p > 0 {
+			return p
+		}
+		return basePort
+	}
+	if cfg.Gateway.DNSListen != "" {
+		if _, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+			return dnsPort
+		}
+	}
+	return 0
+}
+
+func nftIfaceList(ifaces []string) string {
+	if len(ifaces) == 1 {
+		return quoteIface(ifaces[0])
+	}
+	quoted := make([]string, len(ifaces))
+	for i, iface := range ifaces {
+		quoted[i] = quoteIface(iface)
+	}
+	return "{ " + strings.Join(quoted, ", ") + " }"
+}
+
+func writeBlockGuardChain(b *strings.Builder, entries []blockGuardEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	b.WriteString("    chain block_guard {\n")
+	for _, e := range entries {
+		b.WriteString("        " + strings.Join(e.Tokens, " ") + " " + e.Verdict + "\n")
+	}
+	b.WriteString("    }\n")
+}
+
+func writeIsolatedInputRules(b *strings.Builder, isoIfaces []string, allowTProxyMark bool) {
+	for _, iso := range isoIfaces {
+		if allowTProxyMark {
+			b.WriteString(fmt.Sprintf("        iifname %q meta mark %s accept\n", iso, tunMark))
+		}
+		b.WriteString(fmt.Sprintf("        iifname %q udp dport { 67, 68, 546, 547 } accept\n", iso))
+		if allowTProxyMark {
+			b.WriteString(fmt.Sprintf("        iifname %q meta l4proto { tcp, udp } th dport 53 accept\n", iso))
+		}
+		b.WriteString(fmt.Sprintf("        iifname %q icmp type { echo-request, destination-unreachable, time-exceeded } accept\n", iso))
+		b.WriteString(fmt.Sprintf("        iifname %q icmpv6 type { echo-request, destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-solicit, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept\n", iso))
+		b.WriteString(fmt.Sprintf("        iifname %q drop\n", iso))
+	}
+}
+
+func writeIsolatedForwardRules(b *strings.Builder, isoIfaces, lanIfaces []string) {
+	if len(isoIfaces) == 0 {
+		return
+	}
+	for _, iso := range isoIfaces {
+		b.WriteString(fmt.Sprintf("        iifname %q oifname %q drop\n", iso, iso))
+		seenOther := map[string]bool{iso: true}
+		var others []string
+		for _, liface := range lanIfaces {
+			if liface != "" && !seenOther[liface] {
+				seenOther[liface] = true
+				others = append(others, liface)
+			}
+		}
+		for _, otherIso := range isoIfaces {
+			if otherIso != "" && !seenOther[otherIso] {
+				seenOther[otherIso] = true
+				others = append(others, otherIso)
+			}
+		}
+		if len(others) > 0 {
+			otherExpr := nftIfaceList(others)
+			b.WriteString(fmt.Sprintf("        iifname %q oifname %s drop\n", iso, otherExpr))
+			b.WriteString(fmt.Sprintf("        iifname %s oifname %q ct state new drop\n", otherExpr, iso))
+		}
+	}
+	b.WriteString("        ct state established,related accept\n")
+}
+
+func writeCommonDestinationBypasses(b *strings.Builder, cfg *config.UserConfig, lanCIDRs, lanIPv6CIDRs []string) {
+	b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
+	for _, cidr := range flattenCIDRs(lanCIDRs) {
+		if cidr != "" {
+			b.WriteString("        ip daddr " + cidr + " return\n")
+		}
+	}
+	b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return\n")
+	for _, cidr := range flattenCIDRs(lanIPv6CIDRs) {
+		if cidr != "" {
+			b.WriteString("        ip6 daddr " + cidr + " return\n")
+		}
+	}
+	for _, target := range outboundEndpoints(cfg) {
+		writeOutboundEndpointRule(b, target)
+	}
+	for _, ip := range cfg.Gateway.BypassDNS {
+		parsedIP := net.ParseIP(ip)
+		if parsedIP != nil {
+			if parsedIP.To4() != nil {
+				b.WriteString("        ip daddr " + parsedIP.String() + " return\n")
+			} else {
+				b.WriteString("        ip6 daddr " + parsedIP.String() + " return\n")
+			}
+		}
+	}
+}
+
+func ruleTProxyFamily(r config.GatewayRule) string {
+	if r.IP == "" {
+		return ""
+	}
+	if isIPv6(r.IP) {
+		return "ip6 "
+	}
+	return "ip "
+}
+
 func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6CIDRs []string, wanIface string) string {
 	var b strings.Builder
 	basePort := cfg.Gateway.EffectiveTProxyPort()
 	tproxyPorts := config.GatewayTProxyPorts(cfg)
 	isoIfaces := cfg.Gateway.EffectiveIsolatedInterfaces()
+	localPort, localProxyActive := resolveLocalProxyPort(cfg, tproxyPorts, basePort)
+	blockEntries := blockGuardEntries(cfg)
+	sortedRules := sortedAllClientRules(cfg)
 
 	var allPorts []int
 	seenPort := make(map[int]bool)
@@ -1235,63 +1373,150 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		portStrs = append(portStrs, strconv.Itoa(p))
 	}
 
+	b.WriteString("table inet " + tableName + "\n")
+	b.WriteString("delete table inet " + tableName + "\n")
 	b.WriteString("table inet " + tableName + " {\n")
+	writeBlockGuardChain(&b, blockEntries)
+
 	if cfg.Gateway.LANEnabled || cfg.Gateway.LocalEnabled {
-		blocks := blockRuleTokens(cfg)
-		hasInputRules := len(blocks) > 0 || cfg.Gateway.DNSListen != "" || len(isoIfaces) > 0 || len(portStrs) > 0
-		if hasInputRules {
-			b.WriteString("    chain input {\n")
-			b.WriteString("        type filter hook input priority mangle; policy accept;\n")
-			if len(portStrs) == 1 {
-				b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport " + portStrs[0] + " drop\n")
-			} else {
-				b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport { " + strings.Join(portStrs, ", ") + " } drop\n")
-			}
-			for _, tk := range blocks {
-				b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
-			}
-			for _, iso := range isoIfaces {
-				b.WriteString(fmt.Sprintf("        iifname %q tcp dport 22 drop\n", iso))
-			}
-			if cfg.Gateway.DNSListen != "" {
-				if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
-					if !isLoopbackDNSListenHost(host) && len(lanIfaces) > 0 {
-						var quoted []string
-						quoted = append(quoted, `"lo"`)
-						for _, l := range lanIfaces {
-							quoted = append(quoted, `"`+l+`"`)
-						}
-						b.WriteString("        iifname != { " + strings.Join(quoted, ", ") + " } meta l4proto { tcp, udp } th dport " + strconv.Itoa(dnsPort) + " drop\n")
-					}
+		b.WriteString("    chain input {\n")
+		b.WriteString("        type filter hook input priority mangle; policy accept;\n")
+		if len(portStrs) == 1 {
+			b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport " + portStrs[0] + " drop\n")
+		} else {
+			b.WriteString("        meta mark != " + tunMark + " meta l4proto { tcp, udp } th dport { " + strings.Join(portStrs, ", ") + " } drop\n")
+		}
+		if len(blockEntries) > 0 {
+			b.WriteString("        jump block_guard\n")
+		}
+		writeIsolatedInputRules(&b, isoIfaces, true)
+		if cfg.Gateway.DNSListen != "" {
+			if host, dnsPort, _, err := config.ParseDNSListen(cfg.Gateway.DNSListen); err == nil && dnsPort > 0 {
+				if !isLoopbackDNSListenHost(host) && len(lanIfaces) > 0 {
+					allowed := append([]string{"lo"}, lanIfaces...)
+					b.WriteString("        iifname != " + nftIfaceList(allowed) + " meta l4proto { tcp, udp } th dport " + strconv.Itoa(dnsPort) + " drop\n")
 				}
 			}
-			b.WriteString("    }\n")
 		}
+		b.WriteString("    }\n")
 
 		b.WriteString("    chain prerouting {\n")
 		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
-		if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
+		b.WriteString("        ct status dnat return\n")
+
+		// Handle host-originated loopback traffic redirected by policy table 100
+		// before LAN rules so host local_relay never hits LAN client rules.
+		if localProxyActive {
+			b.WriteString("        iifname \"lo\" meta mark " + tunMark + " meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(localPort) + " meta mark set " + tunMark + " accept\n")
+		}
+		b.WriteString("        iifname \"lo\" return\n")
+
+		if !cfg.Gateway.LANEnabled {
+			if len(blockEntries) > 0 {
+				b.WriteString("        jump block_guard\n")
+			}
+			b.WriteString("        iifname != \"lo\" return\n")
+		} else {
+			if len(blockEntries) > 0 {
+				b.WriteString("        jump block_guard\n")
+			}
+			if len(lanIfaces) > 0 {
+				b.WriteString("        iifname != " + nftIfaceList(lanIfaces) + " return\n")
+			} else {
+				b.WriteString("        return\n")
+			}
 			b.WriteString("        iifname != \"lo\" fib daddr type local meta l4proto != { tcp, udp } return\n")
 			b.WriteString("        iifname != \"lo\" fib daddr type local th dport != 53 return\n")
-		} else {
-			b.WriteString("        iifname != \"lo\" fib daddr type local return\n")
-		}
 
-		// Block rules (most specific selector first; less specific blocks
-		// yield to more specific non-block rules).
-		for _, tk := range blockRuleTokens(cfg) {
-			b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
-		}
-
-		// Interface & source subnet guards
-		if cfg.Gateway.LANEnabled && cfg.Gateway.LocalEnabled {
-			var allowed []string
-			allowed = append(allowed, `"lo"`)
-			for _, l := range lanIfaces {
-				allowed = append(allowed, `"`+l+`"`)
+			// Step 2: Port 53 DNS hijacking BEFORE LAN source subnet guards so IPv6
+			// fe80:: link-local DNS works; blocked devices were already dropped above.
+			for _, rule := range sortedRules {
+				if isBlockRule(rule) {
+					continue
+				}
+				match := strings.Join(matchTokens(rule), " ")
+				tproxyFamily := ruleTProxyFamily(rule)
+				if !isDirectRule(rule) {
+					target := strings.TrimSpace(rule.Target)
+					port := tproxyPorts[target]
+					if port <= 0 || !config.GatewayRelayActive(cfg, target) {
+						// Already dropped in block_guard before DNS hijacking.
+						continue
+					}
+					b.WriteString("        " + match + " meta l4proto { tcp, udp } th dport 53 tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
+					continue
+				}
+				// Direct devices still resolve DNS through zone/global relay to avoid poisoning.
+				if rule.Interface != "" || len(lanIfaces) <= 1 {
+					iface := rule.Interface
+					if iface == "" && len(lanIfaces) == 1 {
+						iface = lanIfaces[0]
+					}
+					port := resolveZoneDNSPort(cfg, iface, tproxyPorts, basePort)
+					if port > 0 {
+						b.WriteString("        " + match + " meta l4proto { tcp, udp } th dport 53 tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
+					} else {
+						b.WriteString("        " + match + " meta l4proto { tcp, udp } th dport 53 return\n")
+					}
+					continue
+				}
+				// Multi-LAN rule without explicit interface: coalesce if all zones use same DNS port.
+				firstPort := resolveZoneDNSPort(cfg, lanIfaces[0], tproxyPorts, basePort)
+				uniform := true
+				for _, liface := range lanIfaces[1:] {
+					if resolveZoneDNSPort(cfg, liface, tproxyPorts, basePort) != firstPort {
+						uniform = false
+						break
+					}
+				}
+				if uniform {
+					if firstPort > 0 {
+						b.WriteString("        " + match + " meta l4proto { tcp, udp } th dport 53 tproxy " + tproxyFamily + "to :" + strconv.Itoa(firstPort) + " meta mark set " + tunMark + " accept\n")
+					} else {
+						b.WriteString("        " + match + " meta l4proto { tcp, udp } th dport 53 return\n")
+					}
+				} else {
+					for _, liface := range lanIfaces {
+						p := resolveZoneDNSPort(cfg, liface, tproxyPorts, basePort)
+						if p > 0 {
+							b.WriteString("        iifname " + quoteIface(liface) + " " + match + " meta l4proto { tcp, udp } th dport 53 tproxy " + tproxyFamily + "to :" + strconv.Itoa(p) + " meta mark set " + tunMark + " accept\n")
+						} else {
+							b.WriteString("        iifname " + quoteIface(liface) + " " + match + " meta l4proto { tcp, udp } th dport 53 return\n")
+						}
+					}
+				}
 			}
-			b.WriteString("        iifname != { " + strings.Join(allowed, ", ") + " } return\n")
+			// Default LAN :53 hijacking per zone or uniform across all LAN interfaces.
+			if len(lanIfaces) > 0 {
+				firstDNSPort := resolveZoneDNSPort(cfg, lanIfaces[0], tproxyPorts, basePort)
+				firstExplicitBlock := strings.EqualFold(strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[lanIfaces[0]]), "block")
+				uniformDNS := !firstExplicitBlock
+				for _, liface := range lanIfaces[1:] {
+					if strings.EqualFold(strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[liface]), "block") ||
+						resolveZoneDNSPort(cfg, liface, tproxyPorts, basePort) != firstDNSPort {
+						uniformDNS = false
+						break
+					}
+				}
+				if uniformDNS {
+					if firstDNSPort > 0 {
+						b.WriteString("        meta l4proto { tcp, udp } th dport 53 tproxy to :" + strconv.Itoa(firstDNSPort) + " meta mark set " + tunMark + " accept\n")
+					}
+				} else {
+					for _, liface := range lanIfaces {
+						if strings.EqualFold(strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[liface]), "block") {
+							b.WriteString("        iifname " + quoteIface(liface) + " meta l4proto { tcp, udp } th dport 53 drop\n")
+							continue
+						}
+						if p := resolveZoneDNSPort(cfg, liface, tproxyPorts, basePort); p > 0 {
+							b.WriteString("        iifname " + quoteIface(liface) + " meta l4proto { tcp, udp } th dport 53 tproxy to :" + strconv.Itoa(p) + " meta mark set " + tunMark + " accept\n")
+						}
+					}
+				}
+			}
+
+			// Step 3: Multi-subnet LAN source guards and non-LL IPv6 leak prevention.
 			for i, iface := range lanIfaces {
 				var cidr, ipv6Cidr string
 				if i < len(lanCIDRs) {
@@ -1301,152 +1526,68 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 					ipv6Cidr = lanIPv6CIDRs[i]
 				}
 				if cidr != "" {
-					b.WriteString("        iifname \"" + iface + "\" ip saddr != " + cidr + " return\n")
+					b.WriteString("        iifname " + quoteIface(iface) + " ip saddr != " + nftAddrSet(cidr) + " return\n")
 				}
 				if ipv6Cidr != "" {
-					b.WriteString("        iifname \"" + iface + "\" ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
+					b.WriteString("        iifname " + quoteIface(iface) + " ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
 				} else {
-					b.WriteString("        iifname \"" + iface + "\" ip6 saddr ::/0 return\n")
+					b.WriteString("        iifname " + quoteIface(iface) + " ip6 saddr != { ::/128, fe80::/10 } drop\n")
+					b.WriteString("        iifname " + quoteIface(iface) + " ip6 saddr { ::/128, fe80::/10 } return\n")
 				}
 			}
-		} else if cfg.Gateway.LANEnabled {
-			if len(lanIfaces) == 1 {
-				b.WriteString("        iifname != \"" + lanIfaces[0] + "\" return\n")
-				var cidr, ipv6Cidr string
-				if len(lanCIDRs) > 0 {
-					cidr = lanCIDRs[0]
+
+			// Destination bypasses (always bypass RFC1918/ULA + LAN CIDRs + outbound endpoints)
+			writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+
+			// Per-client non-DNS rules ordered by unified specificity
+			for _, rule := range sortedRules {
+				if isBlockRule(rule) {
+					continue
 				}
-				if len(lanIPv6CIDRs) > 0 {
-					ipv6Cidr = lanIPv6CIDRs[0]
+				match := strings.Join(matchTokens(rule), " ")
+				if isDirectRule(rule) {
+					b.WriteString("        " + match + " return\n")
+					continue
 				}
-				if cidr != "" {
-					b.WriteString("        ip saddr != " + cidr + " return\n")
+				target := strings.TrimSpace(rule.Target)
+				port := tproxyPorts[target]
+				if port <= 0 || !config.GatewayRelayActive(cfg, target) {
+					b.WriteString("        " + match + " drop\n")
+					continue
 				}
-				if ipv6Cidr != "" {
-					b.WriteString("        iifname \"" + lanIfaces[0] + "\" ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
-				} else {
-					b.WriteString("        iifname \"" + lanIfaces[0] + "\" ip6 saddr ::/0 return\n")
+				tproxyFamily := ruleTProxyFamily(rule)
+				b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
+			}
+
+			// Default Gateway Policy
+			if pathTunnelEnabled(cfg) {
+				b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
+				b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
+			}
+			if len(cfg.Gateway.ZoneDefaultRelays) == 0 {
+				if cfg.Gateway.RelayAlias != "" && !strings.EqualFold(cfg.Gateway.RelayAlias, "direct") && !strings.EqualFold(cfg.Gateway.RelayAlias, "block") {
+					if port := tproxyPorts[cfg.Gateway.RelayAlias]; port > 0 && config.GatewayRelayActive(cfg, cfg.Gateway.RelayAlias) {
+						b.WriteString("        meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
+					}
 				}
 			} else {
-				var allowed []string
-				for _, l := range lanIfaces {
-					allowed = append(allowed, `"`+l+`"`)
-				}
-				b.WriteString("        iifname != { " + strings.Join(allowed, ", ") + " } return\n")
-				for i, iface := range lanIfaces {
-					var cidr, ipv6Cidr string
-					if i < len(lanCIDRs) {
-						cidr = lanCIDRs[i]
-					}
-					if i < len(lanIPv6CIDRs) {
-						ipv6Cidr = lanIPv6CIDRs[i]
-					}
-					if cidr != "" {
-						b.WriteString("        iifname \"" + iface + "\" ip saddr != " + cidr + " return\n")
-					}
-					if ipv6Cidr != "" {
-						b.WriteString("        iifname \"" + iface + "\" ip6 saddr != " + nftAddrSet(ipv6Cidr) + " return\n")
-					} else {
-						b.WriteString("        iifname \"" + iface + "\" ip6 saddr ::/0 return\n")
+				for _, liface := range lanIfaces {
+					explicit := strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[liface])
+					switch {
+					case strings.EqualFold(explicit, "block"):
+						b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+					case strings.EqualFold(explicit, "direct"):
+						b.WriteString("        iifname " + quoteIface(liface) + " return\n")
+					default:
+						zRelay := cfg.Gateway.EffectiveRelayForInterface(liface)
+						if explicit != "" && !config.GatewayRelayActive(cfg, explicit) {
+							b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+						} else if zRelay != "" && config.GatewayRelayActive(cfg, zRelay) && tproxyPorts[zRelay] > 0 {
+							b.WriteString("        iifname " + quoteIface(liface) + " meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(tproxyPorts[zRelay]) + " meta mark set " + tunMark + " accept\n")
+						}
 					}
 				}
 			}
-		} else {
-			b.WriteString("        iifname != \"lo\" return\n")
-		}
-
-		if cfg.Gateway.DNSListen == "" && cfg.Gateway.LANEnabled {
-			b.WriteString("        fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
-		}
-
-		// Destination bypasses
-		allowPrivate := hasActiveRelayAllowingPrivateTargets(cfg)
-		if !allowPrivate {
-			b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
-		} else {
-			b.WriteString("        ip daddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
-		}
-		for _, cidr := range lanCIDRs {
-			if cidr != "" {
-				b.WriteString("        ip daddr " + cidr + " return\n")
-			}
-		}
-		if !allowPrivate {
-			b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return\n")
-		} else {
-			b.WriteString("        ip6 daddr { ::1/128, fe80::/10, ff00::/8 } return\n")
-		}
-		for _, cidr := range flattenCIDRs(lanIPv6CIDRs) {
-			if cidr != "" {
-				b.WriteString("        ip6 daddr " + cidr + " return\n")
-			}
-		}
-		for _, target := range outboundEndpoints(cfg) {
-			writeOutboundEndpointRule(&b, target)
-		}
-		for _, ip := range cfg.Gateway.BypassDNS {
-			parsedIP := net.ParseIP(ip)
-			if parsedIP != nil {
-				if parsedIP.To4() != nil {
-					b.WriteString("        ip daddr " + parsedIP.String() + " return\n")
-				} else {
-					b.WriteString("        ip6 daddr " + parsedIP.String() + " return\n")
-				}
-			}
-		}
-
-		// Per-client rules ordered by specificity: interface+MAC, MAC, interface.
-		/*
-		RESERVED AS FALLBACK: Legacy Standalone TUN Interception Rules
-		Preserved as reference if TUN is ever required to intercept nftables prerouting directly:
-
-		for _, rule := range sortedGatewayRules(cfg, false) {
-			match := strings.Join(matchTokens(rule), " ")
-			target := strings.TrimSpace(rule.Target)
-			if strings.EqualFold(target, "direct") {
-				b.WriteString("        " + match + " return\n")
-				continue
-			}
-			b.WriteString("        " + match + " drop\n")
-		}
-		if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
-			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
-			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
-		}
-		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
-		*/
-
-		for _, rule := range sortedGatewayRules(cfg, false) {
-			match := strings.Join(matchTokens(rule), " ")
-			target := strings.TrimSpace(rule.Target)
-			if strings.EqualFold(target, "direct") {
-				b.WriteString("        " + match + " return\n")
-				continue
-			}
-			port := tproxyPorts[target]
-			if port <= 0 || !config.GatewayRelayActive(cfg, target) {
-				// Fail closed: never silently fall back to the default relay.
-				b.WriteString("        " + match + " drop\n")
-				continue
-			}
-			tproxyFamily := ""
-			if rule.IP != "" {
-				if isIPv6(rule.IP) {
-					tproxyFamily = "ip6 "
-				} else {
-					tproxyFamily = "ip "
-				}
-			}
-			b.WriteString("        " + match + " meta l4proto { tcp, udp } tproxy " + tproxyFamily + "to :" + strconv.Itoa(port) + " meta mark set " + tunMark + " accept\n")
-		}
-
-		// Default Gateway Policy
-		if pathTunnelEnabled(cfg) && cfg.Gateway.LANEnabled {
-			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
-			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
-		}
-		if cfg.Gateway.RelayAlias != "" && !strings.EqualFold(cfg.Gateway.RelayAlias, "direct") && !strings.EqualFold(cfg.Gateway.RelayAlias, "block") {
-			b.WriteString("        meta l4proto { tcp, udp } tproxy to :" + strconv.Itoa(basePort) + " meta mark set " + tunMark + " accept\n")
 		}
 		b.WriteString("    }\n")
 	}
@@ -1456,52 +1597,19 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("        type route hook output priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
 		b.WriteString("        fib daddr type local return\n")
-		allowPrivate := hasActiveRelayAllowingPrivateTargets(cfg)
-		if !allowPrivate {
-			b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
-		} else {
-			b.WriteString("        ip daddr { 0.0.0.0/8, 127.0.0.0/8, 169.254.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
-		}
-		for _, cidr := range lanCIDRs {
-			if cidr != "" {
-				b.WriteString("        ip daddr " + cidr + " return\n")
-			}
-		}
-		if !allowPrivate {
-			b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10, ff00::/8 } return\n")
-		} else {
-			b.WriteString("        ip6 daddr { ::1/128, fe80::/10, ff00::/8 } return\n")
-		}
-		for _, cidr := range flattenCIDRs(lanIPv6CIDRs) {
-			if cidr != "" {
-				b.WriteString("        ip6 daddr " + cidr + " return\n")
-			}
-		}
-		for _, target := range outboundEndpoints(cfg) {
-			writeOutboundEndpointRule(&b, target)
-		}
-		for _, ip := range cfg.Gateway.BypassDNS {
-			parsedIP := net.ParseIP(ip)
-			if parsedIP != nil {
-				if parsedIP.To4() != nil {
-					b.WriteString("        ip daddr " + parsedIP.String() + " return\n")
-				} else {
-					b.WriteString("        ip6 daddr " + parsedIP.String() + " return\n")
-				}
-			}
-		}
+		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
 		for _, port := range getSSHPorts() {
 			// Exclude the SSH listener's reply traffic (source port) to prevent
 			// inbound management sessions from being intercepted or broken.
-			// Outbound SSH connections initiated by the host (destination port)
-			// should still be proxied through the transparent gateway.
 			b.WriteString("        tcp sport " + port + " return\n")
 		}
 		if pathTunnelEnabled(cfg) {
 			b.WriteString("        icmp type echo-request meta mark set " + pathTunMark + "\n")
 			b.WriteString("        icmpv6 type echo-request meta mark set " + pathTunMark + "\n")
 		}
-		b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
+		if localProxyActive {
+			b.WriteString("        meta l4proto { tcp, udp } meta mark set " + tunMark + "\n")
+		}
 		b.WriteString("    }\n")
 	}
 
@@ -1527,81 +1635,65 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("    chain nat_prerouting {\n")
 		b.WriteString("        type nat hook prerouting priority dstnat; policy accept;\n")
 		for _, pf := range cfg.Gateway.PortForwards {
-			target := fmt.Sprintf("%s:%d", pf.TargetIP, pf.TargetPort)
-			if strings.Contains(pf.TargetIP, ":") {
-				target = fmt.Sprintf("[%s]:%d", pf.TargetIP, pf.TargetPort)
+			targetIP := strings.TrimSpace(pf.TargetIP)
+			isV6 := strings.Contains(targetIP, ":")
+			if addr, err := netip.ParseAddr(targetIP); err == nil {
+				isV6 = addr.Is6()
+			}
+			nfProto := "meta nfproto ipv4 "
+			dnatVerb := "dnat ip to "
+			target := fmt.Sprintf("%s:%d", targetIP, pf.TargetPort)
+			if isV6 {
+				nfProto = "meta nfproto ipv6 "
+				dnatVerb = "dnat ip6 to "
+				target = fmt.Sprintf("[%s]:%d", targetIP, pf.TargetPort)
 			}
 			proto := strings.ToLower(strings.TrimSpace(pf.Proto))
 			switch proto {
 			case "tcp":
-				b.WriteString(fmt.Sprintf("        iifname %q tcp dport %d dnat to %s\n", wanIface, pf.WANPort, target))
+				b.WriteString(fmt.Sprintf("        iifname %q %stcp dport %d %s%s\n", wanIface, nfProto, pf.WANPort, dnatVerb, target))
 			case "udp":
-				b.WriteString(fmt.Sprintf("        iifname %q udp dport %d dnat to %s\n", wanIface, pf.WANPort, target))
+				b.WriteString(fmt.Sprintf("        iifname %q %sudp dport %d %s%s\n", wanIface, nfProto, pf.WANPort, dnatVerb, target))
 			default:
-				b.WriteString(fmt.Sprintf("        iifname %q meta l4proto { tcp, udp } th dport %d dnat to %s\n", wanIface, pf.WANPort, target))
+				b.WriteString(fmt.Sprintf("        iifname %q %smeta l4proto { tcp, udp } th dport %d %s%s\n", wanIface, nfProto, pf.WANPort, dnatVerb, target))
 			}
 		}
 		b.WriteString("    }\n")
 	}
 
+	var noV6Ifaces []string
+	if cfg.Gateway.LANEnabled {
+		for i, iface := range lanIfaces {
+			if i >= len(lanIPv6CIDRs) || strings.TrimSpace(lanIPv6CIDRs[i]) == "" {
+				noV6Ifaces = append(noV6Ifaces, iface)
+			}
+		}
+	}
+
 	hasIsolated := len(isoIfaces) > 0
 
-	if hasManagedNAT || hasPortForwards || hasIsolated {
+	if hasManagedNAT || hasPortForwards || hasIsolated || len(blockEntries) > 0 || len(noV6Ifaces) > 0 {
 		b.WriteString("    chain forward {\n")
 		b.WriteString("        type filter hook forward priority filter; policy accept;\n")
-		for _, tk := range blockRuleTokens(cfg) {
-			b.WriteString("        " + strings.Join(tk, " ") + " drop\n")
+		if len(blockEntries) > 0 {
+			b.WriteString("        jump block_guard\n")
 		}
 		if hasPortForwards {
 			b.WriteString("        ct status dnat accept\n")
 		}
-		if hasIsolated {
-			b.WriteString("        ct state established,related accept\n")
-			for _, iso := range isoIfaces {
-				var others []string
-				for _, liface := range lanIfaces {
-					if liface != iso {
-						others = append(others, liface)
-					}
-				}
-				if len(others) == 1 {
-					b.WriteString(fmt.Sprintf("        iifname %q oifname %q drop\n", iso, others[0]))
-				} else if len(others) > 1 {
-					var quoted []string
-					for _, o := range others {
-						quoted = append(quoted, fmt.Sprintf("%q", o))
-					}
-					b.WriteString(fmt.Sprintf("        iifname %q oifname { %s } drop\n", iso, strings.Join(quoted, ", ")))
-				}
-			}
+		writeIsolatedForwardRules(&b, isoIfaces, lanIfaces)
+		for _, iface := range noV6Ifaces {
+			b.WriteString("        iifname " + quoteIface(iface) + " ip6 saddr != { ::/128, fe80::/10 } drop\n")
 		}
 		if hasManagedNAT {
-			var lanMatch string
-			if len(lanIfaces) == 1 {
-				lanMatch = `"` + lanIfaces[0] + `"`
-			} else {
-				var quoted []string
-				for _, l := range lanIfaces {
-					quoted = append(quoted, `"`+l+`"`)
-				}
-				lanMatch = `{ ` + strings.Join(quoted, ", ") + ` }`
-			}
+			lanMatch := nftIfaceList(lanIfaces)
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" accept\n")
 			b.WriteString("        iifname \"" + wanIface + "\" oifname " + lanMatch + " ct state established,related accept\n")
 		}
 		b.WriteString("    }\n")
 
 		if hasManagedNAT {
-			var lanMatch string
-			if len(lanIfaces) == 1 {
-				lanMatch = `"` + lanIfaces[0] + `"`
-			} else {
-				var quoted []string
-				for _, l := range lanIfaces {
-					quoted = append(quoted, `"`+l+`"`)
-				}
-				lanMatch = `{ ` + strings.Join(quoted, ", ") + ` }`
-			}
+			lanMatch := nftIfaceList(lanIfaces)
 			b.WriteString("    chain postrouting {\n")
 			b.WriteString("        type nat hook postrouting priority srcnat; policy accept;\n")
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" masquerade\n")
@@ -1611,6 +1703,160 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 
 	b.WriteString("}\n")
 	return b.String()
+}
+
+// buildFailClosedNFT constructs a fail-closed protection table installed when
+// TProxy startup fails and FailOpen is false. It preserves client block/isolate
+// policies and host SSH management while dropping traffic that would have been
+// routed through a proxy relay so real IPs cannot leak on proxy failure.
+func buildFailClosedNFT(cfg *config.UserConfig, lanIfaces, lanCIDRs, lanIPv6CIDRs []string, wanIface string) string {
+	var b strings.Builder
+	blockEntries := blockGuardEntries(cfg)
+	isoIfaces := cfg.Gateway.EffectiveIsolatedInterfaces()
+	sortedRules := sortedAllClientRules(cfg)
+	localRelay := ""
+	if cfg != nil {
+		localRelay = cfg.Gateway.EffectiveLocalRelay()
+	}
+
+	b.WriteString("table inet " + tableName + "\n")
+	b.WriteString("delete table inet " + tableName + "\n")
+	b.WriteString("table inet " + tableName + " {\n")
+	writeBlockGuardChain(&b, blockEntries)
+
+	if len(blockEntries) > 0 || len(isoIfaces) > 0 {
+		b.WriteString("    chain input {\n")
+		b.WriteString("        type filter hook input priority mangle; policy accept;\n")
+		if len(blockEntries) > 0 {
+			b.WriteString("        jump block_guard\n")
+		}
+		writeIsolatedInputRules(&b, isoIfaces, false)
+		b.WriteString("    }\n")
+	}
+
+	if cfg != nil && cfg.Gateway.LANEnabled && len(lanIfaces) > 0 {
+		b.WriteString("    chain prerouting {\n")
+		b.WriteString("        type filter hook prerouting priority mangle; policy accept;\n")
+		b.WriteString("        iifname \"lo\" return\n")
+		if len(blockEntries) > 0 {
+			b.WriteString("        jump block_guard\n")
+		}
+		b.WriteString("        iifname != " + nftIfaceList(lanIfaces) + " return\n")
+		b.WriteString("        iifname != \"lo\" fib daddr type local meta l4proto != { tcp, udp } return\n")
+		b.WriteString("        iifname != \"lo\" fib daddr type local th dport != 53 return\n")
+		// Drop proxied DNS (:53) even for direct clients while proxy DNS is down.
+		b.WriteString("        meta l4proto { tcp, udp } th dport 53 drop\n")
+		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+		for _, rule := range sortedRules {
+			if isBlockRule(rule) {
+				continue
+			}
+			match := strings.Join(matchTokens(rule), " ")
+			if isDirectRule(rule) {
+				b.WriteString("        " + match + " return\n")
+			} else {
+				b.WriteString("        " + match + " drop\n")
+			}
+		}
+		for _, liface := range lanIfaces {
+			explicit := strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[liface])
+			if strings.EqualFold(explicit, "direct") {
+				b.WriteString("        iifname " + quoteIface(liface) + " return\n")
+			} else {
+				b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+			}
+		}
+		b.WriteString("    }\n")
+	}
+
+	if len(blockEntries) > 0 || len(isoIfaces) > 0 || (cfg != nil && cfg.Gateway.LANEnabled && len(lanIfaces) > 0) {
+		b.WriteString("    chain forward {\n")
+		b.WriteString("        type filter hook forward priority filter; policy accept;\n")
+		if len(blockEntries) > 0 {
+			b.WriteString("        jump block_guard\n")
+		}
+		writeIsolatedForwardRules(&b, isoIfaces, lanIfaces)
+		if cfg != nil && cfg.Gateway.LANEnabled && len(lanIfaces) > 0 {
+			b.WriteString("        meta l4proto { tcp, udp } th dport 53 drop\n")
+			b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16 } accept\n")
+			b.WriteString("        ip6 daddr { ::1/128, fc00::/7, fe80::/10 } accept\n")
+			for _, rule := range sortedRules {
+				if isBlockRule(rule) {
+					continue
+				}
+				match := strings.Join(matchTokens(rule), " ")
+				if isDirectRule(rule) {
+					b.WriteString("        " + match + " accept\n")
+				} else {
+					b.WriteString("        " + match + " drop\n")
+				}
+			}
+			for _, liface := range lanIfaces {
+				if strings.EqualFold(strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[liface]), "direct") {
+					b.WriteString("        iifname " + quoteIface(liface) + " accept\n")
+				} else {
+					b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+				}
+			}
+		}
+		b.WriteString("    }\n")
+	}
+
+	if cfg != nil && cfg.Gateway.LocalEnabled && localRelay != "" {
+		b.WriteString("    chain output {\n")
+		b.WriteString("        type route hook output priority mangle; policy accept;\n")
+		b.WriteString("        fib daddr type local return\n")
+		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+		for _, port := range getSSHPorts() {
+			b.WriteString("        tcp sport " + port + " return\n")
+		}
+		b.WriteString("        meta l4proto { tcp, udp } drop\n")
+		b.WriteString("    }\n")
+	}
+
+	b.WriteString("}\n")
+	return b.String()
+}
+
+func applyFailClosedFirewall(cfg *config.UserConfig, lanIfaces, lanCIDRs, lanIPv6CIDRs []string, wanIface string) error {
+	rules := buildFailClosedNFT(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
+	configDir := filepath.Dir(config.GetConfigPathEx(false))
+	_ = os.MkdirAll(configDir, 0700)
+	f, err := os.CreateTemp(configDir, "xray-proxya-failclosed-*.nft")
+	if err != nil {
+		return fmt.Errorf("create fail-closed nft file: %w", err)
+	}
+	tmpFile := f.Name()
+	defer os.Remove(tmpFile)
+	if _, err := f.WriteString(rules); err != nil {
+		f.Close()
+		return fmt.Errorf("write fail-closed nft rules: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close fail-closed nft file: %w", err)
+	}
+
+	var errs []error
+	if err := run("nft", "-f", tmpFile); err != nil {
+		errs = append(errs, err)
+	}
+	// Remove TProxy redirection policy rules so traffic doesn't loop to dead sockets,
+	// while the fail-closed table blocks public leak.
+	if oldRules, loadErr := loadPolicyRules(); loadErr == nil {
+		allDeleted := true
+		for _, r := range oldRules {
+			if delErr := deletePolicyRule(r); delErr != nil {
+				allDeleted = false
+				errs = append(errs, delErr)
+			}
+		}
+		if allDeleted {
+			_ = removeIfExists(policyRulesPath())
+		}
+	}
+	_ = runDelete("ip", "route", "del", "local", "default", "dev", "lo", "table", policyTable)
+	_ = runDelete("ip", "-6", "route", "del", "local", "default", "dev", "lo", "table", policyTable)
+	return errors.Join(errs...)
 }
 
 func getInterfaceCIDR(name string) (string, error) {
@@ -1763,23 +2009,62 @@ func writeOutboundEndpointRule(b *strings.Builder, target outboundEndpoint) {
 	}
 }
 
-func getSSHPorts() []string {
-	ports := []string{"22"}
-	// The conventional SSH port is always excluded.  For a remote invocation,
-	// SSH_CONNECTION additionally tells us the active server-side port; this
-	// protects a custom listener without enumerating other processes through
-	// `ss -p` (which would be inappropriate for the confined management domain).
-	found := map[string]bool{}
-	found["22"] = true
-	if fields := strings.Fields(os.Getenv("SSH_CONNECTION")); len(fields) == 4 {
-		if _, err := strconv.ParseUint(fields[3], 10, 16); err == nil {
-			found[fields[3]] = true
+var sshdConfigMainPath = "/etc/ssh/sshd_config"
+var sshdConfigDirPath = "/etc/ssh/sshd_config.d"
+
+func parseSSHDConfigPorts(path string, found map[string]bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if idx := strings.IndexByte(line, '#'); idx >= 0 {
+			line = line[:idx]
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		var portStr string
+		if strings.EqualFold(fields[0], "port") && len(fields) >= 2 {
+			portStr = fields[1]
+		} else if len(fields[0]) > 5 && strings.EqualFold(fields[0][:5], "port=") {
+			portStr = fields[0][5:]
+		}
+		if portStr != "" {
+			if p, err := strconv.ParseUint(portStr, 10, 16); err == nil && p > 0 {
+				found[strconv.FormatUint(p, 10)] = true
+			}
 		}
 	}
-	ports = ports[:0]
+}
+
+func getSSHPorts() []string {
+	// Always protect port 22, the active SSH_CONNECTION port, and any ports
+	// configured in sshd_config / sshd_config.d/*.conf. Sort deterministically
+	// so generated nftables rules are idempotent.
+	found := map[string]bool{"22": true}
+	if fields := strings.Fields(os.Getenv("SSH_CONNECTION")); len(fields) == 4 {
+		if p, err := strconv.ParseUint(fields[3], 10, 16); err == nil && p > 0 {
+			found[strconv.FormatUint(p, 10)] = true
+		}
+	}
+	if sshdConfigMainPath != "" {
+		parseSSHDConfigPorts(sshdConfigMainPath, found)
+	}
+	if sshdConfigDirPath != "" {
+		if matches, err := filepath.Glob(filepath.Join(sshdConfigDirPath, "*.conf")); err == nil {
+			sort.Strings(matches)
+			for _, m := range matches {
+				parseSSHDConfigPorts(m, found)
+			}
+		}
+	}
+	ports := make([]string, 0, len(found))
 	for port := range found {
 		ports = append(ports, port)
 	}
+	sort.Strings(ports)
 	return ports
 }
 
@@ -1842,9 +2127,31 @@ func setupLANForwardingBlock(lanIfaces ...string) error {
 }
 
 func installDirectLANForwardRules(lanIfaces ...string) error {
-	wanIface, err := detectDefaultInterfaceFn()
-	if err != nil {
-		return fmt.Errorf("detect default WAN interface: %w", err)
+	return installDirectLANForwardRulesWithConfig(nil, lanIfaces...)
+}
+
+func installDirectLANForwardRulesWithConfig(cfg *config.UserConfig, lanIfaces ...string) error {
+	var wanIface string
+	if cfg != nil {
+		wanIface = resolveWANInterface(cfg)
+	} else {
+		var err error
+		wanIface, err = detectDefaultInterfaceFn()
+		if err != nil {
+			return fmt.Errorf("detect default WAN interface: %w", err)
+		}
+	}
+	if wanIface == "" {
+		if cfg != nil && cfg.Gateway.NATDisabled {
+			return nil
+		}
+		return fmt.Errorf("detect default WAN interface: no default route interface found")
+	}
+	for _, lanIface := range lanIfaces {
+		if lanIface != "" && lanIface == wanIface {
+			fmt.Printf("⚠️ WAN interface %q overlaps with LAN interface; managed masquerade skipped to prevent loop\n", wanIface)
+			return nil
+		}
 	}
 
 	_ = run("nft", "add", "table", "inet", "filter")
@@ -1860,9 +2167,10 @@ func installDirectLANForwardRules(lanIfaces ...string) error {
 			[]string{"iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept"}); err != nil {
 			return fmt.Errorf("allow LAN/WAN forwarding: %w", err)
 		}
+		if cfg != nil && cfg.Gateway.NATDisabled {
+			continue
+		}
 		// In the inet table, masquerade performs dual-stack NAT (NAT44 and NAT66).
-		// NAT66 is intentionally utilized here for LAN client privacy protection and
-		// IPv6 address leak prevention when direct forwarding is active.
 		if err := run("nft", "add", "rule", "inet", "filter", "postrouting", "iifname", lanIface, "oifname", wanIface, "masquerade", "comment", "\"xray-proxya\""); err != nil {
 			return fmt.Errorf("enable direct LAN NAT masquerade: %w", err)
 		}
@@ -1871,23 +2179,93 @@ func installDirectLANForwardRules(lanIfaces ...string) error {
 }
 
 func setupDirectLANForwarding(lanIfaces ...string) error {
+	return setupDirectLANForwardingWithConfig(nil, lanIfaces...)
+}
+
+func setupDirectLANForwardingWithConfig(cfg *config.UserConfig, lanIfaces ...string) error {
 	if err := SetupKernel(lanIfaces...); err != nil {
 		return fmt.Errorf("kernel setup failed: %w", err)
 	}
-	return installDirectLANForwardRules(lanIfaces...)
+	return installDirectLANForwardRulesWithConfig(cfg, lanIfaces...)
 }
 
-func cleanupFilterManagedRules(chain string) error {
+func installIsolatedFilterRules(cfg *config.UserConfig, lanIfaces []string) error {
+	if cfg == nil {
+		return nil
+	}
+	isoIfaces := cfg.Gateway.EffectiveIsolatedInterfaces()
+	if len(isoIfaces) == 0 {
+		return nil
+	}
+	_ = run("nft", "add", "table", "inet", "filter")
+	_ = run("nft", "add", "chain", "inet", "filter", "input", "{ type filter hook input priority filter; }")
+	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
+
+	var inputRules [][]string
+	for _, iso := range isoIfaces {
+		inputRules = append(inputRules,
+			[]string{"iifname", iso, "udp", "dport", "{", "67,", "68,", "546,", "547", "}", "accept"},
+			[]string{"iifname", iso, "icmp", "type", "{", "echo-request,", "destination-unreachable,", "time-exceeded", "}", "accept"},
+			[]string{"iifname", iso, "icmpv6", "type", "{", "echo-request,", "destination-unreachable,", "packet-too-big,", "time-exceeded,", "parameter-problem,", "nd-router-solicit,", "nd-router-advert,", "nd-neighbor-solicit,", "nd-neighbor-advert", "}", "accept"},
+			[]string{"iifname", iso, "drop"},
+		)
+	}
+	if err := insertFilterRules("input", inputRules...); err != nil {
+		return err
+	}
+
+	var forwardRules [][]string
+	for _, iso := range isoIfaces {
+		forwardRules = append(forwardRules, []string{"iifname", iso, "oifname", iso, "drop"})
+		for _, liface := range lanIfaces {
+			if liface != "" && liface != iso {
+				forwardRules = append(forwardRules,
+					[]string{"iifname", iso, "oifname", liface, "drop"},
+					[]string{"iifname", liface, "oifname", iso, "ct", "state", "new", "drop"})
+			}
+		}
+	}
+	return insertFilterRules("forward", forwardRules...)
+}
+
+func policyRuleKey(r policyRuleSpec) string {
+	return fmt.Sprintf("%v|%s", r.IPv6, strings.Join(r.Args, " "))
+}
+
+func syncPolicyRules(oldRules, newRules []policyRuleSpec) error {
+	oldMap := make(map[string]policyRuleSpec, len(oldRules))
+	for _, r := range oldRules {
+		oldMap[policyRuleKey(r)] = r
+	}
+	newMap := make(map[string]policyRuleSpec, len(newRules))
+	for _, r := range newRules {
+		newMap[policyRuleKey(r)] = r
+	}
+	for _, r := range newRules {
+		if _, exists := oldMap[policyRuleKey(r)]; !exists {
+			if err := addPolicyRule(r); err != nil {
+				return err
+			}
+		}
+	}
+	for _, r := range oldRules {
+		if _, keep := newMap[policyRuleKey(r)]; !keep {
+			_ = deletePolicyRule(r)
+		}
+	}
+	return nil
+}
+
+func listFilterManagedHandles(chain string) ([]string, error) {
 	out, err := execCommandCombinedOutput("nft", "-a", "list", "chain", "inet", "filter", chain)
 	if err != nil {
 		if isMissingKernelObject(err, out) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("list filter %s chain: %w (output: %q)", chain, err, strings.TrimSpace(string(out)))
+		return nil, fmt.Errorf("list filter %s chain: %w (output: %q)", chain, err, strings.TrimSpace(string(out)))
 	}
-	var cleanupErrs []error
-	lines := strings.Split(string(out), "\n")
-	for _, line := range lines {
+	var handles []string
+	for _, line := range strings.Split(string(out), "\n") {
 		if strings.Contains(line, `comment "xray-proxya"`) {
 			idx := strings.Index(line, "handle ")
 			if idx != -1 {
@@ -1901,14 +2279,30 @@ func cleanupFilterManagedRules(chain string) error {
 					}
 				}
 				if digits != "" {
-					if err := runDelete("nft", "delete", "rule", "inet", "filter", chain, "handle", digits); err != nil {
-						cleanupErrs = append(cleanupErrs, err)
-					}
+					handles = append(handles, digits)
 				}
 			}
 		}
 	}
-	return errors.Join(cleanupErrs...)
+	return handles, nil
+}
+
+func deleteFilterHandles(chain string, handles []string) error {
+	var errs []error
+	for _, h := range handles {
+		if err := runDelete("nft", "delete", "rule", "inet", "filter", chain, "handle", h); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func cleanupFilterManagedRules(chain string) error {
+	handles, err := listFilterManagedHandles(chain)
+	if err != nil {
+		return err
+	}
+	return deleteFilterHandles(chain, handles)
 }
 
 func cleanupFilterForwardRules() error {

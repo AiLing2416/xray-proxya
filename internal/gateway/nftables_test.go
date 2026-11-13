@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -67,8 +68,8 @@ func TestParseDefaultInterfaceNoDefault(t *testing.T) {
 
 func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	rules := buildNFT(testGatewayConfig(true, true), "ens18", "192.168.50.0/24", "")
-	if !strings.Contains(rules, `iifname != { "lo", "ens18" } return`) {
-		t.Fatalf("rules should allow lo and configured LAN interface: %s", rules)
+	if !strings.Contains(rules, `iifname "lo" meta mark 1`) || !strings.Contains(rules, `iifname "lo" return`) || !strings.Contains(rules, `iifname != "ens18" return`) {
+		t.Fatalf("rules should handle lo separately and filter LAN interface: %s", rules)
 	}
 	if !strings.Contains(rules, "ip daddr 192.168.50.0/24 return") {
 		t.Fatalf("rules should exclude configured LAN subnet: %s", rules)
@@ -81,8 +82,9 @@ func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	if !strings.Contains(rulesIPv6, `iifname "ens18" ip6 saddr != fd00::/64 return`) {
 		t.Fatalf("rules should reject spoofed IPv6 LAN sources: %s", rulesIPv6)
 	}
-	if !strings.Contains(rules, `iifname "ens18" ip6 saddr ::/0 return`) {
-		t.Fatalf("rules should bypass IPv6 LAN interception without a LAN IPv6 subnet: %s", rules)
+	if !strings.Contains(rules, `iifname "ens18" ip6 saddr != { ::/128, fe80::/10 } drop`) ||
+		!strings.Contains(rules, `iifname "ens18" ip6 saddr { ::/128, fe80::/10 } return`) {
+		t.Fatalf("rules should drop non-LL IPv6 forward leaks when LAN lacks IPv6 subnet: %s", rules)
 	}
 
 	// LAN only
@@ -90,7 +92,7 @@ func TestBuildNFTUsesConfiguredLANInterface(t *testing.T) {
 	if !strings.Contains(rulesLANOnly, `iifname != "ens18" return`) {
 		t.Fatalf("LAN-only rules should filter on LAN interface: %s", rulesLANOnly)
 	}
-	if !strings.Contains(rulesLANOnly, "ip saddr != 192.168.50.0/24 return") {
+	if !strings.Contains(rulesLANOnly, `iifname "ens18" ip saddr != 192.168.50.0/24 return`) {
 		t.Fatalf("LAN-only rules should reject spoofed IPv4 sources: %s", rulesLANOnly)
 	}
 
@@ -765,8 +767,8 @@ func TestBuildNFTWithDNSListen(t *testing.T) {
 	if !strings.Contains(rules, expectedRule) {
 		t.Fatalf("expected wildcard dns drop rule %q, got:\n%s", expectedRule, rules)
 	}
-	if !strings.Contains(rules, `iifname != "lo" fib daddr type local return`) {
-		t.Fatalf("expected prerouting local fib return rule, got:\n%s", rules)
+	if !strings.Contains(rules, `iifname != "lo" fib daddr type local th dport != 53 return`) {
+		t.Fatalf("expected prerouting local fib non-53 return rule even with DNSListen, got:\n%s", rules)
 	}
 
 	// 2. Specific LAN IP listen "10.0.82.21:53"
@@ -788,7 +790,7 @@ func TestBuildNFTWithDNSListen(t *testing.T) {
 
 func TestBuildNFT_LocalLANDNSInterception(t *testing.T) {
 	// Case 1: TProxy mode, LANEnabled == true, DNSListen == ""
-	// Should allow local port 53 through prerouting and intercept it before destination bypasses
+	// Should allow local port 53 through prerouting and intercept it before LAN source/destination guards
 	cfgTProxy := testGatewayConfig(true, true)
 	cfgTProxy.Gateway.DNSListen = ""
 	rulesTProxy := buildNFT(cfgTProxy, "ens18", "192.168.50.0/24", "")
@@ -800,55 +802,53 @@ func TestBuildNFT_LocalLANDNSInterception(t *testing.T) {
 		t.Fatalf("expected non-53 local fib return in prerouting, got:\n%s", rulesTProxy)
 	}
 	if strings.Contains(rulesTProxy, `iifname != "lo" fib daddr type local return`) {
-		t.Fatalf("did not expect blanket local return in prerouting when DNSListen is empty and LANEnabled is true, got:\n%s", rulesTProxy)
+		t.Fatalf("did not expect blanket local return in prerouting when LANEnabled is true, got:\n%s", rulesTProxy)
 	}
-	expectedTProxyCapture := fmt.Sprintf("fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :%d meta mark set 1 accept", config.DefaultTProxyPort)
+	expectedTProxyCapture := fmt.Sprintf("meta l4proto { tcp, udp } th dport 53 tproxy to :%d meta mark set 1 accept", config.DefaultTProxyPort)
 	if !strings.Contains(rulesTProxy, expectedTProxyCapture) {
-		t.Fatalf("expected local DNS tproxy capture rule %q in prerouting, got:\n%s", expectedTProxyCapture, rulesTProxy)
+		t.Fatalf("expected DNS tproxy capture rule %q in prerouting, got:\n%s", expectedTProxyCapture, rulesTProxy)
 	}
-	// Verify capture occurs before LAN subnet return
+	// Verify capture occurs before LAN source guard and subnet return (supporting fe80:: link-local DNS)
 	idxCapture := strings.Index(rulesTProxy, expectedTProxyCapture)
+	idxSourceGuard := strings.Index(rulesTProxy, `iifname "ens18" ip saddr != 192.168.50.0/24 return`)
 	idxBypass := strings.Index(rulesTProxy, "ip daddr 192.168.50.0/24 return")
-	if idxCapture == -1 || idxBypass == -1 || idxCapture > idxBypass {
-		t.Fatalf("local DNS capture rule must appear before LAN subnet bypass, capture=%d, bypass=%d", idxCapture, idxBypass)
+	if idxCapture == -1 || idxSourceGuard == -1 || idxBypass == -1 || idxCapture > idxSourceGuard || idxCapture > idxBypass {
+		t.Fatalf("DNS capture rule must appear before LAN source guard and subnet bypass, capture=%d, srcGuard=%d, bypass=%d", idxCapture, idxSourceGuard, idxBypass)
 	}
 
-	// Case 2: Configured DNSListen != ""
-	// Should retain the original direct local return in prerouting, without special tproxy rule
+	// Case 2: Configured DNSListen != "" (e.g. "127.0.0.1:5353" or ":53") with active relay
+	// Still excludes port 53 from fib daddr type local return and routes :53 through active relay tproxy
 	cfgDNSListen := testGatewayConfig(true, true)
-	cfgDNSListen.Gateway.DNSListen = ":53"
+	cfgDNSListen.Gateway.DNSListen = "127.0.0.1:5353"
 	rulesDNSListen := buildNFT(cfgDNSListen, "ens18", "192.168.50.0/24", "")
 
-	if !strings.Contains(rulesDNSListen, `iifname != "lo" fib daddr type local return`) {
-		t.Fatalf("expected blanket local fib return in prerouting when DNSListen is configured, got:\n%s", rulesDNSListen)
+	if !strings.Contains(rulesDNSListen, `fib daddr type local th dport != 53 return`) {
+		t.Fatalf("expected non-53 local fib return even when DNSListen is configured, got:\n%s", rulesDNSListen)
 	}
-	if strings.Contains(rulesDNSListen, `fib daddr type local th dport != 53 return`) {
-		t.Fatalf("unexpected non-53 local fib return when DNSListen is configured, got:\n%s", rulesDNSListen)
-	}
-	if strings.Contains(rulesDNSListen, expectedTProxyCapture) {
-		t.Fatalf("unexpected local DNS tproxy capture rule when DNSListen is configured, got:\n%s", rulesDNSListen)
+	if !strings.Contains(rulesDNSListen, expectedTProxyCapture) {
+		t.Fatalf("expected DNS tproxy capture when active relay exists even with DNSListen configured, got:\n%s", rulesDNSListen)
 	}
 
-	// Case 3: When TUN adapter is enabled, primary interception still uses TProxy local DNS capture
+	// Case 3: When TUN adapter is enabled, primary interception still uses TProxy DNS capture
 	cfgTun := testGatewayConfig(true, true)
 	cfgTun.Gateway.TUNEnabled = true
 	cfgTun.Gateway.DNSListen = ""
 	rulesTun := buildNFT(cfgTun, "ens18", "192.168.50.0/24", "")
 
 	if !strings.Contains(rulesTun, expectedTProxyCapture) {
-		t.Fatalf("expected local DNS tproxy capture rule when TUN adapter is enabled, got:\n%s", rulesTun)
+		t.Fatalf("expected DNS tproxy capture rule when TUN adapter is enabled, got:\n%s", rulesTun)
 	}
 
 	// Case 4: LANEnabled == false (LocalEnabled only)
-	// Should use standard local return and not capture
+	// Should return non-lo packets without LAN DNS capture
 	cfgLocalOnly := testGatewayConfig(true, false)
 	rulesLocalOnly := buildNFT(cfgLocalOnly, "ens18", "192.168.50.0/24", "")
 
-	if !strings.Contains(rulesLocalOnly, `iifname != "lo" fib daddr type local return`) {
-		t.Fatalf("expected standard local fib return in local-only mode, got:\n%s", rulesLocalOnly)
+	if !strings.Contains(rulesLocalOnly, `iifname != "lo" return`) {
+		t.Fatalf("expected non-lo return in local-only mode, got:\n%s", rulesLocalOnly)
 	}
-	if strings.Contains(rulesLocalOnly, `fib daddr type local meta l4proto { tcp, udp } th dport 53`) {
-		t.Fatalf("unexpected local DNS capture in local-only mode, got:\n%s", rulesLocalOnly)
+	if strings.Contains(rulesLocalOnly, `th dport 53 tproxy`) {
+		t.Fatalf("unexpected LAN DNS capture in local-only mode, got:\n%s", rulesLocalOnly)
 	}
 }
 
@@ -942,29 +942,40 @@ func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
 
 	rules := buildNFTMulti(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
 
-	// 1. Input chain guards
+	// 1. Input chain & block_guard subchain guards
 	if !strings.Contains(rules, `th dport { 12345, 12346 } drop`) {
 		t.Errorf("expected multi-port tproxy guard in input chain, got:\n%s", rules)
 	}
-	if !strings.Contains(rules, `iifname "eth2" ether saddr != 52:54:00:83:00:12 ether saddr != 52:54:00:83:00:13 drop`) {
-		t.Errorf("expected interface eth2 block (yielding to more specific MAC rules) in input chain, got:\n%s", rules)
+	if !strings.Contains(rules, "chain block_guard {") || !strings.Contains(rules, `jump block_guard`) {
+		t.Errorf("expected block_guard subchain and jump in input/prerouting/forward, got:\n%s", rules)
+	}
+	idxMACDirect := strings.Index(rules, `ether saddr 52:54:00:83:00:12 return`)
+	idxMACRelay := strings.Index(rules, `ether saddr 52:54:00:83:00:13 return`)
+	idxIfaceBlock := strings.Index(rules, `iifname "eth2" drop`)
+	if idxMACDirect < 0 || idxMACRelay < 0 || idxIfaceBlock < 0 || idxMACDirect > idxIfaceBlock || idxMACRelay > idxIfaceBlock {
+		t.Errorf("expected MAC return exceptions before eth2 block in block_guard, got:\n%s", rules)
 	}
 	if !strings.Contains(rules, `ether saddr 52:54:00:83:00:11 drop`) {
-		t.Errorf("expected MAC block in input chain, got:\n%s", rules)
+		t.Errorf("expected MAC block in block_guard, got:\n%s", rules)
 	}
 
-	// 2. Prerouting local fib return
+	// 2. Prerouting local fib return & :53 DNS hijacking (including direct device anti-poisoning DNS)
 	if !strings.Contains(rules, `iifname != "lo" fib daddr type local meta l4proto != { tcp, udp } return`) ||
 		!strings.Contains(rules, `iifname != "lo" fib daddr type local th dport != 53 return`) {
 		t.Errorf("expected local fib return for non-DNS in prerouting, got:\n%s", rules)
 	}
-	if !strings.Contains(rules, `fib daddr type local meta l4proto { tcp, udp } th dport 53 tproxy to :12345 meta mark set 1 accept`) {
-		t.Errorf("expected local DNS tproxy interception in prerouting, got:\n%s", rules)
+	if !strings.Contains(rules, `meta l4proto { tcp, udp } th dport 53 tproxy to :12345 meta mark set 1 accept`) {
+		t.Errorf("expected default DNS tproxy interception in prerouting, got:\n%s", rules)
+	}
+	if !strings.Contains(rules, `ether saddr 52:54:00:83:00:12 meta l4proto { tcp, udp } th dport 53 tproxy to :12345 meta mark set 1 accept`) {
+		t.Errorf("expected direct MAC DNS to still route via relay tproxy, got:\n%s", rules)
 	}
 
-	// 3. Multi-LAN interface guards
-	if !strings.Contains(rules, `iifname != { "lo", "eth1", "eth2" } return`) {
-		t.Errorf("expected multi-lan guard in prerouting, got:\n%s", rules)
+	// 3. Separated lo handling + Multi-LAN interface guards
+	if !strings.Contains(rules, `iifname "lo" meta mark 1 meta l4proto { tcp, udp } tproxy to :12345 meta mark set 1 accept`) ||
+		!strings.Contains(rules, `iifname "lo" return`) ||
+		!strings.Contains(rules, `iifname != { "eth1", "eth2" } return`) {
+		t.Errorf("expected separated lo handling and multi-lan guard in prerouting, got:\n%s", rules)
 	}
 	if !strings.Contains(rules, `iifname "eth1" ip saddr != 10.0.83.0/24 return`) {
 		t.Errorf("expected eth1 IPv4 source guard, got:\n%s", rules)
@@ -973,11 +984,11 @@ func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
 		t.Errorf("expected eth2 IPv4 source guard, got:\n%s", rules)
 	}
 
-	// 4. Private targets NOT globally bypassed in prerouting because relay-extra has AllowPrivateTargets == true
-	if strings.Contains(rules, "10.0.0.0/8") {
-		t.Errorf("RFC1918 10.0.0.0/8 should NOT be globally bypassed when AllowPrivateTargets is active, got:\n%s", rules)
+	// 4. Private targets ALWAYS bypassed in prerouting even if AllowPrivateTargets is true (LOW-01)
+	if !strings.Contains(rules, "10.0.0.0/8") {
+		t.Errorf("RFC1918 10.0.0.0/8 must always be bypassed in nftables, got:\n%s", rules)
 	}
-	// But local LAN CIDRs ARE bypassed
+	// Local LAN CIDRs are bypassed too
 	if !strings.Contains(rules, "ip daddr 10.0.83.0/24 return") {
 		t.Errorf("expected eth1 subnet bypass, got:\n%s", rules)
 	}
@@ -1149,13 +1160,16 @@ func TestRuleSpecificityOrdering(t *testing.T) {
 		{MAC: mac, Interface: "eth1", Target: "x"},
 	}
 	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.1.0/24"}, nil, "")
-	idxSpecific := strings.Index(out, `iifname "eth1" ether saddr `+mac+` meta l4proto`)
+	idxSpecific := strings.Index(out, `iifname "eth1" ether saddr `+mac+` meta l4proto { tcp, udp } tproxy to`)
 	idxIface := strings.Index(out, `iifname "eth1" return`)
 	if idxSpecific < 0 || idxIface < 0 || idxSpecific > idxIface {
 		t.Fatalf("interface+MAC rule must precede interface-only rule:\n%s", out)
 	}
-	if !strings.Contains(out, `ether saddr `+mac+` iifname != "eth1" drop`) {
-		t.Fatalf("MAC-only block must yield to the interface+MAC relay rule:\n%s", out)
+	// block_guard must return for eth1+MAC before dropping pure MAC
+	idxGuardReturn := strings.Index(out, `iifname "eth1" ether saddr `+mac+` return`)
+	idxGuardDrop := strings.Index(out, `ether saddr `+mac+` drop`)
+	if idxGuardReturn < 0 || idxGuardDrop < 0 || idxGuardReturn > idxGuardDrop {
+		t.Fatalf("block_guard must return for interface+MAC before dropping pure MAC:\n%s", out)
 	}
 }
 
@@ -1197,8 +1211,10 @@ func TestInstallBlockFilterRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(calls, "\n")
-	if !strings.Contains(joined, `insert rule inet filter forward iifname "eth2" drop`) || !strings.Contains(joined, `insert rule inet filter input iifname "eth2" drop`) {
-		t.Fatalf("block rules must be installed in forward and input:\n%s", joined)
+	if !strings.Contains(joined, `add rule inet filter block_guard iifname "eth2" drop`) ||
+		!strings.Contains(joined, `insert rule inet filter forward jump block_guard`) ||
+		!strings.Contains(joined, `insert rule inet filter input jump block_guard`) {
+		t.Fatalf("block_guard must be populated and jumped from forward and input:\n%s", joined)
 	}
 	calls = nil
 	cfg.Gateway.Rules = []config.GatewayRule{{Interface: "eth1", Target: "direct"}}
@@ -1236,7 +1252,10 @@ func TestValidateInterfaceNameAndPorts(t *testing.T) {
 }
 
 func TestBuildNFTMulti_TUNModeDirectRules(t *testing.T) {
-	cfg := &config.UserConfig{Role: config.RoleGateway}
+	cfg := &config.UserConfig{
+		Role:            config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{{Alias: "main", Enabled: true}},
+	}
 	cfg.Gateway.Mode = "tun"
 	cfg.Gateway.LANEnabled = true
 	cfg.Gateway.RelayAlias = "main"
@@ -1258,7 +1277,7 @@ func TestBuildNFTMulti_TUNModeDirectRules(t *testing.T) {
 
 func TestBuildNFTMulti_PortForwarding(t *testing.T) {
 	cfg := &config.UserConfig{Role: config.RoleGateway}
-	cfg.Gateway.Mode = "tun"
+	cfg.Gateway.Mode = "tproxy"
 	cfg.Gateway.LANEnabled = true
 	cfg.Gateway.PortForwards = []config.PortForwardRule{
 		{WANPort: 80, TargetIP: "192.168.1.100", TargetPort: 80, Proto: "tcp"},
@@ -1269,41 +1288,55 @@ func TestBuildNFTMulti_PortForwarding(t *testing.T) {
 
 	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"192.168.1.0/24"}, nil, "eth0")
 
-	// 1. Verify nat_prerouting chain
+	// 1. Verify nat_prerouting chain and prerouting ct status dnat return guard
 	if !strings.Contains(out, "chain nat_prerouting {") {
 		t.Fatalf("expected nat_prerouting chain in nftables rules, got:\n%s", out)
 	}
 	if !strings.Contains(out, "type nat hook prerouting priority dstnat; policy accept;") {
 		t.Fatalf("expected nat prerouting hook definition, got:\n%s", out)
 	}
+	if !strings.Contains(out, "ct status dnat return") {
+		t.Fatalf("expected ct status dnat return in prerouting to protect backend reply packets, got:\n%s", out)
+	}
 
-	// 2. Verify TCP rule
-	expectedTCP := `iifname "eth0" tcp dport 80 dnat to 192.168.1.100:80`
+	// 2. Verify IPv4 TCP rule uses meta nfproto ipv4 + dnat ip to
+	expectedTCP := `iifname "eth0" meta nfproto ipv4 tcp dport 80 dnat ip to 192.168.1.100:80`
 	if !strings.Contains(out, expectedTCP) {
 		t.Errorf("expected TCP DNAT rule %q, got:\n%s", expectedTCP, out)
 	}
 
-	// 3. Verify UDP rule
-	expectedUDP := `iifname "eth0" udp dport 53 dnat to 192.168.1.100:53`
+	// 3. Verify IPv4 UDP rule
+	expectedUDP := `iifname "eth0" meta nfproto ipv4 udp dport 53 dnat ip to 192.168.1.100:53`
 	if !strings.Contains(out, expectedUDP) {
 		t.Errorf("expected UDP DNAT rule %q, got:\n%s", expectedUDP, out)
 	}
 
-	// 4. Verify TCP,UDP rule
-	expectedBoth := `iifname "eth0" meta l4proto { tcp, udp } th dport 8080 dnat to 192.168.1.100:8080`
+	// 4. Verify IPv4 TCP,UDP rule
+	expectedBoth := `iifname "eth0" meta nfproto ipv4 meta l4proto { tcp, udp } th dport 8080 dnat ip to 192.168.1.100:8080`
 	if !strings.Contains(out, expectedBoth) {
 		t.Errorf("expected TCP,UDP DNAT rule %q, got:\n%s", expectedBoth, out)
 	}
 
-	// 5. Verify IPv6 target
-	expectedIPv6 := `iifname "eth0" tcp dport 8443 dnat to [fd00::100]:8443`
+	// 5. Verify IPv6 target uses meta nfproto ipv6 + dnat ip6 to
+	expectedIPv6 := `iifname "eth0" meta nfproto ipv6 tcp dport 8443 dnat ip6 to [fd00::100]:8443`
 	if !strings.Contains(out, expectedIPv6) {
 		t.Errorf("expected IPv6 DNAT rule %q, got:\n%s", expectedIPv6, out)
 	}
 
-	// 6. Verify forward chain放行 DNAT 流量
+	// 6. Verify forward chain accepts DNAT traffic
 	if !strings.Contains(out, "ct status dnat accept") {
 		t.Errorf("expected forward chain to accept dnat status, got:\n%s", out)
+	}
+
+	// 7. Verify generated nftables syntax passes kernel parser in table inet
+	if _, err := exec.LookPath("nft"); err == nil {
+		if _, err := exec.LookPath("unshare"); err == nil {
+			cmd := exec.Command("unshare", "-rn", "nft", "-c", "-f", "-")
+			cmd.Stdin = strings.NewReader(out)
+			if outBytes, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("nft syntax check failed for PortForwarding:\n%s\nError: %v\nOutput: %s", out, err, string(outBytes))
+			}
+		}
 	}
 }
 
@@ -1345,19 +1378,26 @@ func TestBuildNFTMulti_ZoneIsolation(t *testing.T) {
 	lanCIDRs := []string{"192.168.1.0/24", "192.168.2.0/24", "192.168.3.0/24"}
 	out := buildNFTMulti(cfg, lanIfaces, lanCIDRs, nil, "eth0")
 
-	// 1. Input chain should drop SSH port 22 from guest0
-	if !strings.Contains(out, `iifname "guest0" tcp dport 22 drop`) {
-		t.Errorf("expected input chain to drop SSH port 22 from guest0, got:\n%s", out)
+	// 1. Input chain should enforce strict whitelist (TProxy mark, DHCP, DNS, ICMP/ND) then drop all else on guest0
+	if !strings.Contains(out, `iifname "guest0" meta mark 1 accept`) ||
+		!strings.Contains(out, `iifname "guest0" udp dport { 67, 68, 546, 547 } accept`) ||
+		!strings.Contains(out, `iifname "guest0" meta l4proto { tcp, udp } th dport 53 accept`) ||
+		!strings.Contains(out, `iifname "guest0" drop`) {
+		t.Errorf("expected strict input whitelist + final drop for guest0, got:\n%s", out)
 	}
 
-	// 2. Forward chain should allow established/related connections
+	// 2. Forward chain should allow established/related connections and enforce bidirectional + hairpin drops
 	if !strings.Contains(out, "ct state established,related accept") {
 		t.Errorf("expected forward chain to accept established/related, got:\n%s", out)
 	}
-
-	// 3. Forward chain should drop guest0 forwarding to other LAN interfaces
+	if !strings.Contains(out, `iifname "guest0" oifname "guest0" drop`) {
+		t.Errorf("expected forward chain to drop same-interface hairpin on guest0, got:\n%s", out)
+	}
 	if !strings.Contains(out, `iifname "guest0" oifname { "eth1", "vmbr0" } drop`) {
 		t.Errorf("expected forward chain to drop guest0 forwarding to { eth1, vmbr0 }, got:\n%s", out)
+	}
+	if !strings.Contains(out, `iifname { "eth1", "vmbr0" } oifname "guest0" ct state new drop`) {
+		t.Errorf("expected forward chain to drop new connections from main LAN into guest0, got:\n%s", out)
 	}
 
 	// Case 2: 1 isolated interface with exactly 1 other LAN interface
@@ -1375,8 +1415,9 @@ func TestBuildNFTMulti_ZoneIsolation(t *testing.T) {
 		},
 	}
 	outSingle := buildNFTMulti(cfgSingleOther, []string{"eth1", "guest0"}, nil, nil, "eth0")
-	if !strings.Contains(outSingle, `iifname "guest0" oifname "eth1" drop`) {
-		t.Errorf("expected forward chain to drop guest0 forwarding to eth1, got:\n%s", outSingle)
+	if !strings.Contains(outSingle, `iifname "guest0" oifname "eth1" drop`) ||
+		!strings.Contains(outSingle, `iifname "eth1" oifname "guest0" ct state new drop`) {
+		t.Errorf("expected forward chain to bidirectionally isolate guest0 and eth1, got:\n%s", outSingle)
 	}
 
 	// Case 3: Multiple isolated interfaces (guest0 and iot0)
@@ -1400,11 +1441,11 @@ func TestBuildNFTMulti_ZoneIsolation(t *testing.T) {
 	if !strings.Contains(outMulti, `iifname "iot0" oifname { "eth1", "guest0" } drop`) {
 		t.Errorf("expected iot0 drop to { eth1, guest0 }, got:\n%s", outMulti)
 	}
-	if !strings.Contains(outMulti, `iifname "guest0" tcp dport 22 drop`) {
-		t.Errorf("expected guest0 SSH drop, got:\n%s", outMulti)
+	if !strings.Contains(outMulti, `iifname "guest0" drop`) {
+		t.Errorf("expected guest0 strict input drop, got:\n%s", outMulti)
 	}
-	if !strings.Contains(outMulti, `iifname "iot0" tcp dport 22 drop`) {
-		t.Errorf("expected iot0 SSH drop, got:\n%s", outMulti)
+	if !strings.Contains(outMulti, `iifname "iot0" drop`) {
+		t.Errorf("expected iot0 strict input drop, got:\n%s", outMulti)
 	}
 
 	// Verify generated nftables script syntax in an isolated network/user namespace
@@ -1443,5 +1484,284 @@ func TestBuildRulesPreview_TunOnlyModeReturnsEmpty(t *testing.T) {
 	}
 	if preview != "" {
 		t.Fatalf("BuildRulesPreview() in mode=tun = %q, want empty string", preview)
+	}
+}
+
+func TestVerify_TunModeSkipsPolicyRules(t *testing.T) {
+	origForwarding := isIPv4ForwardingEnabledFn
+	origExecCombined := execCommandCombinedOutput
+	origExecRun := execCommandRun
+	defer func() {
+		isIPv4ForwardingEnabledFn = origForwarding
+		execCommandCombinedOutput = origExecCombined
+		execCommandRun = origExecRun
+	}()
+
+	isIPv4ForwardingEnabledFn = func() bool { return true }
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte(""), nil
+	}
+	execCommandRun = func(name string, args ...string) error {
+		return errors.New("nft table should not be checked in mode=tun")
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tun",
+			State:        "proxy",
+			LANInterface: "lo",
+			LocalEnabled: false,
+			LANEnabled:   true,
+			TUNEnabled:   false,
+		},
+	}
+	for _, p := range Verify(cfg) {
+		if strings.Contains(p, "policy table") || strings.Contains(p, "LAN CIDR for policy rules") || strings.Contains(p, "nft table") {
+			t.Fatalf("Verify() in mode=tun must skip policy rules and nftables checks, got problem: %q", p)
+		}
+	}
+}
+
+func TestBuildNFTMulti_LocalEnabledWithoutRelayDoesNotBlackhole(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			State:        "proxy",
+			LocalEnabled: true,
+			LANEnabled:   false,
+			RelayAlias:   "",
+		},
+	}
+	out := buildNFTMulti(cfg, nil, nil, nil, "")
+	if strings.Contains(out, "meta l4proto { tcp, udp } meta mark set 1") {
+		t.Fatalf("chain output must NOT mark packets when no active local relay is configured:\n%s", out)
+	}
+	if strings.Contains(out, `iifname "lo" meta mark 1`) {
+		t.Fatalf("chain prerouting must NOT tproxy loopback without active local relay:\n%s", out)
+	}
+}
+
+func TestBuildNFTMulti_LocalRelayAndZoneDefaults(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			State:         "proxy",
+			LocalEnabled:  true,
+			LANEnabled:    true,
+			LocalRelay:    "r2",
+			RelayAlias:    "r1",
+			LANInterfaces: []string{"eth1", "eth2"},
+			ZoneDefaultRelays: map[string]string{
+				"eth1": "r1",
+				"eth2": "r2",
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "r1", Enabled: true},
+			{Alias: "r2", Enabled: true},
+		},
+	}
+	tproxyPorts := config.GatewayTProxyPorts(cfg)
+	r1Port := tproxyPorts["r1"]
+	r2Port := tproxyPorts["r2"]
+	if r1Port == 0 || r2Port == 0 || r1Port == r2Port {
+		t.Fatalf("expected distinct TProxy ports for r1 (%d) and r2 (%d)", r1Port, r2Port)
+	}
+
+	out := buildNFTMulti(cfg, []string{"eth1", "eth2"}, []string{"10.0.83.0/24", "10.0.84.0/24"}, []string{"fd00:83::/64", "fd00:84::/64"}, "eth0")
+	wantLo := fmt.Sprintf(`iifname "lo" meta mark 1 meta l4proto { tcp, udp } tproxy to :%d meta mark set 1 accept`, r2Port)
+	if !strings.Contains(out, wantLo) {
+		t.Fatalf("expected loopback tproxy to r2Port (%d), got:\n%s", r2Port, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf(`iifname "eth1" meta l4proto { tcp, udp } th dport 53 tproxy to :%d meta mark set 1 accept`, r1Port)) ||
+		!strings.Contains(out, fmt.Sprintf(`iifname "eth2" meta l4proto { tcp, udp } th dport 53 tproxy to :%d meta mark set 1 accept`, r2Port)) ||
+		!strings.Contains(out, fmt.Sprintf(`iifname "eth1" meta l4proto { tcp, udp } tproxy to :%d meta mark set 1 accept`, r1Port)) ||
+		!strings.Contains(out, fmt.Sprintf(`iifname "eth2" meta l4proto { tcp, udp } tproxy to :%d meta mark set 1 accept`, r2Port)) {
+		t.Fatalf("expected per-zone relay defaults r1=%d and r2=%d, got:\n%s", r1Port, r2Port, out)
+	}
+	if _, err := exec.LookPath("nft"); err == nil {
+		if _, err := exec.LookPath("unshare"); err == nil {
+			cmd := exec.Command("unshare", "-rn", "nft", "-c", "-f", "-")
+			cmd.Stdin = strings.NewReader(out)
+			if outBytes, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("nft syntax check failed:\n%s\nErr: %v\nOut: %s", out, err, string(outBytes))
+			}
+		}
+	}
+}
+
+func TestBuildFailClosedNFT_ProtectsWithoutLeakAndValidSyntax(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:               "tproxy",
+			State:              "proxy",
+			LocalEnabled:       true,
+			LANEnabled:         true,
+			RelayAlias:         "r1",
+			LANInterfaces:      []string{"eth1", "guest0"},
+			IsolatedInterfaces: []string{"guest0"},
+			Rules: []config.GatewayRule{
+				{MAC: "52:54:00:83:00:11", Target: "block"},
+				{MAC: "52:54:00:83:00:12", Target: "direct"},
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "r1", Enabled: true},
+		},
+	}
+	out := buildFailClosedNFT(cfg, []string{"eth1", "guest0"}, []string{"10.0.83.0/24", "10.0.84.0/24"}, []string{"fd00:83::/64", ""}, "eth0")
+	if !strings.Contains(out, "chain block_guard") ||
+		!strings.Contains(out, `ether saddr 52:54:00:83:00:11 drop`) ||
+		!strings.Contains(out, `iifname "guest0" drop`) ||
+		!strings.Contains(out, `tcp sport 22 return`) ||
+		!strings.Contains(out, `meta l4proto { tcp, udp } drop`) ||
+		!strings.Contains(out, `iifname "eth1" drop`) {
+		t.Fatalf("fail-closed rules missing expected protections:\n%s", out)
+	}
+	if _, err := exec.LookPath("nft"); err == nil {
+		if _, err := exec.LookPath("unshare"); err == nil {
+			cmd := exec.Command("unshare", "-rn", "nft", "-c", "-f", "-")
+			cmd.Stdin = strings.NewReader(out)
+			if outBytes, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("nft syntax check failed for fail-closed table:\n%s\nErr: %v\nOut: %s", out, err, string(outBytes))
+			}
+		}
+	}
+}
+
+func TestBuildNFTMulti_BlockedClientDroppedBeforeDNSAndDirectUsesRelayDNS(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			State:         "proxy",
+			LANEnabled:    true,
+			RelayAlias:    "r1",
+			LANInterfaces: []string{"eth1"},
+			Rules: []config.GatewayRule{
+				{MAC: "52:54:00:83:00:11", Target: "block"},
+				{MAC: "52:54:00:83:00:12", Target: "direct"},
+			},
+		},
+		CustomOutbounds: []config.CustomOutbound{{Alias: "r1", Enabled: true}},
+	}
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.83.0/24"}, nil, "eth0")
+	idxGuardJump := strings.Index(out, "jump block_guard")
+	idxDNS := strings.Index(out, "th dport 53 tproxy")
+	if idxGuardJump < 0 || idxDNS < 0 || idxGuardJump > idxDNS {
+		t.Fatalf("jump block_guard must run before :53 DNS hijacking:\n%s", out)
+	}
+	wantDirectDNS := fmt.Sprintf(`ether saddr 52:54:00:83:00:12 meta l4proto { tcp, udp } th dport 53 tproxy to :%d meta mark set 1 accept`, config.DefaultTProxyPort)
+	if !strings.Contains(out, wantDirectDNS) {
+		t.Fatalf("direct device must still route :53 DNS via relay tproxy (%q), got:\n%s", wantDirectDNS, out)
+	}
+}
+
+func TestBuildNFTMulti_MultiSubnetLANGuard(t *testing.T) {
+	cfg := testGatewayConfig(false, true)
+	cfg.Gateway.LANInterfaces = []string{"eth1"}
+	out := buildNFTMulti(cfg, []string{"eth1"}, []string{"10.0.83.0/24,10.99.83.0/24"}, []string{"fd00:83::/64,2001:db8:83::/64"}, "eth0")
+	if !strings.Contains(out, `iifname "eth1" ip saddr != { 10.0.83.0/24, 10.99.83.0/24 } return`) {
+		t.Fatalf("expected multi-subnet IPv4 guard, got:\n%s", out)
+	}
+	if !strings.Contains(out, `ip daddr 10.0.83.0/24 return`) || !strings.Contains(out, `ip daddr 10.99.83.0/24 return`) {
+		t.Fatalf("expected all IPv4 LAN CIDRs in destination bypasses, got:\n%s", out)
+	}
+	if _, err := exec.LookPath("nft"); err == nil {
+		if _, err := exec.LookPath("unshare"); err == nil {
+			cmd := exec.Command("unshare", "-rn", "nft", "-c", "-f", "-")
+			cmd.Stdin = strings.NewReader(out)
+			if outBytes, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("nft syntax check failed:\n%s\nErr: %v\nOut: %s", out, err, string(outBytes))
+			}
+		}
+	}
+}
+
+func TestGetSSHPorts_ParsesSSHDConfigsAndSorts(t *testing.T) {
+	tmp := t.TempDir()
+	mainConf := filepath.Join(tmp, "sshd_config")
+	confDir := filepath.Join(tmp, "sshd_config.d")
+	if err := os.MkdirAll(confDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(mainConf, []byte("# comment\nPort 2222\nPort 2200 # inline comment\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(confDir, "10-custom.conf"), []byte("port 3322\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	origMain, origDir := sshdConfigMainPath, sshdConfigDirPath
+	defer func() {
+		sshdConfigMainPath = origMain
+		sshdConfigDirPath = origDir
+	}()
+	sshdConfigMainPath = mainConf
+	sshdConfigDirPath = confDir
+	t.Setenv("SSH_CONNECTION", "10.0.82.1 55555 10.0.82.21 4422")
+
+	ports := getSSHPorts()
+	got := strings.Join(ports, ",")
+	if got != "22,2200,2222,3322,4422" {
+		t.Fatalf("getSSHPorts() = %q, want sorted %q", got, "22,2200,2222,3322,4422")
+	}
+}
+
+func TestForwardOnly_RespectsNATDisabledAndIsolatedInterfaces(t *testing.T) {
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", t.TempDir())
+	var recordedCmds [][]string
+	origRun := runCommand
+	origExec := execCommandCombinedOutput
+	origDetect := detectDefaultInterfaceFn
+	origReadSysctl := readSysctlFn
+	defer func() {
+		runCommand = origRun
+		execCommandCombinedOutput = origExec
+		detectDefaultInterfaceFn = origDetect
+		readSysctlFn = origReadSysctl
+	}()
+	readSysctlFn = func(key string) (string, error) { return "0", nil }
+	runCommand = func(name string, args ...string) error {
+		recordedCmds = append(recordedCmds, append([]string{name}, args...))
+		return nil
+	}
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		return []byte(""), errors.New("Error: No such chain")
+	}
+	detectDefaultInterfaceFn = func() (string, error) { return "wan0", nil }
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:               "tproxy",
+			State:              "forward-only",
+			LANInterfaces:      []string{"eth1", "guest0"},
+			WANInterface:       "wan1",
+			NATDisabled:        true,
+			LANEnabled:         true,
+			IsolatedInterfaces: []string{"guest0"},
+		},
+	}
+	if err := ApplyFirewall(cfg); err != nil {
+		t.Fatalf("ApplyFirewall() error = %v", err)
+	}
+	var joined []string
+	for _, cmd := range recordedCmds {
+		joined = append(joined, strings.Join(cmd, " "))
+	}
+	all := strings.Join(joined, "\n")
+	if strings.Contains(all, "masquerade") {
+		t.Fatalf("expected no masquerade when NATDisabled=true, got:\n%s", all)
+	}
+	if !strings.Contains(all, "oifname wan1 accept") {
+		t.Fatalf("expected configured WAN interface wan1 in forward rules, got:\n%s", all)
+	}
+	if !strings.Contains(all, "iifname guest0 drop") || !strings.Contains(all, "iifname guest0 oifname eth1 drop") {
+		t.Fatalf("expected isolated guest0 rules in forward-only mode, got:\n%s", all)
 	}
 }
