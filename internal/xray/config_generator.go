@@ -201,7 +201,7 @@ func dnsRoutingTargets(servers []string) ([]string, []string) {
 }
 
 func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []interface{} {
-	if selectedAlias == "" {
+	if selectedAlias == "" || selectedAlias == "direct" || selectedAlias == "block" {
 		return nil
 	}
 	domains, ips := dnsRoutingTargets(servers)
@@ -215,11 +215,19 @@ func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []inte
 			hasCloudflare = true
 		}
 	}
+	appendUniqueIP := func(ip string) {
+		for _, existing := range ips {
+			if existing == ip {
+				return
+			}
+		}
+		ips = append(ips, ip)
+	}
 	if hasGoogle {
-		ips = append(ips, "8.8.8.8")
+		appendUniqueIP("8.8.8.8")
 	}
 	if hasCloudflare {
-		ips = append(ips, "1.1.1.1")
+		appendUniqueIP("1.1.1.1")
 	}
 
 	rules := make([]interface{}, 0, 2)
@@ -227,6 +235,7 @@ func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []inte
 	if len(domains) > 0 {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
+			"inboundTag":  []string{"dns-internal"},
 			"domain":      domains,
 			"outboundTag": outboundTag,
 		})
@@ -234,6 +243,7 @@ func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []inte
 	if len(ips) > 0 {
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
+			"inboundTag":  []string{"dns-internal"},
 			"ip":          ips,
 			"outboundTag": outboundTag,
 		})
@@ -271,7 +281,24 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	isGateway := userCfg.Role == config.RoleGateway
 	relayAlias := ""
 	if isGateway {
-		relayAlias = userCfg.Gateway.RelayAlias
+		if userCfg.Gateway.RelayAlias != "" && userCfg.Gateway.RelayAlias != "direct" && userCfg.Gateway.RelayAlias != "block" {
+			relayAlias = userCfg.Gateway.RelayAlias
+		} else {
+			tproxyPorts := config.GatewayTProxyPorts(userCfg)
+			basePort := userCfg.Gateway.EffectiveTProxyPort()
+			var aliases []string
+			for alias, p := range tproxyPorts {
+				if p == basePort {
+					relayAlias = alias
+					break
+				}
+				aliases = append(aliases, alias)
+			}
+			if relayAlias == "" && len(aliases) > 0 {
+				sort.Strings(aliases)
+				relayAlias = aliases[0]
+			}
+		}
 	}
 	if !isGateway && userCfg.Gateway.RelayAlias != "" {
 		relayAlias = userCfg.Gateway.RelayAlias
@@ -546,27 +573,10 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		inbounds = append(inbounds, in)
 	}
 
-	// Standalone Pure TUN Adapter Inbound (proxya-tun)
-	// Operates without injecting any nftables rules, allowing external routing scripts/containers
-	// to route directly to proxya-tun as a supplementary compatibility adapter.
-	if userCfg.Role == config.RoleGateway && userCfg.Gateway.EffectiveTUNEnabled() && !disableGatewayTun {
-		inbounds = append(inbounds, map[string]interface{}{
-			"tag":      "tun-in",
-			"protocol": "tun",
-			"settings": map[string]interface{}{
-				"name":    "proxya-tun",
-				"mtu":     1500,
-				"gateway": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
-			},
-			"sniffing": buildSniffingConfig(userCfg),
-		})
-	}
-
-	// Primary Gateway Inbound (TProxy)
-	if gatewayTProxyEnabled {
+	appendGatewayTProxyInbounds := func(target []interface{}) []interface{} {
 		basePort := userCfg.Gateway.EffectiveTProxyPort()
 		tproxyPort := getPort("tproxy-in", basePort)
-		inbounds = append(inbounds, map[string]interface{}{
+		target = append(target, map[string]interface{}{
 			"tag":      "tproxy-in",
 			"port":     tproxyPort,
 			"listen":   "::",
@@ -581,7 +591,6 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 					"mark":   255,
 				},
 			},
-			"sniffing": buildSniffingConfig(userCfg),
 		})
 
 		tproxyPorts := config.GatewayTProxyPorts(userCfg)
@@ -595,7 +604,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		for _, alias := range extraAliases {
 			port := tproxyPorts[alias]
 			inboundTag := "tproxy-in-" + sanitizeTagComponent(alias)
-			inbounds = append(inbounds, map[string]interface{}{
+			target = append(target, map[string]interface{}{
 				"tag":      inboundTag,
 				"port":     getPort(inboundTag, port),
 				"listen":   "::",
@@ -610,17 +619,62 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 						"mark":   255,
 					},
 				},
-				"sniffing": buildSniffingConfig(userCfg),
 			})
 		}
+		return target
+	}
+
+	// Standalone Pure TUN Adapter Inbound (proxya-tun)
+	// Operates without injecting any nftables rules, allowing external routing scripts/containers
+	// to route directly to proxya-tun as a supplementary compatibility adapter.
+	if userCfg.Role == config.RoleGateway && userCfg.Gateway.EffectiveTUNEnabled() && !disableGatewayTun {
+		inbounds = append(inbounds, map[string]interface{}{
+			"tag":      "tun-in",
+			"protocol": "tun",
+			"settings": map[string]interface{}{
+				"name":    "proxya-tun",
+				"mtu":     1500,
+				"gateway": []string{"172.16.255.1/30", "fd00:eea:ff::1/126"},
+			},
+		})
+	}
+
+	// Primary Gateway Inbound (TProxy)
+	if gatewayTProxyEnabled {
+		inbounds = appendGatewayTProxyInbounds(inbounds)
 	}
 	if err := validateInboundsPortConflicts(inbounds); err != nil {
 		return nil, err
 	}
+	// Static apply validation passes gateway-tun-disabled without overriding test-socks/api ports.
+	// Validate virtual gateway dns-in and tproxy-in* ports against all other configured inbounds
+	// without exposing them in the generated JSON when gateway-tun-disabled is active.
+	if isGateway && disableGatewayTun && overridePorts["test-socks"] == 0 {
+		checkInbounds := append([]interface{}{}, inbounds...)
+		if !hasDNSIn && userCfg.Gateway.DNSListen != "" {
+			host, port, _, err := config.ParseDNSListen(userCfg.Gateway.DNSListen)
+			if err == nil && port > 0 {
+				checkInbounds = append(checkInbounds, buildDNSInbound(host, port))
+			}
+		}
+		if gatewayState == "proxy" && (userCfg.Gateway.LocalEnabled || userCfg.Gateway.LANEnabled) && userCfg.Gateway.EffectiveMode() == "tproxy" {
+			checkInbounds = appendGatewayTProxyInbounds(checkInbounds)
+		}
+		if err := validateInboundsPortConflicts(checkInbounds); err != nil {
+			return nil, err
+		}
+	}
 	xc["inbounds"] = inbounds
 
 	// 4. Outbounds
-	xc["outbounds"] = []interface{}{
+	selectedDNSAlias, _, selectedDNSServers := resolveDNSConfig(userCfg, relayAlias, testTarget, isGateway)
+	dnsOutSockopt := map[string]interface{}{"mark": 255}
+	if selectedDNSAlias != "" && selectedDNSAlias != "direct" && selectedDNSAlias != "block" {
+		if co := findOutboundByAlias(userCfg, selectedDNSAlias); co != nil && co.Enabled {
+			dnsOutSockopt["dialerProxy"] = "outbound-" + selectedDNSAlias
+		}
+	}
+	outboundsList := []interface{}{
 		map[string]interface{}{
 			"protocol": "freedom",
 			"tag":      "direct",
@@ -634,9 +688,46 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			},
 			"streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255, "domainStrategy": "UseIP"}},
 		},
-		map[string]interface{}{"protocol": "dns", "tag": "dns-out", "streamSettings": map[string]interface{}{"sockopt": map[string]interface{}{"mark": 255}}},
+		map[string]interface{}{
+			"protocol":       "dns",
+			"tag":            "dns-out",
+			"settings":       map[string]interface{}{"nonIPQuery": "skip"},
+			"streamSettings": map[string]interface{}{"sockopt": dnsOutSockopt},
+		},
 		map[string]interface{}{"protocol": "blackhole", "tag": "blocked"},
 	}
+	extraDNSOutTags := make(map[string]string)
+	if isGateway {
+		tproxyPorts := config.GatewayTProxyPorts(userCfg)
+		basePort := userCfg.Gateway.EffectiveTProxyPort()
+		var extraDNSTargets []string
+		for alias, port := range tproxyPorts {
+			if port != basePort && alias != relayAlias {
+				extraDNSTargets = append(extraDNSTargets, alias)
+			}
+		}
+		sort.Strings(extraDNSTargets)
+		for _, alias := range extraDNSTargets {
+			co := findOutboundByAlias(userCfg, alias)
+			if co == nil || !co.Enabled {
+				continue
+			}
+			tag := "dns-out-" + sanitizeTagComponent(alias)
+			extraDNSOutTags[alias] = tag
+			outboundsList = append(outboundsList, map[string]interface{}{
+				"protocol": "dns",
+				"tag":      tag,
+				"settings": map[string]interface{}{"nonIPQuery": "skip"},
+				"streamSettings": map[string]interface{}{
+					"sockopt": map[string]interface{}{
+						"mark":        255,
+						"dialerProxy": "outbound-" + alias,
+					},
+				},
+			})
+		}
+	}
+	xc["outbounds"] = outboundsList
 	for _, co := range userCfg.CustomOutbounds {
 		if !co.Enabled {
 			continue
@@ -679,7 +770,6 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	// 5. Routing
-	selectedDNSAlias, _, selectedDNSServers := resolveDNSConfig(userCfg, relayAlias, testTarget, isGateway)
 	rules := []interface{}{
 		map[string]interface{}{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"},
 	}
@@ -743,16 +833,18 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	// Route port 53 traffic:
-	// For each traversed relay inbound (e.g. tproxy-in-<alias>), route port 53 queries
-	// to its corresponding relay outbound so DNS requests traverse the exact proxy node as the client.
+	// Route secondary relay port 53 traffic through its dedicated dns-out-<alias>
+	// so static dns_records remain active while non-IP queries (TXT/HTTPS) exit via that relay.
 	for _, tr := range tproxyRoutes {
 		if tr.alias != "" && tr.alias != mainAlias && tr.alias != "direct" && tr.alias != "block" {
-			rules = append(rules, map[string]interface{}{
-				"type":        "field",
-				"inboundTag":  []string{tr.inboundTag},
-				"port":        "53",
-				"outboundTag": "outbound-" + tr.alias,
-			})
+			if dnsOutTag, ok := extraDNSOutTags[tr.alias]; ok {
+				rules = append(rules, map[string]interface{}{
+					"type":        "field",
+					"inboundTag":  []string{tr.inboundTag},
+					"port":        "53",
+					"outboundTag": dnsOutTag,
+				})
+			}
 		}
 	}
 
@@ -760,8 +852,8 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
 	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
 
-	// Explicit loopback protection before AllowPrivateTargets rules
-	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"127.0.0.0/8", "::1/128"}, "outboundTag": "direct"})
+	// Block inbound loopback access (127.0.0.0/8, ::1/128) to prevent SSRF to local services such as APIInbound
+	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"127.0.0.0/8", "::1/128"}, "outboundTag": "blocked"})
 
 	// Only an outbound explicitly opted into private targets may route its
 	// relay user before the private-IP guard. This supports chained relays to
@@ -786,28 +878,16 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 	}
 
 	var bypassGeoIPs []string
-	var bypassGeoSites []string
 	if gatewayTunEnabled && len(userCfg.Gateway.BypassCountries) > 0 {
 		for _, country := range userCfg.Gateway.BypassCountries {
 			code := strings.ToLower(strings.TrimSpace(country))
 			if code != "" {
-				if code == "cn" {
-					bypassGeoSites = append(bypassGeoSites, "geosite:"+code)
-				}
 				bypassGeoIPs = append(bypassGeoIPs, "geoip:"+code)
 			}
 		}
 	}
 
 	appendBypassCountries := func(tag string) {
-		if len(bypassGeoSites) > 0 {
-			rules = append(rules, map[string]interface{}{
-				"type":        "field",
-				"inboundTag":  []string{tag},
-				"domain":      bypassGeoSites,
-				"outboundTag": "direct",
-			})
-		}
 		if len(bypassGeoIPs) > 0 {
 			rules = append(rules, map[string]interface{}{
 				"type":        "field",
@@ -842,6 +922,36 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 	}
 
+	// Guests are isolated from private network targets before the generic geoip:private -> direct rule.
+	var guestUsers []string
+	for _, guest := range userCfg.Guests {
+		if guest.Enabled {
+			guestUsers = append(guestUsers, guestUserEmail(guest.Alias))
+		}
+	}
+	if len(guestUsers) > 0 {
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"user":        guestUsers,
+			"ip":          []string{"geoip:private"},
+			"outboundTag": "blocked",
+		})
+	}
+	for _, guest := range userCfg.Guests {
+		if !guest.Enabled {
+			continue
+		}
+		targetOutbound := "direct"
+		if guest.OutboundConf != nil {
+			targetOutbound = guestOutboundTag(guest.Alias)
+		}
+		rules = append(rules, map[string]interface{}{
+			"type":        "field",
+			"user":        []string{guestUserEmail(guest.Alias)},
+			"outboundTag": targetOutbound,
+		})
+	}
+
 	// geoip:private guard
 	rules = append(rules,
 		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
@@ -873,20 +983,6 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 			"type":        "field",
 			"user":        []string{relayUserEmail(co.Alias)},
 			"outboundTag": "outbound-" + co.Alias,
-		})
-	}
-	for _, guest := range userCfg.Guests {
-		if !guest.Enabled {
-			continue
-		}
-		targetOutbound := "direct"
-		if guest.OutboundConf != nil {
-			targetOutbound = guestOutboundTag(guest.Alias)
-		}
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"user":        []string{guestUserEmail(guest.Alias)},
-			"outboundTag": targetOutbound,
 		})
 	}
 
