@@ -391,3 +391,34 @@ func TestServerInitInitializesHysteria2Preset(t *testing.T) {
 	}
 }
 
+func TestGatewayInitFailsWhenNftOrIpMissing(t *testing.T) {
+	setupTestConfigDir(t)
+	origLookPath := lookPathFunc
+	origCleanup := prepareFreshInitFunc
+	t.Cleanup(func() {
+		lookPathFunc = origLookPath
+		prepareFreshInitFunc = origCleanup
+	})
+
+	cleanupCalls := 0
+	prepareFreshInitFunc = func() {
+		cleanupCalls++
+	}
+	lookPathFunc = func(file string) (string, error) {
+		if file == "nft" {
+			return "", errors.New("not found")
+		}
+		return "/usr/bin/" + file, nil
+	}
+
+	forceInit = true
+	roleStr = "gateway"
+	err := runInit(nil, nil)
+	if err == nil {
+		t.Fatal("expected init gateway to fail when nft is missing")
+	}
+	if cleanupCalls != 0 {
+		t.Errorf("prepareFreshInitFunc must not run when preflight fails, got %d calls", cleanupCalls)
+	}
+}
+

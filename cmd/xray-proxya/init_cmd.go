@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gateway"
@@ -23,6 +25,7 @@ var (
 
 var (
 	prepareFreshInitFunc = prepareFreshInit
+	lookPathFunc         = exec.LookPath
 	ensureXrayBinaryFunc = func() error {
 		xrayPath := xray.GetXrayBinaryPath()
 		if _, err := os.Stat(xrayPath); os.IsNotExist(err) {
@@ -103,6 +106,17 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	var selectedSNI, selectedDest string
+	if role == config.RoleGateway {
+		var missing []string
+		for _, bin := range []string{"nft", "ip"} {
+			if _, err := lookPathFunc(bin); err != nil {
+				missing = append(missing, bin)
+			}
+		}
+		if len(missing) > 0 {
+			return fmt.Errorf("❌ Missing required gateway dependencies in PATH: %s (install nftables and iproute2)", strings.Join(missing, ", "))
+		}
+	}
 	if role == config.RoleServer {
 		var err error
 		selectedSNI, selectedDest, err = realityTargetSelector()

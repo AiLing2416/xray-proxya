@@ -126,48 +126,15 @@ func runGatewayDNS(cmd *cobra.Command, args []string) error {
 	// 4. DNS Settings (listen, port, off, strategy, servers, reset)
 	if dnsSetReset || dnsSetOff || cmd.Flags().Changed("listen") || cmd.Flags().Changed("port") || cmd.Flags().Changed("strategy") || cmd.Flags().Changed("servers") {
 		hasAction = true
-		err := gatewayconf.ModifyGatewayConf(func(content string) string {
-			if dnsSetReset {
-				content = gatewayconf.DeleteSet(content, "dns_listen")
-				content = gatewayconf.DeleteSet(content, "dns_strategy")
-				content = gatewayconf.DeleteSet(content, "dns_servers")
-			}
-			if dnsSetOff {
-				content = gatewayconf.UpdateSet(content, "dns_listen", "off")
-			}
-			if cmd.Flags().Changed("listen") {
-				_, _, normListen, err := config.ParseDNSListen(dnsSetListen)
-				if err == nil {
-					content = gatewayconf.UpdateSet(content, "dns_listen", normListen)
-				}
-			}
-			if cmd.Flags().Changed("port") {
-				if dnsSetPort >= 1 && dnsSetPort <= 65535 {
-					listenAddr := fmt.Sprintf(":%d", dnsSetPort)
-					content = gatewayconf.UpdateSet(content, "dns_listen", listenAddr)
-				}
-			}
-			if cmd.Flags().Changed("strategy") {
-				if norm, ok := config.NormalizeDNSQueryStrategy(dnsSetStrategy); ok {
-					content = gatewayconf.UpdateSet(content, "dns_strategy", norm)
-				}
-			}
-			if cmd.Flags().Changed("servers") {
-				var normServers []string
-				for _, s := range dnsSetServers {
-					s = strings.TrimSpace(s)
-					if s != "" {
-						if norm, err := config.ValidateDNSServerEntry(s); err == nil {
-							normServers = append(normServers, norm)
-						}
-					}
-				}
-				content = gatewayconf.UpdateSet(content, "dns_servers", strings.Join(normServers, ", "))
-			}
-			return content
-		})
-		if err != nil {
-			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		if err := applyValidatedDNSSetParams(
+			dnsSetReset,
+			dnsSetOff,
+			cmd.Flags().Changed("listen"), dnsSetListen,
+			cmd.Flags().Changed("port"), dnsSetPort,
+			cmd.Flags().Changed("strategy"), dnsSetStrategy,
+			cmd.Flags().Changed("servers"), dnsSetServers,
+		); err != nil {
+			return err
 		}
 		fmt.Println("✅ Gateway DNS parameters updated in STAGING (gateway.conf).")
 	}
@@ -310,6 +277,72 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 
 	reset, _ := cmd.Flags().GetBool("reset")
 	off, _ := cmd.Flags().GetBool("off")
+	listen, _ := cmd.Flags().GetString("listen")
+	port, _ := cmd.Flags().GetInt("port")
+	strategy, _ := cmd.Flags().GetString("strategy")
+	servers, _ := cmd.Flags().GetStringSlice("servers")
+
+	if err := applyValidatedDNSSetParams(
+		reset,
+		off,
+		cmd.Flags().Changed("listen"), listen,
+		cmd.Flags().Changed("port"), port,
+		cmd.Flags().Changed("strategy"), strategy,
+		cmd.Flags().Changed("servers"), servers,
+	); err != nil {
+		return err
+	}
+
+	fmt.Println("✅ Gateway DNS parameters updated in STAGING.")
+	fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+	return nil
+}
+
+func applyValidatedDNSSetParams(
+	reset, off bool,
+	hasListen bool, listen string,
+	hasPort bool, port int,
+	hasStrategy bool, strategy string,
+	hasServers bool, servers []string,
+) error {
+	var normListen string
+	if hasListen {
+		_, _, parsed, err := config.ParseDNSListen(listen)
+		if err != nil {
+			return fmt.Errorf("❌ Invalid --listen %q: %w", listen, err)
+		}
+		normListen = parsed
+	}
+	if hasPort {
+		if port < 1 || port > 65535 {
+			return fmt.Errorf("❌ Invalid --port %d: must be between 1 and 65535", port)
+		}
+	}
+	var normStrategy string
+	if hasStrategy {
+		norm, ok := config.NormalizeDNSQueryStrategy(strategy)
+		if !ok {
+			return fmt.Errorf("❌ Invalid --strategy %q: must be UseIP, UseIPv4, or UseIPv6", strategy)
+		}
+		normStrategy = norm
+	}
+	var normServers []string
+	if hasServers {
+		for _, s := range servers {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			norm, err := config.ValidateDNSServerEntry(s)
+			if err != nil {
+				return fmt.Errorf("❌ Invalid --servers entry %q: %w", s, err)
+			}
+			normServers = append(normServers, norm)
+		}
+		if len(normServers) == 0 {
+			return fmt.Errorf("❌ Invalid --servers: at least one valid DNS server is required (use --reset to clear)")
+		}
+	}
 
 	err := gatewayconf.ModifyGatewayConf(func(content string) string {
 		if reset {
@@ -320,37 +353,16 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 		if off {
 			content = gatewayconf.UpdateSet(content, "dns_listen", "off")
 		}
-		if cmd.Flags().Changed("listen") {
-			listen, _ := cmd.Flags().GetString("listen")
-			_, _, normListen, err := config.ParseDNSListen(listen)
-			if err == nil {
-				content = gatewayconf.UpdateSet(content, "dns_listen", normListen)
-			}
+		if hasListen {
+			content = gatewayconf.UpdateSet(content, "dns_listen", normListen)
 		}
-		if cmd.Flags().Changed("port") {
-			port, _ := cmd.Flags().GetInt("port")
-			if port >= 1 && port <= 65535 {
-				listenAddr := fmt.Sprintf(":%d", port)
-				content = gatewayconf.UpdateSet(content, "dns_listen", listenAddr)
-			}
+		if hasPort {
+			content = gatewayconf.UpdateSet(content, "dns_listen", fmt.Sprintf(":%d", port))
 		}
-		if cmd.Flags().Changed("strategy") {
-			strategy, _ := cmd.Flags().GetString("strategy")
-			if norm, ok := config.NormalizeDNSQueryStrategy(strategy); ok {
-				content = gatewayconf.UpdateSet(content, "dns_strategy", norm)
-			}
+		if hasStrategy {
+			content = gatewayconf.UpdateSet(content, "dns_strategy", normStrategy)
 		}
-		if cmd.Flags().Changed("servers") {
-			servers, _ := cmd.Flags().GetStringSlice("servers")
-			var normServers []string
-			for _, s := range servers {
-				s = strings.TrimSpace(s)
-				if s != "" {
-					if norm, err := config.ValidateDNSServerEntry(s); err == nil {
-						normServers = append(normServers, norm)
-					}
-				}
-			}
+		if hasServers {
 			content = gatewayconf.UpdateSet(content, "dns_servers", strings.Join(normServers, ", "))
 		}
 		return content
@@ -358,9 +370,6 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
 	}
-
-	fmt.Println("✅ Gateway DNS parameters updated in STAGING.")
-	fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 	return nil
 }
 

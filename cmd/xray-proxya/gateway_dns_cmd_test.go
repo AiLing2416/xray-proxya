@@ -313,3 +313,54 @@ func TestGatewayDNSRecordDirectFlags(t *testing.T) {
 		t.Fatalf("expected 0 dns records, got %d", len(loaded.Gateway.DNSRecords))
 	}
 }
+
+func TestGatewayDNSSetInvalidInputsFailWithoutCorruptingConf(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:       "tproxy",
+			State:      "proxy",
+			DNSServers: []string{"1.1.1.1"},
+		},
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("cfg.Save() failed: %v", err)
+	}
+
+	for _, args := range [][]string{
+		{"--listen", "not-an-address"},
+		{"--port", "70000"},
+		{"--strategy", "BogusStrategy"},
+		{"--servers", "not-a-dns-server"},
+		{"--servers", ""},
+	} {
+		resetCmdFlags(gatewayDNSSetCmd)
+		if err := gatewayDNSSetCmd.ParseFlags(args); err != nil {
+			t.Fatalf("ParseFlags(%v) failed: %v", args, err)
+		}
+		if err := runGatewayDNSSet(gatewayDNSSetCmd, nil); err == nil {
+			t.Errorf("expected error for invalid gateway dns set args %v, got nil", args)
+		}
+	}
+
+	if config.GatewayConfStaged() {
+		raw, _ := os.ReadFile(config.GetGatewayConfPathEx(true))
+		t.Fatalf("gateway.conf.staging should not be created on invalid inputs:\n%s", string(raw))
+	}
+	raw, err := os.ReadFile(config.GetGatewayConfPath())
+	if err != nil {
+		t.Fatalf("read gateway.conf: %v", err)
+	}
+	if strings.Contains(string(raw), "set dns_servers \n") {
+		t.Fatalf("gateway.conf corrupted with empty set dns_servers:\n%s", string(raw))
+	}
+	loaded, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("LoadConfigEx failed: %v", err)
+	}
+	if len(loaded.Gateway.DNSServers) != 1 || loaded.Gateway.DNSServers[0] != "1.1.1.1" {
+		t.Fatalf("DNSServers unexpectedly modified on invalid inputs: %+v", loaded.Gateway.DNSServers)
+	}
+}

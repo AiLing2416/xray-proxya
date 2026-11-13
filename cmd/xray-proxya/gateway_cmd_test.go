@@ -813,5 +813,57 @@ func TestGatewayEditCmd(t *testing.T) {
 	}
 }
 
+func TestGatewaySetFailOpenFlags(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:         "tproxy",
+			LocalEnabled: true,
+			LANEnabled:   true,
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("save staging config: %v", err)
+	}
+
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--fail-open"}); err != nil {
+		t.Fatalf("ParseFlags --fail-open error: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+		t.Fatalf("RunE --fail-open error: %v", err)
+	}
+	updated, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging config: %v", err)
+	}
+	if !updated.Gateway.FailOpen {
+		t.Fatalf("expected FailOpen = true after --fail-open")
+	}
+
+	gatewaySetCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+	if err := gatewaySetCmd.ParseFlags([]string{"--no-fail-open"}); err != nil {
+		t.Fatalf("ParseFlags --no-fail-open error: %v", err)
+	}
+	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {
+		t.Fatalf("RunE --no-fail-open error: %v", err)
+	}
+	updated, err = config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("load staging config: %v", err)
+	}
+	if updated.Gateway.FailOpen {
+		t.Fatalf("expected FailOpen = false after --no-fail-open")
+	}
+}
+
 
 

@@ -560,6 +560,28 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --nat and --no-nat")
 	}
 
+	failOpenEnable := cmd.Flags().Changed("fail-open") && cmd.Flags().Lookup("fail-open").Value.String() == "true"
+	failOpenDisable := cmd.Flags().Changed("no-fail-open") && cmd.Flags().Lookup("no-fail-open").Value.String() == "true"
+	if cmd.Flags().Changed("fail-open") {
+		val, _ := cmd.Flags().GetBool("fail-open")
+		if val {
+			failOpenEnable = true
+		} else {
+			failOpenDisable = true
+		}
+	}
+	if cmd.Flags().Changed("no-fail-open") {
+		val, _ := cmd.Flags().GetBool("no-fail-open")
+		if val {
+			failOpenDisable = true
+		} else {
+			failOpenEnable = true
+		}
+	}
+	if failOpenEnable && failOpenDisable {
+		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --fail-open and --no-fail-open")
+	}
+
 	if !hasChanged && !lanEnable && !lanDisable && !localEnable && !localDisable && !gatewayTProxyEnable && !gatewayTProxyDisable {
 		if cmd.Name() == "set" {
 			return fmt.Errorf("❌ Error: No parameter supplied")
@@ -656,6 +678,11 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		if cmd.Flags().Changed("state") {
 			stateVal, _ := cmd.Flags().GetString("state")
 			content = gatewayconf.UpdateSet(content, "state", stateVal)
+		}
+		if failOpenEnable {
+			content = gatewayconf.UpdateSet(content, "fail_open", "true")
+		} else if failOpenDisable {
+			content = gatewayconf.UpdateSet(content, "fail_open", "false")
 		}
 
 		return content
@@ -875,9 +902,20 @@ var gatewayDiffCmd = &cobra.Command{
 			fmt.Print(rules)
 		}
 		fmt.Println("# policy routing")
-		if cfg.Gateway.EffectiveMode() == "tun" {
+		state := strings.ToLower(strings.TrimSpace(cfg.Gateway.State))
+		if state == "" {
+			state = "proxy"
+		}
+		switch {
+		case state == "disabled":
+			fmt.Println("(gateway is disabled; no policy routing rules needed)")
+		case state == "forward-only":
+			fmt.Println("(no policy routing rules in forward-only mode)")
+		case cfg.Gateway.EffectiveMode() == "tun":
 			fmt.Println("(no policy routing rules in standalone tun mode)")
-		} else {
+		case !cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled:
+			fmt.Println("(no proxy routing enabled; no policy routing rules needed)")
+		default:
 			fmt.Println("ip rule add fwmark 1 table 100 pref 10100")
 			fmt.Println("ip rule add fwmark 255 table main pref 10000")
 			fmt.Println("ip route replace local default dev lo table 100")
@@ -1296,6 +1334,8 @@ func init() {
 	gatewaySetCmd.Flags().Bool("no-local", false, "Disable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("local-enable", false, "Enable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("local-disable", false, "Disable local machine transparent proxy in staging")
+	gatewaySetCmd.Flags().Bool("fail-open", false, "Enable fail-open behavior on proxy failure in staging")
+	gatewaySetCmd.Flags().Bool("no-fail-open", false, "Disable fail-open (enforce fail-closed) in staging")
 
 	completeModeFn := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return []string{

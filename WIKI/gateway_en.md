@@ -180,10 +180,10 @@ For guest networks (Guest Wi-Fi) or untrusted IoT subnets, specify `isolate=true
 def zone guest vmbr1 isolate=true
 ```
 When `isolate=true` is enabled, Xray-Proxya enforces multiple safety defenses in nftables:
-- **Block Inter-LAN Forwarding**: Drops forwarding traffic originating from the isolated interface (`vmbr1`) towards any other LAN interface (`eth1`, `vmbr0`), preventing lateral movement.
-- **Connection Tracking Allowance**: Allows returning packets and established connections via `ct state established,related accept`.
-- **Gateway Host Management Hardening**: Explicitly drops incoming TCP packets destined for port 22 (SSH) on the isolated interface in the input chain, preventing guest devices from probing or accessing gateway administration.
-- **Preserve Essential Services and WAN Access**: Gateway DNS resolution and DHCP allocation remain accessible; guest devices can reach the Internet via the WAN interface or assigned relay outbounds without disruption.
+- **Bidirectional Inter-LAN & Hairpin Isolation**: In the forward chain, drops forwarding from the isolated interface (`vmbr1`) to any other LAN interface (`eth1`, `vmbr0`), drops L3 hairpin forwarding back onto `vmbr1`, and drops new connections initiated from main LAN interfaces into `vmbr1` (`ct state new drop`).
+- **Connection Tracking Allowance**: Allows returning WAN packets via `ct state established,related accept`.
+- **Gateway Host Management Whitelist**: In the input chain, allows only TProxy-intercepted traffic (`meta mark 1`), DHCP (`udp dport { 67, 68, 546, 547 }`), DNS (`tcp/udp dport 53`, subject to client `block` rules), and basic ICMP/ICMPv6 neighbor discovery (`echo-request`, `destination-unreachable`, `time-exceeded`, `nd-*`), followed by `iifname "vmbr1" drop` to block access to SSH, `:19999`, Xray API, and all other host ports.
+- **Preserve Essential Services and WAN Access**: Essential DHCP/DNS and Internet access through WAN or assigned relay outbounds remain available while blocked devices remain dropped.
 
 ### 3. Device and Group Aliases (`def device` / `def group`)
 Bind human-readable aliases to Layer-2 MAC addresses, and optionally associate them with a zone and static Layer-3 IP:
@@ -261,7 +261,12 @@ dns router.lan -> 10.0.82.1
 dns gateway.local -> 10.0.82.1, fd00:82::1
 dns nas.lan -> 10.0.82.50, fd00:82::50
 ```
-Additionally, routing rules support the `dns=relay` option (e.g., `local -> hk-relay dns=relay`) to route client DNS queries through the matching relay outbound, eliminating DNS leakage.
+Additionally:
+- Port 53 DNS hijacking executes before LAN source-subnet guards so IPv6 link-local (`fe80::`) DNS queries are captured properly.
+- Clients matching a specific relay rule (`mac`/`ip`/`interface -> <relay>`) have their DNS queries hijacked to that relay's TProxy listener.
+- Clients matching `direct` (`-> direct`) still resolve DNS through their zone default relay (or global default relay) so local ISP DNS poisoning cannot bypass proxy DNS protection.
+- Clients matching `block` (`-> block`) are dropped in `block_guard` before DNS hijacking, preventing both DNS resolution and outbound traffic.
+- `local -> <relay>` sets the host's independent `local_relay`, allowing host traffic via `lo` to use a different relay from `zone lan -> <relay>`.
 
 ---
 
@@ -312,16 +317,16 @@ L3 rules can be defined declaratively in `gateway.conf` or interactively via the
 
 ## Interception Modes (Mode)
 
-- `tproxy` (default): Primary interception mode. Uses Linux `nftables` socket TProxy redirect and policy routing `table 100 dev lo`. Delivers high performance and supports multi-relay per-MAC and per-interface routing rules.
-- `tun` (optional compatibility mode): Intercepts traffic via the `proxya-tun` network device (IP `172.16.255.1/30`, policy route `table 100 dev proxya-tun`). Preserved for compatibility with legacy environments or complex external user infrastructure expecting `proxya-tun`. Routes to the default relay without adjusting client routing rules.
+- `tproxy` (default): Primary interception mode. Uses Linux `nftables` (`table inet xray_proxya`) atomic socket TProxy redirection and policy routing `table 100 dev lo`. Delivers high performance and supports full per-client routing rules, multi-relay selection, `local_relay`, and per-zone defaults.
+- `tun` (standalone virtual adapter compatibility mode): Starts Xray with the standalone `proxya-tun` virtual network interface (`172.16.255.1/30` and `fd00:eea:ff::1/126`) without installing `table 100` policy routes or `nftables` client routing rules. Useful only when external infrastructure manages routes into `proxya-tun` directly.
 
 ## State Semantics
 
 Gateway transparent operation is root-only. The persistent configuration describes the desired state; `gateway up` and `gateway down` control the currently running state without changing that desired configuration.
 
-- `proxy`: Xray runs with `proxya-tun` when either Local Proxy or LAN Gateway is enabled. Local Proxy captures this host's traffic; LAN Gateway captures traffic arriving from the configured LAN interface.
-- `disabled`: Xray runs without a TUN inbound and Xray-Proxya installs no transparent Gateway rules.
-- `forward-only`: Xray runs without a TUN inbound. It enables kernel forwarding only; it is not a NAT or direct-internet mode, so LAN reachability requires routing provided outside Xray-Proxya.
+- `proxy`: In default `tproxy` mode, installs `table inet xray_proxya` atomically and routes local (`LocalEnabled` with an active local relay) and/or LAN (`LANEnabled`) traffic through Xray TProxy listeners. If Xray fails to start or verify and `fail_open` is `false` (the default), a **Fail-Closed** protection table is installed/retained to drop proxied internet traffic rather than leaking the real WAN IP (while preserving SSH management, `block`, and `isolate`). Set `fail_open=true` only if you explicitly want failures to degrade to direct connections.
+- `disabled`: Xray runs without gateway inbounds and Xray-Proxya cleans up all managed gateway rules.
+- `forward-only`: Xray runs without gateway TProxy/TUN inbounds. Enables kernel forwarding and installs managed LAN-to-WAN NAT masquerade (unless `nat=false`), client `block` rules, and `isolate=true` isolation rules.
 - LAN Gateway disabled: Xray-Proxya does not forward or transparently proxy LAN client traffic. A LAN client whose default route still points at this host can lose connectivity; that is intentional.
 
 Bring runtime gateway rules up:
@@ -331,15 +336,13 @@ xray-proxya gateway up
 xray-proxya gateway check
 ```
 
-`gateway up` does the following:
+`gateway up` does the following (in default `tproxy` mode):
 
-- Restarts the single Xray core with its TUN inbound enabled and waits for `proxya-tun`
-- Assigns addresses to `proxya-tun`: `172.16.255.1/30` and `fd00:eea:ff::1/126`
-- Enables IPv4/IPv6 forwarding
-- Disables IPv4 rp_filter
-- Creates policy routing: `fwmark 1 -> table 100`
-- Creates nftables rules to send local and LAN TCP/UDP traffic into TUN
-- Excludes the LAN subnet, private ranges, upstream proxy server ports, and active SSH listener ports
+- Restarts the single Xray core with TProxy (and optional DNS/PathLink) inbounds enabled without clearing existing firewall protection first
+- Enables IPv4/IPv6 forwarding and disables `rp_filter` / `send_redirects` on managed interfaces
+- Configures policy routing: `fwmark 1 -> table 100 (local dev lo)`
+- Atomically replaces `table inet xray_proxya` (`nft -f`) to enforce `block_guard`, DNS hijacking, client routing, port forwarding (`ct status dnat return` + family-specific DNAT), and NAT masquerade
+- Excludes LAN subnets, RFC1918/ULA ranges, upstream proxy server endpoints, and SSH listener ports (port 22, `SSH_CONNECTION`, and `/etc/ssh/sshd_config` / `sshd_config.d/*.conf`)
 
 ## Inspect Runtime State
 
@@ -352,12 +355,11 @@ ip route show table 100
 nft list table inet xray_proxya
 ```
 
-A healthy setup should show:
+A healthy `tproxy` setup should show:
 
-- `proxya-tun` exists and has `172.16.255.1/30`
-- `ip rule` contains pref `10/50/51/100`
-- routing table `100` has a default route to `proxya-tun`
-- nft table `inet xray_proxya` exists
+- `ip rule` contains `fwmark 0x1 lookup 100`, `fwmark 0xff lookup main`, LAN subnet `pref 10010+`
+- routing table `100` has `local default dev lo`
+- nft table `inet xray_proxya` exists (without creating `proxya-tun` unless `mode = tun`)
 
 ## Test Gateway-Local Transparent Proxying
 
@@ -443,22 +445,23 @@ xray-proxya gateway down
 
 ## Per-Client Rules, NAT And Isolation Notes
 
-- **Rule precedence follows specificity**: Evaluated in kernel rule matching from highest to lowest specificity:
-  1. `Interface + MAC` (`interface + mac`)
-  2. `MAC only` (`mac only`)
-  3. `Interface + IP` (`interface + ip`)
-  4. `IP / CIDR only` (`ip / cidr only`)
-  5. `Interface only` (`interface only`)
-  6. `Global LAN default`
-  A broader `block` rule yields to a more specific non-block rule (for example, a subnet-wide `block` rule yields to a specific IP or MAC rule configured for `direct` or a relay).
+- **Rule precedence follows strict 7-tier specificity**: Evaluated in kernel rule matching from highest to lowest specificity:
+  1. `Interface + MAC + IP`
+  2. `Interface + MAC`
+  3. `Interface + IP`
+  4. `MAC + IP`
+  5. `MAC only`
+  6. `IP / CIDR only` (longer prefix first: `/32` or `/128` > `/28` > `/24`)
+  7. `Interface only`
+  At equal specificity, `block` precedes non-block rules. All rules (including `block_guard` exceptions) evaluate both IPv4 and IPv6 uniformly without single-family negation leaks.
 - **SSH Lockout Protection**:
   When using `gateway rule set` to add a rule targeting `block`, the command actively inspects the active SSH management session (`SSH_CONNECTION`, `SSH_CLIENT`, current ingress interface, client IP, and client MAC). If the proposed rule would sever the current management session, execution halts with a high-visibility warning, prompting for explicit confirmation (`[N/y]`). Operators using unattended scripts can bypass this with `--force`.
-- **Zone Isolation (`isolate=true`)**: Interfaces marked with `isolate=true` are blocked from forwarding traffic to any other internal LAN interface in the forward chain. The input chain drops TCP port 22 (SSH) on the isolated interface, while preserving local DHCP, DNS, and WAN access.
+- **Zone Isolation (`isolate=true`)**: Interfaces marked with `isolate=true` use bidirectional forward drops (`iso -> other_lan`, `iso -> iso`, and `other_lan -> iso ct state new`) and a strict input whitelist allowing only TProxy-marked packets, DHCP, DNS, and basic ICMP/ICMPv6 neighbor discovery before dropping all other input (SSH, `:19999`, Xray API, etc.).
 - **Rule targets must be valid**: `apply` rejects rules whose relay was deleted or disabled; a dangling rule found at runtime is dropped (fail-closed) instead of falling back to the default relay.
 - **Interface names**: 1-15 characters from letters, digits, `.`, `-`, `_`.
-- **Port conflicts**: `apply` checks TProxy ports (base port and one per extra relay) against the API, test, DNS listener, preset and relay internal ports.
+- **Port conflicts**: `apply` checks TProxy ports (base port and one per extra relay, including `local_relay` and `zone -> relay`) against the API, test, DNS listener, preset and relay internal ports.
 - **WAN and NAT**: the WAN interface is resolved once at `apply`; without `--wan` and without a default route a warning is printed and managed NAT is skipped. Managed masquerade lives in an `inet` table and therefore applies to IPv4 and IPv6 (NAT66). LANs are not isolated from each other (forward policy is accept), unless marked with `isolate=true`. Protecting inbound WAN traffic is the operator's responsibility.
-- **IPv6**: every non link-local prefix on an interface (for example ULA and GUA) is included in the source guard and bypass rules.
+- **IPv6**: all IPv4 and non link-local IPv6 prefixes on each LAN interface (for example ULA and GUA) are included in multi-subnet source guards and bypass rules. When a proxied LAN interface has no global/ULA IPv6 address, non-link-local IPv6 forwarding from that interface is dropped to prevent IPv6 leaks.
 
 ## Troubleshooting
 

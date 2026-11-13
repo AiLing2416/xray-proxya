@@ -180,10 +180,10 @@ def zone lan eth1, vmbr0 subnet=192.168.1.0/24
 def zone guest vmbr1 isolate=true
 ```
 启用 `isolate=true` 后，Xray-Proxya 将在 nftables 中自动下沉多重安全隔离机制：
-- **阻断跨网段互访**：在 forward 链中下发规则，彻底阻断来自隔离接口（如 `vmbr1`）流向其他任何内网 LAN 接口（如 `eth1`、`vmbr0`）的流量，杜绝横向渗透；
-- **连接追踪放行**：通过 `ct state established,related accept` 放行已建立连接与关联回包；
-- **网关主机管理面加固**：在 input 链针对隔离接口显式丢弃（drop）目标端口为 22（SSH）的 TCP 数据包，禁止访客设备尝试探测或登录网关管理服务；
-- **基础网络服务与外网放行**：依然允许访问网关提供的 DNS 解析与 DHCP 分配；访客设备访问互联网（WAN 出口或分配的 Relay 出站）不受阻断。
+- **双向跨网段与同网段防渗透**：在 forward 链中阻断隔离接口（`vmbr1`）流向其他任何 LAN 接口（`eth1`、`vmbr0`）及同接口的三层回环互转（`iifname "vmbr1" oifname "vmbr1" drop`），同时拦截主 LAN 主动向隔离区发起的新连接（`ct state new drop`）；
+- **连接追踪放行**：通过 `ct state established,related accept` 放行已建立 WAN 出站连接的关联回包；
+- **网关主机管理面严格白名单**：在 input 链针对隔离接口仅放行经 TProxy 劫持的流量（`meta mark 1`）、DHCP（`udp dport { 67, 68, 546, 547 }`）、DNS（`tcp/udp dport 53`，受前置 `block` 规则约束）及基础 ICMP/ICMPv6 邻居发现，随后 `iifname "vmbr1" drop` 封禁访问网关 SSH、`:19999`、Xray API 等所有管理端口；
+- **基础网络服务与外网放行**：在未被 `block` 的前提下，访客设备可正常获取 DHCP/DNS 并通过 WAN 或分配的 Relay 出站访问互联网。
 
 ### 3. 设备别名与分组 (`def device` / `def group`)
 通过易读别名绑定二层 MAC 地址，并支持关联所属区域与三层固定 IP：
@@ -261,7 +261,12 @@ dns router.lan -> 10.0.82.1
 dns gateway.local -> 10.0.82.1, fd00:82::1
 dns nas.lan -> 10.0.82.50, fd00:82::50
 ```
-此外，在分流规则中支持指定 `dns=relay`（例如 `local -> hk-relay dns=relay`），使客户端 DNS 解析穿透至对应 Relay 节点，彻底杜绝 DNS 泄漏。
+此外，DNS 劫持行为具备如下安全保障：
+- `:53` 端口劫持位于 LAN 源网段守卫之前，确保 IPv6 链路本地地址（`fe80::`）发起的 DNS 请求也能正常截获；
+- 匹配指定 Relay 规则（`mac`/`ip`/`interface -> <relay>`）的客户端，其 DNS 请求自动导向对应 Relay 的 TProxy 端口解析；
+- 匹配 `direct` 规则的客户端，其 `:53` DNS 流量仍经所属区域默认 Relay（或全局默认 Relay）解析，防止本地运营商 DNS 污染；
+- 匹配 `block` 规则的客户端会在 `block_guard` 阶段（早于 `:53` 劫持）被直接丢弃，既禁出站也禁 DNS 解析；
+- `local -> <relay>` 绑定宿主机独立 `local_relay`，使本机通过 `lo` 的出站流量可与 `zone lan -> <relay>` 独立分流。
 
 ---
 
@@ -312,16 +317,16 @@ dns nas.lan -> 10.0.82.50, fd00:82::50
 
 ## 拦截模式说明 (Mode)
 
-- `tproxy`（默认）：主力拦截模式。基于 Linux `nftables` 的 `tproxy` 机制与策略路由 `table 100 dev lo` 进行透明重定向，性能优异且支持完整的按客户端 MAC / 按接口的分流规则与多 Relay 分发。
-- `tun`（可选兼容模式）：通过创建 `proxya-tun` 设备（IP `172.16.255.1/30`，策略路由 `table 100 dev proxya-tun`）进行流量拦截。主要为了兼容旧版本或用户外部依赖 `proxya-tun` 接口的复杂网络基础设施。此模式下保持简洁的全局默认 Relay 分流，不调整或强求按客户端规则分流。
+- `tproxy`（默认）：主力拦截模式。基于 Linux `nftables`（`table inet xray_proxya`）原子规则替换与策略路由 `table 100 dev lo` 进行透明重定向，性能优异且支持完整的 7 级精度客户端分流规则、多 Relay 分发、`local_relay` 与多区域默认出口。
+- `tun`（独立虚拟网卡兼容模式）：仅启用 `proxya-tun` 虚拟网卡（IP `172.16.255.1/30`、`fd00:eea:ff::1/126`），不配置 `table 100` 策略路由与 `nftables` 客户端分流规则，适用于由外部基础设施自行接管虚拟网卡路由的兼容场景。
 
 ## 状态语义
 
 透明 Gateway 只支持 root 运行。持久配置描述期望状态；`gateway up` 和 `gateway down` 只控制当前运行态，不会改变该期望配置。
 
-- `proxy`：当“本机代理”或“LAN 网关”至少启用一个时，Xray 带 `proxya-tun` 运行。本机代理捕获当前主机流量；LAN 网关捕获从配置 LAN 接口进入的流量。
-- `disabled`：Xray 不创建 TUN 入站，Xray-Proxya 不安装透明 Gateway 规则。
-- `forward-only`：**实验性高级模式**。Xray 不创建 TUN 入站，仅开启内核转发；它不是 NAT、LAN 直连上网或透明代理模式。本机/LAN 开关不会建立代理路径，LAN 连通性必须由 Xray-Proxya 外部的路由与防火墙提供。
+- `proxy`：在默认 `tproxy` 模式下原子下发 `table inet xray_proxya`，由本机代理（需配置有效本地 Relay）与/或 LAN 网关通过 TProxy 监听口透明代理流量。当 Xray 启动或自检失败且 `fail_open=false`（默认）时，系统启用/保留 **Fail-Closed 保护表** 丢弃受代理保护的公网出站流量以防泄露真实 IP（同时保留 SSH 管理端口、`block` 与 `isolate` 防护）；仅在显式配置 `set fail_open true` 时才会降级为放行直连。
+- `disabled`：Xray 不启用网关入站，Xray-Proxya 清理所有受管网关规则。
+- `forward-only`：Xray 不启用 TProxy/TUN 网关入站，仅开启内核转发并下发受管 LAN→WAN NAT 伪装（除非配置 `set nat false`）、`block` 规则与 `isolate=true` 隔离规则。
 - 关闭 LAN 网关：Xray-Proxya 不再转发或透明代理 LAN 客户端流量。默认路由仍指向本机的 LAN 客户端可能断网；这是预期行为。
 
 应用 gateway 运行态规则：
@@ -331,15 +336,13 @@ xray-proxya gateway up
 xray-proxya gateway check
 ```
 
-`gateway up` 会执行：
+`gateway up` 会执行（默认 `tproxy` 模式）：
 
-- 重启单一 Xray 核心并启用 TUN 入站，等待 `proxya-tun` 出现
-- 给 `proxya-tun` 配置地址：`172.16.255.1/30`、`fd00:eea:ff::1/126`
-- 开启 IPv4/IPv6 转发
-- 关闭 IPv4 rp_filter
-- 创建 policy routing：`fwmark 1 -> table 100`
-- 创建 nftables 规则，把本机和 LAN 的 TCP/UDP 流量送入 TUN
-- 排除 LAN 网段、私有地址、上游代理服务器端口和 SSH 监听端口
+- 在不提前清空已有防火墙规则的前提下重启 Xray 服务（消除空白窗）
+- 开启 IPv4/IPv6 转发并关闭相关接口的 `rp_filter` / `send_redirects`
+- 配置策略路由：`fwmark 1 -> table 100 (local dev lo)`
+- 通过 `nft -f` 原子替换 `table inet xray_proxya`，统一部署 `block_guard`、DNS 劫持、客户端分流、端口映射（含 `ct status dnat return` 与协议族显式 DNAT）与 NAT 伪装
+- 自动旁路 LAN 全子网、私有网段（RFC1918/ULA）、上游代理节点端点及 SSH 监听端口（22、`SSH_CONNECTION` 与 `/etc/ssh/sshd_config` / `sshd_config.d/*.conf`）
 
 ## 检查状态
 
@@ -352,12 +355,11 @@ ip route show table 100
 nft list table inet xray_proxya
 ```
 
-正常情况下应看到：
+正常情况下（`tproxy` 模式）应看到：
 
-- `proxya-tun` 存在并有 `172.16.255.1/30`
-- `ip rule` 中有 pref `10/50/51/100`
-- table `100` 的默认路由指向 `proxya-tun`
-- nft table `inet xray_proxya` 存在
+- `ip rule` 中包含 `fwmark 0x1 lookup 100`、`fwmark 0xff lookup main` 及 LAN 子网 `pref 10010+`
+- table `100` 包含 `local default dev lo`
+- nft table `inet xray_proxya` 存在（默认不创建 `proxya-tun`，仅 `mode = tun` 时创建虚拟网卡）
 
 ## 测试网关机本机透明代理
 
@@ -443,22 +445,23 @@ xray-proxya gateway down
 
 ## 按客户端规则、NAT 与隔离说明
 
-- **规则优先级按特异性**：内核规则匹配时遵循特异性从高到低原则：
-  1. `接口 + MAC` (`interface + mac`)
-  2. `独立 MAC` (`mac only`)
+- **规则优先级按 7 级特异性严格排序**：内核规则匹配遵循特异性从高到低原则：
+  1. `接口 + MAC + IP` (`interface + mac + ip`)
+  2. `接口 + MAC` (`interface + mac`)
   3. `接口 + IP` (`interface + ip`)
-  4. `独立 IP / CIDR` (`ip / cidr only`)
-  5. `独立接口` (`interface only`)
-  6. `全局 LAN 默认`
-  较宽泛的 `block` 规则会让位于更具体的非 block 规则（例如全局 block 某网段，但该网段内某特定 IP/MAC 另有 `direct` 或 relay 规则）。
+  4. `MAC + IP` (`mac + ip`)
+  5. `独立 MAC` (`mac only`)
+  6. `独立 IP / CIDR`（长前缀优先：`/32` 或 `/128` > `/28` > `/24`）
+  7. `独立接口` (`interface only`)
+  同精度下 `block` 优先。所有规则（含 `block_guard` 放行例外）同时保护 IPv4 与 IPv6，避免单协议族取反导致 IPv6 漏出。
 - **管理员 SSH 防锁死保护 (Lockout Protection)**：
   当通过 `gateway rule set` 尝试添加包含 `block` 目标的规则时，系统会自动探测当前活跃的 SSH 管理会话（分析 `SSH_CONNECTION`、`SSH_CLIENT`、当前管理网卡接口、客户端 IP 及 MAC）。若检测到该规则可能切断当前连接导致无法管理，系统会立即拦截并弹出红色高危警示，提示锁死风险，要求管理员显式确认 `[N/y]`；若在自动化运维脚本中确认需要操作，可传入 `--force` 强制应用。
-- **访客区域隔离 (`isolate=true`)**：被标记为 isolated 的区域在 forward 链中禁止流向其他任何内网 LAN 接口，同时 input 链丢弃针对网关宿主机 22 端口（SSH）的连接，放行 DHCP/DNS 与 WAN 互联网访问。
+- **访客区域隔离 (`isolate=true`)**：被标记为 isolated 的区域在 forward 链双向阻断跨区域及同接口三层互转，并在 input 链采用严格白名单（仅放行 TProxy 标记流量、DHCP、DNS 与基础 ICMP/ND）后丢弃其余所有管理端口访问。
 - **规则目标必须有效**：规则指向的 relay 被删除或禁用时，`apply` 会拒绝；运行时遗留的失效规则会被丢弃（fail-closed），不会回退到默认 relay。
 - **接口名规范**：仅允许 1-15 个字符的字母、数字、`.`、`-`、`_`。
-- **端口冲突**：`apply` 会检查 TProxy 端口（基础端口与每个额外 relay 的端口）是否与 API、测试、DNS 监听、预设、relay 内部端口冲突。
+- **端口冲突**：`apply` 会检查 TProxy 端口（基础端口与每个额外 relay 端口，含 `local_relay` 与 `zone -> relay`）是否与 API、测试、DNS 监听、预设、relay 内部端口冲突。
 - **WAN 与 NAT**：WAN 接口在 `apply` 时解析一次；未配置 `--wan` 且检测不到默认路由时会打印警告并跳过受管 NAT。受管 NAT 的 masquerade 使用 `inet` 表，同时作用于 IPv4 与 IPv6（即 NAT66）。不同普通 LAN 之间默认不做隔离（forward 策略为 accept），除非接口被标记为 `isolate=true`。保护 WAN 侧入站由用户自行负责。
-- **IPv6**：接口上的所有非链路本地前缀（如 ULA 与 GUA）都会纳入源地址守卫与旁路。
+- **IPv6**：接口上的全部 IPv4 与非链路本地 IPv6 前缀（如 ULA 与 GUA）都会纳入多子网源地址守卫与旁路；若启用代理的 LAN 接口没有全局/ULA IPv6 地址，将丢弃该接口上的非链路本地 IPv6 转发以防止直连泄漏。
 
 ## 常见问题
 
