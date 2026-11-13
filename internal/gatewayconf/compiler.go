@@ -3,6 +3,7 @@ package gatewayconf
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -85,19 +86,6 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 
 	gwConfig := &config.GatewayConfig{
 		Mode: options.DefaultMode,
-	}
-	if options.UserConfig != nil {
-		orig := options.UserConfig.Gateway
-		gwConfig.TUNEnabled = orig.TUNEnabled
-		gwConfig.TProxyPort = orig.TProxyPort
-		gwConfig.BypassDNS = orig.BypassDNS
-		gwConfig.DNSListen = orig.DNSListen
-		gwConfig.DNSStrategy = orig.DNSStrategy
-		gwConfig.DNSServers = orig.DNSServers
-		gwConfig.DNSRecords = orig.DNSRecords
-		gwConfig.State = orig.State
-		gwConfig.BypassCountries = orig.BypassCountries
-		gwConfig.NATDisabled = orig.NATDisabled
 	}
 
 	// 1. Process Zones
@@ -371,6 +359,12 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 			}
 			gwConfig.LANEnabled = b
 			lanExplicit = &b
+		case "fail_open", "failopen":
+			b, err := parseBoolValue(v)
+			if err != nil {
+				return nil, &CompileError{Line: s.Line, Msg: fmt.Sprintf("invalid fail_open value %q: %v", v, err)}
+			}
+			gwConfig.FailOpen = b
 		case "lan_interfaces", "lan_interface":
 			parts := strings.Split(v, ",")
 			var ifaces []string
@@ -401,21 +395,23 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 		}
 	}
 
-	// 5. Process Rules
+	// 5. Process Rules (Two-pass compilation so zone/set declaration order never matters)
 	var rules []config.GatewayRule
-	addRule := func(r config.GatewayRule, line int) error {
+	addRule := func(r config.GatewayRule, line int, enableLAN bool) error {
 		norm, err := config.ValidateGatewayRule(r)
 		if err != nil {
 			return &CompileError{Line: line, Msg: err.Error()}
 		}
 		rules = append(rules, norm)
-		gwConfig.LANEnabled = true
-		if gwConfig.RelayAlias == "" && norm.Target != "direct" && norm.Target != "block" {
-			gwConfig.RelayAlias = norm.Target
+		if enableLAN {
+			gwConfig.LANEnabled = true
 		}
 		return nil
 	}
 
+	// Pass 1: Validate targets/isolate options, resolve local rule, zone defaults, and RelayAlias.
+	hasProxyZone := false
+	lanZoneDirect := false
 	for _, r := range ast.Rules {
 		if err := validateTarget(r.Target, r.Line); err != nil {
 			return nil, err
@@ -457,26 +453,17 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 		}
 
 		switch r.Kind {
-		case SubjectRule:
-			if err := addRule(config.GatewayRule{
-				MAC:       r.MAC,
-				IP:        r.IP,
-				Interface: r.Interface,
-				Target:    r.Target,
-			}, r.Line); err != nil {
-				return nil, err
-			}
-
 		case SubjectLocal:
-			if r.Target != "direct" && r.Target != "block" {
-				gwConfig.LocalEnabled = true
-				if gwConfig.RelayAlias == "" {
-					gwConfig.RelayAlias = r.Target
-				}
-			} else if r.Target == "direct" || r.Target == "block" {
-				gwConfig.LocalEnabled = false
+			if r.Target == "block" {
+				return nil, &CompileError{Line: r.Line, Msg: "local -> block is not supported (it would drop host/DNS traffic); use local -> direct to disable proxy for host traffic"}
 			}
-
+			if r.Target == "direct" {
+				gwConfig.LocalEnabled = false
+				gwConfig.LocalRelay = ""
+			} else {
+				gwConfig.LocalEnabled = true
+				gwConfig.LocalRelay = r.Target
+			}
 		case SubjectZone:
 			zoneName := strings.ToLower(r.SubjectValue)
 			z := zoneMap[zoneName]
@@ -486,21 +473,65 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 			if zoneName == "wan" {
 				return nil, &CompileError{Line: r.Line, Msg: "cannot apply gateway routing rule to WAN zone"}
 			}
-
-			if zoneName == "lan" {
-				if r.Target != "direct" && r.Target != "block" {
-					gwConfig.LANEnabled = true
-					if gwConfig.RelayAlias == "" {
-						gwConfig.RelayAlias = r.Target
-					}
-				} else if r.Target == "direct" {
-					gwConfig.LANEnabled = false
+			if r.Target != "direct" && r.Target != "block" {
+				hasProxyZone = true
+				gwConfig.LANEnabled = true
+				if gwConfig.ZoneDefaultRelays == nil {
+					gwConfig.ZoneDefaultRelays = make(map[string]string)
+				}
+				for _, iface := range z.Interfaces {
+					gwConfig.ZoneDefaultRelays[iface] = r.Target
+				}
+				if zoneName == "lan" && gwConfig.RelayAlias == "" {
+					gwConfig.RelayAlias = r.Target
+				}
+			} else if zoneName == "lan" && r.Target == "direct" {
+				lanZoneDirect = true
+				for _, iface := range z.Interfaces {
+					delete(gwConfig.ZoneDefaultRelays, iface)
 				}
 			}
+		}
+	}
+	if lanZoneDirect && !hasProxyZone && lanExplicit == nil {
+		gwConfig.LANEnabled = false
+	}
 
-			if r.Target == "direct" || r.Target == "block" || (gwConfig.RelayAlias != "" && r.Target != gwConfig.RelayAlias) {
+	devNames := make([]string, 0, len(devMap))
+	for name := range devMap {
+		devNames = append(devNames, name)
+	}
+	sort.Strings(devNames)
+
+	zoneNames := make([]string, 0, len(zoneMap))
+	for name := range zoneMap {
+		zoneNames = append(zoneNames, name)
+	}
+	sort.Strings(zoneNames)
+
+	// Pass 2: Expand zone overrides, device/group aliases, and client rules.
+	for _, r := range ast.Rules {
+		switch r.Kind {
+		case SubjectRule:
+			if err := addRule(config.GatewayRule{
+				MAC:       r.MAC,
+				IP:        r.IP,
+				Interface: r.Interface,
+				Target:    r.Target,
+			}, r.Line, true); err != nil {
+				return nil, err
+			}
+
+		case SubjectLocal:
+			// Already handled in Pass 1.
+
+		case SubjectZone:
+			zoneName := strings.ToLower(r.SubjectValue)
+			z := zoneMap[zoneName]
+			isLanDirect := zoneName == "lan" && r.Target == "direct"
+			if r.Target == "direct" || r.Target == "block" || gwConfig.RelayAlias == "" || r.Target != gwConfig.RelayAlias {
 				for _, iface := range z.Interfaces {
-					if err := addRule(config.GatewayRule{Interface: iface, Target: r.Target}, r.Line); err != nil {
+					if err := addRule(config.GatewayRule{Interface: iface, Target: r.Target}, r.Line, !isLanDirect); err != nil {
 						return nil, err
 					}
 				}
@@ -516,17 +547,17 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				ruleIface, _ = r.Option("iface")
 			}
 			if ruleIface != "" {
-				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line, true); err != nil {
 					return nil, err
 				}
 			} else if d.Zone != "" && zoneMap[strings.ToLower(d.Zone)] != nil && len(zoneMap[strings.ToLower(d.Zone)].Interfaces) > 0 {
 				for _, iface := range zoneMap[strings.ToLower(d.Zone)].Interfaces {
-					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: iface, Target: r.Target}, r.Line); err != nil {
+					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: iface, Target: r.Target}, r.Line, true); err != nil {
 						return nil, err
 					}
 				}
 			} else {
-				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: "", Target: r.Target}, r.Line); err != nil {
+				if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: "", Target: r.Target}, r.Line, true); err != nil {
 					return nil, err
 				}
 			}
@@ -547,17 +578,17 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				}
 				seenMACs[d.MAC] = true
 				if ruleIface != "" {
-					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: ruleIface, Target: r.Target}, r.Line, true); err != nil {
 						return nil, err
 					}
 				} else if d.Zone != "" && zoneMap[strings.ToLower(d.Zone)] != nil && len(zoneMap[strings.ToLower(d.Zone)].Interfaces) > 0 {
 					for _, iface := range zoneMap[strings.ToLower(d.Zone)].Interfaces {
-						if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: iface, Target: r.Target}, r.Line); err != nil {
+						if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: iface, Target: r.Target}, r.Line, true); err != nil {
 							return nil, err
 						}
 					}
 				} else {
-					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: "", Target: r.Target}, r.Line); err != nil {
+					if err := addRule(config.GatewayRule{MAC: d.MAC, Interface: "", Target: r.Target}, r.Line, true); err != nil {
 						return nil, err
 					}
 				}
@@ -568,21 +599,22 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 			if ruleIface == "" {
 				ruleIface, _ = r.Option("iface")
 			}
-			if err := addRule(config.GatewayRule{MAC: r.SubjectValue, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+			if err := addRule(config.GatewayRule{MAC: r.SubjectValue, Interface: ruleIface, Target: r.Target}, r.Line, true); err != nil {
 				return nil, err
 			}
 
 		case SubjectInterface:
 			macVal, _ := r.Option("mac")
-			if err := addRule(config.GatewayRule{Interface: r.SubjectValue, MAC: macVal, Target: r.Target}, r.Line); err != nil {
+			if err := addRule(config.GatewayRule{Interface: r.SubjectValue, MAC: macVal, Target: r.Target}, r.Line, true); err != nil {
 				return nil, err
 			}
 
 		case SubjectIP:
 			ipStr := r.SubjectValue
-			// 1. Exact match with a device IP
+			// 1. Exact match with a device IP (preserve IP constraint alongside MAC)
 			var matchedDev *DeviceDef
-			for _, d := range devMap {
+			for _, name := range devNames {
+				d := devMap[name]
 				if d.IP == ipStr {
 					matchedDev = d
 					break
@@ -594,17 +626,17 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 					ruleIface, _ = r.Option("iface")
 				}
 				if ruleIface != "" {
-					if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+					if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, IP: ipStr, Interface: ruleIface, Target: r.Target}, r.Line, true); err != nil {
 						return nil, err
 					}
 				} else if matchedDev.Zone != "" && zoneMap[strings.ToLower(matchedDev.Zone)] != nil && len(zoneMap[strings.ToLower(matchedDev.Zone)].Interfaces) > 0 {
 					for _, iface := range zoneMap[strings.ToLower(matchedDev.Zone)].Interfaces {
-						if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: iface, Target: r.Target}, r.Line); err != nil {
+						if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, IP: ipStr, Interface: iface, Target: r.Target}, r.Line, true); err != nil {
 							return nil, err
 						}
 					}
 				} else {
-					if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, Interface: "", Target: r.Target}, r.Line); err != nil {
+					if err := addRule(config.GatewayRule{MAC: matchedDev.MAC, IP: ipStr, Interface: "", Target: r.Target}, r.Line, true); err != nil {
 						return nil, err
 					}
 				}
@@ -618,9 +650,10 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 			}
 			if ruleIface == "" {
 				var matchedZone *ZoneDef
-				for _, z := range zoneMap {
+				for _, zName := range zoneNames {
+					z := zoneMap[zName]
 					for _, s := range z.Subnets {
-						if s == ipStr {
+						if ipOrCIDRInZoneSubnet(ipStr, s) {
 							matchedZone = z
 							break
 						}
@@ -631,7 +664,7 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 				}
 				if matchedZone != nil && len(matchedZone.Interfaces) > 0 {
 					for _, iface := range matchedZone.Interfaces {
-						if err := addRule(config.GatewayRule{IP: ipStr, Interface: iface, Target: r.Target}, r.Line); err != nil {
+						if err := addRule(config.GatewayRule{IP: ipStr, Interface: iface, Target: r.Target}, r.Line, true); err != nil {
 							return nil, err
 						}
 					}
@@ -640,7 +673,7 @@ func Compile(ast *ConfigAST, opts ...CompileOption) (*config.GatewayConfig, erro
 			}
 
 			// 3. Native L3 IP or CIDR rule (not bound to any device MAC)
-			if err := addRule(config.GatewayRule{IP: ipStr, Interface: ruleIface, Target: r.Target}, r.Line); err != nil {
+			if err := addRule(config.GatewayRule{IP: ipStr, Interface: ruleIface, Target: r.Target}, r.Line, true); err != nil {
 				return nil, err
 			}
 			continue
@@ -753,4 +786,23 @@ func parseBoolValue(v string) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid boolean value %q", v)
 	}
+}
+
+func ipOrCIDRInZoneSubnet(ipStr, subnetStr string) bool {
+	if ipStr == subnetStr {
+		return true
+	}
+	subPrefix, err := netip.ParsePrefix(subnetStr)
+	if err != nil {
+		return false
+	}
+	subPrefix = subPrefix.Masked()
+	if addr, err := netip.ParseAddr(ipStr); err == nil {
+		return subPrefix.Contains(addr)
+	}
+	if p, err := netip.ParsePrefix(ipStr); err == nil {
+		p = p.Masked()
+		return subPrefix.Bits() <= p.Bits() && subPrefix.Contains(p.Addr())
+	}
+	return false
 }

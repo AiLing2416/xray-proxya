@@ -227,10 +227,10 @@ device tv -> proxy
 zone guest -> direct
 mac 52:54:00:99:99:99 -> block
 `
-	// Delete device tv by MAC selector
-	res1 := DeleteRule(initial, config.GatewayRule{MAC: "52:54:00:11:22:33"})
+	// Delete device tv by strict MAC+Interface selector
+	res1 := DeleteRule(initial, config.GatewayRule{MAC: "52:54:00:11:22:33", Interface: "eth1"})
 	if strings.Contains(res1, "device tv -> proxy") {
-		t.Fatalf("expected device tv rule to be deleted by MAC selector:\n%s", res1)
+		t.Fatalf("expected device tv rule to be deleted by MAC+Interface selector:\n%s", res1)
 	}
 	if !strings.Contains(res1, "zone guest -> direct") {
 		t.Fatalf("zone rule should remain:\n%s", res1)
@@ -276,13 +276,81 @@ def group loop2 loop1
 group all -> proxy
 group loop1 -> direct
 `
-	// Delete nested group rule by member MAC
-	res := DeleteRule(initial, config.GatewayRule{MAC: "52:54:00:11:22:33"})
+	// Delete nested group rule by strict member MAC+Interface selector
+	res := DeleteRule(initial, config.GatewayRule{MAC: "52:54:00:11:22:33", Interface: "eth1"})
 	if strings.Contains(res, "group all -> proxy") {
-		t.Fatalf("expected nested group rule to be deleted by member MAC:\n%s", res)
+		t.Fatalf("expected nested group rule to be deleted by member MAC+Interface:\n%s", res)
 	}
 	// Circular group should not hang and loop1 should remain
 	if !strings.Contains(res, "group loop1 -> direct") {
 		t.Fatalf("loop1 should remain:\n%s", res)
+	}
+}
+
+func TestDeleteRule_StrictMatchingDoesNotWildcard(t *testing.T) {
+	initial := `def zone lan enp1s0
+def device dev1 mac=aa:bb:cc:dd:ee:01 zone=lan
+def device dev2 mac=aa:bb:cc:dd:ee:02 zone=lan
+def group vip dev1, dev2
+
+mac aa:bb:cc:dd:ee:01 -> block interface=enp1s0
+group vip -> direct
+`
+	// Empty Interface selector must not wildcard-delete interface-scoped MAC rule or multi-device group
+	res1 := DeleteRule(initial, config.GatewayRule{MAC: "aa:bb:cc:dd:ee:01"})
+	if !strings.Contains(res1, "mac aa:bb:cc:dd:ee:01 -> block interface=enp1s0") || !strings.Contains(res1, "group vip -> direct") {
+		t.Fatalf("strict DeleteRule unexpectedly deleted rules:\n%s", res1)
+	}
+
+	// Strict Interface-only selector must not delete MAC rules on that interface
+	res2 := DeleteRule(initial, config.GatewayRule{Interface: "enp1s0"})
+	if !strings.Contains(res2, "mac aa:bb:cc:dd:ee:01 -> block interface=enp1s0") || !strings.Contains(res2, "group vip -> direct") {
+		t.Fatalf("Interface-only DeleteRule unexpectedly deleted MAC/group rules:\n%s", res2)
+	}
+
+	// Exact MAC+Interface selector deletes only the MAC rule, preserving group vip
+	res3 := DeleteRule(initial, config.GatewayRule{MAC: "aa:bb:cc:dd:ee:01", Interface: "enp1s0"})
+	if strings.Contains(res3, "mac aa:bb:cc:dd:ee:01 -> block interface=enp1s0") {
+		t.Fatalf("expected exact MAC+Interface rule to be deleted:\n%s", res3)
+	}
+	if !strings.Contains(res3, "group vip -> direct") {
+		t.Fatalf("group vip must remain intact:\n%s", res3)
+	}
+}
+
+func TestUpdateGatewayContent_ClearsAndHandlesAliasesAndFailOpen(t *testing.T) {
+	initial := `def zone lan eth1
+set state proxy
+set wan_interface eth0
+set nat_disabled false
+set tproxy_port 7893
+set bypass_countries CN
+set dns_servers 1.1.1.1
+set fail_open false
+local -> direct
+`
+	gw := &config.GatewayConfig{
+		State:       "proxy",
+		Mode:        "tproxy",
+		WANInterface: "",
+		NATDisabled: true,
+		TProxyPort:  12345,
+		FailOpen:    true,
+	}
+	updated := updateGatewayContent(initial, gw)
+	if !strings.Contains(updated, "set wan_interface auto") {
+		t.Errorf("expected wan_interface alias updated to auto:\n%s", updated)
+	}
+	if !strings.Contains(updated, "set nat_disabled true") {
+		t.Errorf("expected nat_disabled inverted to true:\n%s", updated)
+	}
+	if !strings.Contains(updated, "set tproxy_port 12345") {
+		t.Errorf("expected tproxy_port updated to 12345:\n%s", updated)
+	}
+	if !strings.Contains(updated, "set fail_open true") {
+		t.Errorf("expected fail_open updated to true:\n%s", updated)
+	}
+	if strings.Contains(updated, "bypass_countries") || strings.Contains(updated, "dns_servers") {
+		t.Errorf("expected cleared bypass_countries and dns_servers to be removed:\n%s", updated)
 	}
 }

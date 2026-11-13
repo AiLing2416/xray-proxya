@@ -125,6 +125,10 @@ func Generate(gw *config.GatewayConfig) string {
 		b.WriteString("set tun true\n")
 		hasGlobal = true
 	}
+	if gw.FailOpen {
+		b.WriteString("set fail_open true\n")
+		hasGlobal = true
+	}
 	if gw.NATDisabled {
 		b.WriteString("set nat false\n")
 		hasGlobal = true
@@ -164,8 +168,9 @@ func Generate(gw *config.GatewayConfig) string {
 	b.WriteString("# ------------------------------------------------------------------------------\n")
 
 	// Local rule
-	if gw.LocalEnabled && gw.RelayAlias != "" {
-		b.WriteString(fmt.Sprintf("local -> %s\n", gw.RelayAlias))
+	localTarget := gw.EffectiveLocalRelay()
+	if gw.LocalEnabled && localTarget != "" {
+		b.WriteString(fmt.Sprintf("local -> %s\n", localTarget))
 	} else {
 		b.WriteString("local -> direct\n")
 	}

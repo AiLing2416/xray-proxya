@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"xray-proxya/internal/config"
 )
@@ -11,6 +12,8 @@ import (
 func updateGatewayContent(content string, gw *config.GatewayConfig) string {
 	if gw.State != "" {
 		content = UpdateSetIfExists(content, "state", gw.State)
+	} else {
+		content = DeleteSet(content, "state")
 	}
 	if gw.Mode != "" {
 		content = UpdateSetIfExists(content, "mode", gw.Mode)
@@ -19,6 +22,11 @@ func updateGatewayContent(content string, gw *config.GatewayConfig) string {
 		content = UpdateSetIfExists(content, "tun", "true")
 	} else {
 		content = UpdateSetIfExists(content, "tun", "false")
+	}
+	if gw.FailOpen {
+		content = UpdateSetIfExists(content, "fail_open", "true")
+	} else {
+		content = UpdateSetIfExists(content, "fail_open", "false")
 	}
 	if gw.LocalEnabled {
 		content = UpdateSetIfExists(content, "local", "true")
@@ -32,34 +40,57 @@ func updateGatewayContent(content string, gw *config.GatewayConfig) string {
 	}
 	if gw.NATDisabled {
 		content = UpdateSetIfExists(content, "nat", "false")
+		content = UpdateSetIfExists(content, "nat_disabled", "true")
 	} else {
 		content = UpdateSetIfExists(content, "nat", "true")
+		content = UpdateSetIfExists(content, "nat_disabled", "false")
+	}
+	if gw.TProxyPort > 0 {
+		content = UpdateSetIfExists(content, "tproxy_port", strconv.Itoa(gw.TProxyPort))
+	} else {
+		content = DeleteSet(content, "tproxy_port")
 	}
 	if gw.RelayAlias != "" {
 		content = UpdateSetIfExists(content, "relay", gw.RelayAlias)
+	} else {
+		content = DeleteSet(content, "relay")
 	}
 	if gw.WANInterface != "" {
 		content = UpdateSetIfExists(content, "wan", gw.WANInterface)
+	} else {
+		content = UpdateSetIfExists(content, "wan", "auto")
 	}
 	if len(gw.LANInterfaces) > 0 {
 		content = UpdateSetIfExists(content, "lan_interfaces", strings.Join(gw.LANInterfaces, ","))
 	} else if gw.LANInterface != "" {
 		content = UpdateSetIfExists(content, "lan_interfaces", gw.LANInterface)
+	} else {
+		content = DeleteSet(content, "lan_interfaces")
 	}
 	if len(gw.BypassCountries) > 0 {
 		content = UpdateSetIfExists(content, "bypass_countries", strings.Join(gw.BypassCountries, ","))
+	} else {
+		content = DeleteSet(content, "bypass_countries")
 	}
 	if len(gw.BypassDNS) > 0 {
 		content = UpdateSetIfExists(content, "bypass_dns", strings.Join(gw.BypassDNS, ","))
+	} else {
+		content = DeleteSet(content, "bypass_dns")
 	}
 	if gw.DNSListen != "" {
 		content = UpdateSetIfExists(content, "dns_listen", gw.DNSListen)
+	} else {
+		content = UpdateSetIfExists(content, "dns_listen", "off")
 	}
 	if gw.DNSStrategy != "" {
 		content = UpdateSetIfExists(content, "dns_strategy", gw.DNSStrategy)
+	} else {
+		content = DeleteSet(content, "dns_strategy")
 	}
 	if len(gw.DNSServers) > 0 {
 		content = UpdateSetIfExists(content, "dns_servers", strings.Join(gw.DNSServers, ", "))
+	} else {
+		content = DeleteSet(content, "dns_servers")
 	}
 
 	// Rules and DNS records are declarative and edited in gateway.conf

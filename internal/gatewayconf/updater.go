@@ -13,6 +13,37 @@ import (
 // prioritizing in-place replacement of existing directives, appending new items
 // at the end, and strictly preserving all comments, blank lines, and 'def' directives.
 
+func matchSetKey(field, targetKey string) bool {
+	f := strings.ToLower(strings.TrimSpace(field))
+	t := strings.ToLower(strings.TrimSpace(targetKey))
+	if f == t {
+		return true
+	}
+	canon := func(k string) string {
+		switch k {
+		case "tun", "tun_enabled":
+			return "tun"
+		case "wan", "wan_interface":
+			return "wan"
+		case "tproxy_port", "tproxy":
+			return "tproxy_port"
+		case "relay", "relay_alias":
+			return "relay"
+		case "local", "local_enabled":
+			return "local"
+		case "lan", "lan_enabled":
+			return "lan"
+		case "lan_interfaces", "lan_interface":
+			return "lan_interfaces"
+		case "fail_open", "failopen":
+			return "fail_open"
+		default:
+			return k
+		}
+	}
+	return canon(f) == canon(t)
+}
+
 // UpdateSet updates or appends a 'set <key> <value>' directive.
 func UpdateSet(content string, key string, value string) string {
 	if strings.ContainsAny(key, "\r\n") || strings.ContainsAny(value, "\r\n") {
@@ -20,6 +51,9 @@ func UpdateSet(content string, key string, value string) string {
 	}
 	targetKey := strings.ToLower(strings.TrimSpace(key))
 	targetVal := strings.TrimSpace(value)
+	if targetVal == "" {
+		return DeleteSet(content, targetKey)
+	}
 	newLine := fmt.Sprintf("set %s %s", targetKey, targetVal)
 
 	lines := splitLines(content)
@@ -34,9 +68,9 @@ func UpdateSet(content string, key string, value string) string {
 			continue
 		}
 		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && strings.EqualFold(fields[1], targetKey) {
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && matchSetKey(fields[1], targetKey) {
 			leadingWS := getLeadingWhitespace(line)
-			lines[i] = leadingWS + newLine
+			lines[i] = leadingWS + fmt.Sprintf("set %s %s", strings.ToLower(fields[1]), targetVal)
 			found = true
 			break
 		}
@@ -57,7 +91,9 @@ func UpdateSetIfExists(content string, key string, value string) string {
 	}
 	targetKey := strings.ToLower(strings.TrimSpace(key))
 	targetVal := strings.TrimSpace(value)
-	newLine := fmt.Sprintf("set %s %s", targetKey, targetVal)
+	if targetVal == "" {
+		return DeleteSet(content, targetKey)
+	}
 
 	lines := splitLines(content)
 	found := false
@@ -67,9 +103,9 @@ func UpdateSetIfExists(content string, key string, value string) string {
 			continue
 		}
 		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && strings.EqualFold(fields[1], targetKey) {
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && matchSetKey(fields[1], targetKey) {
 			leadingWS := getLeadingWhitespace(line)
-			lines[i] = leadingWS + newLine
+			lines[i] = leadingWS + fmt.Sprintf("set %s %s", strings.ToLower(fields[1]), targetVal)
 			found = true
 			break
 		}
@@ -92,7 +128,7 @@ func DeleteSet(content string, key string) string {
 			continue
 		}
 		fields := strings.Fields(trimmed)
-		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && strings.EqualFold(fields[1], targetKey) {
+		if len(fields) >= 2 && strings.EqualFold(fields[0], "set") && matchSetKey(fields[1], targetKey) {
 			continue
 		}
 		result = append(result, line)
@@ -507,11 +543,11 @@ func parseRuleMatchCriteria(line string, ctx *ruleParseContext) ([]config.Gatewa
 					ifaces = append(ifaces, ctx.zones[strings.ToLower(d.Zone)].Interfaces...)
 				}
 				if len(ifaces) == 0 {
-					return []config.GatewayRule{{MAC: d.MAC, IP: d.IP}}, true
+					return []config.GatewayRule{{MAC: d.MAC}}, true
 				}
 				var rules []config.GatewayRule
 				for _, iface := range ifaces {
-					rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP, Interface: iface})
+					rules = append(rules, config.GatewayRule{MAC: d.MAC, Interface: iface})
 				}
 				return rules, true
 			}
@@ -550,6 +586,9 @@ func parseRuleMatchCriteria(line string, ctx *ruleParseContext) ([]config.Gatewa
 				}
 
 				devs := resolveGroupDevs(grpName, make(map[string]bool))
+				if len(devs) > 1 {
+					return nil, true
+				}
 				var rules []config.GatewayRule
 				seenMACs := make(map[string]bool)
 				for _, d := range devs {
@@ -564,10 +603,10 @@ func parseRuleMatchCriteria(line string, ctx *ruleParseContext) ([]config.Gatewa
 						ifaces = append(ifaces, ctx.zones[strings.ToLower(d.Zone)].Interfaces...)
 					}
 					if len(ifaces) == 0 {
-						rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP})
+						rules = append(rules, config.GatewayRule{MAC: d.MAC})
 					} else {
 						for _, iface := range ifaces {
-							rules = append(rules, config.GatewayRule{MAC: d.MAC, IP: d.IP, Interface: iface})
+							rules = append(rules, config.GatewayRule{MAC: d.MAC, Interface: iface})
 						}
 					}
 				}
@@ -620,19 +659,9 @@ func extractMACOption(optsStr string) string {
 }
 
 func matchRuleEqual(criteria, selector config.GatewayRule) bool {
-	if selector.MAC == "" && selector.IP == "" && selector.Interface == "" {
-		return criteria.MAC == "" && criteria.IP == "" && criteria.Interface == ""
-	}
-	if selector.MAC != "" && !strings.EqualFold(criteria.MAC, selector.MAC) {
-		return false
-	}
-	if selector.IP != "" && !strings.EqualFold(criteria.IP, selector.IP) {
-		return false
-	}
-	if selector.Interface != "" && !strings.EqualFold(criteria.Interface, selector.Interface) {
-		return false
-	}
-	return true
+	return strings.EqualFold(criteria.MAC, selector.MAC) &&
+		strings.EqualFold(criteria.IP, selector.IP) &&
+		strings.EqualFold(criteria.Interface, selector.Interface)
 }
 
 func isDefLine(line string) bool {

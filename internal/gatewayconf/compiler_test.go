@@ -568,7 +568,7 @@ zone wan -> direct isolate=true
 	}
 }
 
-func TestCompile_PreservesTUNEnabled(t *testing.T) {
+func TestCompile_DoesNotResurrectRemovedSettings(t *testing.T) {
 	input := `
 def zone lan eth1
 local -> direct
@@ -581,9 +581,16 @@ local -> direct
 	userCfg := &config.UserConfig{
 		Role: config.RoleGateway,
 		Gateway: config.GatewayConfig{
-			Mode:       "tproxy",
-			TUNEnabled: true,
-			TProxyPort: 12345,
+			Mode:            "tproxy",
+			TUNEnabled:      true,
+			NATDisabled:     true,
+			State:           "forward-only",
+			TProxyPort:      12345,
+			BypassCountries: []string{"CN"},
+			BypassDNS:       []string{"1.1.1.1"},
+			DNSListen:       "127.0.0.1:5353",
+			DNSServers:      []string{"8.8.8.8"},
+			DNSRecords:      map[string][]string{"old.lan": {"10.0.0.2"}},
 		},
 	}
 
@@ -591,8 +598,11 @@ local -> direct
 	if err != nil {
 		t.Fatalf("compile error: %v", err)
 	}
-	if !compiled.TUNEnabled {
-		t.Fatal("expected TUNEnabled to be preserved as true")
+	if compiled.TUNEnabled || compiled.NATDisabled || compiled.State != "" || compiled.TProxyPort != 0 {
+		t.Fatalf("stale scalar settings resurrected from orig: %+v", compiled)
+	}
+	if len(compiled.BypassCountries) != 0 || len(compiled.BypassDNS) != 0 || compiled.DNSListen != "" || len(compiled.DNSServers) != 0 || len(compiled.DNSRecords) != 0 {
+		t.Fatalf("stale slice/map settings resurrected from orig: %+v", compiled)
 	}
 }
 
@@ -727,6 +737,91 @@ set relay invalid-relay
 	}
 	if !strings.Contains(err.Error(), "target relay \"invalid-relay\" does not exist") {
 		t.Errorf("unexpected error message: %v", err)
+	}
+}
+
+func TestCompile_ForbidsLocalBlock(t *testing.T) {
+	input := `
+def zone lan eth1
+local -> block
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	_, err = Compile(ast)
+	if err == nil || !strings.Contains(err.Error(), "local -> direct") {
+		t.Fatalf("expected compile error recommending local -> direct, got: %v", err)
+	}
+}
+
+func TestCompile_TwoPhaseOrderIndependenceAndLocalRelay(t *testing.T) {
+	input := `
+def zone wan eth0
+def zone lan eth1
+def zone guest eth2
+set fail_open true
+
+# Declared before zone lan -> r1
+zone guest -> r2
+local -> r3
+mac 52:54:00:11:22:33 -> r4 interface=eth1
+zone lan -> r1
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	gw, err := Compile(ast, WithValidRelays([]string{"r1", "r2", "r3", "r4"}))
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	if !gw.FailOpen {
+		t.Errorf("FailOpen = false, want true")
+	}
+	if gw.RelayAlias != "r1" {
+		t.Errorf("RelayAlias = %q, want r1", gw.RelayAlias)
+	}
+	if gw.LocalRelay != "r3" || !gw.LocalEnabled {
+		t.Errorf("LocalRelay=%q LocalEnabled=%v, want r3 / true", gw.LocalRelay, gw.LocalEnabled)
+	}
+	if gw.ZoneDefaultRelays["eth1"] != "r1" || gw.ZoneDefaultRelays["eth2"] != "r2" {
+		t.Errorf("ZoneDefaultRelays = %+v, want eth1:r1 eth2:r2", gw.ZoneDefaultRelays)
+	}
+	if !gw.LANEnabled {
+		t.Errorf("LANEnabled = false, want true")
+	}
+	if len(gw.Rules) != 2 {
+		t.Fatalf("expected 2 rules (guest zone override + mac rule), got %d: %+v", len(gw.Rules), gw.Rules)
+	}
+	if gw.Rules[0].Interface != "eth2" || gw.Rules[0].Target != "r2" {
+		t.Errorf("rules[0] = %+v, want eth2 -> r2", gw.Rules[0])
+	}
+}
+
+func TestCompile_SubjectIPKeepsIPAndSubnetCIDRContains(t *testing.T) {
+	input := `
+def zone lan eth1 subnet=10.10.0.0/16
+def device srv mac=52:54:00:aa:bb:cc ip=10.10.1.5 zone=lan
+ip 10.10.1.5 -> direct
+ip 10.10.2.0/24 -> block
+`
+	ast, err := Parse(input)
+	if err != nil {
+		t.Fatalf("parse error: %v", err)
+	}
+	gw, err := Compile(ast)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+	if len(gw.Rules) != 2 {
+		t.Fatalf("expected 2 rules, got %d", len(gw.Rules))
+	}
+	if gw.Rules[0].MAC != "52:54:00:aa:bb:cc" || gw.Rules[0].IP != "10.10.1.5" || gw.Rules[0].Interface != "eth1" {
+		t.Errorf("device IP rule lost IP/MAC/Interface: %+v", gw.Rules[0])
+	}
+	if gw.Rules[1].IP != "10.10.2.0/24" || gw.Rules[1].Interface != "eth1" || gw.Rules[1].Target != "block" {
+		t.Errorf("subnet containment rule mismatch: %+v", gw.Rules[1])
 	}
 }
 

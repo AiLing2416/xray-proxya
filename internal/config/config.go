@@ -530,26 +530,29 @@ type GatewayRule struct {
 }
 
 type GatewayConfig struct {
-	LocalEnabled    bool                `json:"local_enabled"`
-	LANEnabled      bool                `json:"lan_enabled"`
-	Mode            string              `json:"mode,omitempty"`        // legacy mode field, superseded by TProxy as default
-	TUNEnabled      bool                `json:"tun_enabled,omitempty"` // standalone pure TUN adapter (proxya-tun) without nftables rules
-	RelayAlias      string              `json:"relay_alias"`
-	LANInterface    string              `json:"lan_interface"`
-	LANInterfaces   []string            `json:"lan_interfaces,omitempty"`
-	WANInterface    string              `json:"wan_interface,omitempty"`
-	NATDisabled     bool                `json:"nat_disabled,omitempty"`
-	Rules           []GatewayRule       `json:"rules,omitempty"`
-	TProxyPort      int                 `json:"tproxy_port,omitempty"`
-	BypassDNS       []string            `json:"bypass_dns,omitempty"`
-	State           string              `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
-	BypassCountries []string            `json:"bypass_countries,omitempty"`
-	DNSListen       string              `json:"dns_listen,omitempty"`
-	DNSStrategy     string              `json:"dns_strategy,omitempty"`
-	DNSServers      []string            `json:"dns_servers,omitempty"`
-	DNSRecords      map[string][]string `json:"dns_records,omitempty"`
-	PortForwards    []PortForwardRule   `json:"port_forwards,omitempty"`
-	IsolatedInterfaces []string         `json:"isolated_interfaces,omitempty"`
+	LocalEnabled       bool                `json:"local_enabled"`
+	LANEnabled         bool                `json:"lan_enabled"`
+	Mode               string              `json:"mode,omitempty"`        // legacy mode field, superseded by TProxy as default
+	TUNEnabled         bool                `json:"tun_enabled,omitempty"` // standalone pure TUN adapter (proxya-tun) without nftables rules
+	FailOpen           bool                `json:"fail_open,omitempty"`   // allow traffic fallback if gateway startup/sync fails (default false = fail-closed)
+	RelayAlias         string              `json:"relay_alias"`
+	LocalRelay         string              `json:"local_relay,omitempty"`         // dedicated relay alias for local host traffic (local -> <relay>)
+	ZoneDefaultRelays  map[string]string   `json:"zone_default_relays,omitempty"` // per-interface default relay alias from zone rules
+	LANInterface       string              `json:"lan_interface"`
+	LANInterfaces      []string            `json:"lan_interfaces,omitempty"`
+	WANInterface       string              `json:"wan_interface,omitempty"`
+	NATDisabled        bool                `json:"nat_disabled,omitempty"`
+	Rules              []GatewayRule       `json:"rules,omitempty"`
+	TProxyPort         int                 `json:"tproxy_port,omitempty"`
+	BypassDNS          []string            `json:"bypass_dns,omitempty"`
+	State              string              `json:"state,omitempty"` // "disabled", "forward-only", "proxy"
+	BypassCountries    []string            `json:"bypass_countries,omitempty"`
+	DNSListen          string              `json:"dns_listen,omitempty"`
+	DNSStrategy        string              `json:"dns_strategy,omitempty"`
+	DNSServers         []string            `json:"dns_servers,omitempty"`
+	DNSRecords         map[string][]string `json:"dns_records,omitempty"`
+	PortForwards       []PortForwardRule   `json:"port_forwards,omitempty"`
+	IsolatedInterfaces []string            `json:"isolated_interfaces,omitempty"`
 }
 
 type PortForwardRule struct {
@@ -789,6 +792,49 @@ func (g GatewayConfig) EffectiveTProxyPort() int {
 		return g.TProxyPort
 	}
 	return DefaultTProxyPort
+}
+
+func isRelayAliasTarget(target string) bool {
+	t := strings.TrimSpace(target)
+	return t != "" && !strings.EqualFold(t, "direct") && !strings.EqualFold(t, "block")
+}
+
+// EffectiveRelayForInterface returns the effective proxy relay alias for traffic
+// arriving on iface: first checking ZoneDefaultRelays[iface], then interface-level
+// rules (Interface == iface, MAC == "", IP == ""), and finally falling back to
+// RelayAlias. Returns "" if no proxy relay is configured.
+func (g GatewayConfig) EffectiveRelayForInterface(iface string) string {
+	iface = strings.TrimSpace(iface)
+	if iface != "" {
+		if r, ok := g.ZoneDefaultRelays[iface]; ok && isRelayAliasTarget(r) {
+			return strings.TrimSpace(r)
+		}
+		for _, rule := range g.Rules {
+			if strings.TrimSpace(rule.Interface) == iface &&
+				strings.TrimSpace(rule.MAC) == "" &&
+				strings.TrimSpace(rule.IP) == "" &&
+				isRelayAliasTarget(rule.Target) {
+				return strings.TrimSpace(rule.Target)
+			}
+		}
+	}
+	if isRelayAliasTarget(g.RelayAlias) {
+		return strings.TrimSpace(g.RelayAlias)
+	}
+	return ""
+}
+
+// EffectiveLocalRelay returns the relay alias to use for local host outbound
+// traffic when LocalEnabled is true: LocalRelay if configured, otherwise RelayAlias.
+// Returns "" if neither names a proxy relay.
+func (g GatewayConfig) EffectiveLocalRelay() string {
+	if isRelayAliasTarget(g.LocalRelay) {
+		return strings.TrimSpace(g.LocalRelay)
+	}
+	if isRelayAliasTarget(g.RelayAlias) {
+		return strings.TrimSpace(g.RelayAlias)
+	}
+	return ""
 }
 
 // EffectiveLANInterfaces parses, trims, and deduplicates interfaces from both
@@ -1063,7 +1109,11 @@ func ValidateGatewayPorts(userCfg *UserConfig) error {
 	for i := range userCfg.CustomOutbounds {
 		co := &userCfg.CustomOutbounds[i]
 		claim(co.InternalProxyPort, "relay "+co.Alias+" proxy")
-		claim(co.InternalHttpPort, "relay "+co.Alias+" http")
+		if co.InternalHttpPort > 0 {
+			claim(co.InternalHttpPort, "relay "+co.Alias+" http")
+		} else if co.InternalProxyPort > 0 {
+			claim(co.InternalProxyPort+1, "relay "+co.Alias+" http")
+		}
 	}
 	if userCfg.Gateway.EffectiveMode() != "tun" {
 		var aliases []string
@@ -1115,12 +1165,37 @@ func ValidateGatewayPorts(userCfg *UserConfig) error {
 	return conflict
 }
 
-// ValidateGatewayRuleTargets verifies that every relay target referenced by a
-// gateway rule still names an existing, enabled custom outbound. It protects
-// against rules becoming dangling after a relay is deleted or disabled.
+// ValidateGatewayRuleTargets verifies that every relay target referenced by the
+// gateway configuration (default RelayAlias, LocalRelay, ZoneDefaultRelays, and Rules)
+// still names an existing, enabled custom outbound. It protects against rules becoming
+// dangling after a relay is deleted or disabled.
 func ValidateGatewayRuleTargets(userCfg *UserConfig) error {
 	if userCfg == nil {
 		return nil
+	}
+	if relay := strings.TrimSpace(userCfg.Gateway.RelayAlias); isRelayAliasTarget(relay) {
+		if !GatewayRelayActive(userCfg, relay) {
+			return fmt.Errorf("gateway default relay %q does not exist or is disabled; update relay or delete/enable the outbound first", relay)
+		}
+	}
+	if localRelay := strings.TrimSpace(userCfg.Gateway.LocalRelay); isRelayAliasTarget(localRelay) {
+		if !GatewayRelayActive(userCfg, localRelay) {
+			return fmt.Errorf("gateway local relay %q does not exist or is disabled; update local rule or enable the outbound first", localRelay)
+		}
+	}
+	if len(userCfg.Gateway.ZoneDefaultRelays) > 0 {
+		ifaces := make([]string, 0, len(userCfg.Gateway.ZoneDefaultRelays))
+		for iface := range userCfg.Gateway.ZoneDefaultRelays {
+			ifaces = append(ifaces, iface)
+		}
+		sort.Strings(ifaces)
+		for _, iface := range ifaces {
+			if zr := strings.TrimSpace(userCfg.Gateway.ZoneDefaultRelays[iface]); isRelayAliasTarget(zr) {
+				if !GatewayRelayActive(userCfg, zr) {
+					return fmt.Errorf("gateway zone %q default relay %q does not exist or is disabled; update zone rule or enable the outbound first", iface, zr)
+				}
+			}
+		}
 	}
 	for _, rule := range userCfg.Gateway.Rules {
 		target := strings.TrimSpace(rule.Target)
@@ -1149,7 +1224,7 @@ func GatewayRelayActive(userCfg *UserConfig, alias string) bool {
 
 // GatewayTProxyPorts returns a map of relay aliases to their allocated TProxy ports.
 // The default relay alias (if set and not direct/block) uses basePort (default DefaultTProxyPort).
-// Additional relay targets specified in Gateway.Rules receive basePort + len(ports).
+// Additional relay targets specified in LocalRelay, ZoneDefaultRelays, or Gateway.Rules receive basePort + len(ports).
 func GatewayTProxyPorts(userCfg *UserConfig) map[string]int {
 	ports := make(map[string]int)
 	if userCfg == nil {
@@ -1157,21 +1232,37 @@ func GatewayTProxyPorts(userCfg *UserConfig) map[string]int {
 	}
 	basePort := userCfg.Gateway.EffectiveTProxyPort()
 	defaultRelay := strings.TrimSpace(userCfg.Gateway.RelayAlias)
-	if defaultRelay != "" && !strings.EqualFold(defaultRelay, "direct") && !strings.EqualFold(defaultRelay, "block") {
-		ports[defaultRelay] = basePort
-	}
-	for _, rule := range userCfg.Gateway.Rules {
-		target := strings.TrimSpace(rule.Target)
-		if target == "" || strings.EqualFold(target, "direct") || strings.EqualFold(target, "block") {
-			continue
+	addTarget := func(target string) {
+		t := strings.TrimSpace(target)
+		if !isRelayAliasTarget(t) {
+			return
 		}
-		if _, exists := ports[target]; !exists {
-			if len(ports) == 0 && defaultRelay == "" {
-				ports[target] = basePort
+		if _, exists := ports[t]; !exists {
+			if len(ports) == 0 && !isRelayAliasTarget(defaultRelay) {
+				ports[t] = basePort
 			} else {
-				ports[target] = basePort + len(ports)
+				ports[t] = basePort + len(ports)
 			}
 		}
+	}
+	if isRelayAliasTarget(defaultRelay) {
+		ports[defaultRelay] = basePort
+	}
+	if localRelay := strings.TrimSpace(userCfg.Gateway.LocalRelay); isRelayAliasTarget(localRelay) {
+		addTarget(localRelay)
+	}
+	if len(userCfg.Gateway.ZoneDefaultRelays) > 0 {
+		ifaces := make([]string, 0, len(userCfg.Gateway.ZoneDefaultRelays))
+		for iface := range userCfg.Gateway.ZoneDefaultRelays {
+			ifaces = append(ifaces, iface)
+		}
+		sort.Strings(ifaces)
+		for _, iface := range ifaces {
+			addTarget(userCfg.Gateway.ZoneDefaultRelays[iface])
+		}
+	}
+	for _, rule := range userCfg.Gateway.Rules {
+		addTarget(rule.Target)
 	}
 	return ports
 }
@@ -2461,6 +2552,9 @@ func defaultGatewayConfLoader(staging bool, userCfg *UserConfig) (*GatewayConfig
 			case "tun", "tun_enabled":
 				vLow := strings.ToLower(v)
 				gw.TUNEnabled = (vLow == "true" || vLow == "1" || vLow == "yes" || vLow == "on")
+			case "fail_open":
+				vLow := strings.ToLower(v)
+				gw.FailOpen = (vLow == "true" || vLow == "1" || vLow == "yes" || vLow == "on")
 			case "nat":
 				vLow := strings.ToLower(v)
 				gw.NATDisabled = !(vLow == "true" || vLow == "1" || vLow == "yes" || vLow == "on")
