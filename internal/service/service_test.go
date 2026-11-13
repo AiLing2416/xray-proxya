@@ -343,6 +343,8 @@ func TestBuildOpenRCServiceContent(t *testing.T) {
 		`checkpath -f -m 0600 -o root:root "$output_log" "$error_log"`,
 		`output_log="/var/log/${RC_SVCNAME}.log"`,
 		`export XRAY_LOCATION_ASSET="/root/.local/share/xray-proxya/bin"`,
+		`stop_post()`,
+		`"$command" gateway system-down`,
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected OpenRC content to contain %q, but did not:\n%s", expected, content)
@@ -377,6 +379,7 @@ func TestBuildProcdServiceContent(t *testing.T) {
 		`procd_set_param env XRAY_LOCATION_ASSET=`,
 		`procd_set_param respawn 3600 2 5`,
 		`procd_set_param term_timeout 15`,
+		`"$PROG" gateway system-down`,
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected Procd content to contain %q, but did not:\n%s", expected, content)

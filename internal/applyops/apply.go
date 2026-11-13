@@ -234,7 +234,16 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 		impact.XrayConfigChanged = true
 		impact.SubListenerChanged = stagingCfg.AdminSub.Port > 0 || stagingCfg.SubPort > 0
 		impact.SubContentChanged = stagingCfg.AdminSub.Token != "" || len(stagingCfg.Subscriptions) > 0 || len(stagingCfg.Endpoints) > 0
-		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled || stagingCfg.Gateway.LANEnabled || stagingCfg.Gateway.DNSListen != "" || len(stagingCfg.Gateway.Rules) > 0 || len(stagingCfg.Gateway.EffectiveLANInterfaces()) > 0 || len(stagingCfg.Gateway.PortForwards) > 0 || len(stagingCfg.Gateway.EffectiveIsolatedInterfaces()) > 0
+		impact.GatewayRuntimeChanged = stagingCfg.Gateway.LocalEnabled ||
+			stagingCfg.Gateway.LANEnabled ||
+			stagingCfg.Gateway.DNSListen != "" ||
+			stagingCfg.Gateway.LocalRelay != "" ||
+			stagingCfg.Gateway.FailOpen ||
+			len(stagingCfg.Gateway.ZoneDefaultRelays) > 0 ||
+			len(stagingCfg.Gateway.Rules) > 0 ||
+			len(stagingCfg.Gateway.EffectiveLANInterfaces()) > 0 ||
+			len(stagingCfg.Gateway.PortForwards) > 0 ||
+			len(stagingCfg.Gateway.EffectiveIsolatedInterfaces()) > 0
 		impact.PathdConfigChanged = stagingCfg.Role == config.RoleServer && stagingCfg.Path.Token != ""
 		impact.ChangedSections = []string{"initial_apply"}
 		if len(stagingCfg.Endpoints) > 0 {
@@ -282,6 +291,9 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 	if customOutboundsAffectXray(activeCfg.CustomOutbounds, stagingCfg.CustomOutbounds) {
 		impact.XrayConfigChanged = true
 		impact.SubContentChanged = true
+		if stagingCfg.Role == config.RoleGateway || activeCfg.Role == config.RoleGateway {
+			impact.GatewayRuntimeChanged = true
+		}
 		mark("custom_outbounds")
 	}
 	if relayPathCredentialsChanged(activeCfg, stagingCfg) {
@@ -361,6 +373,9 @@ func BuildImpact(activeCfg, stagingCfg *config.UserConfig) Impact {
 
 	if activeCfg.Gateway.LocalEnabled != stagingCfg.Gateway.LocalEnabled ||
 		activeCfg.Gateway.LANEnabled != stagingCfg.Gateway.LANEnabled ||
+		activeCfg.Gateway.FailOpen != stagingCfg.Gateway.FailOpen ||
+		activeCfg.Gateway.LocalRelay != stagingCfg.Gateway.LocalRelay ||
+		!reflect.DeepEqual(activeCfg.Gateway.ZoneDefaultRelays, stagingCfg.Gateway.ZoneDefaultRelays) ||
 		activeCfg.Gateway.Mode != stagingCfg.Gateway.Mode ||
 		activeCfg.Gateway.EffectiveTUNEnabled() != stagingCfg.Gateway.EffectiveTUNEnabled() ||
 		activeCfg.Gateway.LANInterface != stagingCfg.Gateway.LANInterface ||

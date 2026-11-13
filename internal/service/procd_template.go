@@ -32,7 +32,7 @@ start_service() {
 }
 
 stop_service() {
-	return 0
+	"$PROG" gateway system-down >/dev/null 2>&1 || true
 }
 
 reload_service() {

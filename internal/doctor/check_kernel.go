@@ -3,6 +3,7 @@ package doctor
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"syscall"
 	"time"
@@ -84,6 +85,52 @@ func CheckKernel(ctx context.Context, role config.AppRole) []CheckResult {
 				Detail:      fmt.Sprintf("Optional modules missing: %s (only required if running as Gateway)", strings.Join(missing, ", ")),
 				Remediation: "Load missing modules if planning to use Gateway mode",
 				DurationMs:  time.Since(gwModStart).Milliseconds(),
+			})
+		}
+	}
+
+	// 1b. Check Gateway CLI tools (nft, ip)
+	toolsStart := time.Now()
+	if role == config.RoleServer {
+		results = append(results, CheckResult{
+			Category:   "Kernel Capabilities",
+			Name:       "Gateway CLI Tools (nft, ip)",
+			Status:     StatusSkip,
+			Detail:     "nft and iproute2 tools not required for Server role",
+			DurationMs: time.Since(toolsStart).Milliseconds(),
+		})
+	} else {
+		var missingTools []string
+		for _, tool := range []string{"nft", "ip"} {
+			if _, err := exec.LookPath(tool); err != nil {
+				missingTools = append(missingTools, tool)
+			}
+		}
+		if len(missingTools) == 0 {
+			results = append(results, CheckResult{
+				Category:   "Kernel Capabilities",
+				Name:       "Gateway CLI Tools (nft, ip)",
+				Status:     StatusPass,
+				Detail:     "Required gateway utilities available in PATH (nft, ip)",
+				DurationMs: time.Since(toolsStart).Milliseconds(),
+			})
+		} else if role == config.RoleGateway {
+			results = append(results, CheckResult{
+				Category:    "Kernel Capabilities",
+				Name:        "Gateway CLI Tools (nft, ip)",
+				Status:      StatusFail,
+				Detail:      fmt.Sprintf("Missing required gateway utilities in PATH: %s", strings.Join(missingTools, ", ")),
+				Remediation: "Install 'nftables' and 'iproute2' packages before enabling gateway",
+				DurationMs:  time.Since(toolsStart).Milliseconds(),
+			})
+		} else {
+			results = append(results, CheckResult{
+				Category:    "Kernel Capabilities",
+				Name:        "Gateway CLI Tools (nft, ip)",
+				Status:      StatusWarn,
+				Detail:      fmt.Sprintf("Optional gateway utilities missing in PATH: %s (required for Gateway role)", strings.Join(missingTools, ", ")),
+				Remediation: "Install 'nftables' and 'iproute2' packages if planning to use Gateway mode",
+				DurationMs:  time.Since(toolsStart).Milliseconds(),
 			})
 		}
 	}

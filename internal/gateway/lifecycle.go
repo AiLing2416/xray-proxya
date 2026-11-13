@@ -172,6 +172,43 @@ func convergeDownLocked() error {
 	return errors.Join(errs...)
 }
 
+func convergeFailClosedLocked(cfg *config.UserConfig) error {
+	var errs []error
+	markerReady := true
+	if err := config.SetGatewayTunDisabled(true); err != nil {
+		markerReady = false
+		errs = append(errs, fmt.Errorf("set gateway runtime state: %w", err))
+	}
+	if cfg != nil && cfg.Gateway.EffectiveMode() == "tproxy" {
+		lanIfaces := cfg.Gateway.EffectiveLANInterfaces()
+		lanCIDRs, lanIPv6CIDRs, _ := collectLANCIDRs(lanIfaces, false)
+		wanIface := resolveWANInterface(cfg)
+		if err := applyFailClosedFirewall(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface); err != nil {
+			errs = append(errs, fmt.Errorf("apply fail-closed firewall: %w", err))
+		}
+	}
+	if markerReady {
+		if err := xray.RestartXrayServiceWithoutHook(); err != nil {
+			errs = append(errs, fmt.Errorf("restart Xray service without gateway: %w", err))
+			if stopErr := xray.StopXrayService(); stopErr != nil {
+				errs = append(errs, fmt.Errorf("stop Xray service after failed restart: %w", stopErr))
+			}
+		}
+	} else {
+		if stopErr := xray.StopXrayService(); stopErr != nil {
+			errs = append(errs, fmt.Errorf("stop Xray service after failed state update: %w", stopErr))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func convergeOnErrorLocked(cfg *config.UserConfig) error {
+	if cfg != nil && !cfg.Gateway.FailOpen {
+		return convergeFailClosedLocked(cfg)
+	}
+	return convergeDownLocked()
+}
+
 // RestoreTunState reapplies all kernel state that is intentionally outside
 // Xray's config: interface addresses, forwarding/rp_filter sysctls, policy
 // routing, and nftables. It is a no-op when the active gateway is down.
@@ -219,18 +256,21 @@ func restoreTunStateLocked(cfg *config.UserConfig) error {
 	}
 	if cfg.Gateway.EffectiveTUNEnabled() {
 		if err := waitForInterface(tunName, true); err != nil {
-			return err
+			return errors.Join(err, convergeOnErrorLocked(cfg))
 		}
 	}
 	if pathTunnelEnabled(cfg) {
 		if err := waitForInterface(pathTunName, true); err != nil {
-			return err
+			return errors.Join(err, convergeOnErrorLocked(cfg))
 		}
 	}
 	if err := ApplyFirewall(cfg); err != nil {
-		return fmt.Errorf("reapply gateway runtime state: %w", err)
+		return errors.Join(fmt.Errorf("reapply gateway runtime state: %w", err), convergeOnErrorLocked(cfg))
 	}
-	return waitForReady(cfg)
+	if err := waitForReady(cfg); err != nil {
+		return errors.Join(err, convergeOnErrorLocked(cfg))
+	}
+	return nil
 }
 
 func waitForReady(cfg *config.UserConfig) error {
@@ -268,22 +308,19 @@ func upLocked(cfg *config.UserConfig) error {
 	if !WantsTunnel(cfg) {
 		return fmt.Errorf("gateway proxy is not enabled in active config; set state=proxy and enable local or LAN first")
 	}
-	// Clean up existing kernel firewall/routing rules before restarting Xray
-	// once with TProxy enabled. Avoid calling convergeDownLocked() here so we
-	// do not trigger two back-to-back service restarts within milliseconds.
-	if err := CleanupFirewall(); err != nil {
-		return fmt.Errorf("prepare clean gateway state: %w", err)
-	}
+	// Keep existing firewall rules in place while Xray restarts so there is no
+	// unprotected direct-traffic window; ApplyFirewall replaces rules atomically
+	// once the new listeners are ready.
 	if err := restartWithTunDisabled(false); err != nil {
-		return errors.Join(err, convergeDownLocked())
+		return errors.Join(err, convergeOnErrorLocked(cfg))
 	}
 	// Firewall and policy routing are owned by this explicit root operation,
 	// rather than the long-running Xray service domain.
 	if err := ApplyFirewall(cfg); err != nil {
-		return errors.Join(fmt.Errorf("apply gateway firewall: %w", err), convergeDownLocked())
+		return errors.Join(fmt.Errorf("apply gateway firewall: %w", err), convergeOnErrorLocked(cfg))
 	}
 	if err := waitForReady(cfg); err != nil {
-		return errors.Join(err, convergeDownLocked())
+		return errors.Join(err, convergeOnErrorLocked(cfg))
 	}
 	return nil
 }

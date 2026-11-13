@@ -160,3 +160,79 @@ func TestPipelineRollbackOnFailureAfterCommit(t *testing.T) {
 	}
 }
 
+func TestPipelineRollbackRestoresGatewayStagingAndTunMarker(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", tempDir)
+
+	activePath := config.GetConfigPath()
+	stagingPath := config.GetConfigPathEx(true)
+	gwActivePath := config.GetGatewayConfPath()
+	gwStagingPath := config.GetGatewayConfPathEx(true)
+
+	origActive := []byte(`{"role":"gateway","uuid":"orig-active"}`)
+	origStaging := []byte(`{"role":"gateway","uuid":"orig-staging"}`)
+	origGwActive := []byte("set relay r1\n")
+	origGwStaging := []byte("set relay r2\n")
+
+	if err := os.WriteFile(activePath, []byte(`{"role":"gateway","uuid":"committed"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stagingPath, []byte(`{"role":"gateway","uuid":"stale"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(gwActivePath, []byte("set relay r2\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = config.SetGatewayTunDisabled(true)
+
+	runtimeRolledBack := false
+	origRollback := rollbackRuntimeFn
+	rollbackRuntimeFn = func(actx *ApplyContext) {
+		runtimeRolledBack = true
+	}
+	defer func() { rollbackRuntimeFn = origRollback }()
+
+	pipeline := &ApplyPipeline{
+		steps: []ApplyStep{
+			&mockStep{name: "step-fail", shouldRun: true, runErr: errors.New("sync failed")},
+		},
+	}
+
+	actx := &ApplyContext{
+		Committed:                true,
+		ActiveBackupRaw:          origActive,
+		StagingBackupRaw:         origStaging,
+		GatewayActiveBackupRaw:   origGwActive,
+		GatewayActiveExisted:     true,
+		GatewayStagingBackupRaw:  origGwStaging,
+		GatewayStagingExisted:    true,
+		GatewayTunDisabledBefore: false,
+		GatewayTunDisabledKnown:  true,
+	}
+
+	if err := pipeline.Execute(actx); err == nil {
+		t.Fatal("expected pipeline error, got nil")
+	}
+	if !runtimeRolledBack {
+		t.Fatal("expected rollbackRuntimeFn to be invoked")
+	}
+
+	gotGwActive, err := os.ReadFile(gwActivePath)
+	if err != nil || string(gotGwActive) != string(origGwActive) {
+		t.Fatalf("gateway.conf not rolled back: err=%v, got=%q", err, string(gotGwActive))
+	}
+	if info, err := os.Stat(gwActivePath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("gateway.conf mode = %v (err=%v), want 0600", info.Mode().Perm(), err)
+	}
+	gotGwStaging, err := os.ReadFile(gwStagingPath)
+	if err != nil || string(gotGwStaging) != string(origGwStaging) {
+		t.Fatalf("gateway.conf.staging not rolled back: err=%v, got=%q", err, string(gotGwStaging))
+	}
+	if info, err := os.Stat(gwStagingPath); err != nil || info.Mode().Perm() != 0600 {
+		t.Fatalf("gateway.conf.staging mode = %v (err=%v), want 0600", info.Mode().Perm(), err)
+	}
+	if config.GatewayTunDisabled() {
+		t.Fatal("expected gateway.tun.disabled marker to be restored to false")
+	}
+}
+

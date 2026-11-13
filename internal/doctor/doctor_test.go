@@ -186,3 +186,35 @@ func TestCheckPortConflicts_Hysteria2AndTCP443(t *testing.T) {
 		t.Errorf("missing UDP 443 check in results: %+v", results)
 	}
 }
+
+func TestCheckKernel_GatewayToolsLookPath(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	gwResults := CheckKernel(context.Background(), config.RoleGateway)
+	foundFail := false
+	for _, r := range gwResults {
+		if r.Name == "Gateway CLI Tools (nft, ip)" {
+			if r.Status != StatusFail {
+				t.Errorf("expected StatusFail for missing nft/ip in Gateway role, got %s (%s)", r.Status, r.Detail)
+			}
+			foundFail = true
+		}
+	}
+	if !foundFail {
+		t.Fatalf("Gateway CLI Tools check result not found")
+	}
+
+	srvResults := CheckKernel(context.Background(), config.RoleServer)
+	foundSkip := false
+	for _, r := range srvResults {
+		if r.Name == "Gateway CLI Tools (nft, ip)" {
+			if r.Status != StatusSkip {
+				t.Errorf("expected StatusSkip for Server role, got %s", r.Status)
+			}
+			foundSkip = true
+		}
+	}
+	if !foundSkip {
+		t.Fatalf("Server CLI Tools skip result not found")
+	}
+}

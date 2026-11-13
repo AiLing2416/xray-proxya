@@ -39,6 +39,10 @@ start_pre() {
 	checkpath -d -m 0700 -o root:root "%s"
 	checkpath -d -m 0700 -o root:root "%s"
 }
+
+stop_post() {
+	"$command" gateway system-down >/dev/null 2>&1 || true
+}
 `, binPath, workDir, assetDir, workDir, assetDir)
 }
 

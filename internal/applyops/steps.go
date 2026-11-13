@@ -123,7 +123,14 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 	}
 	if data, err := os.ReadFile(config.GetGatewayConfPath()); err == nil {
 		ctx.GatewayActiveBackupRaw = data
+		ctx.GatewayActiveExisted = true
 	}
+	if data, err := os.ReadFile(config.GetGatewayConfPathEx(true)); err == nil {
+		ctx.GatewayStagingBackupRaw = data
+		ctx.GatewayStagingExisted = true
+	}
+	ctx.GatewayTunDisabledBefore = config.GatewayTunDisabled()
+	ctx.GatewayTunDisabledKnown = true
 
 	if err := config.CommitStaging(); err != nil {
 		return fmt.Errorf("failed to commit: %w", err)

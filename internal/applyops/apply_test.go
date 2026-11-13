@@ -601,3 +601,48 @@ local -> direct
 	}
 }
 
+func TestBuildImpact_GatewayCustomOutboundsLocalRelayZoneDefaultsFailOpen(t *testing.T) {
+	makeBase := func() *config.UserConfig {
+		return &config.UserConfig{
+			Role: config.RoleGateway,
+			CustomOutbounds: []config.CustomOutbound{
+				{Alias: "r1", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+			},
+			Gateway: config.GatewayConfig{
+				Mode:       "tproxy",
+				State:      "proxy",
+				RelayAlias: "r1",
+			},
+		}
+	}
+	base := makeBase()
+
+	stgOutbound := makeBase()
+	stgOutbound.CustomOutbounds[0].Config = map[string]interface{}{"protocol": "blackhole"}
+	impOut := BuildImpact(base, stgOutbound)
+	if !impOut.XrayConfigChanged || !impOut.GatewayRuntimeChanged {
+		t.Fatalf("custom outbound change on gateway must set XrayConfigChanged and GatewayRuntimeChanged: %+v", impOut)
+	}
+
+	stgLocalRelay := makeBase()
+	stgLocalRelay.Gateway.LocalRelay = "r1"
+	impLR := BuildImpact(base, stgLocalRelay)
+	if !impLR.XrayConfigChanged || !impLR.GatewayRuntimeChanged {
+		t.Fatalf("LocalRelay change must set XrayConfigChanged and GatewayRuntimeChanged: %+v", impLR)
+	}
+
+	stgZone := makeBase()
+	stgZone.Gateway.ZoneDefaultRelays = map[string]string{"eth1": "r1"}
+	impZone := BuildImpact(base, stgZone)
+	if !impZone.XrayConfigChanged || !impZone.GatewayRuntimeChanged {
+		t.Fatalf("ZoneDefaultRelays change must set XrayConfigChanged and GatewayRuntimeChanged: %+v", impZone)
+	}
+
+	stgFailOpen := makeBase()
+	stgFailOpen.Gateway.FailOpen = true
+	impFO := BuildImpact(base, stgFailOpen)
+	if !impFO.GatewayRuntimeChanged {
+		t.Fatalf("FailOpen change must set GatewayRuntimeChanged: %+v", impFO)
+	}
+}
+
