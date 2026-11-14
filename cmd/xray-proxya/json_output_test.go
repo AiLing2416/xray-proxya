@@ -1,12 +1,16 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func TestStatusJSONOutput(t *testing.T) {
@@ -266,6 +270,42 @@ func TestProxyListJSONOutput(t *testing.T) {
 	}
 	if proxies2[1].Applied {
 		t.Errorf("expected applied false for pending item")
+	}
+}
+
+func TestRootExecute_JSONErrorContract(t *testing.T) {
+	r := &cobra.Command{
+		Use:           "test-root",
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+	sub := &cobra.Command{
+		Use: "check",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return errors.New("❌ Error: dial timeout")
+		},
+	}
+	sub.Flags().Bool("json", false, "json output")
+	r.AddCommand(sub)
+
+	var stdout, stderr bytes.Buffer
+	code := executeRoot(r, []string{"check", "--json"}, &stdout, &stderr)
+	if code != 1 {
+		t.Fatalf("expected exit code 1, got %d", code)
+	}
+	if stderr.Len() != 0 {
+		t.Errorf("expected empty stderr in --json mode, got %q", stderr.String())
+	}
+
+	var payload struct {
+		Exit  int    `json:"exit"`
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &payload); err != nil {
+		t.Fatalf("expected valid JSON error block on stdout, got %q (err: %v)", stdout.String(), err)
+	}
+	if payload.Exit != 1 || payload.Error != "dial timeout" {
+		t.Errorf("unexpected JSON error payload: %+v", payload)
 	}
 }
 

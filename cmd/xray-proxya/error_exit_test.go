@@ -1,9 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func TestErrorExitCodes(t *testing.T) {
@@ -108,4 +113,60 @@ func TestErrorExitCodes(t *testing.T) {
 	if err := configUpgradeCmd.RunE(configUpgradeCmd, nil); err == nil {
 		t.Fatalf("expected configUpgradeCmd to return error when config missing")
 	}
+}
+
+func TestRootExecute_TextErrorAndSilentError(t *testing.T) {
+	newTestRoot := func(runErr error, preOut string) *cobra.Command {
+		r := &cobra.Command{
+			Use:           "test-root",
+			SilenceUsage:  true,
+			SilenceErrors: true,
+		}
+		sub := &cobra.Command{
+			Use: "fail",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if preOut != "" {
+					cmd.Print(preOut)
+				}
+				return runErr
+			},
+		}
+		sub.Flags().Bool("json", false, "json output")
+		r.AddCommand(sub)
+		return r
+	}
+
+	t.Run("text_error_cleans_prefixes", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		r := newTestRoot(errors.New("❌ Error: ✖ something failed"), "")
+		code := executeRoot(r, []string{"fail"}, &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+		if stdout.Len() != 0 {
+			t.Errorf("expected empty stdout, got %q", stdout.String())
+		}
+		gotErr := stderr.String()
+		if !strings.Contains(gotErr, "✖ Error: something failed") {
+			t.Errorf("expected unified error prefix, got %q", gotErr)
+		}
+		if strings.Contains(gotErr, "❌") {
+			t.Errorf("unexpected ❌ in stderr: %q", gotErr)
+		}
+	})
+
+	t.Run("silent_error_suppresses_stderr", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		r := newTestRoot(&SilentError{Err: errors.New("already printed")}, `{"ok":false}`+"\n")
+		code := executeRoot(r, []string{"fail", "--json"}, &stdout, &stderr)
+		if code != 1 {
+			t.Fatalf("expected exit code 1, got %d", code)
+		}
+		if stderr.Len() != 0 {
+			t.Errorf("expected empty stderr on SilentError, got %q", stderr.String())
+		}
+		if stdout.String() != "{\"ok\":false}\n" {
+			t.Errorf("expected only pre-printed JSON on stdout, got %q", stdout.String())
+		}
+	})
 }

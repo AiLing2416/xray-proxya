@@ -1,7 +1,10 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"strings"
 	"xray-proxya/internal/buildinfo"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 
 	"github.com/spf13/cobra"
@@ -26,14 +30,115 @@ var rootCmd = &cobra.Command{
 	Long:              "Xray-Proxya is a Go-based successor to the archive bash scripts.\nIt features a staging-based configuration system with mandatory normalization.",
 }
 
+// SilentError wraps an error that has already been reported to output
+// (e.g., structured JSON diagnostics) and should exit non-zero without extra text.
+type SilentError struct {
+	Err error
+}
+
+func (e *SilentError) Error() string {
+	if e == nil || e.Err == nil {
+		return ""
+	}
+	return e.Err.Error()
+}
+
+func (e *SilentError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+// Silent marks this error as already reported.
+func (e *SilentError) Silent() bool {
+	return true
+}
+
+func isSilentError(err error) bool {
+	var silent interface{ Silent() bool }
+	return errors.As(err, &silent) && silent.Silent()
+}
+
+func isJSONMode(cmd *cobra.Command, args []string) bool {
+	if cmd != nil {
+		if f := cmd.Flags().Lookup("json"); f != nil && f.Value.String() == "true" {
+			return true
+		}
+	}
+	for _, arg := range args {
+		if arg == "--json" || strings.HasPrefix(arg, "--json=") && strings.TrimPrefix(arg, "--json=") != "false" {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanErrorText(msg string) string {
+	msg = strings.TrimSpace(msg)
+	prefixes := []string{
+		"❌", "✖", "⚠️", "⚠", "✅", "✔", "ℹ️", "ℹ", "▲", "🚀", "🔄", "🔍",
+		"Error:", "error:",
+	}
+	for {
+		matched := false
+		for _, p := range prefixes {
+			if strings.HasPrefix(msg, p) {
+				msg = strings.TrimSpace(strings.TrimPrefix(msg, p))
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			break
+		}
+	}
+	return msg
+}
+
+func executeRoot(root *cobra.Command, args []string, stdout, stderr io.Writer) int {
+	root.SetOut(stdout)
+	root.SetErr(stderr)
+	root.SetArgs(args)
+
+	cmd, err := root.ExecuteC()
+	if err == nil {
+		return 0
+	}
+
+	if isSilentError(err) {
+		return 1
+	}
+
+	clean := cleanErrorText(err.Error())
+	if isJSONMode(cmd, args) {
+		payload := struct {
+			Exit  int    `json:"exit"`
+			Error string `json:"error"`
+		}{
+			Exit:  1,
+			Error: clean,
+		}
+		if b, mErr := json.Marshal(payload); mErr == nil {
+			fmt.Fprintln(stdout, string(b))
+		} else {
+			fmt.Fprintf(stdout, `{"exit":1,"error":%q}`+"\n", clean)
+		}
+		return 1
+	}
+
+	fmt.Fprintf(stderr, "%s Error: %s\n", ui.Red(ui.SymCross, ui.IsColorEnabled()), clean)
+	return 1
+}
+
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if code := executeRoot(rootCmd, os.Args[1:], os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
 	}
 }
 
 func init() {
+	rootCmd.PersistentFlags().BoolP("help", "", false, "Help for this command")
 	rootCmd.Version = Version
 	rootCmd.SetVersionTemplate("Xray-Proxya v{{.Version}}\n")
 	versionCmd.Flags().BoolVarP(&versionVerbose, "verbose", "V", false, "Show detailed runtime and build environment info")
