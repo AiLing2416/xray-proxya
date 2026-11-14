@@ -17,9 +17,7 @@ var (
 var applyCmd = &cobra.Command{
 	Use:   "apply",
 	Short: "Validate and commit staged changes with selective restart",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = cmd.RunE(cmd, args)
-	},
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		lines, err := applyops.ApplyPending(applyops.Options{
 			Force:  forceApply,
@@ -40,9 +38,7 @@ var applyCmd = &cobra.Command{
 var undoCmd = &cobra.Command{
 	Use:   "undo",
 	Short: "Discard all pending changes in STAGING",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = cmd.RunE(cmd, args)
-	},
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := applyops.ClearPending(); err != nil {
 			return fmt.Errorf("❌ Failed: %w", err)

@@ -152,10 +152,10 @@ func TestRelayRemoveAliases(t *testing.T) {
 		}
 	}
 
-	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-rem"})
-	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-rm"})
-	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-del"})
-	removeOutboundCmd.Run(removeOutboundCmd, []string{"r-delete"})
+	_ = removeOutboundCmd.RunE(removeOutboundCmd, []string{"r-rem"})
+	_ = removeOutboundCmd.RunE(removeOutboundCmd, []string{"r-rm"})
+	_ = removeOutboundCmd.RunE(removeOutboundCmd, []string{"r-del"})
+	_ = removeOutboundCmd.RunE(removeOutboundCmd, []string{"r-delete"})
 
 	stagedFinal, _ := config.LoadConfigEx(true)
 	if len(stagedFinal.CustomOutbounds) != 0 {

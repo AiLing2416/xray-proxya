@@ -215,6 +215,7 @@ var endpointListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List all configured endpoints",
+	Args:    cobra.NoArgs,
 	RunE:    runEndpointList,
 }
 
@@ -472,7 +473,7 @@ func runEndpointRemove(cmd *cobra.Command, args []string) error {
 }
 
 var endpointRemoveCmd = &cobra.Command{
-	Use:               "remove [name]",
+	Use:               "remove <name>",
 	Aliases:           []string{"rm", "del", "delete"},
 	Short:             "Remove an endpoint from STAGING",
 	Args:              cobra.ExactArgs(1),
@@ -902,6 +903,7 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 var endpointRotateProfilesCmd = &cobra.Command{
 	Use:   "rotate-profiles",
 	Short: "Display available dynamic-v6 rotation profiles and behaviors",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		table := ui.NewTable("PROFILE", "SCOPE", "ACTIVE IPS", "ROTATION TRIGGER", "RETIREMENT", "BEST FOR")
 		table.SetAlignment(2, ui.AlignCenter)
@@ -936,7 +938,7 @@ var endpointRotateCmd = &cobra.Command{
 }
 
 func init() {
-	endpointListCmd.Flags().BoolVarP(&endpointListJSON, "json", "j", false, "Output in JSON format")
+	endpointListCmd.Flags().BoolVar(&endpointListJSON, "json", false, "Output in JSON format")
 
 	endpointShowCmd.Flags().BoolVar(&endpointShowJSON, "json", false, "Output in JSON format")
 

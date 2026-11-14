@@ -39,6 +39,7 @@ var tuneCmd = &cobra.Command{
 var tuneShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show current kernel tuning state and runtime session info",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		data := tune.ShowDataForKeys()
 		fmt.Printf("Kernel: %s\n", data.KernelVersion)
@@ -72,8 +73,10 @@ var tuneShowCmd = &cobra.Command{
 }
 
 var tuneProfilesCmd = &cobra.Command{
-	Use:   "profiles",
-	Short: "List available kernel tuning profiles",
+	Use:     "profiles",
+	Aliases: []string{"list", "ls"},
+	Short:   "List available kernel tuning profiles",
+	Args:    cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		t := ui.NewTable("PROFILE", "DESCRIPTION")
 		for _, profile := range tune.Profiles() {
@@ -86,7 +89,7 @@ var tuneProfilesCmd = &cobra.Command{
 }
 
 var tuneDiffCmd = &cobra.Command{
-	Use:   "diff [profile]",
+	Use:   "diff <profile>",
 	Short: "Show the current-vs-target diff for a tuning profile",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -116,7 +119,7 @@ var tuneDiffCmd = &cobra.Command{
 }
 
 var tuneUseCmd = &cobra.Command{
-	Use:   "use [profile]",
+	Use:   "use <profile>",
 	Short: "Apply a kernel tuning profile for the current runtime",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -189,18 +192,16 @@ func runTuneVerify(cmd *cobra.Command, args []string) error {
 }
 
 var tuneVerifyCmd = &cobra.Command{
-	Use:   "verify [profile]",
+	Use:   "verify <profile>",
 	Short: "Verify whether current kernel values match a tuning profile",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runTuneVerify(cmd, args)
-	},
-	RunE: runTuneVerify,
+	RunE:  runTuneVerify,
 }
 
 var tuneRollbackCmd = &cobra.Command{
 	Use:   "rollback",
 	Short: "Rollback the last tune apply session using recorded old values",
+	Args:  cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		if !requireRoot() {
 			return

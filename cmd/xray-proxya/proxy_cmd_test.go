@@ -56,7 +56,7 @@ func TestProxySetAndUnsetCmd(t *testing.T) {
 		proxyListenIP = ""
 	}()
 
-	proxySetCmd.Run(proxySetCmd, []string{"relay-test"})
+	_ = proxySetCmd.RunE(proxySetCmd, []string{"relay-test"})
 
 	// Check staging config after set
 	cfgAfterSet, err := config.LoadConfigEx(true)
@@ -78,7 +78,7 @@ func TestProxySetAndUnsetCmd(t *testing.T) {
 	}
 
 	// 2. Run "unset" command
-	proxyUnsetCmd.Run(proxyUnsetCmd, []string{"relay-test"})
+	_ = proxyUnsetCmd.RunE(proxyUnsetCmd, []string{"relay-test"})
 
 	// Check staging config after unset
 	cfgAfterUnset, err := config.LoadConfigEx(true)

@@ -82,7 +82,7 @@ func systemctlWrapper(action string) *cobra.Command {
 	var now bool
 	command := &cobra.Command{
 		Use:   action + " [unit-name]",
-		Short: "Run systemctl " + action + " for a managed unit",
+		Short: "Run service " + action + " for a managed unit",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if os.Geteuid() == 0 {
@@ -148,6 +148,7 @@ func systemctlWrapper(action string) *cobra.Command {
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Write managed service files without enabling or starting them",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := service.Install(nil); err != nil {
 			return err
@@ -167,6 +168,7 @@ var serviceInstallCmd = &cobra.Command{
 var serviceUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Remove stopped managed service files without disabling them",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := service.Uninstall(); err != nil {
 			return err

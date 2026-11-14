@@ -260,10 +260,8 @@ var proxyListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List all configured local SOCKS/HTTP proxies",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runProxyList(cmd, args)
-	},
-	RunE: runProxyList,
+	Args:    cobra.NoArgs,
+	RunE:    runProxyList,
 }
 
 func checkProxyPortConflict(cfg *config.UserConfig, alias string, listenIP string, socksPort, httpPort int) error {
@@ -529,7 +527,7 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 }
 
 var proxySetCmd = &cobra.Command{
-	Use:   "set [alias]",
+	Use:   "set <alias>",
 	Short: "Configure local SOCKS/HTTP proxy for a relay in STAGING",
 	Example: `  # Configure SOCKS (10808) and HTTP (10809) for localhost
   xray-proxya proxy set node-us -p 10808
@@ -538,10 +536,7 @@ var proxySetCmd = &cobra.Command{
   xray-proxya proxy set node-hk --socks-port 10810 --http-port 10811 --listen 0.0.0.0`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runProxySet(cmd, args)
-	},
-	RunE: runProxySet,
+	RunE:              runProxySet,
 }
 
 func runProxyUnset(cmd *cobra.Command, args []string) error {
@@ -571,17 +566,14 @@ func runProxyUnset(cmd *cobra.Command, args []string) error {
 }
 
 var proxyUnsetCmd = &cobra.Command{
-	Use:   "unset [alias]",
+	Use:   "unset <alias>",
 	Short: "Disable local SOCKS/HTTP proxy for a relay in STAGING",
 	Example: `  # Disable local proxy for a relay in STAGING
   xray-proxya proxy unset node-us
   xray-proxya apply`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeConfiguredProxyAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runProxyUnset(cmd, args)
-	},
-	RunE: runProxyUnset,
+	RunE:              runProxyUnset,
 }
 
 func runProxyRun(cmd *cobra.Command, args []string) error {
@@ -744,7 +736,7 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 }
 
 var proxyRunCmd = &cobra.Command{
-	Use:   "run [alias]",
+	Use:   "run <alias>",
 	Short: "Run a temporary standalone local SOCKS/HTTP proxy for a relay",
 	Example: `  # Run temporary proxy in foreground
   xray-proxya proxy run node-us -p 20808
@@ -936,7 +928,7 @@ func completeConfiguredProxyAliasesArg(cmd *cobra.Command, args []string, toComp
 var proxyTestProbe bool
 
 var proxyTestCmd = &cobra.Command{
-	Use:               "test [alias]",
+	Use:               "test <alias>",
 	Short:             "Test connectivity of a configured local proxy",
 	Example: `  # Test connectivity of configured local proxy
   xray-proxya proxy test node-us
@@ -945,10 +937,7 @@ var proxyTestCmd = &cobra.Command{
   xray-proxya proxy test node-us --probe`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeConfiguredProxyAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runProxyTest(cmd, args)
-	},
-	RunE: runProxyTest,
+	RunE:              runProxyTest,
 }
 
 func resolveProxyTargets(co config.CustomOutbound) (string, string) {
@@ -995,7 +984,7 @@ func runProxyProbe(cmd *cobra.Command, args []string) error {
 }
 
 var proxyProbeCmd = &cobra.Command{
-	Use:               "probe [alias]",
+	Use:               "probe <alias>",
 	Short:             "Probe outbound public IP addresses via configured local proxy",
 	Example: `  # Probe outbound IPv4/IPv6 via configured local proxy
   xray-proxya proxy probe node-us`,

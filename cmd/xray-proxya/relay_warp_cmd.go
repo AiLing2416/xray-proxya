@@ -24,6 +24,7 @@ var (
 var relayWarpCmd = &cobra.Command{
 	Use:   "warp",
 	Short: "Quickly generate and import Cloudflare WARP relay node (STAGING)",
+	Args:  cobra.NoArgs,
 	Long: strings.TrimSpace(`
 Automatically generate a free Cloudflare WARP WireGuard account and import it
 as a relay node named 'CF_WARP' into STAGING configuration.

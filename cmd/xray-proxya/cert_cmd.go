@@ -32,7 +32,7 @@ var certCmd = &cobra.Command{
 }
 
 var certAddCmd = &cobra.Command{
-	Use:   "add [domain]",
+	Use:   "add <domain>",
 	Short: "Add a domain, issue Let's Encrypt TLS certificate, and register 7-day auto-renewal",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -98,6 +98,7 @@ var certListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List managed domains and their certificate issuance & expiration dates",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
@@ -199,7 +200,7 @@ var certListCmd = &cobra.Command{
 }
 
 var certRemoveCmd = &cobra.Command{
-	Use:     "remove [domain]",
+	Use:     "remove <domain>",
 	Aliases: []string{"rm", "del", "delete"},
 	Short:   "Remove a managed domain & certificate, automatically disabling any dependent presets",
 	Args:    cobra.ExactArgs(1),

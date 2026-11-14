@@ -37,6 +37,7 @@ const guestQuotaCheckInterval = 6 * time.Hour
 var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run Xray core in foreground",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
 			return fmt.Errorf("Xray-Proxya has not been initialized; run 'xray-proxya init' first")

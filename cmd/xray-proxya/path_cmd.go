@@ -1308,16 +1308,16 @@ func activePathdSOCKSAddress() (string, error) {
 }
 
 func init() {
-	pathSetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay to bind PathLink credentials to (Gateway only)")
-	pathSetCmd.Flags().StringVarP(&pathListen, "listen", "l", "", "numeric loopback Pathd listen address")
-	pathSetCmd.Flags().StringVarP(&pathToken, "token", "t", "", "shared PathLink token")
+	pathSetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "Relay to bind PathLink credentials to (Gateway only)")
+	pathSetCmd.Flags().StringVarP(&pathListen, "listen", "l", "", "Numeric loopback Pathd listen address")
+	pathSetCmd.Flags().StringVarP(&pathToken, "token", "t", "", "Shared PathLink token")
 	pathSetCmd.Flags().IntVar(&pathIdle, "idle", 20, "Pathd connection idle timeout in seconds")
-	pathSetCmd.Flags().BoolVar(&pathGenerate, "generate-token", false, "generate a new Server Pathd token")
+	pathSetCmd.Flags().BoolVar(&pathGenerate, "generate-token", false, "Generate a new Server Pathd token")
 	pathSetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 	})
 
-	pathUnsetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay whose PathLink credentials to remove (Gateway only)")
+	pathUnsetCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "Relay whose PathLink credentials to remove (Gateway only)")
 	pathUnsetCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 	})
@@ -1325,28 +1325,28 @@ func init() {
 	noFileComp := func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	}
-	pathListCmd.Flags().BoolVar(&pathListJSON, "json", false, "output in JSON format")
+	pathListCmd.Flags().BoolVar(&pathListJSON, "json", false, "Output in JSON format")
 	pathListCmd.ValidArgsFunction = noFileComp
-	pathStatusCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "relay whose PathLink status to inspect (Gateway only)")
+	pathStatusCmd.Flags().StringVarP(&pathRelay, "relay", "r", "", "Relay whose PathLink status to inspect (Gateway only)")
 	pathStatusCmd.RegisterFlagCompletionFunc("relay", func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return getRelayAliases(), cobra.ShellCompDirectiveNoFileComp
 	})
-	pathStatusCmd.Flags().BoolVar(&pathStatusJSON, "json", false, "output in JSON format")
-	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "outgoing ICMP TTL/hop limit (1-255)")
-	pathPingCmd.Flags().IntVarP(&pathPingCount, "count", "c", 1, "number of ICMP echo requests to send")
-	pathPingCmd.Flags().DurationVarP(&pathPingInterval, "interval", "i", time.Second, "wait interval between packets")
+	pathStatusCmd.Flags().BoolVar(&pathStatusJSON, "json", false, "Output in JSON format")
+	pathPingCmd.Flags().IntVar(&pathPingTTL, "ttl", 64, "Outgoing ICMP TTL/hop limit (1-255)")
+	pathPingCmd.Flags().IntVarP(&pathPingCount, "count", "c", 1, "Number of ICMP echo requests to send")
+	pathPingCmd.Flags().DurationVarP(&pathPingInterval, "interval", "i", time.Second, "Wait interval between packets")
 	pathPingCmd.Flags().IntVarP(&pathPingSize, "size", "s", 8, "ICMP payload size in bytes (8-1024)")
-	pathPingCmd.Flags().DurationVarP(&pathPingTimeout, "timeout", "W", 2*time.Second, "timeout per ICMP probe")
-	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "output in JSON format")
+	pathPingCmd.Flags().DurationVarP(&pathPingTimeout, "timeout", "W", 2*time.Second, "Timeout per ICMP probe")
+	pathPingCmd.Flags().BoolVar(&pathPingJSON, "json", false, "Output in JSON format")
 	pathPingCmd.ValidArgsFunction = noFileComp
-	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "maximum TTL/hop limit to probe (1-255)")
-	pathTraceCmd.Flags().DurationVarP(&pathTraceTimeout, "timeout", "W", 2*time.Second, "timeout per hop probe")
-	pathTraceCmd.Flags().BoolVar(&pathTraceJSON, "json", false, "output in JSON format")
+	pathTraceCmd.Flags().IntVarP(&pathTraceHops, "max-hops", "m", 16, "Maximum TTL/hop limit to probe (1-255)")
+	pathTraceCmd.Flags().DurationVarP(&pathTraceTimeout, "timeout", "W", 2*time.Second, "Timeout per hop probe")
+	pathTraceCmd.Flags().BoolVar(&pathTraceJSON, "json", false, "Output in JSON format")
 	pathTraceCmd.ValidArgsFunction = noFileComp
-	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
-	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "largest IP packet MTU to probe")
-	pathMTUCmd.Flags().DurationVarP(&pathMTUTimeout, "timeout", "W", 2*time.Second, "timeout per MTU probe")
-	pathMTUCmd.Flags().BoolVar(&pathMTUJSON, "json", false, "output in JSON format")
+	pathMTUCmd.Flags().IntVar(&pathMTUMin, "min", 0, "Smallest IP packet MTU to probe (default: IPv4 576, IPv6 1280)")
+	pathMTUCmd.Flags().IntVar(&pathMTUMax, "max", 2000, "Largest IP packet MTU to probe")
+	pathMTUCmd.Flags().DurationVarP(&pathMTUTimeout, "timeout", "W", 2*time.Second, "Timeout per MTU probe")
+	pathMTUCmd.Flags().BoolVar(&pathMTUJSON, "json", false, "Output in JSON format")
 	pathMTUCmd.ValidArgsFunction = noFileComp
 
 	pathCmd.AddCommand(pathListCmd, pathSetCmd, pathUnsetCmd, pathStatusCmd, pathPingCmd, pathTraceCmd, pathMTUCmd)

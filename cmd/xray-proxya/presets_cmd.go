@@ -76,8 +76,10 @@ func validateManualTarget(sni, target string) error {
 }
 
 var presetsListCmd = &cobra.Command{
-	Use:   "list",
-	Short: "Show all available preset slots and their status",
+	Use:     "list",
+	Aliases: []string{"ls"},
+	Short:   "Show all available preset slots and their status",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil || cfg == nil {
@@ -151,6 +153,7 @@ var presetsSkinListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List available Web camouflage skins and their characteristics",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if buildinfo.IsSlim {
 			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
@@ -169,7 +172,7 @@ var presetsSkinListCmd = &cobra.Command{
 }
 
 var presetsSetCmd = &cobra.Command{
-	Use:   "set [id]",
+	Use:   "set <id>",
 	Short: "Configure a specific preset slot (STAGING)",
 	Long: strings.TrimSpace(`
 Configure or toggle features for a specific preset slot in the STAGING config.
@@ -202,11 +205,6 @@ Web camouflage skin highlights:
   xray-proxya presets set 1 --skin off
 `),
 	Args: cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		if err := runPresetsSet(cmd, args); err != nil {
-			fmt.Println(err)
-		}
-	},
 	RunE: runPresetsSet,
 }
 

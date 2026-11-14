@@ -95,9 +95,6 @@ Use --dry-run to preview the upgrade without modifying the file.
 	ValidArgsFunction: func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	},
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runConfigUpgrade(cmd, args)
-	},
 	RunE: runConfigUpgrade,
 }
 
@@ -187,10 +184,9 @@ var (
 )
 
 var configShowCmd = &cobra.Command{
-	Use:     "show",
-	Aliases: []string{"view"},
-	Short:   "Display formatted configuration JSON",
-	Args:    cobra.NoArgs,
+	Use:   "show",
+	Short: "Display formatted configuration JSON",
+	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		var targetPath string
 		if configShowStaging {

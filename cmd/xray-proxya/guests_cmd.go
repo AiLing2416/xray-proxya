@@ -192,10 +192,8 @@ var guestsListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "Show all guests status and quota",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsList(cmd, args)
-	},
-	RunE: runGuestsList,
+	Args:    cobra.NoArgs,
+	RunE:    runGuestsList,
 }
 
 func runGuestsAdd(cmd *cobra.Command, args []string) error {
@@ -373,13 +371,10 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 }
 
 var guestsAddCmd = &cobra.Command{
-	Use:   "add [alias]",
+	Use:   "add <alias>",
 	Short: "Add a new guest user (STAGING)",
 	Args:  cobra.ExactArgs(1),
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsAdd(cmd, args)
-	},
-	RunE: runGuestsAdd,
+	RunE:  runGuestsAdd,
 }
 
 func runGuestsRemove(cmd *cobra.Command, args []string) error {
@@ -412,15 +407,12 @@ func runGuestsRemove(cmd *cobra.Command, args []string) error {
 }
 
 var guestsRemoveCmd = &cobra.Command{
-	Use:               "remove [alias]",
+	Use:               "remove <alias>",
 	Aliases:           []string{"rm", "del", "delete"},
 	Short:             "Remove a guest user (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsRemove(cmd, args)
-	},
-	RunE: runGuestsRemove,
+	RunE:              runGuestsRemove,
 }
 
 func runGuestsSet(cmd *cobra.Command, args []string) error {
@@ -601,14 +593,11 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 }
 
 var guestsSetCmd = &cobra.Command{
-	Use:               "set [alias]",
+	Use:               "set <alias>",
 	Short:             "Configure guest parameters (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsSet(cmd, args)
-	},
-	RunE: runGuestsSet,
+	RunE:              runGuestsSet,
 }
 
 func runGuestsPause(cmd *cobra.Command, args []string) error {
@@ -631,14 +620,11 @@ func runGuestsPause(cmd *cobra.Command, args []string) error {
 }
 
 var guestsPauseCmd = &cobra.Command{
-	Use:               "pause [alias]",
+	Use:               "pause <alias>",
 	Short:             "Pause a guest manually (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsPause(cmd, args)
-	},
-	RunE: runGuestsPause,
+	RunE:              runGuestsPause,
 }
 
 func runGuestsResume(cmd *cobra.Command, args []string) error {
@@ -664,14 +650,11 @@ func runGuestsResume(cmd *cobra.Command, args []string) error {
 }
 
 var guestsResumeCmd = &cobra.Command{
-	Use:               "resume [alias]",
+	Use:               "resume <alias>",
 	Short:             "Resume a paused guest (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsResume(cmd, args)
-	},
-	RunE: runGuestsResume,
+	RunE:              runGuestsResume,
 }
 
 func runGuestsInfo(cmd *cobra.Command, args []string) error {
@@ -722,15 +705,12 @@ func runGuestsInfo(cmd *cobra.Command, args []string) error {
 }
 
 var guestsInfoCmd = &cobra.Command{
-	Use:               "info [alias]",
-	Aliases:           []string{"show"},
+	Use:               "show <alias>",
+	Aliases:           []string{"info"},
 	Short:             "Show detailed guest runtime state",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsInfo(cmd, args)
-	},
-	RunE: runGuestsInfo,
+	RunE:              runGuestsInfo,
 }
 
 func runGuestsCheck(cmd *cobra.Command, args []string) error {
@@ -768,10 +748,8 @@ func runGuestsCheck(cmd *cobra.Command, args []string) error {
 var guestsCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Check quota usage now and update active guest states",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsCheck(cmd, args)
-	},
-	RunE: runGuestsCheck,
+	Args:  cobra.NoArgs,
+	RunE:  runGuestsCheck,
 }
 
 var guestsSubCmd = &cobra.Command{
@@ -804,14 +782,11 @@ func runGuestsSubEnable(cmd *cobra.Command, args []string) error {
 }
 
 var guestsSubEnableCmd = &cobra.Command{
-	Use:               "enable [alias]",
+	Use:               "enable <alias>",
 	Short:             "Enable self-service subscription for a guest (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsSubEnable(cmd, args)
-	},
-	RunE: runGuestsSubEnable,
+	RunE:              runGuestsSubEnable,
 }
 
 func runGuestsSubDisable(cmd *cobra.Command, args []string) error {
@@ -833,14 +808,11 @@ func runGuestsSubDisable(cmd *cobra.Command, args []string) error {
 }
 
 var guestsSubDisableCmd = &cobra.Command{
-	Use:               "disable [alias]",
+	Use:               "disable <alias>",
 	Short:             "Disable self-service subscription for a guest (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsSubDisable(cmd, args)
-	},
-	RunE: runGuestsSubDisable,
+	RunE:              runGuestsSubDisable,
 }
 
 func runGuestsSubRotate(cmd *cobra.Command, args []string) error {
@@ -863,14 +835,11 @@ func runGuestsSubRotate(cmd *cobra.Command, args []string) error {
 }
 
 var guestsSubRotateCmd = &cobra.Command{
-	Use:               "rotate [alias]",
+	Use:               "rotate <alias>",
 	Short:             "Rotate the guest self-service subscription token (STAGING)",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsSubRotate(cmd, args)
-	},
-	RunE: runGuestsSubRotate,
+	RunE:              runGuestsSubRotate,
 }
 
 func runGuestsSubShow(cmd *cobra.Command, args []string) error {
@@ -916,14 +885,11 @@ func runGuestsSubShow(cmd *cobra.Command, args []string) error {
 }
 
 var guestsSubShowCmd = &cobra.Command{
-	Use:               "show [alias]",
+	Use:               "show <alias>",
 	Short:             "Show a guest self-service subscription link",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeGuestAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runGuestsSubShow(cmd, args)
-	},
-	RunE: runGuestsSubShow,
+	RunE:              runGuestsSubShow,
 }
 
 var (
@@ -1067,7 +1033,7 @@ func init() {
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
 	guestsSubSetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
-	guestsListCmd.Flags().BoolVarP(&guestsListJSON, "json", "j", false, "Output guests list in JSON format")
+	guestsListCmd.Flags().BoolVar(&guestsListJSON, "json", false, "Output guests list in JSON format")
 	guestsSubCmd.AddCommand(guestsSubEnableCmd, guestsSubDisableCmd, guestsSubRotateCmd, guestsSubShowCmd, guestsSubSetCmd)
 	guestsCmd.AddCommand(guestsListCmd, guestsAddCmd, guestsRemoveCmd, guestsSetCmd, guestsPauseCmd, guestsResumeCmd, guestsInfoCmd, guestsCheckCmd, guestsSubCmd)
 	rootCmd.AddCommand(guestsCmd)

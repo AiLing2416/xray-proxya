@@ -60,7 +60,7 @@ var (
 var outboundCmd = &cobra.Command{
 	Use:     "relay",
 	Aliases: []string{"relays", "outbound", "outbounds", "node"},
-	Short:   "Manage relay nodes (custom outbounds) in the staging config",
+	Short:   "Manage relay nodes (custom outbounds) (STAGING)",
 }
 
 func getRelayAliases() []string {
@@ -171,7 +171,7 @@ func runAddOutbound(cmd *cobra.Command, args []string) error {
 }
 
 var addOutboundCmd = &cobra.Command{
-	Use:   "add [alias] [link]",
+	Use:   "add <alias> [link]",
 	Short: "Import a relay node from a link (STAGING)",
 	Long: strings.TrimSpace(`
 Import a proxy node into STAGING from a proxy link (e.g. vless://, vmess://, ss://).
@@ -179,9 +179,6 @@ The alias is optional. If omitted, the remark in the link will be used as the al
 if no remark is present, an alias like Relay-1 will be automatically generated.
 `),
 	Args: cobra.RangeArgs(1, 2),
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runAddOutbound(cmd, args)
-	},
 	RunE: runAddOutbound,
 }
 
@@ -300,10 +297,8 @@ var listOutboundCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List relay nodes with remote endpoint and local bind details",
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runListOutbound(cmd, args)
-	},
-	RunE: runListOutbound,
+	Args:    cobra.NoArgs,
+	RunE:    runListOutbound,
 }
 
 func outboundProtocol(co config.CustomOutbound) string {
@@ -721,7 +716,7 @@ func fetchFamilyIP(client *http.Client, family string) string {
 
 
 var probeLocalOutboundCmd = &cobra.Command{
-	Use:               "probe-local [alias]",
+	Use:               "probe-local <alias>",
 	Short:             "Probe a relay's bound local socks/http listeners",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
@@ -746,7 +741,7 @@ var probeLocalOutboundCmd = &cobra.Command{
 }
 
 var resolveOutboundCmd = &cobra.Command{
-	Use:   "resolve [alias] [domain]",
+	Use:   "resolve <alias> <domain>",
 	Short: "Resolve a domain through a relay's DNS path",
 	Long: strings.TrimSpace(`
 Start a temporary Xray instance with the selected relay and send explicit DNS
@@ -1084,15 +1079,12 @@ func runRemoveOutbound(cmd *cobra.Command, args []string) error {
 }
 
 var removeOutboundCmd = &cobra.Command{
-	Use:               "remove [alias]",
+	Use:               "remove <alias>",
 	Aliases:           []string{"rm", "del", "delete"},
 	Short:             "Remove a relay node from STAGING",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runRemoveOutbound(cmd, args)
-	},
-	RunE: runRemoveOutbound,
+	RunE:              runRemoveOutbound,
 }
 
 func runBindInterface(cmd *cobra.Command, args []string) error {
@@ -1129,13 +1121,10 @@ func runBindInterface(cmd *cobra.Command, args []string) error {
 }
 
 var bindInterfaceCmd = &cobra.Command{
-	Use:   "bind-interface [alias] [interface]",
-	Short: "Create a direct relay bound to a local interface",
+	Use:   "bind-interface <alias> <interface>",
+	Short: "Create a direct relay bound to a local interface (STAGING)",
 	Args:  cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runBindInterface(cmd, args)
-	},
-	RunE: runBindInterface,
+	RunE:  runBindInterface,
 }
 
 func runSetDNSRelay(cmd *cobra.Command, args []string) error {
@@ -1173,7 +1162,7 @@ func runSetDNSRelay(cmd *cobra.Command, args []string) error {
 }
 
 var setDNSRelayCmd = &cobra.Command{
-	Use:   "set-dns [alias]",
+	Use:   "set-dns <alias>",
 	Short: "Configure DNS strategy for a relay (STAGING)",
 	Long: strings.TrimSpace(`
 Override the DNS behavior of a specific relay in the staging config.
@@ -1190,10 +1179,7 @@ back to the global default DNS behavior generated from the active config.
 `),
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runSetDNSRelay(cmd, args)
-	},
-	RunE: runSetDNSRelay,
+	RunE:              runSetDNSRelay,
 }
 
 func runSetPrivateTargetsRelay(cmd *cobra.Command, args []string) error {
@@ -1222,7 +1208,7 @@ func runSetPrivateTargetsRelay(cmd *cobra.Command, args []string) error {
 }
 
 var setOutboundCmd = &cobra.Command{
-	Use:               "set [alias]",
+	Use:               "set <alias>",
 	Short:             "Configure parameters for a relay node in STAGING",
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
@@ -1276,7 +1262,7 @@ func runSetOutbound(cmd *cobra.Command, args []string) error {
 }
 
 var setPrivateTargetsRelayCmd = &cobra.Command{
-	Use:    "set-private-targets [alias] [true|false]",
+	Use:    "set-private-targets <alias> <true|false>",
 	Hidden: true,
 	Short:  "Allow or block relay access to next-hop private addresses (STAGING)",
 	Long: strings.TrimSpace(`
@@ -1300,9 +1286,6 @@ service through this relay, such as a remote PathLink agent on 127.0.0.1.
 			return []string{"true", "false"}, cobra.ShellCompDirectiveNoFileComp
 		}
 		return nil, cobra.ShellCompDirectiveNoFileComp
-	},
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runSetPrivateTargetsRelay(cmd, args)
 	},
 	RunE: runSetPrivateTargetsRelay,
 }
@@ -1330,12 +1313,12 @@ func init() {
 	setDNSRelayCmd.Flags().StringSliceP("servers", "v", []string{}, "DNS servers for this relay, e.g. https://dns.google/dns-query or 1.1.1.1")
 	setDNSRelayCmd.Flags().BoolP("reset", "r", false, "Clear relay-specific DNS overrides and return to the default DNS config")
 	testOutboundCmd.Flags().BoolVarP(&relayTestFull, "full", "f", false, "Run complete diagnostic mode including modern web protocols and UDP stack")
-	testOutboundCmd.Flags().BoolVarP(&relayTestJSON, "json", "j", false, "Output test results in JSON format")
+	testOutboundCmd.Flags().BoolVar(&relayTestJSON, "json", false, "Output test results in JSON format")
 	testOutboundCmd.Flags().IntVar(&relayTestConcurrency, "concurrency", 4, "Number of concurrent relay tests")
 	testOutboundCmd.Flags().BoolVar(&relayTestNoProgress, "no-progress", false, "Disable live progress bar and terminal animations")
 	testOutboundCmd.Flags().BoolVarP(&relayTestFailFast, "fail-fast", "x", false, "Cancel remaining test queue on first node failure")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoFull, "full", "f", false, "Run complete profile and unlock mode including timezone and local time")
-	infoOutboundCmd.Flags().BoolVarP(&relayInfoJSON, "json", "j", false, "Output info results in JSON format")
+	infoOutboundCmd.Flags().BoolVar(&relayInfoJSON, "json", false, "Output info results in JSON format")
 	infoOutboundCmd.Flags().IntVarP(&relayInfoConcurrency, "concurrency", "c", 4, "Number of concurrent relay info tests")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoIPv4, "ipv4", "4", false, "Force IPv4 stack for unlock and profile testing")
 	infoOutboundCmd.Flags().BoolVarP(&relayInfoIPv6, "ipv6", "6", false, "Force IPv6 stack for unlock and profile testing")
@@ -1345,7 +1328,7 @@ func init() {
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv4, "ipv4", "4", false, "Probe IPv4")
 	probeLocalOutboundCmd.Flags().BoolVarP(&outboundIPv6, "ipv6", "6", false, "Probe IPv6")
 	speedOutboundCmd.Flags().StringVarP(&relaySpeedProvider, "provider", "p", "cloudflare", "Speed test provider (cloudflare, fast, mlab, ookla, custom)")
-	speedOutboundCmd.Flags().BoolVarP(&relaySpeedJSON, "json", "j", false, "Output speed test results in JSON format")
+	speedOutboundCmd.Flags().BoolVar(&relaySpeedJSON, "json", false, "Output speed test results in JSON format")
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedDownload, "download", "d", false, "Run a download speed test")
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedUpload, "upload", "u", false, "Run an upload speed test")
 	speedOutboundCmd.Flags().BoolVarP(&relaySpeedBoth, "both", "b", false, "Run both download and upload speed tests")

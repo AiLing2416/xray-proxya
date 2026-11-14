@@ -625,6 +625,7 @@ var subListCmd = &cobra.Command{
 	Use:     "list",
 	Aliases: []string{"ls"},
 	Short:   "List subscription instances and guest subscriptions",
+	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
@@ -795,7 +796,7 @@ func init() {
 	subSetCmd.Flags().StringVarP(&subListen, "listen", "l", "", "Loopback listener address")
 	subSetCmd.Flags().StringVarP(&subToken, "token", "t", "", "Subscription access token")
 	subSetCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTP port")
-	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "direct, outbound, or guest")
+	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "Direct, outbound, or guest")
 	subSetCmd.Flags().StringVar(&subTargetAlias, "target", "", "Target alias for outbound or guest")
 	subSetCmd.Flags().StringVarP(&subEndpoint, "endpoint", "e", "", "Endpoint(s) to bind for proxy nodes")
 	subSetCmd.ValidArgsFunction = completeSubscriptionInstanceArg

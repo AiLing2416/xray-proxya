@@ -295,6 +295,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 var showCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Show sharing links for active modes",
+	Args:  cobra.NoArgs,
 	RunE:  runShow,
 }
 

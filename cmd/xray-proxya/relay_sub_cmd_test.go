@@ -145,14 +145,14 @@ func TestRelaySubLifecycle(t *testing.T) {
 }
 
 func TestRelaySubTerminologyStandardization(t *testing.T) {
-	if !strings.Contains(relaySubAddCmd.Use, "[provider-name]") || strings.Contains(relaySubAddCmd.Use, "airport") {
-		t.Errorf("relaySubAddCmd.Use = %q, want '[provider-name]' without 'airport'", relaySubAddCmd.Use)
+	if !strings.Contains(relaySubAddCmd.Use, "<provider-name>") || strings.Contains(relaySubAddCmd.Use, "airport") {
+		t.Errorf("relaySubAddCmd.Use = %q, want '<provider-name>' without 'airport'", relaySubAddCmd.Use)
 	}
 	if !strings.Contains(relaySubUpdateCmd.Use, "[provider-name]") || strings.Contains(relaySubUpdateCmd.Use, "airport") {
 		t.Errorf("relaySubUpdateCmd.Use = %q, want '[provider-name]' without 'airport'", relaySubUpdateCmd.Use)
 	}
-	if !strings.Contains(relaySubRemoveCmd.Use, "[provider-name]") || strings.Contains(relaySubRemoveCmd.Use, "airport") {
-		t.Errorf("relaySubRemoveCmd.Use = %q, want '[provider-name]' without 'airport'", relaySubRemoveCmd.Use)
+	if !strings.Contains(relaySubRemoveCmd.Use, "<provider-name>") || strings.Contains(relaySubRemoveCmd.Use, "airport") {
+		t.Errorf("relaySubRemoveCmd.Use = %q, want '<provider-name>' without 'airport'", relaySubRemoveCmd.Use)
 	}
 
 	tmpDir := t.TempDir()

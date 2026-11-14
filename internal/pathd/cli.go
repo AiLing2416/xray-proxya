@@ -32,10 +32,10 @@ func RunCLICustom(args []string, stdout, stderr io.Writer, stopCh <-chan struct{
 	flags := flag.NewFlagSet("serve", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
-	listen := flags.String("listen", DefaultListenAddress, "loopback listen address")
+	listen := flags.String("listen", DefaultListenAddress, "Loopback listen address")
 	token := flags.String("token", "", "PathLink authentication token")
-	idle := flags.Duration("idle", 20*time.Second, "idle connection timeout")
-	configPath := flags.String("config", "", "private pathd JSON configuration")
+	idle := flags.Duration("idle", 20*time.Second, "Idle connection timeout")
+	configPath := flags.String("config", "", "Private pathd JSON configuration")
 
 	if err := flags.Parse(args[1:]); err != nil {
 		return 2

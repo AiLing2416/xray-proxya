@@ -129,7 +129,7 @@ func TestPresetsSetRiskyTargetInteractiveReject(t *testing.T) {
 	presetSNIManual = "cdn.jsdelivr.net"
 	presetSNIForce = false
 
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	if promptCalls != 1 {
 		t.Errorf("promptCalls = %d, want 1", promptCalls)
@@ -173,7 +173,7 @@ func TestPresetsSetRiskyTargetInteractiveConfirm(t *testing.T) {
 	presetSNIManual = "cdn.jsdelivr.net"
 	presetSNIForce = false
 
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	if promptCalls != 1 {
 		t.Errorf("promptCalls = %d, want 1", promptCalls)
@@ -217,7 +217,7 @@ func TestPresetsSetRiskyTargetWithForceFlag(t *testing.T) {
 	presetSNIManual = "cdn.jsdelivr.net"
 	presetSNIForce = true
 
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	if promptCalls != 0 {
 		t.Errorf("promptCalls = %d, want 0 when forced", promptCalls)
@@ -268,7 +268,7 @@ func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ := config.LoadConfigEx(true)
 	if loaded.Presets[0].Skin != "" {
@@ -279,7 +279,7 @@ func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile", "--skin-domain", "uncerted.com"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[0].Skin != "" {
@@ -290,7 +290,7 @@ func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--skin", "seafile", "--skin-domain", "sea.ailing.dev"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[0].Skin != "seafile" {
@@ -314,7 +314,7 @@ func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--skin-port", "19443"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.SkinPort != 19443 {
@@ -328,7 +328,7 @@ func TestPresetsSetSkinRequiresDomainAndCert(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--skin", "off"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[0].Skin != "" {
@@ -357,7 +357,7 @@ func TestPresetsSetMinVer(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.3.27"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ := config.LoadConfigEx(true)
 	if loaded.Presets[0].MinClientVer != "26.3.27" {
@@ -368,7 +368,7 @@ func TestPresetsSetMinVer(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "0.0.0"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[0].MinClientVer != "0.0.0" {
@@ -379,7 +379,7 @@ func TestPresetsSetMinVer(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "invalid.version"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"1"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"1"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[0].MinClientVer != "0.0.0" {
@@ -390,7 +390,7 @@ func TestPresetsSetMinVer(t *testing.T) {
 	if err := presetsSetCmd.ParseFlags([]string{"--min-ver", "26.3.27"}); err != nil {
 		t.Fatalf("ParseFlags error: %v", err)
 	}
-	presetsSetCmd.Run(presetsSetCmd, []string{"4"})
+	_ = presetsSetCmd.RunE(presetsSetCmd, []string{"4"})
 
 	loaded, _ = config.LoadConfigEx(true)
 	if loaded.Presets[3].MinClientVer != "" {

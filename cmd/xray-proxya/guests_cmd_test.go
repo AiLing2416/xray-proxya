@@ -50,7 +50,7 @@ func TestGuestsSetNotifyAndWebhook(t *testing.T) {
 	// 1. Set --notify header
 	notifyStr = "header"
 	_ = guestsSetCmd.Flags().Set("notify", "header")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-tom"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-tom"})
 
 	staged, err := config.LoadConfigEx(true)
 	if err != nil {
@@ -63,7 +63,7 @@ func TestGuestsSetNotifyAndWebhook(t *testing.T) {
 	// 2. Set --notify-webhook
 	notifyWebhookStr = "https://example.com/hook"
 	_ = guestsSetCmd.Flags().Set("notify-webhook", "https://example.com/hook")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-tom"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-tom"})
 
 	staged2, _ := config.LoadConfigEx(true)
 	if staged2.Guests[0].NotifyWebhook != "https://example.com/hook" {
@@ -73,7 +73,7 @@ func TestGuestsSetNotifyAndWebhook(t *testing.T) {
 	// 3. Clear --notify-webhook
 	notifyWebhookStr = ""
 	_ = guestsSetCmd.Flags().Set("notify-webhook", "")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-tom"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-tom"})
 
 	staged3, _ := config.LoadConfigEx(true)
 	if staged3.Guests[0].NotifyWebhook != "" {
@@ -102,7 +102,7 @@ func TestGuestsSetLimitAndTriggerValidation(t *testing.T) {
 	// 1. Set --limit 50GB (Base 10)
 	limitStr = "50GB"
 	_ = guestsSetCmd.Flags().Set("limit", "50GB")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-amy"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-amy"})
 
 	staged, _ := config.LoadConfigEx(true)
 	if staged.Guests[0].EffectiveLimitBytes() != 50*config.GigaByte {
@@ -112,7 +112,7 @@ func TestGuestsSetLimitAndTriggerValidation(t *testing.T) {
 	// 2. Set valid triggers: 80p, 45p, 40G, 5G
 	notifyTriggerStr = "80p,45p,40G,5G"
 	_ = guestsSetCmd.Flags().Set("notify-trigger", "80p,45p,40G,5G")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-amy"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-amy"})
 
 	staged2, _ := config.LoadConfigEx(true)
 	if len(staged2.Guests[0].NotifyTrigger) != 4 {
@@ -122,7 +122,7 @@ func TestGuestsSetLimitAndTriggerValidation(t *testing.T) {
 	// 3. Reject trigger exceeding Limit: 60G > 50G
 	notifyTriggerStr = "60G"
 	_ = guestsSetCmd.Flags().Set("notify-trigger", "60G")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-amy"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-amy"})
 
 	staged3, _ := config.LoadConfigEx(true)
 	if len(staged3.Guests[0].NotifyTrigger) != 4 {
@@ -132,7 +132,7 @@ func TestGuestsSetLimitAndTriggerValidation(t *testing.T) {
 	// 4. Reject trigger percentage > 100%
 	notifyTriggerStr = "105p"
 	_ = guestsSetCmd.Flags().Set("notify-trigger", "105p")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-amy"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-amy"})
 
 	staged4, _ := config.LoadConfigEx(true)
 	if len(staged4.Guests[0].NotifyTrigger) != 4 {
@@ -142,7 +142,7 @@ func TestGuestsSetLimitAndTriggerValidation(t *testing.T) {
 	// 5. Clear triggers with 'none'
 	notifyTriggerStr = "none"
 	_ = guestsSetCmd.Flags().Set("notify-trigger", "none")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-amy"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-amy"})
 
 	staged5, _ := config.LoadConfigEx(true)
 	if len(staged5.Guests[0].NotifyTrigger) != 0 {
@@ -203,7 +203,7 @@ func TestGuestsSetRelayAndRelayLink(t *testing.T) {
 	// 1. Valid relay alias
 	relayStr = "us-node"
 	_ = guestsSetCmd.Flags().Set("relay", "us-node")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-bob"})
 
 	staged1, err := config.LoadConfigEx(true)
 	if err != nil {
@@ -216,7 +216,7 @@ func TestGuestsSetRelayAndRelayLink(t *testing.T) {
 	// 2. Set to direct
 	relayStr = "direct"
 	_ = guestsSetCmd.Flags().Set("relay", "direct")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-bob"})
 
 	staged2, _ := config.LoadConfigEx(true)
 	if staged2.Guests[0].OutboundLink != "" || staged2.Guests[0].OutboundConf != nil {
@@ -226,7 +226,7 @@ func TestGuestsSetRelayAndRelayLink(t *testing.T) {
 	// 3. Invalid relay alias
 	relayStr = "nonexistent-alias"
 	_ = guestsSetCmd.Flags().Set("relay", "nonexistent-alias")
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-bob"})
 
 	staged3, _ := config.LoadConfigEx(true)
 	if staged3.Guests[0].OutboundLink != "" {
@@ -239,7 +239,7 @@ func TestGuestsSetRelayAndRelayLink(t *testing.T) {
 	validLink := "vless://11111111-2222-3333-4444-555555555555@example.com:443?type=tcp&security=reality&pbk=1111111111111111111111111111111111111111111=&fp=chrome&sni=example.com#test-node"
 	relayLinkStr = validLink
 	_ = guestsSetCmd.Flags().Set("relay-link", validLink)
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-bob"})
 
 	staged4, _ := config.LoadConfigEx(true)
 	if staged4.Guests[0].OutboundLink != validLink || staged4.Guests[0].OutboundConf == nil {
@@ -251,7 +251,7 @@ func TestGuestsSetRelayAndRelayLink(t *testing.T) {
 	_ = guestsSetCmd.Flags().Set("relay", "us-node")
 	relayLinkStr = validLink
 	_ = guestsSetCmd.Flags().Set("relay-link", validLink)
-	guestsSetCmd.Run(guestsSetCmd, []string{"guest-bob"})
+	_ = guestsSetCmd.RunE(guestsSetCmd, []string{"guest-bob"})
 
 	staged5, _ := config.LoadConfigEx(true)
 	// Must not change from staged4 because error was reported
@@ -290,7 +290,7 @@ func TestGuestsRemoveAliases(t *testing.T) {
 		t.Fatalf("save staging config: %v", err)
 	}
 
-	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-rem"})
+	_ = guestsRemoveCmd.RunE(guestsRemoveCmd, []string{"g-rem"})
 	staged, _ := config.LoadConfigEx(true)
 	if len(staged.Guests) != 3 {
 		t.Fatalf("expected 3 guests after remove, got %d", len(staged.Guests))
@@ -303,9 +303,9 @@ func TestGuestsRemoveAliases(t *testing.T) {
 		}
 	}
 
-	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-rm"})
-	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-del"})
-	guestsRemoveCmd.Run(guestsRemoveCmd, []string{"g-delete"})
+	_ = guestsRemoveCmd.RunE(guestsRemoveCmd, []string{"g-rm"})
+	_ = guestsRemoveCmd.RunE(guestsRemoveCmd, []string{"g-del"})
+	_ = guestsRemoveCmd.RunE(guestsRemoveCmd, []string{"g-delete"})
 
 	stagedFinal, _ := config.LoadConfigEx(true)
 	if len(stagedFinal.Guests) != 0 {

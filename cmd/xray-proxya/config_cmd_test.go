@@ -35,7 +35,9 @@ func TestConfigUpgradeDryRunDoesNotModifyFile(t *testing.T) {
 	})
 
 	output := captureStdout(t, func() {
-		configUpgradeCmd.Run(configUpgradeCmd, nil)
+		if err := configUpgradeCmd.RunE(configUpgradeCmd, nil); err != nil {
+			t.Fatalf("configUpgradeCmd.RunE() error = %v", err)
+		}
 	})
 
 	after, err := os.ReadFile(configPath)
@@ -297,7 +299,7 @@ func TestConfigUpgradeUpgradesEndpointsAndGateURL(t *testing.T) {
 	})
 
 	_ = captureStdout(t, func() {
-		configUpgradeCmd.Run(configUpgradeCmd, nil)
+		_ = configUpgradeCmd.RunE(configUpgradeCmd, nil)
 	})
 
 	upgraded, err := config.LoadConfig()

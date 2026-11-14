@@ -2,8 +2,12 @@ package main
 
 import (
 	"bytes"
+	"slices"
+	"strings"
 	"testing"
 	"xray-proxya/internal/config"
+
+	"github.com/spf13/cobra"
 )
 
 func TestListSubcommandsLsAlias(t *testing.T) {
@@ -66,7 +70,43 @@ func TestListSubcommandsLsAlias(t *testing.T) {
 			buf := new(bytes.Buffer)
 			targetCmd.SetOut(buf)
 			targetCmd.SetErr(buf)
-			targetCmd.Run(targetCmd, []string{})
+			if targetCmd.RunE != nil {
+				if err := targetCmd.RunE(targetCmd, []string{}); err != nil {
+					t.Fatalf("RunE(%v) returned error: %v", tt.args, err)
+				}
+			} else {
+				targetCmd.Run(targetCmd, []string{})
+			}
 		})
+	}
+}
+
+func TestStandardizedCommandsAndFlags(t *testing.T) {
+	if guestsInfoCmd.Use != "show <alias>" || !slices.Contains(guestsInfoCmd.Aliases, "info") {
+		t.Errorf("guestsInfoCmd Use=%q Aliases=%v, want Use='show <alias>' and 'info' alias", guestsInfoCmd.Use, guestsInfoCmd.Aliases)
+	}
+	if slices.Contains(configShowCmd.Aliases, "view") {
+		t.Errorf("configShowCmd.Aliases = %v, should not contain 'view'", configShowCmd.Aliases)
+	}
+	if !slices.Contains(presetsListCmd.Aliases, "ls") {
+		t.Errorf("presetsListCmd.Aliases = %v, want 'ls'", presetsListCmd.Aliases)
+	}
+	if !slices.Contains(tuneProfilesCmd.Aliases, "list") || !slices.Contains(tuneProfilesCmd.Aliases, "ls") {
+		t.Errorf("tuneProfilesCmd.Aliases = %v, want 'list' and 'ls'", tuneProfilesCmd.Aliases)
+	}
+	if purgeCmd.Use != "purge" {
+		t.Errorf("purgeCmd.Use = %q, want 'purge'", purgeCmd.Use)
+	}
+	if !strings.HasSuffix(outboundCmd.Short, "(STAGING)") || !strings.HasSuffix(bindInterfaceCmd.Short, "(STAGING)") {
+		t.Errorf("relay staging Short mismatch: outbound=%q bind=%q", outboundCmd.Short, bindInterfaceCmd.Short)
+	}
+	for _, cmd := range []*cobra.Command{guestsListCmd, testOutboundCmd, infoOutboundCmd, speedOutboundCmd, endpointListCmd} {
+		f := cmd.Flags().Lookup("json")
+		if f == nil {
+			t.Fatalf("%s missing --json flag", cmd.Name())
+		}
+		if f.Shorthand != "" {
+			t.Errorf("%s --json shorthand = %q, want empty", cmd.Name(), f.Shorthand)
+		}
 	}
 }

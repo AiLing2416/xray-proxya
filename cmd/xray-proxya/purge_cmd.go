@@ -21,7 +21,7 @@ var (
 )
 
 var purgeCmd = &cobra.Command{
-	Use:   "purge -i <types> [flags]",
+	Use:   "purge",
 	Short: "Safely purge specified components, configurations, and data",
 	Long: `Permanently delete explicitly specified resources, files, and managed services.
 

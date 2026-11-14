@@ -47,10 +47,7 @@ Show logs for a managed service across systemd, OpenRC, and procd. Use --follow 
 `),
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeManagedServiceUnits,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runServiceLogs(cmd, args)
-	},
-	RunE: runServiceLogs,
+	RunE:              runServiceLogs,
 }
 
 var logsCmd = &cobra.Command{
@@ -61,10 +58,7 @@ Show managed service logs across systemd, OpenRC, and procd. Use --follow to str
 `),
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeManagedServiceUnits,
-	Run: func(cmd *cobra.Command, args []string) {
-		_ = runServiceLogs(cmd, args)
-	},
-	RunE: runServiceLogs,
+	RunE:              runServiceLogs,
 }
 
 func tailLogContent(content string, lines int) string {
