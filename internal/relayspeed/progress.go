@@ -9,15 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
+	"xray-proxya/internal/ui"
 )
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // IsTerminal checks if the provided file descriptor is connected to a terminal.
 func IsTerminal(fd uintptr) bool {
-	_, err := unix.IoctlGetTermios(int(fd), unix.TCGETS)
-	return err == nil
+	return ui.IsTerminal(fd)
 }
 
 // ProgressRenderer manages terminal animations, braille spinners, and clean non-TTY fallback.
@@ -48,7 +47,7 @@ func NewProgressRenderer(out io.Writer, isTTY bool, disabled bool) *ProgressRend
 		out:          out,
 		isTTY:        isTTY,
 		disabled:     disabled,
-		colorEnabled: isTTY && !disabled,
+		colorEnabled: isTTY && !disabled && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb",
 		stopCh:       make(chan struct{}),
 	}
 
@@ -158,20 +157,11 @@ func (r *ProgressRenderer) CompleteNode(res *SpeedResult) {
 	}
 
 	// In TTY mode: overwrite current line in place and lock with newline
-	var prefix string
 	if res != nil && res.Error != "" && res.Download == nil && res.Upload == nil {
-		if r.colorEnabled {
-			prefix = "\033[31m✖\033[0m"
-		} else {
-			prefix = "✖"
-		}
+		prefix := ui.Red(ui.SymCross, r.colorEnabled)
 		fmt.Fprintf(r.out, "\r%s [%s] Failed: %s\033[K\n", prefix, alias, res.Error)
 	} else {
-		if r.colorEnabled {
-			prefix = "\033[32m✔\033[0m"
-		} else {
-			prefix = "✔"
-		}
+		prefix := ui.Green(ui.SymCheck, r.colorEnabled)
 		fmt.Fprintf(r.out, "\r%s [%s] %s\033[K\n", prefix, alias, summary)
 	}
 

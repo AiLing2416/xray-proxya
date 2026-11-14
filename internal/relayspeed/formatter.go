@@ -3,7 +3,6 @@ package relayspeed
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 	"xray-proxya/internal/ui"
@@ -11,7 +10,7 @@ import (
 )
 
 func isColorSupported() bool {
-	return IsTerminal(os.Stdout.Fd()) && os.Getenv("NO_COLOR") == "" && os.Getenv("TERM") != "dumb"
+	return ui.IsColorEnabled()
 }
 
 // FormatBitrateColored formats a bitrate with ANSI color coding based on speed tiers when color is enabled:
@@ -83,7 +82,7 @@ func RenderSingleCardWithChart(r *SpeedResult, showChart bool, colorEnabled bool
 		return ""
 	}
 	if r.Error != "" && r.Download == nil && r.Upload == nil {
-		return fmt.Sprintf("[%s] (Provider: %s)\n  ❌ Error: %s\n", r.Alias, r.Provider, r.Error)
+		return fmt.Sprintf("[%s] (Provider: %s)\n  %s Error: %s\n", r.Alias, r.Provider, ui.SymCross, r.Error)
 	}
 
 	var sb strings.Builder

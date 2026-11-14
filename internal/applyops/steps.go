@@ -10,6 +10,7 @@ import (
 	"xray-proxya/internal/endpoint"
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/service"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 )
 
@@ -26,7 +27,7 @@ func (s *StaticValidationStep) ShouldRun(ctx *ApplyContext) bool {
 
 func (s *StaticValidationStep) Run(ctx *ApplyContext) error {
 	testOverrides := map[string]int{"gateway-tun-disabled": 1}
-	ctx.AppendLine("🔍 Stage 1: Static Validation...")
+	ctx.AppendLine(ui.Notice("Stage 1: Static Validation..."))
 
 	cfg := ctx.StagingCfg
 	activeCfg := ctx.ActiveCfg
@@ -61,11 +62,11 @@ func (s *StaticValidationStep) Run(ctx *ApplyContext) error {
 				}
 				needsOnlineValidation := activeM == nil || !activeM.Enabled || activeM.SNI != m.SNI || activeM.Dest != m.Dest
 				if needsOnlineValidation {
-					ctx.AppendLine(fmt.Sprintf("🔍 Validating REALITY target for preset %s: %s (%s)...", m.Mode, m.SNI, m.Dest))
+					ctx.AppendLine(ui.Notice(fmt.Sprintf("Validating REALITY target for preset %s: %s (%s)...", m.Mode, m.SNI, m.Dest)))
 					if _, err := config.ValidateRealityTarget(m.Dest, 5*time.Second); err != nil {
 						return fmt.Errorf("REALITY target %s (%s) validation failed during apply: %w", m.SNI, m.Dest, err)
 					}
-					ctx.AppendLine(fmt.Sprintf("✅ REALITY target validated for preset %s.", m.Mode))
+					ctx.AppendLine(ui.Success(fmt.Sprintf("REALITY target validated for preset %s.", m.Mode)))
 				}
 			}
 		}
@@ -78,7 +79,7 @@ func (s *StaticValidationStep) Run(ctx *ApplyContext) error {
 	if err := xray.ValidateConfig(jsonData); err != nil {
 		return fmt.Errorf("static validation failed: %w", err)
 	}
-	ctx.AppendLine("✅ Syntax OK.")
+	ctx.AppendLine(ui.Success("Syntax OK."))
 	return nil
 }
 
@@ -94,11 +95,11 @@ func (s *RuntimeIsolationStep) ShouldRun(ctx *ApplyContext) bool {
 }
 
 func (s *RuntimeIsolationStep) Run(ctx *ApplyContext) error {
-	ctx.AppendLine("🔍 Stage 2: Runtime Isolation Test...")
+	ctx.AppendLine(ui.Notice("Stage 2: Runtime Isolation Test..."))
 	if err := xray.ValidateRuntime(ctx.StagingCfg); err != nil {
 		return fmt.Errorf("runtime isolation test failed: %w", err)
 	}
-	ctx.AppendLine("✅ Runtime isolation test passed (using randomized ports).")
+	ctx.AppendLine(ui.Success("Runtime isolation test passed (using randomized ports)."))
 	return nil
 }
 
@@ -114,7 +115,7 @@ func (s *CommitStagingStep) ShouldRun(ctx *ApplyContext) bool {
 }
 
 func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
-	ctx.AppendLine("🚀 Stage 3: Committing changes...")
+	ctx.AppendLine(ui.Notice("Stage 3: Committing changes..."))
 	if data, err := os.ReadFile(config.GetConfigPath()); err == nil {
 		ctx.ActiveBackupRaw = data
 	}
@@ -149,10 +150,10 @@ func (s *CommitStagingStep) Run(ctx *ApplyContext) error {
 		}
 	}
 	if len(ctx.Impact.ChangedSections) > 0 {
-		ctx.AppendLine(fmt.Sprintf("ℹ️  Changed sections: %v", ctx.Impact.ChangedSections))
+		ctx.AppendLine(ui.Notice(fmt.Sprintf("Changed sections: %v", ctx.Impact.ChangedSections)))
 	}
 	if len(ctx.Impact.EndpointDiffs) > 0 {
-		ctx.AppendLine("ℹ️  Endpoint changes:")
+		ctx.AppendLine(ui.Notice("Endpoint changes:"))
 		for _, diff := range ctx.Impact.EndpointDiffs {
 			ctx.AppendLine(fmt.Sprintf("   • %s", diff))
 		}
@@ -177,15 +178,15 @@ func (s *PathdSyncStep) Run(ctx *ApplyContext) error {
 		return fmt.Errorf("synchronize Pathd configuration: %w", err)
 	}
 	if pathdWasActive {
-		ctx.AppendLine("✅ Pathd configuration synchronized and active service restarted.")
+		ctx.AppendLine(ui.Success("Pathd configuration synchronized and active service restarted."))
 	} else if ctx.Options.Start && os.Geteuid() == 0 && service.IsUnitInstalled(service.PathdUnit) {
-		ctx.AppendLine("🚀 Starting Pathd service (--start requested)...")
+		ctx.AppendLine(ui.Notice("Starting Pathd service (--start requested)..."))
 		if err := service.Start(service.PathdUnit); err != nil {
 			return fmt.Errorf("start Pathd service: %w", err)
 		}
-		ctx.AppendLine("✅ Pathd service started.")
+		ctx.AppendLine(ui.Success("Pathd service started."))
 	} else {
-		ctx.AppendLine("✅ Pathd configuration synchronized (service is stopped; skipping restart).")
+		ctx.AppendLine(ui.Success("Pathd configuration synchronized (service is stopped; skipping restart)."))
 	}
 	return nil
 }
@@ -210,47 +211,47 @@ func (s *XrayGatewaySyncStep) Run(ctx *ApplyContext) error {
 	if opts.Full || impact.XrayConfigChanged {
 		if !xrayActive {
 			if opts.Start {
-				ctx.AppendLine("🚀 Starting Xray service (--start requested)...")
+				ctx.AppendLine(ui.Notice("Starting Xray service (--start requested)..."))
 				if err := service.Start(service.MainUnit); err != nil {
-					ctx.AppendLine(fmt.Sprintf("❌ Error starting Xray service: %v", err))
+					ctx.AppendLine(ui.Error(fmt.Sprintf("Error starting Xray service: %v", err)))
 					return fmt.Errorf("start Xray service: %w", err)
 				}
 				xrayActive = true
 				ctx.XrayRestarted = true
 			} else {
-				ctx.AppendLine("ℹ️  Xray service is currently stopped (skipping restart).")
-				ctx.AppendLine("   💡 Hint: To start the service with new configuration, run:")
+				ctx.AppendLine(ui.Notice("Xray service is currently stopped (skipping restart)."))
+				ctx.AppendLine("   Hint: To start the service with new configuration, run:")
 				ctx.AppendLine("      xray-proxya service start core")
 			}
 		} else if ctx.GatewaySyncRequired {
-			ctx.AppendLine("🔄 Restarting Xray and synchronizing Gateway runtime...")
+			ctx.AppendLine(ui.Notice("Restarting Xray and synchronizing Gateway runtime..."))
 		} else {
-			ctx.AppendLine("🔄 Restarting Xray service...")
+			ctx.AppendLine(ui.Notice("Restarting Xray service..."))
 			if err := xray.RestartXrayServiceWithoutHook(); err != nil {
-				ctx.AppendLine(fmt.Sprintf("❌ Error restarting Xray service: %v", err))
+				ctx.AppendLine(ui.Error(fmt.Sprintf("Error restarting Xray service: %v", err)))
 				return fmt.Errorf("restart Xray service: %w", err)
 			}
 			if cfg.Role == config.RoleGateway {
 				if err := gateway.RestoreTunStateLocked(cfg); err != nil {
-					ctx.AppendLine(fmt.Sprintf("❌ Error restoring Gateway runtime: %v", err))
+					ctx.AppendLine(ui.Error(fmt.Sprintf("Error restoring Gateway runtime: %v", err)))
 					return fmt.Errorf("failed to restore gateway runtime: %w", err)
 				}
 			}
 			ctx.XrayRestarted = true
 		}
 	} else {
-		ctx.AppendLine("ℹ️  Xray restart skipped: no Xray-facing changes detected.")
+		ctx.AppendLine(ui.Notice("Xray restart skipped: no Xray-facing changes detected."))
 	}
 
 	if ctx.GatewaySyncRequired {
 		if !xrayActive {
-			ctx.AppendLine("ℹ️  Gateway runtime synchronization skipped: Xray service is stopped.")
+			ctx.AppendLine(ui.Notice("Gateway runtime synchronization skipped: Xray service is stopped."))
 		} else if err := gateway.SyncDesiredLocked(cfg); err != nil {
-			ctx.AppendLine(fmt.Sprintf("❌ Failed to synchronize gateway runtime: %v", err))
+			ctx.AppendLine(ui.Error(fmt.Sprintf("Failed to synchronize gateway runtime: %v", err)))
 			return fmt.Errorf("failed to synchronize gateway runtime: %w", err)
 		} else {
 			ctx.XrayRestarted = true
-			ctx.AppendLine("✅ Gateway runtime synchronized with active configuration.")
+			ctx.AppendLine(ui.Success("Gateway runtime synchronized with active configuration."))
 		}
 	}
 	return nil
@@ -274,31 +275,31 @@ func (s *SubServiceSyncStep) Run(ctx *ApplyContext) error {
 	if opts.Full || impact.SubListenerChanged {
 		if HasSubServiceInstalled() {
 			if AnySubServiceActive() {
-				ctx.AppendLine("🔄 Restarting active subscription service...")
+				ctx.AppendLine(ui.Notice("Restarting active subscription service..."))
 				if err := RestartSubServiceIfInstalled(); err != nil {
-					ctx.AppendLine(fmt.Sprintf("❌ Error restarting subscription service: %v", err))
+					ctx.AppendLine(ui.Error(fmt.Sprintf("Error restarting subscription service: %v", err)))
 					return fmt.Errorf("restart subscription service: %w", err)
 				}
 				ctx.SubRestarted = true
 			} else {
 				if opts.Start {
-					ctx.AppendLine("🚀 Starting subscription service (--start requested)...")
+					ctx.AppendLine(ui.Notice("Starting subscription service (--start requested)..."))
 					if err := service.Start(service.SubUnit); err != nil {
-						ctx.AppendLine(fmt.Sprintf("❌ Error starting subscription service: %v", err))
+						ctx.AppendLine(ui.Error(fmt.Sprintf("Error starting subscription service: %v", err)))
 						return fmt.Errorf("start subscription service: %w", err)
 					}
 					ctx.SubRestarted = true
 				} else {
-					ctx.AppendLine("ℹ️  Subscription service is currently stopped (skipping restart).")
-					ctx.AppendLine("   💡 Hint: To start the service with new configuration, run:")
+					ctx.AppendLine(ui.Notice("Subscription service is currently stopped (skipping restart)."))
+					ctx.AppendLine("   Hint: To start the service with new configuration, run:")
 					ctx.AppendLine("      xray-proxya service start sub")
 				}
 			}
 		} else if impact.SubListenerChanged {
-			ctx.AppendLine("ℹ️  Subscription listener changed, but no installed subscription service was found.")
+			ctx.AppendLine(ui.Notice("Subscription listener changed, but no installed subscription service was found."))
 		}
 	} else if impact.SubContentChanged {
-		ctx.AppendLine("ℹ️  Subscription content updated; no restart needed because the sub server reloads config on each request.")
+		ctx.AppendLine(ui.Notice("Subscription content updated; no restart needed because the sub server reloads config on each request."))
 	}
 	return nil
 }

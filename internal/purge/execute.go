@@ -11,6 +11,7 @@ import (
 	"xray-proxya/internal/gateway"
 	"xray-proxya/internal/service"
 	"xray-proxya/internal/tune"
+	"xray-proxya/internal/ui"
 	"xray-proxya/internal/xray"
 )
 
@@ -31,7 +32,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 			if err := service.CurrentProvider().Stop(item.Target); err != nil {
 				return fmt.Errorf("stop %s: %w (aborting purge to prevent orphaned running service)", item.Target, err)
 			}
-			fmt.Fprintf(out, "✅ Stopped service: %s\n", item.Target)
+			fmt.Fprintln(out, ui.Success(fmt.Sprintf("Stopped service: %s", item.Target)))
 		}
 	}
 
@@ -41,17 +42,17 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 			if os.Geteuid() == 0 {
 				if _, err := exec.LookPath("nft"); err == nil {
 					if err := gateway.CleanupFirewall(); err != nil {
-						fmt.Fprintf(out, "⚠️  Gateway firewall cleanup notice: %v\n", err)
+						fmt.Fprintln(out, ui.Warning(fmt.Sprintf("Gateway firewall cleanup notice: %v", err)))
 					} else {
-						fmt.Fprintln(out, "✅ Flushed gateway firewall & routing rules")
+						fmt.Fprintln(out, ui.Success("Flushed gateway firewall & routing rules"))
 					}
 					_ = exec.Command("nft", "delete", "table", "inet", "xray-proxya").Run()
 				}
 				if state, err := tune.LoadRuntimeState(); err == nil && state != nil {
 					if _, rErr := tune.RollbackRuntimeState(state); rErr != nil {
-						fmt.Fprintf(out, "⚠️  Kernel tune rollback notice: %v\n", rErr)
+						fmt.Fprintln(out, ui.Warning(fmt.Sprintf("Kernel tune rollback notice: %v", rErr)))
 					} else {
-						fmt.Fprintln(out, "✅ Rolled back kernel tune sysctl parameters")
+						fmt.Fprintln(out, ui.Success("Rolled back kernel tune sysctl parameters"))
 					}
 				}
 			}
@@ -63,9 +64,9 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 		if item.Category == CatService && item.Action == ActionDisable {
 			if err := service.CurrentProvider().Disable(item.Target, false); err != nil {
 				// Non-fatal notice if service was not previously enabled
-				fmt.Fprintf(out, "ℹ️  Service disable notice (%s): %v\n", item.Target, err)
+				fmt.Fprintln(out, ui.Notice(fmt.Sprintf("Service disable notice (%s): %v", item.Target, err)))
 			} else {
-				fmt.Fprintf(out, "✅ Disabled service: %s\n", item.Target)
+				fmt.Fprintln(out, ui.Success(fmt.Sprintf("Disabled service: %s", item.Target)))
 			}
 		}
 	}
@@ -79,7 +80,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 			if err := os.Remove(item.Target); err != nil && !os.IsNotExist(err) {
 				errs = append(errs, fmt.Errorf("remove %s %s: %w", desc, item.Target, err))
 			} else {
-				fmt.Fprintf(out, "✅ Removed %s: %s\n", desc, item.Target)
+				fmt.Fprintln(out, ui.Success(fmt.Sprintf("Removed %s: %s", desc, item.Target)))
 				if strings.Contains(item.Target, "NetworkManager") {
 					if _, err := exec.LookPath("nmcli"); err == nil {
 						_ = exec.Command("nmcli", "general", "reload", "conf").Run()
@@ -95,7 +96,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 				if err := xray.ReloadSystemdDaemon(); err != nil {
 					errs = append(errs, fmt.Errorf("systemd daemon-reload: %w", err))
 				} else {
-					fmt.Fprintln(out, "✅ Reloaded systemd daemon")
+					fmt.Fprintln(out, ui.Success("Reloaded systemd daemon"))
 				}
 			}
 		}
@@ -116,7 +117,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 					errs = append(errs, fmt.Errorf("remove SELinux policy module %s: %w (%s)", item.Target, err, semoduleOut))
 				}
 			} else {
-				fmt.Fprintf(out, "✅ Removed SELinux policy module: %s\n", item.Target)
+				fmt.Fprintln(out, ui.Success(fmt.Sprintf("Removed SELinux policy module: %s", item.Target)))
 			}
 		}
 	}
@@ -129,19 +130,19 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 				if err := os.Remove(item.Target); err != nil && !os.IsNotExist(err) {
 					errs = append(errs, fmt.Errorf("remove completion file %s: %w", item.Target, err))
 				} else {
-					fmt.Fprintf(out, "✅ Removed shell completion file: %s\n", item.Target)
+					fmt.Fprintln(out, ui.Success(fmt.Sprintf("Removed shell completion file: %s", item.Target)))
 				}
 			case ActionCleanCompletion:
 				if err := cleanProfileCompletion(item.Target); err != nil {
 					errs = append(errs, fmt.Errorf("clean profile completion %s: %w", item.Target, err))
 				} else {
-					fmt.Fprintf(out, "✅ Cleaned shell completion from: %s\n", item.Target)
+					fmt.Fprintln(out, ui.Success(fmt.Sprintf("Cleaned shell completion from: %s", item.Target)))
 				}
 			case ActionCleanPath:
 				if err := cleanProfilePath(item.Target, installDir); err != nil {
 					errs = append(errs, fmt.Errorf("clean profile PATH %s: %w", item.Target, err))
 				} else {
-					fmt.Fprintf(out, "✅ Cleaned PATH export from: %s\n", item.Target)
+					fmt.Fprintln(out, ui.Success(fmt.Sprintf("Cleaned PATH export from: %s", item.Target)))
 				}
 			}
 		}
@@ -153,7 +154,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 			if err := os.RemoveAll(item.Target); err != nil && !os.IsNotExist(err) {
 				errs = append(errs, fmt.Errorf("remove %s: %w", item.Target, err))
 			} else {
-				fmt.Fprintf(out, "✅ Removed: %s\n", item.Target)
+				fmt.Fprintln(out, ui.Success(fmt.Sprintf("Removed: %s", item.Target)))
 			}
 		}
 	}
@@ -162,14 +163,14 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 	if configDir != "" {
 		if entries, err := os.ReadDir(configDir); err == nil && len(entries) == 0 {
 			_ = os.Remove(configDir)
-			fmt.Fprintf(out, "✅ Cleaned empty config directory: %s\n", configDir)
+			fmt.Fprintln(out, ui.Success(fmt.Sprintf("Cleaned empty config directory: %s", configDir)))
 		}
 	}
 	if homeDir != "" {
 		shareDir := filepath.Join(homeDir, ".local", "share", "xray-proxya")
 		if entries, err := os.ReadDir(shareDir); err == nil && len(entries) == 0 {
 			_ = os.Remove(shareDir)
-			fmt.Fprintf(out, "✅ Cleaned empty data directory: %s\n", shareDir)
+			fmt.Fprintln(out, ui.Success(fmt.Sprintf("Cleaned empty data directory: %s", shareDir)))
 		}
 	}
 
@@ -179,7 +180,7 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 			if err := os.Remove(item.Target); err != nil && !os.IsNotExist(err) {
 				errs = append(errs, fmt.Errorf("remove binary %s: %w", item.Target, err))
 			} else {
-				fmt.Fprintf(out, "✅ Removed binary: %s\n", item.Target)
+				fmt.Fprintln(out, ui.Success(fmt.Sprintf("Removed binary: %s", item.Target)))
 			}
 		}
 	}

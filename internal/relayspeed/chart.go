@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"xray-proxya/internal/ui"
 )
 
 var sparklineBlocks = []rune{
@@ -490,15 +492,15 @@ func colorizeWaveformLine(line string, row int, avgRow int) string {
 	inColor := false
 	currentColor := ""
 
-	targetColor := "\033[32m" // Default green
+	targetColor := ui.ColorGreen // Default green
 	if row >= avgRow {
-		targetColor = "\033[1;36m" // Cyan above average
+		targetColor = ui.ColorBoldCyan // Cyan above average
 	}
 
 	for _, ch := range line {
 		if ch == ' ' {
 			if inColor {
-				sb.WriteString("\033[0m")
+				sb.WriteString(ui.ColorReset)
 				inColor = false
 				currentColor = ""
 			}
@@ -513,7 +515,7 @@ func colorizeWaveformLine(line string, row int, avgRow int) string {
 		}
 	}
 	if inColor {
-		sb.WriteString("\033[0m")
+		sb.WriteString(ui.ColorReset)
 	}
 	return sb.String()
 }

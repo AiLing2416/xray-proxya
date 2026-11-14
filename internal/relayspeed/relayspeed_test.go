@@ -1669,6 +1669,41 @@ func TestUploadChunkSizeAndSpeedAccuracy(t *testing.T) {
 	}
 }
 
+func TestProgressRenderer_NoColorAndDumbTerm(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	t.Setenv("TERM", "xterm-256color")
+	var buf1 strings.Builder
+	r1 := NewProgressRenderer(&buf1, true, false)
+	if r1.colorEnabled {
+		t.Errorf("expected colorEnabled=false when NO_COLOR is set")
+	}
+	r1.Stop()
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "dumb")
+	var buf2 strings.Builder
+	r2 := NewProgressRenderer(&buf2, true, false)
+	if r2.colorEnabled {
+		t.Errorf("expected colorEnabled=false when TERM=dumb")
+	}
+	r2.Stop()
+}
+
+func TestRenderSingleCard_ErrorSymbol(t *testing.T) {
+	res := &SpeedResult{
+		Alias:    "hk-err",
+		Provider: "cloudflare",
+		Error:    "dial timeout",
+	}
+	out := RenderSingleCard(res)
+	if !strings.Contains(out, "✖ Error: dial timeout") {
+		t.Errorf("expected monochrome ✖ Error symbol, got: %q", out)
+	}
+	if strings.Contains(out, "❌") {
+		t.Errorf("unexpected emoji ❌ in output: %q", out)
+	}
+}
+
 
 
 

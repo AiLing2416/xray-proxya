@@ -2,6 +2,8 @@ package ui
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -202,5 +204,79 @@ func TestTableMultilineWrapping(t *testing.T) {
 			t.Errorf("box line %d width mismatch: want %d, got %d (line: %q)", i, boxWidth, VisualWidth(l), l)
 		}
 	}
+}
+
+type errReader struct {
+	err error
+}
+
+func (e errReader) Read(_ []byte) (int, error) {
+	return 0, e.err
+}
+
+func TestConfirm(t *testing.T) {
+	cases := []struct {
+		name       string
+		input      string
+		prompt     string
+		wantOK     bool
+		wantPrompt string
+	}{
+		{"yes_lower", "y\n", "Proceed?", true, "Proceed? [y/N]: "},
+		{"yes_word", "  YES \n", "Proceed? [y/N]: ", true, "Proceed? [y/N]: "},
+		{"yes_eof_no_newline", "y", "Continue?", true, "Continue? [y/N]: "},
+		{"no_lower", "n\n", "Proceed?", false, "Proceed? [y/N]: "},
+		{"empty_newline", "\n", "Proceed?", false, "Proceed? [y/N]: "},
+		{"empty_eof", "", "Proceed?", false, "Proceed? [y/N]: "},
+		{"other_text", "maybe\n", "Proceed? ", false, "Proceed? [y/N]: "},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			ok, err := Confirm(strings.NewReader(tc.input), &out, tc.prompt)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ok != tc.wantOK {
+				t.Errorf("got %v, want %v", ok, tc.wantOK)
+			}
+			if out.String() != tc.wantPrompt {
+				t.Errorf("prompt got %q, want %q", out.String(), tc.wantPrompt)
+			}
+		})
+	}
+
+	t.Run("read_error", func(t *testing.T) {
+		var out bytes.Buffer
+		wantErr := errors.New("boom")
+		ok, err := Confirm(errReader{err: wantErr}, &out, "Proceed?")
+		if ok {
+			t.Errorf("expected false on error")
+		}
+		if !errors.Is(err, wantErr) && err != io.EOF {
+			t.Errorf("got err %v, want %v", err, wantErr)
+		}
+	})
+}
+
+func TestIsColorEnabled_EnvVars(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	if IsColorEnabled() {
+		t.Errorf("expected IsColorEnabled() == false when NO_COLOR is set")
+	}
+
+	t.Setenv("NO_COLOR", "")
+	t.Setenv("TERM", "dumb")
+	if IsColorEnabled() {
+		t.Errorf("expected IsColorEnabled() == false when TERM=dumb")
+	}
+
+	var buf bytes.Buffer
+	r := NewProgressRenderer(&buf, true, false)
+	if r.colorEnabled {
+		t.Errorf("expected ProgressRenderer.colorEnabled == false when TERM=dumb")
+	}
+	r.Stop()
 }
 
