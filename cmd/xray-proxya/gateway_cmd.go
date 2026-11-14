@@ -15,6 +15,7 @@ import (
 	"xray-proxya/internal/gatewayconf"
 	proxyaSELinux "xray-proxya/internal/selinux"
 	"xray-proxya/internal/tune"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -169,7 +170,7 @@ func runGatewayStatus(cmd *cobra.Command, args []string) error {
 	activeCfg, _ := config.LoadConfigEx(false)
 	stagingCfg, _ := config.LoadConfigEx(true)
 	if activeCfg == nil && stagingCfg == nil {
-		return fmt.Errorf("❌ Failed to load gateway configuration")
+		return fmt.Errorf("failed to load gateway configuration")
 	}
 
 	iface, err := net.InterfaceByName("proxya-tun")
@@ -406,7 +407,7 @@ func runGatewayState(cmd *cobra.Command, args []string) error {
 	}
 
 	if count > 1 {
-		return fmt.Errorf("❌ Conflicting state flags: only one of --proxy, --forward-only, or --disabled may be specified")
+		return fmt.Errorf("conflicting state flags: only one of --proxy, --forward-only, or --disabled may be specified")
 	}
 
 	if count == 1 {
@@ -414,11 +415,11 @@ func runGatewayState(cmd *cobra.Command, args []string) error {
 			return gatewayconf.UpdateSet(content, "state", targetState)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+			return fmt.Errorf("failed to update gateway.conf: %w", err)
 		}
-		fmt.Printf("✅ Gateway state updated to '%s' in STAGING.\n", targetState)
+		fmt.Println(ui.Success(fmt.Sprintf("Gateway state updated to '%s' in STAGING.", targetState)))
 		if targetState == "forward-only" {
-			fmt.Println("⚠️  forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying.")
+			fmt.Println(ui.Warning("forward-only is experimental: it enables kernel forwarding only, without NAT or transparent proxying."))
 		}
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
@@ -547,19 +548,19 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 	}
 
 	if lanEnable && lanDisable {
-		return fmt.Errorf("❌ Error: Conflicting flags specified")
+		return fmt.Errorf("Conflicting flags specified")
 	}
 	if localEnable && localDisable {
-		return fmt.Errorf("❌ Error: Conflicting flags specified")
+		return fmt.Errorf("Conflicting flags specified")
 	}
 	if gatewayTProxyEnable && gatewayTProxyDisable {
-		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --enable and --disable")
+		return fmt.Errorf("Conflicting flags specified: cannot use both --enable and --disable")
 	}
 
 	natEnable := cmd.Flags().Changed("nat")
 	natDisable := cmd.Flags().Changed("no-nat")
 	if natEnable && natDisable {
-		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --nat and --no-nat")
+		return fmt.Errorf("Conflicting flags specified: cannot use both --nat and --no-nat")
 	}
 
 	failOpenEnable := cmd.Flags().Changed("fail-open") && cmd.Flags().Lookup("fail-open").Value.String() == "true"
@@ -581,12 +582,12 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if failOpenEnable && failOpenDisable {
-		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --fail-open and --no-fail-open")
+		return fmt.Errorf("Conflicting flags specified: cannot use both --fail-open and --no-fail-open")
 	}
 
 	if !hasChanged && !lanEnable && !lanDisable && !localEnable && !localDisable && !gatewayTProxyEnable && !gatewayTProxyDisable {
 		if cmd.Name() == "set" {
-			return fmt.Errorf("❌ Error: No parameter supplied")
+			return fmt.Errorf("No parameter supplied")
 		}
 		return runGatewayStatus(cmd, args)
 	}
@@ -690,20 +691,20 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		return content
 	})
 	if err != nil {
-		return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		return fmt.Errorf("failed to update gateway.conf: %w", err)
 	}
 
 	// Validate staging gateway
 	stgCfg, err := config.LoadConfigEx(true)
 	if err != nil {
-		return fmt.Errorf("❌ Validation error in updated gateway: %w", err)
+		return fmt.Errorf("validation error in updated gateway: %w", err)
 	}
 	if stgCfg != nil {
 		if err := config.ValidateGatewayInterfaces(stgCfg); err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if err := config.ValidateGatewayRulesForMode(stgCfg); err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 	}
 
@@ -720,11 +721,11 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		if gatewayTProxyDisable || gatewayDisableNow {
 			op = "system-down"
 		}
-		fmt.Printf("✅ Gateway parameters updated and runtime rules synced (%s).\n", op)
+		fmt.Println(ui.Success(fmt.Sprintf("Gateway parameters updated and runtime rules synced (%s).", op)))
 		return nil
 	}
 
-	fmt.Println("✅ Gateway parameters updated in STAGING.")
+	fmt.Println(ui.Success("Gateway parameters updated in STAGING."))
 	fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 	return nil
 }
@@ -753,7 +754,7 @@ func runGatewayTun(cmd *cobra.Command, args []string) error {
 	}()
 
 	if gatewayTunEnable && gatewayTunDisable {
-		return fmt.Errorf("❌ Error: Conflicting flags specified: cannot use both --enable and --disable")
+		return fmt.Errorf("Conflicting flags specified: cannot use both --enable and --disable")
 	}
 
 	if gatewayTunEnable || gatewayTunDisable {
@@ -765,7 +766,7 @@ func runGatewayTun(cmd *cobra.Command, args []string) error {
 			return gatewayconf.UpdateSet(content, "tun", val)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+			return fmt.Errorf("failed to update gateway.conf: %w", err)
 		}
 
 		if gatewayTunNow {
@@ -776,11 +777,11 @@ func runGatewayTun(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to apply configuration: %w", err)
 			}
-			fmt.Println("✅ Gateway TUN updated and runtime rules synced.")
+			fmt.Println(ui.Success("Gateway TUN updated and runtime rules synced."))
 			return nil
 		}
 
-		fmt.Printf("✅ Gateway TUN set to %s in STAGING.\n", val)
+		fmt.Println(ui.Success(fmt.Sprintf("Gateway TUN set to %s in STAGING.", val)))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
@@ -876,7 +877,7 @@ var gatewaySystemUpCmd = &cobra.Command{
 		if err := gateway.Up(cfg); err != nil {
 			return fmt.Errorf("apply gateway runtime: %w", err)
 		}
-		fmt.Println("✅ Gateway runtime rules are up.")
+		fmt.Println(ui.Success("Gateway runtime rules are up."))
 		return nil
 	},
 }
@@ -885,18 +886,17 @@ var gatewayDiffCmd = &cobra.Command{
 	Use:   "diff",
 	Short: "Show gateway runtime rules that would be applied",
 	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
 			cfg, _ = config.LoadConfigEx(false)
 		}
 		if cfg == nil {
-			return
+			return fmt.Errorf("failed to load gateway configuration")
 		}
 		rules, err := gateway.BuildRulesPreview(cfg)
 		if err != nil {
-			fmt.Printf("❌ Failed: %v\n", err)
-			return
+			return fmt.Errorf("failed to build gateway rules preview: %w", err)
 		}
 		fmt.Println("# nftables")
 		if rules == "" {
@@ -923,6 +923,7 @@ var gatewayDiffCmd = &cobra.Command{
 			fmt.Println("ip rule add fwmark 255 table main pref 10000")
 			fmt.Println("ip route replace local default dev lo table 100")
 		}
+		return nil
 	},
 }
 
@@ -930,7 +931,7 @@ var gatewayCheckCmd = &cobra.Command{
 	Use:   "check",
 	Short: "Check gateway runtime state",
 	Args:  cobra.NoArgs,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfig()
 		hasSyntaxErr := false
 
@@ -941,12 +942,12 @@ var gatewayCheckCmd = &cobra.Command{
 				label = "gateway.conf.staging"
 			}
 			if err != nil {
-				fmt.Printf("⚠️  Failed to read %s: %v\n", label, err)
+				fmt.Println(ui.Warning(fmt.Sprintf("Failed to read %s: %v", label, err)))
 				return
 			}
 			ast, parseErr := gatewayconf.Parse(string(data))
 			if parseErr != nil {
-				fmt.Printf("❌ %s syntax error: %v\n", label, parseErr)
+				fmt.Println(ui.Error(fmt.Sprintf("%s syntax error: %v", label, parseErr)))
 				hasSyntaxErr = true
 				return
 			}
@@ -957,11 +958,11 @@ var gatewayCheckCmd = &cobra.Command{
 				}
 			}
 			if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(checkCfg)); compileErr != nil {
-				fmt.Printf("❌ %s semantic error: %v\n", label, compileErr)
+				fmt.Println(ui.Error(fmt.Sprintf("%s semantic error: %v", label, compileErr)))
 				hasSyntaxErr = true
 				return
 			}
-			fmt.Printf("✅ %s declarative configuration syntax is valid.\n", label)
+			fmt.Println(ui.Success(fmt.Sprintf("%s declarative configuration syntax is valid.", label)))
 		}
 
 		if config.GatewayConfExists() {
@@ -971,19 +972,19 @@ var gatewayCheckCmd = &cobra.Command{
 			checkConf(config.GetGatewayConfPathEx(true), true)
 		}
 		if hasSyntaxErr {
-			os.Exit(1)
+			return fmt.Errorf("gateway configuration validation failed")
 		}
 
 		problems := gateway.Verify(cfg)
 		if len(problems) == 0 {
-			fmt.Println("✅ Gateway runtime state looks ready.")
-			return
+			fmt.Println(ui.Success("Gateway runtime state looks ready."))
+			return nil
 		}
-		fmt.Println("❌ Gateway verification found issues:")
+		fmt.Println(ui.Error("Gateway verification found issues:"))
 		for _, problem := range problems {
 			fmt.Printf("- %s\n", problem)
 		}
-		os.Exit(1)
+		return fmt.Errorf("gateway verification found %d issue(s)", len(problems))
 	},
 }
 
@@ -1008,7 +1009,7 @@ var gatewaySystemDownCmd = &cobra.Command{
 		if err := gateway.Down(); err != nil {
 			return fmt.Errorf("remove gateway runtime: %w", err)
 		}
-		fmt.Println("✅ Gateway runtime rules are down.")
+		fmt.Println(ui.Success("Gateway runtime rules are down."))
 		return nil
 	},
 }
@@ -1081,9 +1082,9 @@ func runGatewayManagement(operation string) error {
 		return fmt.Errorf("run Gateway SELinux management domain: %w", err)
 	}
 	if operation == "system-up" {
-		fmt.Println("✅ Gateway runtime rules are up.")
+		fmt.Println(ui.Success("Gateway runtime rules are up."))
 	} else {
-		fmt.Println("✅ Gateway runtime rules are down.")
+		fmt.Println(ui.Success("Gateway runtime rules are down."))
 	}
 	return nil
 }
@@ -1098,12 +1099,12 @@ var gatewayTestCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			fmt.Printf("❌ Failed to load active config: %v\n", err)
+			fmt.Println(ui.Error(fmt.Sprintf("Failed to load active config: %v", err)))
 			return
 		}
 
 		if cfg.Gateway.State == "disabled" {
-			fmt.Printf("ℹ️  Gateway transparent tests skipped: active state is %q.\n", cfg.Gateway.State)
+			fmt.Println(ui.Notice(fmt.Sprintf("Gateway transparent tests skipped: active state is %q.", cfg.Gateway.State)))
 			fmt.Println("   Hint: xray-proxya gateway set --state proxy && xray-proxya apply")
 			return
 		}
@@ -1112,24 +1113,26 @@ var gatewayTestCmd = &cobra.Command{
 			fmt.Println("🔍 Running Local Proxy Route Test (observing public IP through a non-bypassed endpoint)...")
 			localIP, err := gateway.RunLocalProxyTest(cfg)
 			if err != nil {
-				fmt.Printf("❌ Local Proxy Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
+				fmt.Println(ui.Error(fmt.Sprintf("Local Proxy Test Failed: %v", err)))
+				fmt.Println("   (Hint: Is the 'xray-proxya' service running and gateway rules up?)")
 			} else {
-				fmt.Printf("ℹ️  Local Proxy Test observed public IP: %s\n", localIP)
+				fmt.Println(ui.Notice(fmt.Sprintf("Local Proxy Test observed public IP: %s", localIP)))
 			}
 		} else {
-			fmt.Println("ℹ️  Local Proxy Test skipped: Local Proxy is disabled.")
+			fmt.Println(ui.Notice("Local Proxy Test skipped: Local Proxy is disabled."))
 		}
 
 		if cfg.Gateway.LANEnabled {
 			fmt.Println("\n🔍 Running Simulated LAN Gateway Route Test (observing public IP through a non-bypassed endpoint)...")
 			lanIP, err := gateway.RunSimulatedLANTest(cfg)
 			if err != nil {
-				fmt.Printf("❌ Simulated LAN Test Failed: %v\n   (Hint: Is the 'xray-proxya' service running and gateway rules up?)\n", err)
+				fmt.Println(ui.Error(fmt.Sprintf("Simulated LAN Test Failed: %v", err)))
+				fmt.Println("   (Hint: Is the 'xray-proxya' service running and gateway rules up?)")
 			} else {
-				fmt.Printf("ℹ️  Simulated LAN Gateway Test observed public IP: %s\n", lanIP)
+				fmt.Println(ui.Notice(fmt.Sprintf("Simulated LAN Gateway Test observed public IP: %s", lanIP)))
 			}
 		} else {
-			fmt.Println("ℹ️  Simulated LAN Gateway Test skipped: LAN Gateway is disabled; LAN clients are intentionally not served.")
+			fmt.Println(ui.Notice("Simulated LAN Gateway Test skipped: LAN Gateway is disabled; LAN clients are intentionally not served."))
 		}
 	},
 }
@@ -1149,7 +1152,7 @@ var gatewayExportCmd = &cobra.Command{
 		if err != nil || cfg == nil {
 			cfg, err = config.LoadConfigEx(false)
 			if err != nil || cfg == nil {
-				return fmt.Errorf("❌ Failed to load gateway configuration")
+				return fmt.Errorf("failed to load gateway configuration")
 			}
 		}
 
@@ -1184,12 +1187,12 @@ var gatewayExportCmd = &cobra.Command{
 		}
 
 		if err := os.MkdirAll(filepath.Dir(targetPath), 0700); err != nil {
-			return fmt.Errorf("❌ Failed to create directory: %w", err)
+			return fmt.Errorf("failed to create directory: %w", err)
 		}
 		if err := os.WriteFile(targetPath, []byte(content), 0600); err != nil {
-			return fmt.Errorf("❌ Failed to write %s: %w", targetPath, err)
+			return fmt.Errorf("failed to write %s: %w", targetPath, err)
 		}
-		fmt.Printf("✅ Gateway configuration exported to: %s\n", targetPath)
+		fmt.Println(ui.Success(fmt.Sprintf("Gateway configuration exported to: %s", targetPath)))
 		return nil
 	},
 }
@@ -1225,12 +1228,12 @@ var gatewayEditCmd = &cobra.Command{
 				}
 			}
 			if err := os.MkdirAll(filepath.Dir(confPath), 0700); err != nil {
-				return fmt.Errorf("❌ Failed to create config directory: %w", err)
+				return fmt.Errorf("failed to create config directory: %w", err)
 			}
 			if err := os.WriteFile(confPath, []byte(content), 0600); err != nil {
-				return fmt.Errorf("❌ Failed to create initial %s: %w", confPath, err)
+				return fmt.Errorf("failed to create initial %s: %w", confPath, err)
 			}
-			fmt.Printf("ℹ️  Initialized staging gateway configuration at %s\n", confPath)
+			fmt.Println(ui.Notice(fmt.Sprintf("Initialized staging gateway configuration at %s", confPath)))
 		}
 
 		editor := os.Getenv("EDITOR")
@@ -1246,7 +1249,7 @@ var gatewayEditCmd = &cobra.Command{
 			}
 		}
 		if editor == "" {
-			return fmt.Errorf("❌ No editor found. Please set $EDITOR or install nano/vim")
+			return fmt.Errorf("no editor found. Please set $EDITOR or install nano/vim")
 		}
 
 		isTerm := false
@@ -1260,17 +1263,17 @@ var gatewayEditCmd = &cobra.Command{
 			c.Stdout = os.Stdout
 			c.Stderr = os.Stderr
 			if err := c.Run(); err != nil {
-				return fmt.Errorf("❌ Editor %q exited with error: %w", editor, err)
+				return fmt.Errorf("editor %q exited with error: %w", editor, err)
 			}
 
 			data, err := os.ReadFile(confPath)
 			if err != nil {
-				return fmt.Errorf("❌ Failed to read %s: %w", confPath, err)
+				return fmt.Errorf("failed to read %s: %w", confPath, err)
 			}
 
 			ast, parseErr := gatewayconf.Parse(string(data))
 			if parseErr != nil {
-				fmt.Printf("\n❌ Syntax error in gateway.conf.staging:\n   %v\n", parseErr)
+				fmt.Printf("\n%s\n   %v\n", ui.Error("Syntax error in gateway.conf.staging:"), parseErr)
 				if !isTerm {
 					return parseErr
 				}
@@ -1288,7 +1291,7 @@ var gatewayEditCmd = &cobra.Command{
 				userCfg, _ = config.LoadConfigEx(false)
 			}
 			if _, compileErr := gatewayconf.Compile(ast, gatewayconf.WithUserConfig(userCfg)); compileErr != nil {
-				fmt.Printf("\n⚠️  Compilation warning in gateway.conf.staging:\n   %v\n", compileErr)
+				fmt.Printf("\n%s\n   %v\n", ui.Warning("Compilation warning in gateway.conf.staging:"), compileErr)
 				if !isTerm {
 					return compileErr
 				}
@@ -1301,8 +1304,8 @@ var gatewayEditCmd = &cobra.Command{
 				continue
 			}
 
-			fmt.Println("✅ gateway.conf.staging syntax validated successfully.")
-			fmt.Println("ℹ️  Run 'xray-proxya apply' to compile and apply changes, or 'xray-proxya undo' to discard.")
+			fmt.Println(ui.Success("gateway.conf.staging syntax validated successfully."))
+			fmt.Println(ui.Notice("Run 'xray-proxya apply' to compile and apply changes, or 'xray-proxya undo' to discard."))
 			break
 		}
 

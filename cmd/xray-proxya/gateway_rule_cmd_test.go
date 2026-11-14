@@ -63,8 +63,8 @@ func TestGatewayRuleListTextAndJSON(t *testing.T) {
 	if !strings.Contains(textOutput, "eth1") {
 		t.Errorf("expected interface rule in output, got:\n%s", textOutput)
 	}
-	if !strings.Contains(textOutput, "IP / CIDR") {
-		t.Errorf("expected IP / CIDR header in output, got:\n%s", textOutput)
+	if !strings.Contains(textOutput, "IP / SUBNET") {
+		t.Errorf("expected IP / SUBNET header in output, got:\n%s", textOutput)
 	}
 
 	// 2. JSON output
@@ -485,8 +485,8 @@ func TestGatewayRuleSet_LockoutRisk_InteractiveAndForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected interactive 'y' to succeed, got: %v", err)
 	}
-	if !strings.Contains(outBuf.String(), "[N/y]:") {
-		t.Errorf("expected prompt [N/y]: in output, got:\n%s", outBuf.String())
+	if !strings.Contains(outBuf.String(), "[y/N]:") {
+		t.Errorf("expected prompt [y/N]: in output, got:\n%s", outBuf.String())
 	}
 	stg, _ := config.LoadConfigEx(true)
 	if len(stg.Gateway.Rules) != 1 || stg.Gateway.Rules[0].Interface != "eth0" || stg.Gateway.Rules[0].Target != "block" {
@@ -581,7 +581,7 @@ func TestGatewayRuleSet_LockoutRisk_InteractiveAndForce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected --force to succeed, got: %v", err)
 	}
-	if !strings.Contains(outBuf.String(), "⚠️  WARNING: High-risk block rule forced (--force specified):") {
+	if !strings.Contains(outBuf.String(), "WARNING: High-risk block rule forced (--force specified):") {
 		t.Errorf("expected force warning in output, got:\n%s", outBuf.String())
 	}
 	stg, _ = config.LoadConfigEx(true)
@@ -871,7 +871,7 @@ func TestGatewayRuleSetRequiresTo(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when running gateway rule set without --to, got nil")
 	}
-	expectedErr := "❌ --to / -t must be specified when adding or updating a rule"
+	expectedErr := "--to / -t must be specified when adding or updating a rule"
 	if !strings.Contains(err.Error(), expectedErr) {
 		t.Fatalf("expected error containing %q, got: %v", expectedErr, err)
 	}

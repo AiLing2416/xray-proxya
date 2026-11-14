@@ -7,6 +7,7 @@ import (
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gatewayconf"
+	"xray-proxya/internal/ui"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
@@ -76,7 +77,7 @@ func runGatewayDNSStatus(cmd *cobra.Command, args []string) error {
 	activeCfg, _ := config.LoadConfigEx(false)
 	stagingCfg, _ := config.LoadConfigEx(true)
 	if activeCfg == nil && stagingCfg == nil {
-		return fmt.Errorf("❌ Failed to load gateway configuration")
+		return fmt.Errorf("failed to load gateway configuration")
 	}
 
 	if gatewayDNSStatusJSON {
@@ -158,7 +159,7 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 		hasChanged = true
 	})
 	if !hasChanged {
-		return fmt.Errorf("❌ Error: No flags specified. Run 'xray-proxya gateway dns set --help' for usage.")
+		return fmt.Errorf("no flags specified. Run 'xray-proxya gateway dns set --help' for usage")
 	}
 
 	reset, _ := cmd.Flags().GetBool("reset")
@@ -179,7 +180,7 @@ func runGatewayDNSSet(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	fmt.Println("✅ Gateway DNS parameters updated in STAGING.")
+	fmt.Println(ui.Success("Gateway DNS parameters updated in STAGING."))
 	fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 	return nil
 }
@@ -195,20 +196,20 @@ func applyValidatedDNSSetParams(
 	if hasListen {
 		_, _, parsed, err := config.ParseDNSListen(listen)
 		if err != nil {
-			return fmt.Errorf("❌ Invalid --listen %q: %w", listen, err)
+			return fmt.Errorf("invalid --listen %q: %w", listen, err)
 		}
 		normListen = parsed
 	}
 	if hasPort {
 		if port < 1 || port > 65535 {
-			return fmt.Errorf("❌ Invalid --port %d: must be between 1 and 65535", port)
+			return fmt.Errorf("invalid --port %d: must be between 1 and 65535", port)
 		}
 	}
 	var normStrategy string
 	if hasStrategy {
 		norm, ok := config.NormalizeDNSQueryStrategy(strategy)
 		if !ok {
-			return fmt.Errorf("❌ Invalid --strategy %q: must be UseIP, UseIPv4, or UseIPv6", strategy)
+			return fmt.Errorf("invalid --strategy %q: must be UseIP, UseIPv4, or UseIPv6", strategy)
 		}
 		normStrategy = norm
 	}
@@ -221,12 +222,12 @@ func applyValidatedDNSSetParams(
 			}
 			norm, err := config.ValidateDNSServerEntry(s)
 			if err != nil {
-				return fmt.Errorf("❌ Invalid --servers entry %q: %w", s, err)
+				return fmt.Errorf("invalid --servers entry %q: %w", s, err)
 			}
 			normServers = append(normServers, norm)
 		}
 		if len(normServers) == 0 {
-			return fmt.Errorf("❌ Invalid --servers: at least one valid DNS server is required (use --reset to clear)")
+			return fmt.Errorf("invalid --servers: at least one valid DNS server is required (use --reset to clear)")
 		}
 	}
 
@@ -254,7 +255,7 @@ func applyValidatedDNSSetParams(
 		return content
 	})
 	if err != nil {
-		return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+		return fmt.Errorf("failed to update gateway.conf: %w", err)
 	}
 	return nil
 }
@@ -279,19 +280,19 @@ var gatewayDNSRecordSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain, err := config.NormalizeDNSRecordDomain(args[0])
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		ips, err := config.ValidateDNSRecordIPs(args[1:])
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		err = gatewayconf.ModifyGatewayConf(func(content string) string {
 			return gatewayconf.UpdateDNSRecord(content, domain, ips)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+			return fmt.Errorf("failed to update gateway.conf: %w", err)
 		}
-		fmt.Printf("✅ Static record %s -> %s set in STAGING.\n", domain, strings.Join(ips, ", "))
+		fmt.Println(ui.Success(fmt.Sprintf("Static record %s -> %s set in STAGING.", domain, strings.Join(ips, ", "))))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	},
@@ -309,21 +310,21 @@ var gatewayDNSRecordDelCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		domain, err := config.NormalizeDNSRecordDomain(args[0])
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg != nil {
 			if _, exists := cfg.Gateway.DNSRecords[domain]; !exists {
-				return fmt.Errorf("❌ Static record for domain %q not found in STAGING", domain)
+				return fmt.Errorf("static record for domain %q not found in STAGING", domain)
 			}
 		}
 		err = gatewayconf.ModifyGatewayConf(func(content string) string {
 			return gatewayconf.DeleteDNSRecord(content, domain)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+			return fmt.Errorf("failed to update gateway.conf: %w", err)
 		}
-		fmt.Printf("✅ Static record for %s removed in STAGING.\n", domain)
+		fmt.Println(ui.Success(fmt.Sprintf("Static record for %s removed in STAGING.", domain)))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	},
@@ -337,10 +338,10 @@ var gatewayDNSRecordListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil || cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config: %v", err)
+			return fmt.Errorf("failed to load staging config: %v", err)
 		}
 		if len(cfg.Gateway.DNSRecords) == 0 {
-			fmt.Println("ℹ️  No static DNS records configured in STAGING.")
+			fmt.Println(ui.Notice("No static DNS records configured in STAGING."))
 			return nil
 		}
 		fmt.Println("\n📋 STATIC DNS RECORDS (STAGING)")
@@ -369,9 +370,9 @@ var gatewayDNSRecordClearCmd = &cobra.Command{
 			return gatewayconf.ClearDNSRecords(content)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to update gateway.conf: %w", err)
+			return fmt.Errorf("failed to update gateway.conf: %w", err)
 		}
-		fmt.Println("✅ Cleared all static DNS records in STAGING.")
+		fmt.Println(ui.Success("Cleared all static DNS records in STAGING."))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	},

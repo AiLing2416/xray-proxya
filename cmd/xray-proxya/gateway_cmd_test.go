@@ -821,5 +821,19 @@ func TestGatewaySetFailOpenFlags(t *testing.T) {
 	}
 }
 
+func TestGatewayDiffAndCheckUseRunE(t *testing.T) {
+	if gatewayDiffCmd.RunE == nil || gatewayDiffCmd.Run != nil {
+		t.Fatal("expected gatewayDiffCmd to use RunE instead of Run")
+	}
+	if gatewayCheckCmd.RunE == nil || gatewayCheckCmd.Run != nil {
+		t.Fatal("expected gatewayCheckCmd to use RunE instead of Run")
+	}
+	for _, cmd := range []*cobra.Command{gatewayStateCmd, gatewayTProxyCmd, gatewayTunCmd} {
+		if !cmd.Hidden {
+			t.Errorf("expected redundant command %q to be Hidden", cmd.Name())
+		}
+	}
+}
+
 
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/gatewayconf"
+	"xray-proxya/internal/ui"
 	"xray-proxya/pkg/utils"
 
 	"github.com/spf13/cobra"
@@ -89,8 +90,7 @@ func printRulesTable(header string, rules []config.GatewayRule) {
 		fmt.Println("  (no rules configured)")
 		return
 	}
-	fmt.Printf("  %-5s  %-19s  %-20s  %-12s  %s\n", "INDEX", "MAC ADDRESS", "IP / CIDR", "INTERFACE", "TARGET")
-	fmt.Printf("  %-5s  %-19s  %-20s  %-12s  %s\n", "-----", "-------------------", "--------------------", "------------", "------")
+	t := ui.NewTable("INDEX", "MAC ADDRESS", "IP / SUBNET", "INTERFACE", "TARGET")
 	for i, r := range rules {
 		mac := r.MAC
 		if mac == "" {
@@ -104,15 +104,16 @@ func printRulesTable(header string, rules []config.GatewayRule) {
 		if iface == "" {
 			iface = "(any)"
 		}
-		fmt.Printf("  #%-4d  %-19s  %-20s  %-12s  %s\n", i+1, mac, ip, iface, r.Target)
+		t.AddRow(fmt.Sprintf("#%d", i+1), mac, ip, iface, r.Target)
 	}
+	fmt.Print(t.Render())
 }
 
 func runGatewayRuleList(cmd *cobra.Command, args []string) error {
 	activeCfg, _ := config.LoadConfigEx(false)
 	stagingCfg, _ := config.LoadConfigEx(true)
 	if activeCfg == nil && stagingCfg == nil {
-		return fmt.Errorf("❌ Failed to load gateway configuration")
+		return fmt.Errorf("failed to load gateway configuration")
 	}
 
 	if gatewayRuleListJSON {
@@ -320,9 +321,9 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 			return gatewayconf.ClearRules(content)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to clear rules in gateway.conf: %w", err)
+			return fmt.Errorf("failed to clear rules in gateway.conf: %w", err)
 		}
-		fmt.Println("✅ All client rules cleared from STAGING (gateway.conf).")
+		fmt.Println(ui.Success("All client rules cleared from STAGING (gateway.conf)."))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
@@ -330,16 +331,16 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 	// 2. Delete rule
 	if ruleDel {
 		if mac == "" && ip == "" && iface == "" {
-			return fmt.Errorf("❌ At least one selector (--mac, --ip, or --interface) must be specified for delete")
+			return fmt.Errorf("at least one selector (--mac, --ip, or --interface) must be specified for delete")
 		}
 		delRule := config.GatewayRule{MAC: mac, IP: ip, Interface: iface}
 		err := gatewayconf.ModifyGatewayConf(func(content string) string {
 			return gatewayconf.DeleteRule(content, delRule)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to delete rule from gateway.conf: %w", err)
+			return fmt.Errorf("failed to delete rule from gateway.conf: %w", err)
 		}
-		fmt.Println("✅ Rule deleted from STAGING (gateway.conf).")
+		fmt.Println(ui.Success("Rule deleted from STAGING (gateway.conf)."))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
@@ -355,7 +356,7 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 		}
 		normRule, err := config.ValidateGatewayRule(rawRule)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 
 		// Validate target against CustomOutbounds if not direct/block
@@ -369,7 +370,7 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 				}
 			}
 			if !found {
-				return fmt.Errorf("❌ Target relay %q not found in custom outbounds (allowed: direct, block, or an existing relay alias)", normRule.Target)
+				return fmt.Errorf("target relay %q not found in custom outbounds (allowed: direct, block, or an existing relay alias)", normRule.Target)
 			}
 		}
 
@@ -377,21 +378,21 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 		hasRisk, warningMsg := detectLockoutRisk(normRule)
 		if hasRisk {
 			if force {
-				fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule forced (--force specified): %s\n", warningMsg)
+				fmt.Fprintln(cmd.OutOrStdout(), ui.Warning(fmt.Sprintf("WARNING: High-risk block rule forced (--force specified): %s", warningMsg)))
 			} else {
-				fmt.Fprintf(cmd.OutOrStdout(), "⚠️  WARNING: High-risk block rule detected!\n")
+				fmt.Fprintln(cmd.OutOrStdout(), ui.Warning("WARNING: High-risk block rule detected!"))
 				fmt.Fprintf(cmd.OutOrStdout(), "   %s\n", warningMsg)
 				fmt.Fprintf(cmd.OutOrStdout(), "   Applying this rule may immediately sever your active SSH session and cause permanent management lockout.\n")
-				fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to proceed? [N/y]: ")
+				fmt.Fprintf(cmd.OutOrStdout(), "Are you sure you want to proceed? [y/N]: ")
 
 				reader := bufio.NewReader(cmd.InOrStdin())
 				input, err := reader.ReadString('\n')
 				if err != nil && len(input) == 0 {
-					return fmt.Errorf("❌ Operation cancelled: failed to read confirmation (use --force to bypass)")
+					return fmt.Errorf("Operation cancelled: failed to read confirmation (use --force to bypass)")
 				}
 				answer := strings.TrimSpace(input)
 				if !strings.EqualFold(answer, "y") && !strings.EqualFold(answer, "yes") {
-					return fmt.Errorf("❌ Operation cancelled by user (lockout protection)")
+					return fmt.Errorf("Operation cancelled by user (lockout protection)")
 				}
 			}
 		}
@@ -400,7 +401,7 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 			return gatewayconf.UpdateRule(content, normRule)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to update rule in gateway.conf: %w", err)
+			return fmt.Errorf("failed to update rule in gateway.conf: %w", err)
 		}
 
 		macDesc := normRule.MAC
@@ -415,7 +416,7 @@ func runGatewayRule(cmd *cobra.Command, args []string) error {
 		if ifaceDesc == "" {
 			ifaceDesc = "(any)"
 		}
-		fmt.Printf("✅ Updated gateway rule in STAGING (gateway.conf): MAC=%s, IP=%s, Interface=%s -> %s\n", macDesc, ipDesc, ifaceDesc, normRule.Target)
+		fmt.Println(ui.Success(fmt.Sprintf("Updated gateway rule in STAGING (gateway.conf): MAC=%s, IP=%s, Interface=%s -> %s", macDesc, ipDesc, ifaceDesc, normRule.Target)))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
@@ -429,7 +430,7 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 		target = ruleSetTarget
 	}
 	if strings.TrimSpace(target) == "" {
-		return fmt.Errorf("❌ --to / -t must be specified when adding or updating a rule")
+		return fmt.Errorf("--to / -t must be specified when adding or updating a rule")
 	}
 	return runGatewayRule(cmd, args)
 }
@@ -449,24 +450,24 @@ var gatewayRuleDelCmd = &cobra.Command{
 func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("failed to load staging config: %v", err)
 	}
 
 	if len(cfg.Gateway.Rules) == 0 {
-		return fmt.Errorf("❌ No gateway rules configured in STAGING")
+		return fmt.Errorf("no gateway rules configured in STAGING")
 	}
 
 	if len(args) == 1 {
 		idx, err := strconv.Atoi(strings.TrimSpace(args[0]))
 		if err != nil || idx < 1 || idx > len(cfg.Gateway.Rules) {
-			return fmt.Errorf("❌ Invalid rule index %q (must be between 1 and %d)", args[0], len(cfg.Gateway.Rules))
+			return fmt.Errorf("invalid rule index %q (must be between 1 and %d)", args[0], len(cfg.Gateway.Rules))
 		}
 		deleted := cfg.Gateway.Rules[idx-1]
 		err = gatewayconf.ModifyGatewayConf(func(content string) string {
 			return gatewayconf.DeleteRule(content, deleted)
 		})
 		if err != nil {
-			return fmt.Errorf("❌ Failed to delete rule from gateway.conf: %w", err)
+			return fmt.Errorf("failed to delete rule from gateway.conf: %w", err)
 		}
 		macDesc := deleted.MAC
 		if macDesc == "" {
@@ -480,7 +481,7 @@ func runGatewayRuleDel(cmd *cobra.Command, args []string) error {
 		if ifaceDesc == "" {
 			ifaceDesc = "(any)"
 		}
-		fmt.Printf("✅ Deleted rule #%d (MAC=%s, IP=%s, Interface=%s -> %s) from STAGING.\n", idx, macDesc, ipDesc, ifaceDesc, deleted.Target)
+		fmt.Println(ui.Success(fmt.Sprintf("Deleted rule #%d (MAC=%s, IP=%s, Interface=%s -> %s) from STAGING.", idx, macDesc, ipDesc, ifaceDesc, deleted.Target)))
 		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
 		return nil
 	}
