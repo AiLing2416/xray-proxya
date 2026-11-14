@@ -372,6 +372,7 @@ var gatewayStateCmd = &cobra.Command{
 	Use:        "state",
 	Short:      "View or set gateway state (--proxy, --forward-only, --disabled)",
 	Args:       cobra.NoArgs,
+	Hidden:     true,
 	Deprecated: "use 'gateway set --state ...' instead",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if gatewayStateProxy || gatewayStateForwardOnly || gatewayStateDisabled {
@@ -452,10 +453,11 @@ func runGatewayState(cmd *cobra.Command, args []string) error {
 }
 
 var gatewayTProxyCmd = &cobra.Command{
-	Use:               "tproxy",
+	Use:               "tproxy [relay]",
 	Short:             "Configure or inspect TProxy transparent gateway settings",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeRelayAliasesArg,
+	Hidden:            true,
 	Deprecated:        "use 'gateway set' instead",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		hasChanged := len(args) > 0
@@ -506,8 +508,8 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		}
 	})
 
-	lanEnable := cmd.Flags().Changed("lan-enable") && cmd.Flags().Lookup("lan-enable").Value.String() == "true"
-	lanDisable := cmd.Flags().Changed("lan-disable") && cmd.Flags().Lookup("lan-disable").Value.String() == "true"
+	lanEnable := false
+	lanDisable := false
 	if cmd.Flags().Changed("lan") {
 		val, _ := cmd.Flags().GetBool("lan")
 		if val {
@@ -525,8 +527,8 @@ func runGatewayTProxy(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	localEnable := cmd.Flags().Changed("local-enable") && cmd.Flags().Lookup("local-enable").Value.String() == "true"
-	localDisable := cmd.Flags().Changed("local-disable") && cmd.Flags().Lookup("local-disable").Value.String() == "true"
+	localEnable := false
+	localDisable := false
 	if cmd.Flags().Changed("local") {
 		val, _ := cmd.Flags().GetBool("local")
 		if val {
@@ -731,6 +733,7 @@ var gatewayTunCmd = &cobra.Command{
 	Use:        "tun",
 	Short:      "Configure or inspect standalone TUN adapter settings",
 	Args:       cobra.NoArgs,
+	Hidden:     true,
 	Deprecated: "use 'gateway set --tun' instead",
 	PreRunE: func(cmd *cobra.Command, args []string) error {
 		if gatewayTunEnable || gatewayTunDisable {
@@ -1328,12 +1331,8 @@ func init() {
 	gatewaySetCmd.Flags().BoolVar(&gatewayTProxyNow, "now", false, "Immediately apply changes and update runtime rules")
 	gatewaySetCmd.Flags().Bool("lan", false, "Enable LAN gateway forwarding in staging")
 	gatewaySetCmd.Flags().Bool("no-lan", false, "Disable LAN gateway in staging")
-	gatewaySetCmd.Flags().Bool("lan-enable", false, "Enable LAN gateway (IP forwarding) in staging")
-	gatewaySetCmd.Flags().Bool("lan-disable", false, "Disable LAN gateway in staging")
 	gatewaySetCmd.Flags().Bool("local", false, "Enable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("no-local", false, "Disable local machine transparent proxy in staging")
-	gatewaySetCmd.Flags().Bool("local-enable", false, "Enable local machine transparent proxy in staging")
-	gatewaySetCmd.Flags().Bool("local-disable", false, "Disable local machine transparent proxy in staging")
 	gatewaySetCmd.Flags().Bool("fail-open", false, "Enable fail-open behavior on proxy failure in staging")
 	gatewaySetCmd.Flags().Bool("no-fail-open", false, "Disable fail-open (enforce fail-closed) in staging")
 
@@ -1384,10 +1383,6 @@ func init() {
 	gatewayExportCmd.Flags().StringVarP(&gatewayExportOut, "output", "o", "", "Output file path")
 
 	_ = gatewaySetCmd.Flags().MarkHidden("lan-interface")
-	_ = gatewaySetCmd.Flags().MarkHidden("lan-enable")
-	_ = gatewaySetCmd.Flags().MarkHidden("lan-disable")
-	_ = gatewaySetCmd.Flags().MarkHidden("local-enable")
-	_ = gatewaySetCmd.Flags().MarkHidden("local-disable")
 
 	gatewayStateCmd.Flags().BoolVar(&gatewayStateProxy, "proxy", false, "Set gateway state to proxy in staging")
 	gatewayStateCmd.Flags().BoolVar(&gatewayStateForwardOnly, "forward-only", false, "Set gateway state to forward-only in staging")

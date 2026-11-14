@@ -18,15 +18,8 @@ import (
 var (
 	gatewayRuleListJSON bool
 
-	ruleMAC       string
-	ruleIP        string
-	ruleInterface string
-	ruleTo        string
-	ruleTarget    string
-	ruleForce     bool
-	ruleDel       bool
-	ruleClear     bool
-	ruleStatus    bool
+	ruleDel   bool
+	ruleClear bool
 
 	ruleSetMAC       string
 	ruleSetIP        string
@@ -49,15 +42,10 @@ var gatewayRuleCmd = &cobra.Command{
 	Use:     "rule",
 	Aliases: []string{"rules"},
 	Short:   "Manage gateway per-MAC, per-IP/CIDR, and per-interface routing rules (STAGING)",
-	Args:    cobra.ArbitraryArgs,
-	PreRunE: func(cmd *cobra.Command, args []string) error {
-		if ruleClear || ruleDel || ruleTarget != "" || ruleSetTo != "" || ruleSetTarget != "" ||
-			cmd.Flags().Changed("to") || cmd.Flags().Changed("target") || cmd.Flags().Changed("clear") || cmd.Flags().Changed("del") {
-			return gatewayRequireRoot("gateway rule")
-		}
-		return nil
+	Args:    cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		_ = cmd.Help()
 	},
-	RunE:    runGatewayRule,
 }
 
 type GatewayRuleItemJSON struct {
@@ -299,48 +287,31 @@ func detectLockoutRisk(targetRule config.GatewayRule) (bool, string) {
 }
 
 func runGatewayRule(cmd *cobra.Command, args []string) error {
-	mac := ruleMAC
-	if mac == "" {
-		mac = ruleSetMAC
-	}
+	mac := ruleSetMAC
 	if mac == "" {
 		mac = ruleDelMAC
 	}
 
-	ip := ruleIP
-	if ip == "" {
-		ip = ruleSetIP
-	}
+	ip := ruleSetIP
 	if ip == "" {
 		ip = ruleDelIP
 	}
 
-	iface := ruleInterface
-	if iface == "" {
-		iface = ruleSetInterface
-	}
+	iface := ruleSetInterface
 	if iface == "" {
 		iface = ruleDelInterface
 	}
 
-	target := ruleTo
-	if target == "" {
-		target = ruleTarget
-	}
-	if target == "" {
-		target = ruleSetTo
-	}
+	target := ruleSetTo
 	if target == "" {
 		target = ruleSetTarget
 	}
 
-	force := ruleForce || ruleSetForce
+	force := ruleSetForce
 	defer func() {
-		ruleForce = false
 		ruleSetForce = false
 		ruleDel = false
 		ruleClear = false
-		ruleStatus = false
 	}()
 
 	// 1. Clear rules
@@ -457,12 +428,6 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 	if target == "" {
 		target = ruleSetTarget
 	}
-	if target == "" {
-		target = ruleTo
-	}
-	if target == "" {
-		target = ruleTarget
-	}
 	if strings.TrimSpace(target) == "" {
 		return fmt.Errorf("❌ --to / -t must be specified when adding or updating a rule")
 	}
@@ -470,13 +435,13 @@ func runGatewayRuleSet(cmd *cobra.Command, args []string) error {
 }
 
 var gatewayRuleDelCmd = &cobra.Command{
-	Use:               "del [index]",
-	Aliases:           []string{"rm", "remove"},
+	Use:               "remove [index]",
+	Aliases:           []string{"rm", "del", "delete"},
 	Short:             "Delete a gateway routing rule from STAGING",
 	Args:              cobra.MaximumNArgs(1),
 	ValidArgsFunction: completeRuleIndicesArg,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
-		return gatewayRequireRoot("gateway rule del")
+		return gatewayRequireRoot("gateway rule remove")
 	},
 	RunE:              runGatewayRuleDel,
 }
@@ -626,23 +591,6 @@ func completeRuleIPs(cmd *cobra.Command, args []string, toComplete string) ([]st
 }
 
 func init() {
-	gatewayRuleCmd.Flags().StringVarP(&ruleMAC, "mac", "m", "", "Client MAC address (e.g. 52:54:00:83:00:11)")
-	gatewayRuleCmd.Flags().StringVar(&ruleIP, "ip", "", "Client IP address or CIDR subnet (e.g. 192.168.1.95 or 10.0.0.0/24)")
-	gatewayRuleCmd.Flags().StringVarP(&ruleInterface, "interface", "i", "", "LAN interface name (e.g. eth1)")
-	gatewayRuleCmd.Flags().StringVarP(&ruleTo, "to", "t", "", "Target destination ('direct', 'block', or relay alias)")
-	gatewayRuleCmd.Flags().StringVar(&ruleTarget, "target", "", "Alias for --to")
-	gatewayRuleCmd.Flags().BoolVarP(&ruleForce, "force", "f", false, "Force setting the rule even if it poses a lockout risk")
-	gatewayRuleCmd.Flags().BoolVar(&ruleDel, "del", false, "Delete rule matching specified criteria")
-	gatewayRuleCmd.Flags().BoolVar(&ruleClear, "clear", false, "Clear all rules")
-	gatewayRuleCmd.Flags().BoolVar(&ruleStatus, "status", false, "Show current rule status")
-	gatewayRuleCmd.Flags().BoolVar(&gatewayRuleListJSON, "json", false, "Output in JSON format")
-
-	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("to", completeRuleTargets)
-	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("target", completeRuleTargets)
-	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("interface", completeInterfaceNames)
-	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("mac", completeRuleMACs)
-	_ = gatewayRuleCmd.RegisterFlagCompletionFunc("ip", completeRuleIPs)
-
 	gatewayRuleListCmd.Flags().BoolVar(&gatewayRuleListJSON, "json", false, "Output in JSON format")
 
 	gatewayRuleSetCmd.Flags().StringVarP(&ruleSetMAC, "mac", "m", "", "Client MAC address (e.g. 52:54:00:83:00:11)")

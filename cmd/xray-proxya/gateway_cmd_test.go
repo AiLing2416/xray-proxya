@@ -56,46 +56,6 @@ func TestGatewaySetFlagsLanLocalEnableDisable(t *testing.T) {
 		wantLAN   bool
 	}{
 		{
-			name:      "enable LAN",
-			args:      []string{"--lan-enable"},
-			initLAN:   false,
-			wantLAN:   true,
-			initLocal: false,
-			wantLocal: false,
-		},
-		{
-			name:      "disable LAN",
-			args:      []string{"--lan-disable"},
-			initLAN:   true,
-			wantLAN:   false,
-			initLocal: false,
-			wantLocal: false,
-		},
-		{
-			name:      "enable Local",
-			args:      []string{"--local-enable"},
-			initLocal: false,
-			wantLocal: true,
-			initLAN:   false,
-			wantLAN:   false,
-		},
-		{
-			name:      "disable Local",
-			args:      []string{"--local-disable"},
-			initLocal: true,
-			wantLocal: false,
-			initLAN:   false,
-			wantLAN:   false,
-		},
-		{
-			name:      "enable both",
-			args:      []string{"--lan-enable", "--local-enable"},
-			initLAN:   false,
-			initLocal: false,
-			wantLAN:   true,
-			wantLocal: true,
-		},
-		{
 			name:      "concise enable LAN",
 			args:      []string{"--lan"},
 			initLAN:   false,
@@ -217,11 +177,7 @@ func TestGatewaySetConflictingFlagsError(t *testing.T) {
 
 	conflictCases := [][]string{
 		{"--lan", "--no-lan"},
-		{"--lan-enable", "--lan-disable"},
-		{"--lan", "--lan-disable"},
 		{"--local", "--no-local"},
-		{"--local-enable", "--local-disable"},
-		{"--local", "--local-disable"},
 	}
 
 	for _, args := range conflictCases {
@@ -493,7 +449,7 @@ func TestProxyNodeExitConfigurationSuite(t *testing.T) {
 		_ = f.Value.Set(f.DefValue)
 		f.Changed = false
 	})
-	if err := gatewaySetCmd.ParseFlags([]string{"--relay", "JP-TK", "--state", "proxy", "--local-enable"}); err != nil {
+	if err := gatewaySetCmd.ParseFlags([]string{"--relay", "JP-TK", "--state", "proxy", "--local"}); err != nil {
 		t.Fatalf("failed to parse gateway set flags: %v", err)
 	}
 	if err := gatewaySetCmd.RunE(gatewaySetCmd, nil); err != nil {

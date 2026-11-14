@@ -798,7 +798,7 @@ func TestDetectLockoutRisk_WithIP(t *testing.T) {
 	}
 }
 
-func TestGatewayRuleDirectFlags_MultiCriteria(t *testing.T) {
+func TestGatewayRuleSubcommands_MultiCriteria(t *testing.T) {
 	setupTestConfigDir(t)
 
 	cfg := &config.UserConfig{
@@ -813,15 +813,15 @@ func TestGatewayRuleDirectFlags_MultiCriteria(t *testing.T) {
 	}
 	_ = cfg.SaveEx(true)
 
-	// 1. Direct multi-criteria add: gateway rule --ip 10.0.0.1 --mac 52:54:00:83:00:11 --interface eth1 --to relay-node1
-	resetCmdFlags(gatewayRuleCmd)
-	ruleIP = "10.0.0.1"
-	ruleMAC = "52:54:00:83:00:11"
-	ruleInterface = "eth1"
-	ruleTo = "relay-node1"
-	err := runGatewayRule(gatewayRuleCmd, []string{})
+	// 1. Multi-criteria add: gateway rule set --ip 10.0.0.1 --mac 52:54:00:83:00:11 --interface eth1 --to relay-node1
+	resetCmdFlags(gatewayRuleSetCmd)
+	ruleSetIP = "10.0.0.1"
+	ruleSetMAC = "52:54:00:83:00:11"
+	ruleSetInterface = "eth1"
+	ruleSetTo = "relay-node1"
+	err := gatewayRuleSetCmd.RunE(gatewayRuleSetCmd, []string{})
 	if err != nil {
-		t.Fatalf("runGatewayRule multi-criteria failed: %v", err)
+		t.Fatalf("gateway rule set multi-criteria failed: %v", err)
 	}
 
 	stg, _ := config.LoadConfigEx(true)
@@ -833,20 +833,19 @@ func TestGatewayRuleDirectFlags_MultiCriteria(t *testing.T) {
 		t.Fatalf("unexpected rule content: %+v", r)
 	}
 
-	// 2. Direct delete matching criteria: gateway rule --ip 10.0.0.1 --mac 52:54:00:83:00:11 --interface eth1 --del
-	resetCmdFlags(gatewayRuleCmd)
-	ruleIP = "10.0.0.1"
-	ruleMAC = "52:54:00:83:00:11"
-	ruleInterface = "eth1"
-	ruleDel = true
-	err = runGatewayRule(gatewayRuleCmd, []string{})
+	// 2. Delete matching criteria: gateway rule remove --ip 10.0.0.1 --mac 52:54:00:83:00:11 --interface eth1
+	resetCmdFlags(gatewayRuleDelCmd)
+	ruleDelIP = "10.0.0.1"
+	ruleDelMAC = "52:54:00:83:00:11"
+	ruleDelInterface = "eth1"
+	err = gatewayRuleDelCmd.RunE(gatewayRuleDelCmd, []string{})
 	if err != nil {
-		t.Fatalf("runGatewayRule --del failed: %v", err)
+		t.Fatalf("gateway rule remove failed: %v", err)
 	}
 
 	stg, _ = config.LoadConfigEx(true)
 	if len(stg.Gateway.Rules) != 0 {
-		t.Fatalf("expected 0 rules after --del, got: %+v", stg.Gateway.Rules)
+		t.Fatalf("expected 0 rules after remove, got: %+v", stg.Gateway.Rules)
 	}
 }
 
@@ -897,18 +896,15 @@ func TestGatewayRuleSetRequiresTo(t *testing.T) {
 		t.Fatalf("expected error containing %q, got: %v", expectedErr, err)
 	}
 
-	// 4. bare gateway rule should succeed and display rule list
-	resetCmdFlags(gatewayRuleCmd)
-	ruleTo = ""
-	ruleTarget = ""
-	ruleClear = false
-	ruleDel = false
-	err = gatewayRuleCmd.RunE(gatewayRuleCmd, []string{})
-	if err != nil {
-		t.Fatalf("expected bare gateway rule to succeed, got: %v", err)
+	// 4. gateway rule container rejects unexpected args and shows help with no args
+	if err := gatewayRuleCmd.Args(gatewayRuleCmd, []string{"unexpected"}); err == nil {
+		t.Fatal("expected gatewayRuleCmd to reject unexpected arguments")
+	}
+	if err := gatewayRuleCmd.Args(gatewayRuleCmd, []string{}); err != nil {
+		t.Fatalf("expected gatewayRuleCmd to accept no arguments, got: %v", err)
 	}
 
-	// 5. gateway rule list should also succeed
+	// 5. gateway rule list should succeed
 	err = gatewayRuleListCmd.RunE(gatewayRuleListCmd, []string{})
 	if err != nil {
 		t.Fatalf("expected gateway rule list to succeed, got: %v", err)
