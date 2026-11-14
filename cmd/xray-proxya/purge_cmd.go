@@ -87,7 +87,7 @@ Examples:
 		}
 
 		out := cmd.OutOrStdout()
-		fmt.Fprintln(out, "📋 Purge Execution Plan:")
+		fmt.Fprintln(out, "Purge Execution Plan:")
 		if len(plan.Items) == 0 {
 			fmt.Fprintln(out, "  (No matching files or services found on disk)")
 		} else {
@@ -124,7 +124,7 @@ Examples:
 
 		// Interactive confirmation if not --force
 		if !force {
-			fmt.Fprintf(out, "\n⚠️  The above actions will permanently modify your system.\n")
+			fmt.Fprintf(out, "\n▲ The above actions will permanently modify your system.\n")
 			fmt.Fprintf(out, "Are you sure you want to proceed? [y/N]: ")
 
 			reader := bufio.NewReader(cmd.InOrStdin())
@@ -134,12 +134,11 @@ Examples:
 			}
 			answer := strings.ToLower(strings.TrimSpace(input))
 			if answer != "y" && answer != "yes" {
-				fmt.Fprintln(out, "Purge cancelled.")
-				return nil
+				return fmt.Errorf("purge cancelled")
 			}
 		}
 
-		fmt.Fprintln(out, "\n🚀 Executing purge...")
+		fmt.Fprintln(out, "\n→ Executing purge...")
 		err = config.WithLifecycleLock(func() error {
 			return purge.Execute(plan, configDir, homeDir, installDir, out)
 		})
@@ -153,12 +152,12 @@ Examples:
 			if readErr == nil && (len(entries) == 0 || (len(entries) == 1 && entries[0].Name() == "lifecycle.lock")) {
 				_ = os.Remove(lockFile)
 				if err := os.Remove(configDir); err == nil {
-					fmt.Fprintf(out, "✅ Cleaned empty config directory: %s\n", configDir)
+					fmt.Fprintf(out, "✔ Cleaned empty config directory: %s\n", configDir)
 				}
 			}
 		}
 
-		fmt.Fprintln(out, "\n✨ Purge operation completed.")
+		fmt.Fprintln(out, "\n✔ Purge operation completed.")
 		return nil
 	},
 }

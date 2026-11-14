@@ -26,12 +26,12 @@ var statusCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
-			return fmt.Errorf("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
+			return fmt.Errorf("Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 		}
 
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			return fmt.Errorf("❌ Failed to load active config: %w", err)
+			return fmt.Errorf("Failed to load active config: %w", err)
 		}
 
 		isRoot := os.Geteuid() == 0
@@ -53,7 +53,7 @@ var statusCmd = &cobra.Command{
 		printServiceUnitStatus(cfg, isRoot)
 
 		// 2. Network & Role Configuration
-		fmt.Println("\n🌐 NETWORK & PROXY")
+		fmt.Println("\nNETWORK & PROXY")
 		if cfg.Role == config.RoleGateway {
 			gwState := cfg.Gateway.State
 			if gwState == "" {
@@ -95,19 +95,19 @@ var statusCmd = &cobra.Command{
 		// 3. Traffic Statistics
 		mainActive, _, _ := querySystemdUnitState(xray.MainServiceUnit)
 		if !mainActive {
-			fmt.Println("\n📊 TRAFFIC & USAGE")
+			fmt.Println("\nTRAFFIC & USAGE")
 			fmt.Println("  (Xray Core service is inactive; traffic statistics unavailable)")
 		} else {
 			allStats, err := xray.GetXrayStats(cfg.APIInbound)
 			if err != nil {
-				fmt.Println("\n📊 TRAFFIC & USAGE")
-				fmt.Printf("  ⚠️ Failed to query API traffic stats (port %d): %v\n", cfg.APIInbound, err)
+				fmt.Println("\nTRAFFIC & USAGE")
+				fmt.Printf("  ▲ Failed to query API traffic stats (port %d): %v\n", cfg.APIInbound, err)
 			} else {
-				fmt.Println("\n📊 TRAFFIC & USAGE")
+				fmt.Println("\nTRAFFIC & USAGE")
 				summary := trafficstats.Summarize(allStats)
 				fmt.Printf("  Throughput Total   : Direct: %s │ Relay: %s\n",
 					utils.FormatBytes(summary.Direct), utils.FormatBytes(summary.Relay))
-				printNamedStats("\n  📥 Service Inbounds:", summary.InboundStats)
+				printNamedStats("\n  Service Inbounds:", summary.InboundStats)
 				printNamedStats("\n  🧭 Direct / Service Usage:", summary.ServiceStats)
 				printNamedStats("\n  🔁 Relay Usage:", summary.RelayStats)
 				printGuestStatsWithDetails(summary.GuestStats, cfg.Guests)
@@ -405,7 +405,7 @@ func outputStatusJSON(cfg *config.UserConfig, isRoot bool) error {
 
 	data, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
-		return fmt.Errorf("❌ Failed to serialize status JSON: %w", err)
+		return fmt.Errorf("Failed to serialize status JSON: %w", err)
 	}
 	fmt.Println(string(data))
 	return nil

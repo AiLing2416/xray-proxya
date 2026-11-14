@@ -91,7 +91,7 @@ var runCmd = &cobra.Command{
 		if cfg.Role == config.RoleGateway && gatewayState == "proxy" &&
 			(cfg.Gateway.LocalEnabled || cfg.Gateway.LANEnabled) && cfg.Gateway.RelayAlias != "" &&
 			!config.GatewayTunDisabled() && pathErr != nil {
-			fmt.Printf("ℹ️  PathLink unavailable for relay %s: %v\n", cfg.Gateway.RelayAlias, pathErr)
+			fmt.Printf("ℹ PathLink unavailable for relay %s: %v\n", cfg.Gateway.RelayAlias, pathErr)
 		}
 		if pathdEnabled {
 			// Retry PathLink when the service is restarted.  If allocation fails,
@@ -101,7 +101,7 @@ var runCmd = &cobra.Command{
 			}
 			port, err := xray.GetFreePort()
 			if err != nil {
-				fmt.Printf("⚠️  PathLink disabled: allocate SOCKS port: %v\n", err)
+				fmt.Printf("▲ PathLink disabled: allocate SOCKS port: %v\n", err)
 				pathdEnabled = false
 			} else {
 				pathdPort = port
@@ -113,7 +113,7 @@ var runCmd = &cobra.Command{
 		}
 		quotaMonitor, err := quota.LoadMonitor()
 		if err != nil {
-			fmt.Printf("⚠️  Failed to load quota monitor state: %v\n", err)
+			fmt.Printf("▲ Failed to load quota monitor state: %v\n", err)
 			quotaMonitor = quota.NewMonitor()
 		}
 
@@ -130,7 +130,7 @@ var runCmd = &cobra.Command{
 				go func(eps map[string]config.EndpointConfig) {
 					for epName, ep := range eps {
 						if err := endpoint.ReconcileOnStartup(epName, ep); err != nil {
-							fmt.Printf("⚠️  Failed to reconcile dynamic-v6 endpoint '%s': %v\n", epName, err)
+							fmt.Printf("▲ Failed to reconcile dynamic-v6 endpoint '%s': %v\n", epName, err)
 						} else {
 							st, _ := endpoint.LoadRotationState(epName)
 							activeCount := 0
@@ -139,13 +139,13 @@ var runCmd = &cobra.Command{
 								activeCount = len(st.ActivePool)
 								deprecatedCount = len(st.DeprecatedPool)
 							}
-							fmt.Printf("🔄 Reconciled dynamic-v6 endpoint '%s' (active: %d, deprecated: %d)\n", epName, activeCount, deprecatedCount)
+							fmt.Printf("→ Reconciled dynamic-v6 endpoint '%s' (active: %d, deprecated: %d)\n", epName, activeCount, deprecatedCount)
 						}
 					}
 				}(endpointsToReconcile)
 			}
 
-			fmt.Println("🔍 Generating configuration...")
+			fmt.Println("→ Generating configuration...")
 			jsonData, err := xray.GenerateXrayJSON(currentCfg, overrides, "")
 			if err != nil {
 				return nil, nil, err
@@ -154,7 +154,7 @@ var runCmd = &cobra.Command{
 				return nil, nil, err
 			}
 
-			fmt.Println("🚀 Starting Xray core in foreground...")
+			fmt.Println("→ Starting Xray core in foreground...")
 			process, err := xray.StartXray(confPath)
 			if err != nil {
 				return nil, nil, err
@@ -249,7 +249,7 @@ var runCmd = &cobra.Command{
 
 		if len(skinMappings) > 0 {
 			if !skin.Enabled {
-				fmt.Println("⚠️  Web camouflage skin feature is disabled in Slim build. Skipping skin server.")
+				fmt.Println("▲ Web camouflage skin feature is disabled in Slim build. Skipping skin server.")
 			} else {
 				skinPort := cfg.EnsureSkinPort()
 				skinAddr := fmt.Sprintf("127.0.0.1:%d", skinPort)
@@ -270,9 +270,9 @@ var runCmd = &cobra.Command{
 					if h3Srv != nil {
 						h3Status = " (H1/H2 + native H3)"
 					}
-					fmt.Printf("🎨 Web Skin HTTPS%s server listening on %s for: %s\n", h3Status, skinAddr, strings.Join(domains, ", "))
+					fmt.Printf("Web Skin HTTPS%s server listening on %s for: %s\n", h3Status, skinAddr, strings.Join(domains, ", "))
 				} else {
-					fmt.Printf("⚠️  Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
+					fmt.Printf("▲ Failed to start Web Skin HTTPS server on %s: %v\n", skinAddr, err)
 				}
 			}
 
@@ -306,9 +306,9 @@ var runCmd = &cobra.Command{
 				if ln, err := net.Listen("tcp", ":80"); err == nil {
 					skinServers = append(skinServers, httpRedirectServer)
 					go func() { _ = httpRedirectServer.Serve(ln) }()
-					fmt.Println("🌐 Port 80 HTTP -> HTTPS redirect listener started")
+					fmt.Println("Port 80 HTTP -> HTTPS redirect listener started")
 				} else {
-					fmt.Printf("⚠️  Port 80 redirect listener not started: %v\n", err)
+					fmt.Printf("▲ Port 80 redirect listener not started: %v\n", err)
 				}
 			}
 		}
@@ -339,7 +339,7 @@ var runCmd = &cobra.Command{
 				}
 				_ = pathClient.Close()
 				pathClient = nil
-				fmt.Printf("⚠️  PathLink disabled for this runtime: %v\n", err)
+				fmt.Printf("▲ PathLink disabled for this runtime: %v\n", err)
 			} else {
 				if markerErr := config.SetPathTunDisabled(false); markerErr != nil {
 					_ = pathTunManager.Close()
@@ -379,7 +379,7 @@ var runCmd = &cobra.Command{
 		// `gateway up` to install interception rules.
 		if !(cfg.Role == config.RoleGateway && proxyaSELinux.IsEnforcing() && !proxyaSELinux.InGatewayDomain()) {
 			if err := gateway.RestoreTunState(cfg); err != nil {
-				fmt.Printf("❌ Failed to restore gateway runtime state: %v\n", err)
+				fmt.Printf("✖ Failed to restore gateway runtime state: %v\n", err)
 				_ = stopProcess(process, waitCh)
 				cleanup()
 				return fmt.Errorf("restore gateway runtime state: %w", err)
@@ -399,13 +399,13 @@ var runCmd = &cobra.Command{
 			case <-certTicker.C:
 				renewed, failed, expiredFailed, err := certmanager.CheckAndRenewCerts(cfg, false)
 				if err != nil {
-					fmt.Printf("⚠️  Cert auto-renewal check error: %v\n", err)
+					fmt.Printf("▲ Cert auto-renewal check error: %v\n", err)
 				}
 				for _, f := range failed {
-					fmt.Printf("⚠️  Cert auto-renewal failed for %s: %v\n", f.Domain, f.Err)
+					fmt.Printf("▲ Cert auto-renewal failed for %s: %v\n", f.Domain, f.Err)
 				}
 				for _, d := range renewed {
-					fmt.Printf("✅ Auto-renewed certificate for %s\n", d)
+					fmt.Printf("✔ Auto-renewed certificate for %s\n", d)
 				}
 				for _, d := range expiredFailed {
 					fmt.Printf("🚨 Alert: Certificate for %s expired and renewal failed. Dependent presets disabled.\n", d)
@@ -421,22 +421,22 @@ var runCmd = &cobra.Command{
 			case err := <-waitCh:
 				cleanup()
 				if err != nil {
-					fmt.Printf("\n❌ Xray core exited unexpectedly: %v\n", err)
+					fmt.Printf("\n✖ Xray core exited unexpectedly: %v\n", err)
 					return fmt.Errorf("Xray core exited unexpectedly: %w", err)
 				}
-				fmt.Println("\nℹ️ Xray core exited normally.")
+				fmt.Println("\nℹ Xray core exited normally.")
 				return nil
 			case <-quotaTicker.C:
 				reloadedCfg, err := config.LoadConfig()
 				if err != nil {
-					fmt.Printf("⚠️  Failed to reload config for guest quota check: %v\n", err)
+					fmt.Printf("▲ Failed to reload config for guest quota check: %v\n", err)
 					continue
 				}
 				cfg = reloadedCfg
 
 				update, err := checkGuestQuotaState(cfg, quotaMonitor, time.Now())
 				if err != nil {
-					fmt.Printf("⚠️  Guest quota check failed: %v\n", err)
+					fmt.Printf("▲ Guest quota check failed: %v\n", err)
 					continue
 				}
 				if !update.Changed {
@@ -444,14 +444,14 @@ var runCmd = &cobra.Command{
 				}
 				if update.RestartNeeded {
 					for _, msg := range update.Messages {
-						fmt.Printf("ℹ️  Guest quota: %s\n", msg)
+						fmt.Printf("ℹ Guest quota: %s\n", msg)
 					}
-					fmt.Println("🔄 Reloading Xray to apply guest quota changes...")
+					fmt.Println("→ Reloading Xray to apply guest quota changes...")
 					restartErr := config.WithLifecycleLock(func() error {
 						_ = stopProcess(process, waitCh)
 						quotaMonitor.Reset()
 						if err := quotaMonitor.Save(); err != nil {
-							fmt.Printf("⚠️  Failed to reset quota monitor state: %v\n", err)
+							fmt.Printf("▲ Failed to reset quota monitor state: %v\n", err)
 						}
 						process, waitCh, err = startProcess(cfg)
 						if err != nil {
@@ -460,7 +460,7 @@ var runCmd = &cobra.Command{
 						return gateway.RestoreTunStateLocked(cfg)
 					})
 					if restartErr != nil {
-						fmt.Printf("❌ Failed to restart Xray after quota update: %v\n", restartErr)
+						fmt.Printf("✖ Failed to restart Xray after quota update: %v\n", restartErr)
 						_ = stopProcess(process, waitCh)
 						cleanup()
 						return fmt.Errorf("restart Xray after quota update: %w", restartErr)
@@ -519,7 +519,7 @@ func auditConfigPorts(cfg *config.UserConfig, runAudit bool) (bool, error) {
 						break
 					}
 				}
-				fmt.Printf("⚠️  Warning: %s Port %d occupied, switched to %d\n", label, *current, newP)
+				fmt.Printf("▲ Warning: %s Port %d occupied, switched to %d\n", label, *current, newP)
 				*current = newP
 				changed = true
 			} else {

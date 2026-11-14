@@ -15,7 +15,7 @@ var tuiCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
-			return fmt.Errorf("❌ Error: Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
+			return fmt.Errorf("Xray-Proxya has not been initialized. Please run 'xray-proxya init' first.")
 		}
 		return tui.Start()
 	},

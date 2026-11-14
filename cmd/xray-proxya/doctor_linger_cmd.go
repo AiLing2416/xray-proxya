@@ -25,9 +25,9 @@ allowing user-level systemd services (e.g. xray-proxya.service --user) to run co
 			return err
 		}
 		if enabled {
-			fmt.Fprintf(cmd.OutOrStdout(), "✅ User lingering is ENABLED for %q.\n   User-level systemd services will persist across sessions and system boots.\n", username)
+			fmt.Fprintf(cmd.OutOrStdout(), "✔ User lingering is ENABLED for %q.\n   User-level systemd services will persist across sessions and system boots.\n", username)
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "⚠️  User lingering is DISABLED for %q.\n   User-level systemd services will terminate when you log out.\n💡 To enable lingering, run: xray-proxya doctor linger enable\n", username)
+			fmt.Fprintf(cmd.OutOrStdout(), "▲ User lingering is DISABLED for %q.\n   User-level systemd services will terminate when you log out.\nℹ To enable lingering, run: xray-proxya doctor linger enable\n", username)
 		}
 		return nil
 	},
@@ -42,7 +42,7 @@ var doctorLingerEnableCmd = &cobra.Command{
 		if err := setLinger(username, true); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ User lingering ENABLED for %q.\n   User systemd services will persist across logouts.\n", username)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ User lingering ENABLED for %q.\n   User systemd services will persist across logouts.\n", username)
 		return nil
 	},
 }
@@ -56,7 +56,7 @@ var doctorLingerDisableCmd = &cobra.Command{
 		if err := setLinger(username, false); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ User lingering DISABLED for %q.\n", username)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ User lingering DISABLED for %q.\n", username)
 		return nil
 	},
 }

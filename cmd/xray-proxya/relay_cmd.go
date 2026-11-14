@@ -127,7 +127,7 @@ func runAddOutbound(cmd *cobra.Command, args []string) error {
 
 	out, remark, err := xray.ParseProxyLinkWithRemark(link)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to parse link: %w", err)
+		return fmt.Errorf("Failed to parse link: %w", err)
 	}
 
 	if !explicitAlias {
@@ -141,7 +141,7 @@ func runAddOutbound(cmd *cobra.Command, args []string) error {
 
 	if aliasExists(cfg, alias) {
 		if explicitAlias {
-			return fmt.Errorf("❌ Alias '%s' already exists.", alias)
+			return fmt.Errorf("Alias '%s' already exists.", alias)
 		}
 		base := alias
 		for i := 2; ; i++ {
@@ -155,18 +155,18 @@ func runAddOutbound(cmd *cobra.Command, args []string) error {
 
 	newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
 	cfg.CustomOutbounds = append(cfg.CustomOutbounds, newCO)
-	fmt.Printf("🔍 Testing node '%s' connectivity...\n", alias)
+	fmt.Printf("→ Testing node '%s' connectivity...\n", alias)
 	res, err := relaytest.RunTest(context.Background(), cfg, alias, relaytest.ModeSimple)
 	if err != nil || res == nil {
-		fmt.Printf("❌ Test failed: %v\n", err)
+		fmt.Printf("✖ Test failed: %v\n", err)
 	} else {
 		fmt.Print(relaytest.RenderTerminal([]*relaytest.TestResult{res}))
 		fmt.Println()
 	}
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Relay node '%s' added to STAGING. Run 'apply' to commit.\n", alias)
+	fmt.Printf("✔ Relay node '%s' added to STAGING. Run 'apply' to commit.\n", alias)
 	return nil
 }
 
@@ -201,7 +201,7 @@ type RelayListItemJSON struct {
 func runListOutbound(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 
 	if relayListJSON {
@@ -237,7 +237,7 @@ func runListOutbound(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(items, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize relay JSON: %w", err)
+			return fmt.Errorf("Failed to serialize relay JSON: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
@@ -396,7 +396,7 @@ var testOutboundCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config.")
+			return fmt.Errorf("Failed to load staging config.")
 		}
 
 		mode := relaytest.ModeSimple
@@ -421,7 +421,7 @@ var testOutboundCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				return fmt.Errorf("❌ Relay '%s' not found.", target)
+				return fmt.Errorf("Relay '%s' not found.", target)
 			}
 
 			renderer := ui.NewProgressRenderer(os.Stdout, progressTTY, disabled)
@@ -464,12 +464,16 @@ var testOutboundCmd = &cobra.Command{
 					}
 				}
 				if !found {
-					return fmt.Errorf("❌ Relay '%s' not found.", a)
+					return fmt.Errorf("Relay '%s' not found.", a)
 				}
 				targets = append(targets, a)
 			}
 		} else {
 			if len(cfg.CustomOutbounds) == 0 {
+				if relayTestJSON {
+					fmt.Println("[]")
+					return nil
+				}
 				fmt.Println("No custom relay nodes configured.")
 				return nil
 			}
@@ -536,7 +540,7 @@ var infoOutboundCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config.")
+			return fmt.Errorf("Failed to load staging config.")
 		}
 
 		mode := relayinfo.ModeSimple
@@ -570,7 +574,7 @@ var infoOutboundCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				return fmt.Errorf("❌ Relay '%s' not found.", target)
+				return fmt.Errorf("Relay '%s' not found.", target)
 			}
 
 			renderer := ui.NewProgressRenderer(os.Stdout, progressTTY, disabled)
@@ -612,12 +616,16 @@ var infoOutboundCmd = &cobra.Command{
 					}
 				}
 				if !found {
-					return fmt.Errorf("❌ Relay '%s' not found.", a)
+					return fmt.Errorf("Relay '%s' not found.", a)
 				}
 				targets = append(targets, a)
 			}
 		} else {
 			if len(cfg.CustomOutbounds) == 0 {
+				if relayInfoJSON {
+					fmt.Println("[]")
+					return nil
+				}
 				fmt.Println("No custom relay nodes configured.")
 				return nil
 			}
@@ -724,19 +732,19 @@ var probeLocalOutboundCmd = &cobra.Command{
 		alias := args[0]
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config.")
+			return fmt.Errorf("Failed to load staging config.")
 		}
 		for _, co := range cfg.CustomOutbounds {
 			if co.Alias != alias {
 				continue
 			}
 			if co.InternalProxyPort <= 0 {
-				return fmt.Errorf("❌ Relay '%s' has no bound local proxy. Use 'proxy set %s'.", alias, alias)
+				return fmt.Errorf("Relay '%s' has no bound local proxy. Use 'proxy set %s'.", alias, alias)
 			}
 			runProxyProbeTarget(alias, co)
 			return nil
 		}
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	},
 }
 
@@ -765,7 +773,7 @@ without changing the running service.
 		alias, domain := args[0], args[1]
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config.")
+			return fmt.Errorf("Failed to load staging config.")
 		}
 
 		found := false
@@ -776,7 +784,7 @@ without changing the running service.
 			}
 		}
 		if !found {
-			return fmt.Errorf("❌ Relay '%s' not found.", alias)
+			return fmt.Errorf("Relay '%s' not found.", alias)
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -784,7 +792,7 @@ without changing the running service.
 
 		session, err := relaytest.StartTestSession(ctx, cfg, alias, relaytest.WithDNS())
 		if err != nil {
-			return fmt.Errorf("❌ Failed to start test session: %w", err)
+			return fmt.Errorf("Failed to start test session: %w", err)
 		}
 		defer session.Close()
 
@@ -797,11 +805,11 @@ without changing the running service.
 		} {
 			answers, duration, err := session.ResolveDNS(domain, queryType.value, 3)
 			if err != nil {
-				fmt.Printf("%s  %s  ❌ %v\n", alias, queryType.label, err)
+				fmt.Printf("%s  %s  ✖ %v\n", alias, queryType.label, err)
 				continue
 			}
 			if len(answers) == 0 {
-				fmt.Printf("%s  %s  ⚠️ no records (%dms)\n", alias, queryType.label, duration.Milliseconds())
+				fmt.Printf("%s  %s  ▲ no records (%dms)\n", alias, queryType.label, duration.Milliseconds())
 				continue
 			}
 			fmt.Printf("%s  %s  %s  (%dms)\n", alias, queryType.label, strings.Join(answers, ", "), duration.Milliseconds())
@@ -817,7 +825,7 @@ var speedOutboundCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, _ := config.LoadConfigEx(true)
 		if cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config.")
+			return fmt.Errorf("Failed to load staging config.")
 		}
 
 		sizeLimit := int64(25 * 1024 * 1024)
@@ -825,7 +833,7 @@ var speedOutboundCmd = &cobra.Command{
 			var err error
 			sizeLimit, err = relayspeed.ParseSize(relaySpeedSize)
 			if err != nil {
-				return fmt.Errorf("❌ Invalid size: %w", err)
+				return fmt.Errorf("Invalid size: %w", err)
 			}
 		}
 
@@ -837,7 +845,7 @@ var speedOutboundCmd = &cobra.Command{
 		}
 
 		if relaySpeedThreads < 1 || relaySpeedThreads > 16 {
-			return fmt.Errorf("❌ Invalid threads: %d (must be between 1 and 16)", relaySpeedThreads)
+			return fmt.Errorf("Invalid threads: %d (must be between 1 and 16)", relaySpeedThreads)
 		}
 
 		customDL := relaySpeedLink
@@ -854,7 +862,7 @@ var speedOutboundCmd = &cobra.Command{
 			var err error
 			durationSec, err = relayspeed.ParseTime(relaySpeedTime)
 			if err != nil {
-				return fmt.Errorf("❌ Invalid time duration: %w", err)
+				return fmt.Errorf("Invalid time duration: %w", err)
 			}
 		}
 
@@ -884,7 +892,7 @@ var speedOutboundCmd = &cobra.Command{
 
 		ctx := context.Background()
 
-		realTTY := relayspeed.IsTerminal(os.Stdout.Fd())
+		realTTY := ui.IsColorEnabled()
 		progressTTY := realTTY && !relaySpeedNoProgress
 		disabled := relaySpeedJSON || relaySpeedNoProgress
 
@@ -899,7 +907,7 @@ var speedOutboundCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				return fmt.Errorf("❌ Relay '%s' not found.", target)
+				return fmt.Errorf("Relay '%s' not found.", target)
 			}
 
 			renderer := relayspeed.NewProgressRenderer(os.Stdout, progressTTY, disabled)
@@ -940,12 +948,16 @@ var speedOutboundCmd = &cobra.Command{
 					}
 				}
 				if !found {
-					return fmt.Errorf("❌ Relay '%s' not found.", a)
+					return fmt.Errorf("Relay '%s' not found.", a)
 				}
 				targets = append(targets, a)
 			}
 		} else {
 			if len(cfg.CustomOutbounds) == 0 {
+				if relaySpeedJSON {
+					fmt.Println("[]")
+					return nil
+				}
 				fmt.Println("No custom relay nodes configured.")
 				return nil
 			}
@@ -1055,7 +1067,7 @@ func runRemoveOutbound(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	newOutbounds := []config.CustomOutbound{}
 	found := false
@@ -1067,14 +1079,14 @@ func runRemoveOutbound(cmd *cobra.Command, args []string) error {
 		newOutbounds = append(newOutbounds, co)
 	}
 	if !found {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 	cfg.CustomOutbounds = newOutbounds
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Deleted '%s' from STAGING.\n", alias)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Deleted '%s' from STAGING.\n", alias)
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -1108,15 +1120,15 @@ func runBindInterface(cmd *cobra.Command, args []string) error {
 	}
 	out, err := xray.ParseInterfaceBind(ifaceName, bindAddr)
 	if err != nil {
-		return fmt.Errorf("❌ Error: %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	newCO := config.CustomOutbound{Alias: alias, Enabled: true, UserUUID: uuid.New().String(), Config: out}
 	cfg.CustomOutbounds = append(cfg.CustomOutbounds, newCO)
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Println("✅ Interface binding added to STAGING.")
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Println("✔ Interface binding added to STAGING.")
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -1134,31 +1146,31 @@ func runSetDNSRelay(cmd *cobra.Command, args []string) error {
 	reset, _ := cmd.Flags().GetBool("reset")
 	normalizedStrategy, normalizedServers, err := normalizeDNSFlags(strategy, servers, reset)
 	if err != nil {
-		return fmt.Errorf("❌ Error: %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	if normalizedStrategy == "" && len(normalizedServers) == 0 && !reset {
-		return fmt.Errorf("❌ Error: You must specify --strategy, --servers, or --reset")
+		return fmt.Errorf("You must specify --strategy, --servers, or --reset")
 	}
 	cfg, _ := config.LoadConfigEx(true)
 	if cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 	for i, co := range cfg.CustomOutbounds {
 		if co.Alias == alias {
 			applyDNSConfigUpdate(&cfg.CustomOutbounds[i], normalizedStrategy, normalizedServers, reset)
 			if err := cfg.SaveEx(true); err != nil {
-				return fmt.Errorf("❌ Failed to save staging config: %w", err)
+				return fmt.Errorf("Failed to save staging config: %w", err)
 			}
 			if reset {
-				fmt.Printf("✅ DNS config reset for '%s'.\n", alias)
+				fmt.Printf("✔ DNS config reset for '%s'.\n", alias)
 			} else {
-				fmt.Printf("✅ DNS config updated for '%s'.\n", alias)
+				fmt.Printf("✔ DNS config updated for '%s'.\n", alias)
 			}
-			fmt.Println("🚀 Run 'apply' to commit changes.")
+			fmt.Println("→ Run 'apply' to commit changes.")
 			return nil
 		}
 	}
-	return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	return fmt.Errorf("Relay '%s' not found.", alias)
 }
 
 var setDNSRelayCmd = &cobra.Command{
@@ -1186,24 +1198,24 @@ func runSetPrivateTargetsRelay(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	allow, err := strconv.ParseBool(args[1])
 	if err != nil {
-		return fmt.Errorf("❌ Value must be true or false.")
+		return fmt.Errorf("Value must be true or false.")
 	}
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	if !setRelayPrivateTargets(cfg, alias, allow) {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	state := "blocked"
 	if allow {
 		state = "allowed"
 	}
-	fmt.Printf("✅ Private targets are %s for relay '%s' in STAGING.\n", state, alias)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Private targets are %s for relay '%s' in STAGING.\n", state, alias)
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -1221,10 +1233,10 @@ func runSetOutbound(cmd *cobra.Command, args []string) error {
 	hasNoPrivate := cmd.Flags().Changed("no-private")
 
 	if !hasPrivate && !hasNoPrivate {
-		return fmt.Errorf("❌ Error: No parameter supplied")
+		return fmt.Errorf("No parameter supplied")
 	}
 	if hasPrivate && hasNoPrivate {
-		return fmt.Errorf("❌ Error: Conflicting flags specified")
+		return fmt.Errorf("Conflicting flags specified")
 	}
 
 	var allow bool
@@ -1244,20 +1256,20 @@ func runSetOutbound(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	if !setRelayPrivateTargets(cfg, alias, allow) {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	state := "blocked"
 	if allow {
 		state = "allowed"
 	}
-	fmt.Printf("✅ Private targets are %s for relay '%s' in STAGING.\n", state, alias)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Private targets are %s for relay '%s' in STAGING.\n", state, alias)
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 

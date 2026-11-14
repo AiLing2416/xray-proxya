@@ -95,7 +95,7 @@ var tuneDiffCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		profile, ok := tune.GetProfile(args[0])
 		if !ok {
-			fmt.Printf("❌ Unknown profile '%s'.\n", args[0])
+			fmt.Printf("✖ Unknown profile '%s'.\n", args[0])
 			return
 		}
 		fmt.Printf("Profile: %s\n", profile.Name)
@@ -128,7 +128,7 @@ var tuneUseCmd = &cobra.Command{
 		}
 		profile, ok := tune.GetProfile(args[0])
 		if !ok {
-			fmt.Printf("❌ Unknown profile '%s'.\n", args[0])
+			fmt.Printf("✖ Unknown profile '%s'.\n", args[0])
 			return
 		}
 		state, err := tune.ApplyProfile(profile)
@@ -153,17 +153,17 @@ var tuneUseCmd = &cobra.Command{
 		}
 		fmt.Print(t.Render())
 		if err != nil {
-			fmt.Printf("\n⚠️  Apply completed with errors: %v\n", err)
+			fmt.Printf("\n▲ Apply completed with errors: %v\n", err)
 			return
 		}
-		fmt.Println("\n✅ Apply completed.")
+		fmt.Println("\n✔ Apply completed.")
 	},
 }
 
 func runTuneVerify(cmd *cobra.Command, args []string) error {
 	profile, ok := tune.GetProfile(args[0])
 	if !ok {
-		return fmt.Errorf("❌ Unknown profile '%s'.", args[0])
+		return fmt.Errorf("Unknown profile '%s'.", args[0])
 	}
 	colorEnabled := ui.IsColorEnabled()
 	fmt.Printf("Profile: %s\n\n", profile.Name)
@@ -185,9 +185,9 @@ func runTuneVerify(cmd *cobra.Command, args []string) error {
 	}
 	fmt.Print(t.Render())
 	if mismatch {
-		return fmt.Errorf("⚠️  Profile is not fully active.")
+		return fmt.Errorf("▲ Profile is not fully active.")
 	}
-	fmt.Println("\n✅ Profile is active.")
+	fmt.Println("\n✔ Profile is active.")
 	return nil
 }
 
@@ -208,7 +208,7 @@ var tuneRollbackCmd = &cobra.Command{
 		}
 		state, err := tune.LoadRuntimeState()
 		if err != nil {
-			fmt.Println("❌ No runtime tune state found. Reboot is the only guaranteed reset.")
+			fmt.Println("✖ No runtime tune state found. Reboot is the only guaranteed reset.")
 			return
 		}
 		results, rollbackErr := tune.RollbackRuntimeState(state)
@@ -233,10 +233,10 @@ var tuneRollbackCmd = &cobra.Command{
 		}
 		fmt.Print(t.Render())
 		if rollbackErr != nil {
-			fmt.Printf("\n⚠️  Rollback completed with errors: %v\n", rollbackErr)
+			fmt.Printf("\n▲ Rollback completed with errors: %v\n", rollbackErr)
 			return
 		}
-		fmt.Println("\n✅ Rollback completed.")
+		fmt.Println("\n✔ Rollback completed.")
 	},
 }
 

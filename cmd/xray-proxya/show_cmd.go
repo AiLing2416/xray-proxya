@@ -194,12 +194,12 @@ func runShow(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("❌ Configuration not found. Please run 'init' first.")
+		return fmt.Errorf("Configuration not found. Please run 'init' first.")
 	}
 
 	ips := resolveShowIPs(cmd, cfg)
 	if len(ips) == 0 {
-		return fmt.Errorf("❌ Could not determine any IP address. Use -e to specify an endpoint.")
+		return fmt.Errorf("Could not determine any IP address. Use -e to specify an endpoint.")
 	}
 
 	targetRelay := showRelay
@@ -253,7 +253,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 					links := xray.GenerateGuestLinks(cfg, ip, target.UUID, target.Alias)
 					printGroup("Guest "+target.Alias, ip, links)
 				} else {
-					return fmt.Errorf("❌ Guest '%s' not found.", showGuest)
+					return fmt.Errorf("Guest '%s' not found.", showGuest)
 				}
 			} else if len(cfg.Guests) > 0 {
 				for _, g := range cfg.Guests {
@@ -276,7 +276,7 @@ func runShow(cmd *cobra.Command, args []string) error {
 					links := xray.GenerateRelayLinks(cfg, ip, *target)
 					printGroup("Relay "+target.Alias, ip, links)
 				} else {
-					return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
+					return fmt.Errorf("Relay '%s' not found.", targetRelay)
 				}
 			} else if len(cfg.CustomOutbounds) > 0 {
 				for _, co := range cfg.CustomOutbounds {

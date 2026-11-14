@@ -242,7 +242,7 @@ func runPathList(cmd *cobra.Command, args []string) error {
 		if activeCfg != nil {
 			stagingCfg = activeCfg
 		} else {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 	}
 	if stagingCfg.Role == config.RoleServer {
@@ -264,7 +264,7 @@ func runPathList(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 	if stagingCfg.Role != config.RoleGateway {
-		return fmt.Errorf("❌ Unsupported role %q", stagingCfg.Role)
+		return fmt.Errorf("Unsupported role %q", stagingCfg.Role)
 	}
 
 	if len(stagingCfg.CustomOutbounds) == 0 {
@@ -376,7 +376,7 @@ func runPathList(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Print(t.Render())
 	if hasPending {
-		fmt.Println("\n⚠️  Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
+		fmt.Println("\n▲ Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
 	} else {
 		fmt.Println()
 	}
@@ -391,36 +391,36 @@ var pathSetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		relay, err := resolvePathRelay(cmd, args)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		switch cfg.Role {
 		case config.RoleServer:
 			if err := validatePathRole(cfg.Role, relay); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
 			generated, err := setPathEndpoint(cmd, &cfg.Path, false)
 			if err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
 			if err := cfg.SaveEx(true); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
 			_, _ = service.EnsurePathdSymlink()
-			fmt.Printf("✅ Server Pathd configured in STAGING (%s). Run 'apply', then manage it with 'service enable --now xray-proxya-pathd'.\n", cfg.Path.Listen)
+			fmt.Printf("✔ Server Pathd configured in STAGING (%s). Run 'apply', then manage it with 'service enable --now xray-proxya-pathd'.\n", cfg.Path.Listen)
 			if generated != "" {
 				fmt.Printf("🔐 Generated token (save it now): %s\n", generated)
 			}
 			return nil
 		case config.RoleGateway:
 			if err := validatePathRole(cfg.Role, relay); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
 			if pathGenerate {
-				return fmt.Errorf("❌ Gateway credentials must match the remote Pathd; pass --token instead of --generate-token.")
+				return fmt.Errorf("Gateway credentials must match the remote Pathd; pass --token instead of --generate-token.")
 			}
 			for i := range cfg.CustomOutbounds {
 				outbound := &cfg.CustomOutbounds[i]
@@ -431,17 +431,17 @@ var pathSetCmd = &cobra.Command{
 					outbound.Path = &config.PathConfig{}
 				}
 				if _, err := setPathEndpoint(cmd, outbound.Path, outbound.Path.Token == ""); err != nil {
-					return fmt.Errorf("❌ %w", err)
+					return fmt.Errorf("%w", err)
 				}
 				if err := cfg.SaveEx(true); err != nil {
-					return fmt.Errorf("❌ %w", err)
+					return fmt.Errorf("%w", err)
 				}
-				fmt.Printf("✅ PathLink credentials for relay '%s' saved in STAGING. Run 'apply'.\n", relay)
+				fmt.Printf("✔ PathLink credentials for relay '%s' saved in STAGING. Run 'apply'.\n", relay)
 				return nil
 			}
-			return fmt.Errorf("❌ Relay '%s' not found.", relay)
+			return fmt.Errorf("Relay '%s' not found.", relay)
 		default:
-			return fmt.Errorf("❌ Unsupported role %q.", cfg.Role)
+			return fmt.Errorf("Unsupported role %q.", cfg.Role)
 		}
 	},
 }
@@ -454,28 +454,28 @@ var pathUnsetCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		relay, err := resolvePathRelay(cmd, args)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if cfg.Role == config.RoleServer {
 			if err := validatePathRole(cfg.Role, relay); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
 			if service.IsUnitActive(service.PathdUnit) {
-				return fmt.Errorf("❌ Stop or disable xray-proxya-pathd with the service command before removing its configuration.")
+				return fmt.Errorf("Stop or disable xray-proxya-pathd with the service command before removing its configuration.")
 			}
 			cfg.Path = config.PathConfig{}
 			if err := cfg.SaveEx(true); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
-			fmt.Println("✅ Server Pathd configuration removed from STAGING. Run 'apply'.")
+			fmt.Println("✔ Server Pathd configuration removed from STAGING. Run 'apply'.")
 			return nil
 		} else if cfg.Role == config.RoleGateway {
 			if err := validatePathRole(cfg.Role, relay); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
 			found := false
 			for i := range cfg.CustomOutbounds {
@@ -486,15 +486,15 @@ var pathUnsetCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				return fmt.Errorf("❌ Relay '%s' not found.", relay)
+				return fmt.Errorf("Relay '%s' not found.", relay)
 			}
 			if err := cfg.SaveEx(true); err != nil {
-				return fmt.Errorf("❌ %w", err)
+				return fmt.Errorf("%w", err)
 			}
-			fmt.Printf("✅ PathLink credentials for relay '%s' removed from STAGING. Run 'apply'.\n", relay)
+			fmt.Printf("✔ PathLink credentials for relay '%s' removed from STAGING. Run 'apply'.\n", relay)
 			return nil
 		}
-		return fmt.Errorf("❌ Unsupported role %q.", cfg.Role)
+		return fmt.Errorf("Unsupported role %q.", cfg.Role)
 	},
 }
 var pathStatusCmd = &cobra.Command{
@@ -505,15 +505,15 @@ var pathStatusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		targetRelay, err := resolvePathRelay(cmd, args)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if cfg.Role == config.RoleServer {
 			if targetRelay != "" {
-				return fmt.Errorf("❌ Server Pathd is local; --relay is only valid on a Gateway")
+				return fmt.Errorf("Server Pathd is local; --relay is only valid on a Gateway")
 			}
 			_, _ = service.EnsurePathdSymlink()
 			serviceState := "unknown"
@@ -576,7 +576,7 @@ var pathStatusCmd = &cobra.Command{
 				}
 			}
 			if targetCO == nil {
-				return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
+				return fmt.Errorf("Relay '%s' not found.", targetRelay)
 			}
 
 			isActive := (targetCO.Alias == cfg.Gateway.RelayAlias)
@@ -626,13 +626,13 @@ var pathStatusCmd = &cobra.Command{
 			fmt.Printf("Target Relay: %s (%s)\n", targetCO.Alias, standby)
 			if !tokenSet {
 				fmt.Println("PathLink Status: not configured")
-				fmt.Printf("ℹ️  Configure PathLink credentials with: xray-proxya path set %s --token <token>\n", targetCO.Alias)
+				fmt.Printf("ℹ Configure PathLink credentials with: xray-proxya path set %s --token <token>\n", targetCO.Alias)
 				return nil
 			}
 			fmt.Printf("PathLink Status: configured (%s, idle %ds)\n", listenAddr, idleSec)
 			fmt.Println("Token: configured [SET]")
 			if !isActive {
-				fmt.Printf("\nℹ️  Relay '%s' is currently standby. To route gateway ICMP via this node:\n", targetCO.Alias)
+				fmt.Printf("\nℹ Relay '%s' is currently standby. To route gateway ICMP via this node:\n", targetCO.Alias)
 				fmt.Printf("   xray-proxya gateway set --relay %s && xray-proxya apply\n", targetCO.Alias)
 			} else {
 				state, runtimeErr := readPathRuntime()
@@ -776,38 +776,38 @@ var pathPingCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfig()
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if cfg.Role == config.RoleServer {
-			return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+			return fmt.Errorf("ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
 		}
 		if pathPingCount < 1 {
-			return fmt.Errorf("❌ --count must be at least 1")
+			return fmt.Errorf("--count must be at least 1")
 		}
 		if pathPingTTL < 1 || pathPingTTL > 255 {
-			return fmt.Errorf("❌ --ttl must be between 1 and 255")
+			return fmt.Errorf("--ttl must be between 1 and 255")
 		}
 		if pathPingSize < 8 || pathPingSize > 1024 {
-			return fmt.Errorf("❌ --size must be between 8 and 1024 bytes")
+			return fmt.Errorf("--size must be between 8 and 1024 bytes")
 		}
 		if pathPingTimeout < 100*time.Millisecond || pathPingTimeout > 15*time.Second {
-			return fmt.Errorf("❌ --timeout must be between 100ms and 15s")
+			return fmt.Errorf("--timeout must be between 100ms and 15s")
 		}
 		if os.Geteuid() != 0 {
-			return fmt.Errorf("❌ path ping requires root on the Gateway.")
+			return fmt.Errorf("path ping requires root on the Gateway.")
 		}
 
 		endpoint, relay, err := selectedGatewayPath(cfg)
 		if err != nil {
-			return fmt.Errorf("❌ path ping requires Gateway PathLink credentials: %w", err)
+			return fmt.Errorf("path ping requires Gateway PathLink credentials: %w", err)
 		}
 		ip, err := resolvePublicTarget(args[0])
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		socks, err := activePathdSOCKSAddress()
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 		defer client.Close()
@@ -932,28 +932,19 @@ var pathPingCmd = &cobra.Command{
 			}
 			data, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(data))
-			if pathPingCount == 1 && !out.Success {
-				if lastErr != nil {
-					return fmt.Errorf("probe failed: %w", lastErr)
-				}
-				return fmt.Errorf("probe did not receive echo reply: %s", out.Error)
-			}
-			if pathPingCount > 1 && received == 0 {
-				return fmt.Errorf("all %d probes failed (100%% packet loss)", pathPingCount)
-			}
 			return nil
 		}
 
 		// Text mode
 		if pathPingCount == 1 {
 			if lastErr != nil {
-				return fmt.Errorf("❌ %s through %s: %w", ip, relay, lastErr)
+				return fmt.Errorf("%s through %s: %w", ip, relay, lastErr)
 			}
 			if !lastProbe.Echo {
-				fmt.Printf("⚠️ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, lastDur.Round(time.Millisecond), lastProbe.Error())
+				fmt.Printf("▲ %s through %s\nPathLink end-to-end: %s\nRemote diagnostic: %v\n", ip, relay, lastDur.Round(time.Millisecond), lastProbe.Error())
 				return fmt.Errorf("probe did not receive echo reply: %v", lastProbe.Error())
 			}
-			fmt.Printf("✅ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, lastDur.Round(time.Millisecond), lastProbe.RTT.Round(time.Millisecond))
+			fmt.Printf("✔ %s through %s\nPathLink end-to-end: %s\nRemote ICMP RTT: %s\n", ip, relay, lastDur.Round(time.Millisecond), lastProbe.RTT.Round(time.Millisecond))
 			return nil
 		}
 
@@ -973,31 +964,31 @@ var pathPingCmd = &cobra.Command{
 var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace remote ICMP hops through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	if cfg.Role == config.RoleServer {
-		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+		return fmt.Errorf("ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
 	}
 	if pathTraceHops < 1 || pathTraceHops > 255 {
-		return fmt.Errorf("❌ --max-hops must be between 1 and 255.")
+		return fmt.Errorf("--max-hops must be between 1 and 255.")
 	}
 	if pathTraceTimeout < 100*time.Millisecond || pathTraceTimeout > 15*time.Second {
-		return fmt.Errorf("❌ --timeout must be between 100ms and 15s")
+		return fmt.Errorf("--timeout must be between 100ms and 15s")
 	}
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("❌ path trace requires root on the Gateway.")
+		return fmt.Errorf("path trace requires root on the Gateway.")
 	}
 	endpoint, relay, err := selectedGatewayPath(cfg)
 	if err != nil {
-		return fmt.Errorf("❌ path trace requires Gateway PathLink credentials: %w", err)
+		return fmt.Errorf("path trace requires Gateway PathLink credentials: %w", err)
 	}
 	ip, err := resolvePublicTarget(args[0])
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	socks, err := activePathdSOCKSAddress()
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
@@ -1046,9 +1037,6 @@ var pathTraceCmd = &cobra.Command{Use: "trace <hostname-or-ip>", Short: "Trace r
 		}
 		data, _ := json.MarshalIndent(traceJSON, "", "  ")
 		fmt.Println(string(data))
-		if !traceJSON.Reached {
-			return fmt.Errorf("trace stopped after %d hops without an echo reply", pathTraceHops)
-		}
 		return nil
 	}
 
@@ -1091,24 +1079,24 @@ func pathDiagnosticLabel(probe pathd.ProbeResult) string {
 var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively discover path MTU through the selected relay", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	if cfg.Role == config.RoleServer {
-		return fmt.Errorf("❌ Error: ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
+		return fmt.Errorf("ICMP probing commands (ping, trace, mtu) are only supported on Gateway nodes. Server nodes run the 'xray-proxya-pathd' responder daemon.")
 	}
 	if pathMTUTimeout < 100*time.Millisecond || pathMTUTimeout > 15*time.Second {
-		return fmt.Errorf("❌ --timeout must be between 100ms and 15s")
+		return fmt.Errorf("--timeout must be between 100ms and 15s")
 	}
 	if os.Geteuid() != 0 {
-		return fmt.Errorf("❌ path mtu requires root on the Gateway.")
+		return fmt.Errorf("path mtu requires root on the Gateway.")
 	}
 	endpoint, relay, err := selectedGatewayPath(cfg)
 	if err != nil {
-		return fmt.Errorf("❌ path mtu requires Gateway PathLink credentials: %w", err)
+		return fmt.Errorf("path mtu requires Gateway PathLink credentials: %w", err)
 	}
 	ip, err := resolvePublicTarget(args[0])
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	minimum := pathMTUMin
 	if minimum == 0 {
@@ -1118,11 +1106,11 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 		}
 	}
 	if pathMTUMax < minimum || minimum < 28 || pathMTUMax > 65535 {
-		return fmt.Errorf("❌ invalid --min/--max MTU range.")
+		return fmt.Errorf("invalid --min/--max MTU range.")
 	}
 	socks, err := activePathdSOCKSAddress()
 	if err != nil {
-		return fmt.Errorf("❌ %w", err)
+		return fmt.Errorf("%w", err)
 	}
 	client := pathd.NewIdleClient(socks, endpoint.Listen, endpoint.Token, time.Duration(endpoint.IdleSeconds)*time.Second)
 	defer client.Close()
@@ -1177,7 +1165,7 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 				data, _ := json.MarshalIndent(out, "", "  ")
 				fmt.Println(string(data))
 			}
-			return fmt.Errorf("❌ probe at %d bytes failed: %w", candidate, probeErr)
+			return fmt.Errorf("probe at %d bytes failed: %w", candidate, probeErr)
 		}
 		if probe.Echo {
 			if !pathMTUJSON {
@@ -1211,7 +1199,7 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 			data, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(data))
 		}
-		return fmt.Errorf("❌ probe at %d bytes returned %s", candidate, pathDiagnosticLabel(probe))
+		return fmt.Errorf("probe at %d bytes returned %s", candidate, pathDiagnosticLabel(probe))
 	}
 
 	if best == 0 {
@@ -1228,7 +1216,7 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 			data, _ := json.MarshalIndent(out, "", "  ")
 			fmt.Println(string(data))
 		}
-		return fmt.Errorf("❌ no successful probe in %d–%d bytes", minimum, pathMTUMax)
+		return fmt.Errorf("no successful probe in %d–%d bytes", minimum, pathMTUMax)
 	}
 
 	if pathMTUJSON {
@@ -1247,10 +1235,10 @@ var pathMTUCmd = &cobra.Command{Use: "mtu <hostname-or-ip>", Short: "Actively di
 	}
 
 	if best == pathMTUMax {
-		fmt.Printf("✅ Path MTU: at least %d bytes (no limit found in the requested range; active %s probe)\n", best, probeKind)
+		fmt.Printf("✔ Path MTU: at least %d bytes (no limit found in the requested range; active %s probe)\n", best, probeKind)
 		return nil
 	}
-	fmt.Printf("✅ Path MTU: %d bytes (active %s probe)\n", best, probeKind)
+	fmt.Printf("✔ Path MTU: %d bytes (active %s probe)\n", best, probeKind)
 	return nil
 }}
 

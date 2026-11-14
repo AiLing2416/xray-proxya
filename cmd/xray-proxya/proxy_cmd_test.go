@@ -618,7 +618,7 @@ func TestProxyTestUnappliedStagingHint(t *testing.T) {
 		}
 	})
 
-	expectedHint := "💡 Hint: Local proxy for 'test-node' is in STAGING but not yet active. Run 'xray-proxya apply' to start it."
+	expectedHint := "ℹ Hint: Local proxy for 'test-node' is in STAGING but not yet active. Run 'xray-proxya apply' to start it."
 	if !strings.Contains(out, expectedHint) {
 		t.Errorf("expected output to contain hint:\n%q\nGot:\n%s", expectedHint, out)
 	}

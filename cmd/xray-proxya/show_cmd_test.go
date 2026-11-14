@@ -216,7 +216,7 @@ func TestShowCmd_ExecutionMultiIPAndHeaders(t *testing.T) {
 	if !strings.Contains(output, showDivider) {
 		t.Errorf("output missing 59-char divider: %s", output)
 	}
-	if strings.Contains(output, "🚀 SHARING LINKS") {
+	if strings.Contains(output, "→ SHARING LINKS") {
 		t.Errorf("output should not contain old banner: %s", output)
 	}
 	if strings.Contains(output, "=== Address:") {

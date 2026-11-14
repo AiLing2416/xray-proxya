@@ -39,10 +39,10 @@ system limits, public multi-protocol UDP reachability, and modern web protocols.
 				return fmt.Errorf("failed to format json: %w", err)
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), jsonOut)
-		} else {
-			fmt.Fprint(cmd.OutOrStdout(), doctor.RenderTerminal(report, doctorCheckVerbose))
+			return nil
 		}
 
+		fmt.Fprint(cmd.OutOrStdout(), doctor.RenderTerminal(report, doctorCheckVerbose))
 		if report.Summary.Failed > 0 {
 			return fmt.Errorf("diagnostic check failed with %d error(s)", report.Summary.Failed)
 		}

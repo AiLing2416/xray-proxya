@@ -35,12 +35,12 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("rollback failed: %w", err)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "✅ Successfully restored configuration from %s\n", res.BackupPath)
+			fmt.Fprintf(cmd.OutOrStdout(), "✔ Successfully restored configuration from %s\n", res.BackupPath)
 			fmt.Fprintln(cmd.OutOrStdout(), "Restored files:")
 			for _, f := range res.RestoredFiles {
 				fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", f)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "\n💡 Tip: Run 'xray-proxya apply' or 'xray-proxya doctor check' to inspect and sync runtime services.")
+			fmt.Fprintln(cmd.OutOrStdout(), "\nℹ Tip: Run 'xray-proxya apply' or 'xray-proxya doctor check' to inspect and sync runtime services.")
 			return nil
 		}
 
@@ -50,13 +50,13 @@ Examples:
 			return fmt.Errorf("backup failed: %w", err)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ Configuration backup created successfully: %s\n", res.BackupPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ Configuration backup created successfully: %s\n", res.BackupPath)
 		fmt.Fprintln(cmd.OutOrStdout(), "Archived files:")
 		for _, f := range res.ArchivedFiles {
 			fmt.Fprintf(cmd.OutOrStdout(), "  - %s\n", f)
 		}
 		baseName := filepath.Base(res.BackupPath)
-		fmt.Fprintf(cmd.OutOrStdout(), "\n💡 Tip: You can rollback anytime with:\n   xray-proxya doctor backup -r %s\n", baseName)
+		fmt.Fprintf(cmd.OutOrStdout(), "\nℹ Tip: You can rollback anytime with:\n   xray-proxya doctor backup -r %s\n", baseName)
 		return nil
 	},
 }

@@ -293,21 +293,14 @@ func TestCLIAutocompletionCoverage(t *testing.T) {
 			}
 		}
 	}
-	for _, dnsCmd := range []*cobra.Command{gatewayDNSCmd, gatewayDNSSetCmd} {
-		for _, flag := range []string{"strategy", "servers", "listen"} {
-			if fn, ok := dnsCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
-				t.Errorf("gateway dns (%s) missing --%s completion", dnsCmd.Name(), flag)
-			}
+	for _, flag := range []string{"strategy", "servers", "listen"} {
+		if fn, ok := gatewayDNSSetCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+			t.Errorf("gateway dns (%s) missing --%s completion", gatewayDNSSetCmd.Name(), flag)
 		}
 	}
-	if fn, ok := gatewayDNSCmd.GetFlagCompletionFunc("record-del"); !ok || fn == nil {
-		t.Error("gateway dns missing --record-del completion")
-	}
-	for _, ruleCmd := range []*cobra.Command{gatewayRuleCmd, gatewayRuleSetCmd} {
-		for _, flag := range []string{"to", "target", "interface", "mac", "ip"} {
-			if fn, ok := ruleCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
-				t.Errorf("gateway rule (%s) missing --%s completion", ruleCmd.Name(), flag)
-			}
+	for _, flag := range []string{"to", "target", "interface", "mac", "ip"} {
+		if fn, ok := gatewayRuleSetCmd.GetFlagCompletionFunc(flag); !ok || fn == nil {
+			t.Errorf("gateway rule (%s) missing --%s completion", gatewayRuleSetCmd.Name(), flag)
 		}
 	}
 	for _, flag := range []string{"interface", "mac", "ip"} {

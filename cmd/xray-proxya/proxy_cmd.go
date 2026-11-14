@@ -122,7 +122,7 @@ func isProxyApplied(stagingCO config.CustomOutbound, activeCfg *config.UserConfi
 func runProxyList(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 
 	var activeCfg *config.UserConfig
@@ -175,7 +175,7 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(items, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize proxy list JSON: %w", err)
+			return fmt.Errorf("Failed to serialize proxy list JSON: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
@@ -189,7 +189,7 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(cfg.CustomOutbounds) == 0 || (!proxyListAll && configuredCount == 0) {
-		fmt.Println("ℹ️ No local proxy listeners configured. Use 'xray-proxya proxy set <alias>' to configure one.")
+		fmt.Println("ℹ No local proxy listeners configured. Use 'xray-proxya proxy set <alias>' to configure one.")
 		return nil
 	}
 
@@ -249,7 +249,7 @@ func runProxyList(cmd *cobra.Command, args []string) error {
 	fmt.Println()
 	fmt.Print(t.Render())
 	if hasPending {
-		fmt.Println("\n⚠️  Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
+		fmt.Println("\n▲ Pending changes in STAGING. Run 'xray-proxya apply' to commit.")
 	} else {
 		fmt.Println()
 	}
@@ -385,7 +385,7 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 
 	for i, co := range cfg.CustomOutbounds {
@@ -414,7 +414,7 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 			// 1. Determine listen address
 			if listenSpecified {
 				if ip := net.ParseIP(listenIP); ip == nil {
-					return fmt.Errorf("❌ Invalid listen IP address: %s", listenIP)
+					return fmt.Errorf("Invalid listen IP address: %s", listenIP)
 				}
 			} else {
 				if co.InternalListenAddr != "" {
@@ -459,14 +459,14 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 			}
 
 			if socksPort < 1 || socksPort > 65535 {
-				return fmt.Errorf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)", socksPort)
+				return fmt.Errorf("Invalid SOCKS port: %d (must be between 1 and 65535)", socksPort)
 			}
 			if httpPort < 1 || httpPort > 65535 {
-				return fmt.Errorf("❌ Invalid HTTP port: %d (must be between 1 and 65535)", httpPort)
+				return fmt.Errorf("Invalid HTTP port: %d (must be between 1 and 65535)", httpPort)
 			}
 
 			if err := checkProxyPortConflict(cfg, alias, listenIP, socksPort, httpPort); err != nil {
-				return fmt.Errorf("❌ Port conflict: %w", err)
+				return fmt.Errorf("Port conflict: %w", err)
 			}
 
 			// Check if ports are already legitimately owned by this relay in active configuration
@@ -499,12 +499,12 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 
 			if !socksOwnedBySelf {
 				if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
-					return fmt.Errorf("❌ SOCKS Port %d is in use on the host.", socksPort)
+					return fmt.Errorf("SOCKS Port %d is in use on the host.", socksPort)
 				}
 			}
 			if !httpOwnedBySelf {
 				if !utils.IsPortFree(httpPort) {
-					return fmt.Errorf("❌ HTTP Port %d is in use on the host.", httpPort)
+					return fmt.Errorf("HTTP Port %d is in use on the host.", httpPort)
 				}
 			}
 
@@ -513,17 +513,17 @@ func runProxySet(cmd *cobra.Command, args []string) error {
 			cfg.CustomOutbounds[i].InternalListenAddr = listenIP
 
 			if err := cfg.SaveEx(true); err != nil {
-				return fmt.Errorf("❌ Failed to save staging config: %w", err)
+				return fmt.Errorf("Failed to save staging config: %w", err)
 			}
-			fmt.Printf("✅ Configured local proxy for '%s' in STAGING:\n", alias)
+			fmt.Printf("✔ Configured local proxy for '%s' in STAGING:\n", alias)
 			fmt.Printf("   SOCKS Port: %d\n", socksPort)
 			fmt.Printf("   HTTP Port:  %d\n", httpPort)
 			fmt.Printf("   Listen IP:  %s\n", listenIP)
-			fmt.Println("🚀 Run 'apply' to commit changes.")
+			fmt.Println("→ Run 'apply' to commit changes.")
 			return nil
 		}
 	}
-	return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	return fmt.Errorf("Relay '%s' not found.", alias)
 }
 
 var proxySetCmd = &cobra.Command{
@@ -543,26 +543,26 @@ func runProxyUnset(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 	for i, co := range cfg.CustomOutbounds {
 		if co.Alias == alias {
 			if co.InternalProxyPort <= 0 {
-				fmt.Printf("ℹ️ Local proxy for '%s' was not configured.\n", alias)
+				fmt.Printf("ℹ Local proxy for '%s' was not configured.\n", alias)
 				return nil
 			}
 			cfg.CustomOutbounds[i].InternalProxyPort = 0
 			cfg.CustomOutbounds[i].InternalHttpPort = 0
 			cfg.CustomOutbounds[i].InternalListenAddr = ""
 			if err := cfg.SaveEx(true); err != nil {
-				return fmt.Errorf("❌ Failed to save staging config: %w", err)
+				return fmt.Errorf("Failed to save staging config: %w", err)
 			}
-			fmt.Printf("✅ Disabled local proxy for '%s' in STAGING.\n", alias)
-			fmt.Println("🚀 Run 'apply' to commit changes.")
+			fmt.Printf("✔ Disabled local proxy for '%s' in STAGING.\n", alias)
+			fmt.Println("→ Run 'apply' to commit changes.")
 			return nil
 		}
 	}
-	return fmt.Errorf("❌ Relay '%s' not found.", alias)
+	return fmt.Errorf("Relay '%s' not found.", alias)
 }
 
 var proxyUnsetCmd = &cobra.Command{
@@ -583,7 +583,7 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 		cfg, _ = config.LoadConfig()
 	}
 	if cfg == nil {
-		return fmt.Errorf("❌ Configuration could not be loaded.")
+		return fmt.Errorf("Configuration could not be loaded.")
 	}
 
 	var targetCO *config.CustomOutbound
@@ -594,7 +594,7 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if targetCO == nil {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 
 	socksSpecified := cmd.Flags().Changed("port") || cmd.Flags().Changed("socks-port") || proxyRunSocksPort != 0
@@ -643,23 +643,23 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if socksPort < 1 || socksPort > 65535 {
-		return fmt.Errorf("❌ Invalid SOCKS port: %d (must be between 1 and 65535)", socksPort)
+		return fmt.Errorf("Invalid SOCKS port: %d (must be between 1 and 65535)", socksPort)
 	}
 	if httpPort < 1 || httpPort > 65535 {
-		return fmt.Errorf("❌ Invalid HTTP port: %d (must be between 1 and 65535)", httpPort)
+		return fmt.Errorf("Invalid HTTP port: %d (must be between 1 and 65535)", httpPort)
 	}
 	if socksPort == httpPort {
-		return fmt.Errorf("❌ SOCKS port and HTTP port cannot be the same (%d).", socksPort)
+		return fmt.Errorf("SOCKS port and HTTP port cannot be the same (%d).", socksPort)
 	}
 
 	if !utils.IsPortFree(socksPort) || !utils.IsUDPPortFree(socksPort) {
-		return fmt.Errorf("❌ SOCKS Port %d is in use on the host.", socksPort)
+		return fmt.Errorf("SOCKS Port %d is in use on the host.", socksPort)
 	}
 	if !utils.IsPortFree(httpPort) {
-		return fmt.Errorf("❌ HTTP Port %d is in use on the host.", httpPort)
+		return fmt.Errorf("HTTP Port %d is in use on the host.", httpPort)
 	}
 	if ip := net.ParseIP(listenIP); ip == nil {
-		return fmt.Errorf("❌ Invalid listen IP address: %s", listenIP)
+		return fmt.Errorf("Invalid listen IP address: %s", listenIP)
 	}
 
 	// Setup a temporary configuration copy with only our target node and configured proxy ports
@@ -685,13 +685,13 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 	}
 	jsonData, err := xray.GenerateXrayJSON(&tempCfg, overrides, "")
 	if err != nil {
-		return fmt.Errorf("❌ Failed to generate config: %w", err)
+		return fmt.Errorf("Failed to generate config: %w", err)
 	}
 
 	var stderrBuf bytes.Buffer
 	cmdProc, cleanup, err := xray.StartXrayTempWithOutput(jsonData, &stderrBuf)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to start temporary Xray instance: %w", err)
+		return fmt.Errorf("Failed to start temporary Xray instance: %w", err)
 	}
 	defer cleanup()
 
@@ -709,19 +709,19 @@ func runProxyRun(cmd *cobra.Command, args []string) error {
 			if sigErr := cmdProc.Process.Signal(syscall.Signal(0)); sigErr != nil {
 				out := strings.TrimSpace(stderrBuf.String())
 				if out != "" {
-					return fmt.Errorf("❌ Temporary Xray instance exited prematurely: %s", out)
+					return fmt.Errorf("Temporary Xray instance exited prematurely: %s", out)
 				}
-				return fmt.Errorf("❌ Temporary Xray instance exited prematurely: %w", sigErr)
+				return fmt.Errorf("Temporary Xray instance exited prematurely: %w", sigErr)
 			}
 		}
 		out := strings.TrimSpace(stderrBuf.String())
 		if out != "" {
-			return fmt.Errorf("❌ SOCKS listener %s not ready: %v (xray stderr: %s)", dialAddr, err, out)
+			return fmt.Errorf("SOCKS listener %s not ready: %v (xray stderr: %s)", dialAddr, err, out)
 		}
-		return fmt.Errorf("❌ SOCKS listener %s not ready: %w", dialAddr, err)
+		return fmt.Errorf("SOCKS listener %s not ready: %w", dialAddr, err)
 	}
 
-	fmt.Printf("✅ Temporary SOCKS/HTTP proxy started successfully!\n")
+	fmt.Printf("✔ Temporary SOCKS/HTTP proxy started successfully!\n")
 	fmt.Printf("   👉 SOCKS5: %s:%d\n", listenIP, socksPort)
 	fmt.Printf("   👉 HTTP:   %s:%d\n", listenIP, httpPort)
 	fmt.Printf("   Target:    %s (%s)\n", alias, outboundRemoteSummary(coCopy))
@@ -807,7 +807,7 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 
 	var targetCO *config.CustomOutbound
@@ -818,11 +818,11 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if targetCO == nil {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 
 	if targetCO.InternalProxyPort <= 0 {
-		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
+		return fmt.Errorf("Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
 	}
 
 	var activeCfg *config.UserConfig
@@ -846,12 +846,12 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 	dialer, err := utils.NewSOCKS5Dialer(socksAddr)
 	if err != nil {
 		if !applied {
-			fmt.Printf("💡 Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
+			fmt.Printf("ℹ Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
 		}
-		return fmt.Errorf("❌ Failed to create SOCKS dialer: %w", err)
+		return fmt.Errorf("Failed to create SOCKS dialer: %w", err)
 	}
 
-	fmt.Printf("🔍 Testing local SOCKS5 proxy at %s...\n", socksAddr)
+	fmt.Printf("→ Testing local SOCKS5 proxy at %s...\n", socksAddr)
 
 	socksTargets := []string{"8.8.8.8:53", "1.1.1.1:53", "9.9.9.9:53"}
 	var lastTCPErr error
@@ -867,32 +867,32 @@ func runProxyTest(cmd *cobra.Command, args []string) error {
 	}
 	if !tcpOK {
 		if !applied {
-			fmt.Printf("💡 Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
+			fmt.Printf("ℹ Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
 		}
-		return fmt.Errorf("❌ TCP test failed: %w", lastTCPErr)
+		return fmt.Errorf("TCP test failed: %w", lastTCPErr)
 	}
-	fmt.Println("✅ SOCKS5 TCP connectivity OK.")
+	fmt.Println("✔ SOCKS5 TCP connectivity OK.")
 
 	// Test UDP query/ping if supported
 	duration, err := xray.TestUDP(socksAddr, "user-"+alias, "test")
 	if err == nil {
-		fmt.Printf("✅ SOCKS5 UDP connectivity OK (%dms).\n", duration.Milliseconds())
+		fmt.Printf("✔ SOCKS5 UDP connectivity OK (%dms).\n", duration.Milliseconds())
 	} else {
-		fmt.Printf("⚠️  SOCKS5 UDP test failed: %v\n", err)
+		fmt.Printf("▲ SOCKS5 UDP test failed: %v\n", err)
 	}
 
 	// Test HTTP proxy
-	fmt.Printf("🔍 Testing local HTTP proxy at %s...\n", httpAddr)
+	fmt.Printf("→ Testing local HTTP proxy at %s...\n", httpAddr)
 	if err := testHTTPProxy(httpAddr); err != nil {
 		if !applied {
-			fmt.Printf("💡 Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
+			fmt.Printf("ℹ Hint: Local proxy for '%s' is in STAGING but not yet active. Run 'xray-proxya apply' to start it.\n", alias)
 		}
-		return fmt.Errorf("❌ HTTP proxy test failed: %w", err)
+		return fmt.Errorf("HTTP proxy test failed: %w", err)
 	}
-	fmt.Println("✅ HTTP proxy connectivity OK.")
+	fmt.Println("✔ HTTP proxy connectivity OK.")
 
 	if proxyTestProbe {
-		fmt.Printf("\n🌐 Probing outbound IP via local proxy...\n")
+		fmt.Printf("\nProbing outbound IP via local proxy...\n")
 		runProxyProbeTarget(alias, *targetCO)
 	}
 
@@ -961,7 +961,7 @@ func runProxyProbe(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 
 	var targetCO *config.CustomOutbound
@@ -972,11 +972,11 @@ func runProxyProbe(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if targetCO == nil {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 
 	if targetCO.InternalProxyPort <= 0 {
-		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
+		return fmt.Errorf("Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
 	}
 
 	runProxyProbeTarget(alias, *targetCO)
@@ -1002,13 +1002,13 @@ func runProxyEnv(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(args) == 0 {
-		return fmt.Errorf("❌ Please specify a relay alias (e.g. 'xray-proxya proxy env <alias>') or use --unset")
+		return fmt.Errorf("Please specify a relay alias (e.g. 'xray-proxya proxy env <alias>') or use --unset")
 	}
 
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config.")
+		return fmt.Errorf("Failed to load staging config.")
 	}
 
 	var targetCO *config.CustomOutbound
@@ -1019,11 +1019,11 @@ func runProxyEnv(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if targetCO == nil {
-		return fmt.Errorf("❌ Relay '%s' not found.", alias)
+		return fmt.Errorf("Relay '%s' not found.", alias)
 	}
 
 	if targetCO.InternalProxyPort <= 0 {
-		return fmt.Errorf("❌ Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
+		return fmt.Errorf("Local proxy is not configured for '%s'. Configure it first with 'xray-proxya proxy set %s'.", alias, alias)
 	}
 
 	listenIP := normalizeProbeListenIP(targetCO.InternalListenAddr)

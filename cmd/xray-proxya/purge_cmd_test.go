@@ -130,24 +130,31 @@ func TestPurgeCmdInteractiveCancelled(t *testing.T) {
 
 	t.Setenv("XRAY_PROXYA_CONFIG_DIR", cfgDir)
 
-	cmd := rootCmd
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetIn(strings.NewReader("n\n")) // User enters 'n'
-	cmd.SetArgs([]string{"purge", "-i", "config"})
+	for _, tc := range []struct {
+		name  string
+		input string
+	}{
+		{"explicit no", "n\n"},
+		{"eof non-interactive", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resetPurgeFlags()
+			cmd := rootCmd
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetIn(strings.NewReader(tc.input))
+			cmd.SetArgs([]string{"purge", "-i", "config"})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute purge failed: %v", err)
-	}
+			err := cmd.Execute()
+			if err == nil || !strings.Contains(err.Error(), "purge cancelled") {
+				t.Fatalf("expected 'purge cancelled' error, got: %v", err)
+			}
 
-	out := stdout.String()
-	if !strings.Contains(out, "Purge cancelled.") {
-		t.Fatalf("expected 'Purge cancelled.' in output:\n%s", out)
-	}
-
-	// Verify file still exists
-	if _, err := os.Stat(filepath.Join(cfgDir, "config.json")); err != nil {
-		t.Fatalf("config.json should still exist after cancellation, got err: %v", err)
+			// Verify file still exists
+			if _, err := os.Stat(filepath.Join(cfgDir, "config.json")); err != nil {
+				t.Fatalf("config.json should still exist after cancellation, got err: %v", err)
+			}
+		})
 	}
 }
 

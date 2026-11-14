@@ -44,12 +44,12 @@ func runRelayWarp(cmd *cobra.Command, args []string) error {
 		ctx = context.Background()
 	}
 	if !relayWarpJSON {
-		fmt.Println("⚡ Generating Cloudflare WARP free account...")
+		fmt.Println("→ Generating Cloudflare WARP free account...")
 	}
 
 	info, err := warp.RegisterFreeAccount(ctx, relayWarpEndpoint)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to register Cloudflare WARP account: %w", err)
+		return fmt.Errorf("Failed to register Cloudflare WARP account: %w", err)
 	}
 
 	if !relayWarpJSON {
@@ -84,13 +84,13 @@ func runRelayWarp(cmd *cobra.Command, args []string) error {
 
 	if foundIndex >= 0 {
 		if !relayWarpJSON {
-			fmt.Printf("🔄 Overwriting existing '%s' relay in STAGING...\n", warp.DefaultWarpAlias)
+			fmt.Printf("→ Overwriting existing '%s' relay in STAGING...\n", warp.DefaultWarpAlias)
 		}
 		cfg.CustomOutbounds[foundIndex].Config = outboundMap
 		cfg.CustomOutbounds[foundIndex].Enabled = true
 	} else {
 		if !relayWarpJSON {
-			fmt.Printf("➕ Adding '%s' relay to STAGING...\n", warp.DefaultWarpAlias)
+			fmt.Printf("+ Adding '%s' relay to STAGING...\n", warp.DefaultWarpAlias)
 		}
 		newCO := config.CustomOutbound{
 			Alias:    warp.DefaultWarpAlias,
@@ -102,14 +102,14 @@ func runRelayWarp(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
 
 	if !relayWarpNoTest && !relayWarpJSON {
-		fmt.Printf("🔍 Testing node '%s' connectivity...\n", warp.DefaultWarpAlias)
+		fmt.Printf("→ Testing node '%s' connectivity...\n", warp.DefaultWarpAlias)
 		res, err := relaytest.RunTest(ctx, cfg, warp.DefaultWarpAlias, relaytest.ModeSimple)
 		if err != nil || res == nil {
-			fmt.Printf("⚠️  Test check notice: %v\n", err)
+			fmt.Printf("▲ Test check notice: %v\n", err)
 		} else {
 			fmt.Print(relaytest.RenderTerminal([]*relaytest.TestResult{res}))
 			fmt.Println()
@@ -130,25 +130,25 @@ func runRelayWarp(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(resPayload, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize JSON output: %w", err)
+			return fmt.Errorf("Failed to serialize JSON output: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
 	}
 
 	if relayWarpApply {
-		fmt.Println("🚀 Applying staging configuration...")
+		fmt.Println("→ Applying staging configuration...")
 		lines, err := applyops.ApplyPending(applyops.Options{Start: true})
 		for _, line := range lines {
 			fmt.Println(line)
 		}
 		if err != nil {
-			return fmt.Errorf("❌ Apply failed: %w", err)
+			return fmt.Errorf("Apply failed: %w", err)
 		}
-		fmt.Printf("✅ Cloudflare WARP relay '%s' applied and active.\n", warp.DefaultWarpAlias)
+		fmt.Printf("✔ Cloudflare WARP relay '%s' applied and active.\n", warp.DefaultWarpAlias)
 	} else {
-		fmt.Printf("✅ Cloudflare WARP relay '%s' saved to STAGING.\n", warp.DefaultWarpAlias)
-		fmt.Println("💡 Run 'xray-proxya apply' to commit changes, or 'xray-proxya relay warp --apply' next time.")
+		fmt.Printf("✔ Cloudflare WARP relay '%s' saved to STAGING.\n", warp.DefaultWarpAlias)
+		fmt.Println("ℹ Run 'xray-proxya apply' to commit changes, or 'xray-proxya relay warp --apply' next time.")
 	}
 
 	return nil

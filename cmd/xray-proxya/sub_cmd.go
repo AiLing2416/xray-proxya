@@ -435,10 +435,10 @@ Supported target types:
 		if cmd.Flags().Changed("endpoint") {
 			epVal := strings.TrimSpace(subEndpoint)
 			if epVal == "" {
-				return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
+				return fmt.Errorf("Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 			}
 			if err := endpoint.ValidateEndpointSpec(cfg, epVal); err != nil {
-				return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
+				return fmt.Errorf("Invalid endpoint %q: %w", epVal, err)
 			}
 			entry.Endpoint = epVal
 			changed = true
@@ -486,7 +486,7 @@ Supported target types:
 		if strings.HasPrefix(subURL, "https://") {
 			proto = "HTTPS"
 		}
-		fmt.Printf("✅ Subscription configuration updated in STAGING (%s). Run 'apply', then control it with 'service start xray-proxya-sub'.\n", proto)
+		fmt.Printf("✔ Subscription configuration updated in STAGING (%s). Run 'apply', then control it with 'service start xray-proxya-sub'.\n", proto)
 		return nil
 	},
 }
@@ -532,7 +532,7 @@ func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR b
 			}
 		}
 		if target == nil {
-			return fmt.Errorf("❌ Guest '%s' not found.", guestFilter)
+			return fmt.Errorf("Guest '%s' not found.", guestFilter)
 		}
 
 		fmt.Println("\n--- Guest Subscription ---")
@@ -543,7 +543,7 @@ func printSubscriptionsList(cfg *config.UserConfig, guestFilter string, withQR b
 
 	adminSub := ensureManagedSubscription(cfg)
 	if adminSub.Token == "" {
-		fmt.Println("ℹ️  No subscription configured. Use 'sub set'.")
+		fmt.Println("ℹ No subscription configured. Use 'sub set'.")
 	} else {
 		subURL := managedSubURL(cfg, adminSub)
 		proto := "HTTP"
@@ -629,7 +629,7 @@ var subListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if reconcileSubscriptions(cfg) {
 			_ = cfg.SaveEx(true)
@@ -646,7 +646,7 @@ var subShowCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		if reconcileSubscriptions(cfg) {
 			_ = cfg.SaveEx(true)
@@ -675,7 +675,7 @@ var subShowCmd = &cobra.Command{
 				}
 			}
 			if !found {
-				return fmt.Errorf("❌ Subscription instance '%s' not found.", instName)
+				return fmt.Errorf("Subscription instance '%s' not found.", instName)
 			}
 			port := inst.Port
 			if port <= 0 {
@@ -719,7 +719,7 @@ var subShowCmd = &cobra.Command{
 				}
 			}
 			if target == nil {
-				return fmt.Errorf("❌ Guest '%s' not found.", subShowGuest)
+				return fmt.Errorf("Guest '%s' not found.", subShowGuest)
 			}
 
 			fmt.Println("\n--- Guest Subscription ---")
@@ -731,7 +731,7 @@ var subShowCmd = &cobra.Command{
 		// 4. Default: No args, no -g, no --all -> show Admin Subscription only (aligned with show)
 		adminSub := ensureManagedSubscription(cfg)
 		if adminSub.Token == "" {
-			fmt.Println("ℹ️  No subscription configured. Use 'sub set'.")
+			fmt.Println("ℹ No subscription configured. Use 'sub set'.")
 			return nil
 		}
 		subURL := managedSubURL(cfg, adminSub)

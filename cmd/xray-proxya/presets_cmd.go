@@ -83,7 +83,7 @@ var presetsListCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil || cfg == nil {
-			return fmt.Errorf("❌ Failed to load staging config.")
+			return fmt.Errorf("Failed to load staging config.")
 		}
 
 		colorEnabled := ui.IsColorEnabled()
@@ -125,7 +125,7 @@ var presetsListCmd = &cobra.Command{
 		fmt.Println()
 		fmt.Print(t.Render())
 		if cfg.SkinPort > 0 {
-			fmt.Printf("\n🎨 Web Camouflage Skin Port: %d (127.0.0.1:%d)\n", cfg.SkinPort, cfg.SkinPort)
+			fmt.Printf("\nWeb Camouflage Skin Port: %d (127.0.0.1:%d)\n", cfg.SkinPort, cfg.SkinPort)
 		}
 		fmt.Println()
 		return nil
@@ -137,13 +137,13 @@ var presetsSkinCmd = &cobra.Command{
 	Short: "Manage Web camouflage skins for presets",
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if buildinfo.IsSlim {
-			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+			return fmt.Errorf("Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
 		}
 		return nil
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if buildinfo.IsSlim {
-			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+			return fmt.Errorf("Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
 		}
 		return cmd.Help()
 	},
@@ -156,7 +156,7 @@ var presetsSkinListCmd = &cobra.Command{
 	Args:    cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if buildinfo.IsSlim {
-			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+			return fmt.Errorf("Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
 		}
 		t := ui.NewTable("SKIN", "DESCRIPTION")
 		t.AddRow("nextcloud", "Official Nextcloud Hub login replica with /status.php & auth rejection")
@@ -210,19 +210,19 @@ Web camouflage skin highlights:
 
 func runPresetsSet(cmd *cobra.Command, args []string) error {
 	if cmd.Flags().Changed("on") && cmd.Flags().Changed("off") {
-		return fmt.Errorf("❌ Error: Cannot specify both --on and --off")
+		return fmt.Errorf("Cannot specify both --on and --off")
 	}
 
 	id, err := strconv.Atoi(args[0])
 	if err != nil {
-		return fmt.Errorf("❌ Invalid ID: %s", args[0])
+		return fmt.Errorf("Invalid ID: %s", args[0])
 	}
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	if id < 1 || id > len(cfg.Presets) {
-		return fmt.Errorf("❌ Invalid ID: %d", id)
+		return fmt.Errorf("Invalid ID: %d", id)
 	}
 
 	idx := id - 1
@@ -246,12 +246,12 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 	}
 
 	if selectors > 1 {
-		return fmt.Errorf("❌ Error: Conflicting SNI target flags specified. Please specify only one target selection option.")
+		return fmt.Errorf("Conflicting SNI target flags specified. Please specify only one target selection option.")
 	}
 
 	hasRealityReq := presetSNICheck || selectors > 0 || presetDest != ""
 	if hasRealityReq && !supportsSNI(m.Mode) {
-		return fmt.Errorf("❌ Error: Mode [%s] does not support REALITY target/SNI configuration (requires VLESS Reality or Vision).", m.Mode)
+		return fmt.Errorf("Mode [%s] does not support REALITY target/SNI configuration (requires VLESS Reality or Vision).", m.Mode)
 	}
 
 	if presetOff {
@@ -275,7 +275,7 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		}
 		normHost, _, _, err := config.NormalizeRealityTarget(manualDomain)
 		if err != nil {
-			return fmt.Errorf("❌ Error: Invalid domain %q: %v", manualDomain, err)
+			return fmt.Errorf("Invalid domain %q: %v", manualDomain, err)
 		}
 		dest := presetDest
 		if dest == "" {
@@ -283,40 +283,40 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		} else {
 			destHost, _, normDest, err := config.NormalizeRealityTarget(dest)
 			if err != nil {
-				return fmt.Errorf("❌ Error: Invalid --dest %q: %v", dest, err)
+				return fmt.Errorf("Invalid --dest %q: %v", dest, err)
 			}
 			if destHost != normHost {
-				return fmt.Errorf("❌ Error: --dest host (%s) must match --sni host (%s)", destHost, normHost)
+				return fmt.Errorf("--dest host (%s) must match --sni host (%s)", destHost, normHost)
 			}
 			dest = normDest
 		}
 
 		// Security risk inspection
 		if isRisky, reason := config.InspectRealityDomainRisk(normHost); isRisky {
-			fmt.Printf("⚠️  WARNING: Target domain %q is flagged as risky:\n    -> %s\n", normHost, reason)
+			fmt.Printf("▲ WARNING: Target domain %q is flagged as risky:\n    -> %s\n", normHost, reason)
 			if !presetSNIForce {
-				confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", normHost))
+				confirmed := promptConfirmFunc(fmt.Sprintf("▲ Do you want to proceed with risky target %s? [y/N]: ", normHost))
 				if !confirmed {
-					return fmt.Errorf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.")
+					return fmt.Errorf("Target configuration aborted. Use '--sni-force' to bypass this safety check.")
 				}
-				fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
+				fmt.Println("▲ Proceeding with risky target as confirmed by user.")
 			} else {
-				fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
+				fmt.Println("▲ Bypassing safety check via '--sni-force'.")
 			}
 		}
 
-		fmt.Printf("🔍 Validating manual REALITY target %s (%s)...\n", normHost, dest)
+		fmt.Printf("→ Validating manual REALITY target %s (%s)...\n", normHost, dest)
 		if err := validateManualTarget(normHost, dest); err != nil {
-			return fmt.Errorf("❌ Error: Target %s failed qualification: %v", dest, err)
+			return fmt.Errorf("Target %s failed qualification: %v", dest, err)
 		}
 		m.SNI = normHost
 		m.Dest = dest
 		if m.Mode == config.ModeHysteria2 {
 			if err := cfg.UpdateHysteria2Credentials(m, m.SNI); err != nil {
-				return fmt.Errorf("❌ Error configuring credentials for %s: %v", m.SNI, err)
+				return fmt.Errorf("Error configuring credentials for %s: %v", m.SNI, err)
 			}
 		}
-		fmt.Printf("🎯 Validated manual REALITY target: %s (%s)\n", normHost, dest)
+		fmt.Printf("• Validated manual REALITY target: %s (%s)\n", normHost, dest)
 	} else if selectors > 0 {
 		// 2. Specific Cloud Vendor Pool
 		vendor := config.VendorAWS
@@ -329,82 +329,82 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		}
 
 		if !config.IsValidCloudVendor(vendor) {
-			return fmt.Errorf("❌ Error: Unknown cloud vendor %q", presetSNIVendor)
+			return fmt.Errorf("Unknown cloud vendor %q", presetSNIVendor)
 		}
 
 		domains, err := config.GetCloudVendorDomains(vendor)
 		if err != nil {
-			return fmt.Errorf("❌ Error obtaining [%s] domain pool: %v", vendor, err)
+			return fmt.Errorf("Error obtaining [%s] domain pool: %v", vendor, err)
 		}
-		fmt.Printf("🔍 Probing and benchmarking [%s] candidate pool (%d domains)...\n", vendor, len(domains))
+		fmt.Printf("→ Probing and benchmarking [%s] candidate pool (%d domains)...\n", vendor, len(domains))
 		bestDomain, rtt, err := config.BenchmarkDomains(domains, 5*time.Second)
 		if err != nil {
-			return fmt.Errorf("❌ Error benchmarking [%s] domains: %v", vendor, err)
+			return fmt.Errorf("Error benchmarking [%s] domains: %v", vendor, err)
 		}
 		m.SNI = bestDomain
 		m.Dest = net.JoinHostPort(bestDomain, "443")
 		if m.Mode == config.ModeHysteria2 {
 			if err := cfg.UpdateHysteria2Credentials(m, m.SNI); err != nil {
-				return fmt.Errorf("❌ Error configuring credentials for %s: %v", m.SNI, err)
+				return fmt.Errorf("Error configuring credentials for %s: %v", m.SNI, err)
 			}
 		}
-		fmt.Printf("🎯 Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
+		fmt.Printf("• Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", vendor, bestDomain, float64(rtt.Microseconds())/1000.0)
 	} else if presetDest != "" {
 		// 3. Adjust dest port only for existing SNI
 		if m.SNI == "" {
-			return fmt.Errorf("❌ Error: Current preset has no SNI configured. Please specify --sni.")
+			return fmt.Errorf("Current preset has no SNI configured. Please specify --sni.")
 		}
 		destHost, _, normDest, err := config.NormalizeRealityTarget(presetDest)
 		if err != nil {
-			return fmt.Errorf("❌ Error: Invalid --dest %q: %v", presetDest, err)
+			return fmt.Errorf("Invalid --dest %q: %v", presetDest, err)
 		}
 		if destHost != m.SNI {
-			return fmt.Errorf("❌ Error: --dest host (%s) must match current SNI (%s)", destHost, m.SNI)
+			return fmt.Errorf("--dest host (%s) must match current SNI (%s)", destHost, m.SNI)
 		}
 
 		if isRisky, reason := config.InspectRealityDomainRisk(destHost); isRisky {
-			fmt.Printf("⚠️  WARNING: Target destination %q is flagged as risky:\n    -> %s\n", destHost, reason)
+			fmt.Printf("▲ WARNING: Target destination %q is flagged as risky:\n    -> %s\n", destHost, reason)
 			if !presetSNIForce {
-				confirmed := promptConfirmFunc(fmt.Sprintf("⚠️  Do you want to proceed with risky target %s? [y/N]: ", destHost))
+				confirmed := promptConfirmFunc(fmt.Sprintf("▲ Do you want to proceed with risky target %s? [y/N]: ", destHost))
 				if !confirmed {
-					return fmt.Errorf("❌ Target configuration aborted. Use '--sni-force' to bypass this safety check.")
+					return fmt.Errorf("Target configuration aborted. Use '--sni-force' to bypass this safety check.")
 				}
-				fmt.Println("⚠️  Proceeding with risky target as confirmed by user.")
+				fmt.Println("▲ Proceeding with risky target as confirmed by user.")
 			} else {
-				fmt.Println("⚠️  Bypassing safety check via '--sni-force'.")
+				fmt.Println("▲ Bypassing safety check via '--sni-force'.")
 			}
 		}
 
-		fmt.Printf("🔍 Validating REALITY destination %s...\n", normDest)
+		fmt.Printf("→ Validating REALITY destination %s...\n", normDest)
 		if err := checkTargetAvailability(normDest); err != nil {
-			return fmt.Errorf("❌ Error: Target %s failed qualification: %v", normDest, err)
+			return fmt.Errorf("Target %s failed qualification: %v", normDest, err)
 		}
 		m.Dest = normDest
-		fmt.Printf("🎯 Validated REALITY destination: %s\n", normDest)
+		fmt.Printf("• Validated REALITY destination: %s\n", normDest)
 	} else if presetSNICheck {
 		// 4. Validate current SNI/Dest without changing
 		if m.SNI == "" {
-			return fmt.Errorf("❌ Error: Current preset has no SNI configured.")
+			return fmt.Errorf("Current preset has no SNI configured.")
 		}
 		target := m.Dest
 		if target == "" {
 			target = net.JoinHostPort(m.SNI, "443")
 		}
-		fmt.Printf("🔍 Validating current REALITY target %s (%s)...\n", m.SNI, target)
+		fmt.Printf("→ Validating current REALITY target %s (%s)...\n", m.SNI, target)
 		if err := checkTargetAvailability(target); err != nil {
-			return fmt.Errorf("❌ Error: Current REALITY target %s failed qualification: %v", target, err)
+			return fmt.Errorf("Current REALITY target %s failed qualification: %v", target, err)
 		}
 		m.Dest = target
-		fmt.Printf("🎯 Validated current REALITY target: %s (%s)\n", m.SNI, target)
+		fmt.Printf("• Validated current REALITY target: %s (%s)\n", m.SNI, target)
 	}
 
 	// 4.5. Web camouflage skin port configuration
 	if cmd.Flags().Changed("skin-port") {
 		if buildinfo.IsSlim {
-			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+			return fmt.Errorf("Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
 		}
 		if presetSkinPort < 1024 || presetSkinPort > 65535 {
-			return fmt.Errorf("❌ Error: Invalid --skin-port %d. Must be between 1024 and 65535.", presetSkinPort)
+			return fmt.Errorf("Invalid --skin-port %d. Must be between 1024 and 65535.", presetSkinPort)
 		}
 		cfg.SkinPort = presetSkinPort
 		for i := range cfg.Presets {
@@ -412,17 +412,17 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 				cfg.Presets[i].Dest = fmt.Sprintf("127.0.0.1:%d", cfg.SkinPort)
 			}
 		}
-		fmt.Printf("🎨 Configured Web Skin port to %d.\n", cfg.SkinPort)
+		fmt.Printf("Configured Web Skin port to %d.\n", cfg.SkinPort)
 	}
 
 	// 5. Web camouflage skin configuration
 	if cmd.Flags().Changed("skin") && presetSkin != "" {
 		st := strings.ToLower(strings.TrimSpace(presetSkin))
 		if st != "off" && st != "none" && buildinfo.IsSlim {
-			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+			return fmt.Errorf("Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
 		}
 		if !supportsSkin(m.Mode) {
-			return fmt.Errorf("❌ Error: Mode [%s] does not support Web camouflage skin.", m.Mode)
+			return fmt.Errorf("Mode [%s] does not support Web camouflage skin.", m.Mode)
 		}
 		if st == "off" || st == "none" {
 			m.Skin = ""
@@ -433,10 +433,10 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			if m.Mode == config.ModeHysteria2 {
 				_ = cfg.UpdateHysteria2Credentials(m, m.SNI)
 			}
-			fmt.Printf("🎨 Disabled Web Skin for preset [%s].\n", m.Mode)
+			fmt.Printf("Disabled Web Skin for preset [%s].\n", m.Mode)
 		} else {
 			if !config.IsValidSkin(st) {
-				return fmt.Errorf("❌ Error: Unknown skin %q. Available skins: %s", presetSkin, strings.Join(config.SupportedSkins, ", "))
+				return fmt.Errorf("Unknown skin %q. Available skins: %s", presetSkin, strings.Join(config.SupportedSkins, ", "))
 			}
 			effectiveDomain := presetSkinDomain
 			if effectiveDomain == "" {
@@ -450,11 +450,11 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			}
 			effectiveDomain = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(effectiveDomain)), ".")
 			if effectiveDomain == "" {
-				return fmt.Errorf("❌ Error: Setting --skin requires a valid domain. Please specify --skin-domain <domain> or run 'xray-proxya cert add <domain>' first.")
+				return fmt.Errorf("Setting --skin requires a valid domain. Please specify --skin-domain <domain> or run 'xray-proxya cert add <domain>' first.")
 			}
 			cert := cfg.FindCert(effectiveDomain)
 			if cert == nil && m.Mode != config.ModeHysteria2 {
-				return fmt.Errorf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
+				return fmt.Errorf("Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
 			}
 			m.Skin = st
 			m.SkinDomain = effectiveDomain
@@ -466,7 +466,7 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 				m.SNI = effectiveDomain
 				m.Dest = fmt.Sprintf("127.0.0.1:%d", skinPort)
 				if err := cfg.UpdateHysteria2Credentials(m, effectiveDomain); err != nil {
-					return fmt.Errorf("❌ Error configuring credentials for %s: %v", effectiveDomain, err)
+					return fmt.Errorf("Error configuring credentials for %s: %v", effectiveDomain, err)
 				}
 			}
 			if m.Mode == config.ModeHysteria2 && m.Settings.PublicKey != "" {
@@ -474,31 +474,31 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 				if len(pubKeyPin) > 16 {
 					pubKeyPin = pubKeyPin[:16]
 				}
-				fmt.Printf("🎨 Configured Web Skin [%s] for Hysteria2 on 127.0.0.1:%d using self-signed certificate (SNI: %s, pinSHA256: %s...).\n",
+				fmt.Printf("Configured Web Skin [%s] for Hysteria2 on 127.0.0.1:%d using self-signed certificate (SNI: %s, pinSHA256: %s...).\n",
 					m.Skin, skinPort, m.SNI, pubKeyPin)
 			} else {
 				certExpiry := ""
 				if cert != nil {
 					certExpiry = cert.ExpiresAt.Format("2006-01-02")
 				}
-				fmt.Printf("🎨 Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
+				fmt.Printf("Configured Web Skin [%s] bound to domain %s on 127.0.0.1:%d (Cert valid until %s).\n",
 					m.Skin, m.SkinDomain, skinPort, certExpiry)
 			}
 		}
 	} else if cmd.Flags().Changed("skin-domain") {
 		if buildinfo.IsSlim {
-			return fmt.Errorf("❌ Error: Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
+			return fmt.Errorf("Web camouflage skin feature is disabled in Slim build. Please use the full build for proxy servers.")
 		}
 		if m.Skin == "" {
-			return fmt.Errorf("❌ Error: Cannot set --skin-domain without setting --skin.")
+			return fmt.Errorf("Cannot set --skin-domain without setting --skin.")
 		}
 		effectiveDomain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(presetSkinDomain)), ".")
 		if effectiveDomain == "" {
-			return fmt.Errorf("❌ Error: --skin-domain cannot be empty.")
+			return fmt.Errorf("--skin-domain cannot be empty.")
 		}
 		cert := cfg.FindCert(effectiveDomain)
 		if cert == nil && m.Mode != config.ModeHysteria2 {
-			return fmt.Errorf("❌ Error: Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
+			return fmt.Errorf("Domain %q has no valid certificate. Run 'xray-proxya cert add %s' first.", effectiveDomain, effectiveDomain)
 		}
 		m.SkinDomain = effectiveDomain
 		if supportsReality(m.Mode) {
@@ -506,7 +506,7 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 		} else if m.Mode == config.ModeHysteria2 {
 			m.SNI = effectiveDomain
 			if err := cfg.UpdateHysteria2Credentials(m, effectiveDomain); err != nil {
-				return fmt.Errorf("❌ Error configuring credentials for %s: %v", effectiveDomain, err)
+				return fmt.Errorf("Error configuring credentials for %s: %v", effectiveDomain, err)
 			}
 		}
 		if m.Mode == config.ModeHysteria2 && m.Settings.PublicKey != "" {
@@ -514,27 +514,27 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 			if len(pubKeyPin) > 16 {
 				pubKeyPin = pubKeyPin[:16]
 			}
-			fmt.Printf("🎨 Updated Web Skin domain to %s using self-signed certificate (pinSHA256: %s...).\n", m.SkinDomain, pubKeyPin)
+			fmt.Printf("Updated Web Skin domain to %s using self-signed certificate (pinSHA256: %s...).\n", m.SkinDomain, pubKeyPin)
 		} else if cert != nil {
-			fmt.Printf("🎨 Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
+			fmt.Printf("Updated Web Skin domain to %s (Cert valid until %s).\n", m.SkinDomain, cert.ExpiresAt.Format("2006-01-02"))
 		} else {
-			fmt.Printf("🎨 Updated Web Skin domain to %s.\n", m.SkinDomain)
+			fmt.Printf("Updated Web Skin domain to %s.\n", m.SkinDomain)
 		}
 	}
 
 	if cmd.Flags().Changed("min-ver") {
 		if !supportsReality(m.Mode) {
-			return fmt.Errorf("❌ Error: Mode [%s] does not support REALITY min-ver configuration (requires VLESS Reality or Vision).", m.Mode)
+			return fmt.Errorf("Mode [%s] does not support REALITY min-ver configuration (requires VLESS Reality or Vision).", m.Mode)
 		}
 		normVer, err := config.NormalizeMinClientVersion(presetMinVer)
 		if err != nil {
-			return fmt.Errorf("❌ Error: Invalid --min-ver %q: %v", presetMinVer, err)
+			return fmt.Errorf("Invalid --min-ver %q: %v", presetMinVer, err)
 		}
 		m.MinClientVer = normVer
 	}
 
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
 	status := "OFF"
 	if m.Enabled {
@@ -548,9 +548,9 @@ func runPresetsSet(cmd *cobra.Command, args []string) error {
 	if m.Skin != "" {
 		skinInfo = fmt.Sprintf(", Skin: %s (%s)", m.Skin, m.SkinDomain)
 	}
-	fmt.Printf("✅ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s%s [STAGING]\n",
+	fmt.Printf("✔ Updated [%s] -> Status: %s, Port: %d, SNI: %s, Dest: %s%s%s [STAGING]\n",
 		m.Mode, status, m.Port, m.SNI, m.Dest, extraInfo, skinInfo)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 

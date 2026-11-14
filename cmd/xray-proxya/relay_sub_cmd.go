@@ -56,13 +56,13 @@ var relaySubAddCmd = &cobra.Command{
 		subURL := strings.TrimSpace(args[1])
 
 		if name == "" || strings.Contains(name, "/") || strings.Contains(name, " ") {
-			fmt.Println("❌ Invalid provider name. It must not be empty or contain '/' or spaces.")
+			fmt.Println("✖ Invalid provider name. It must not be empty or contain '/' or spaces.")
 			return
 		}
 
 		u, err := url.Parse(subURL)
 		if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-			fmt.Println("❌ Invalid subscription URL. It must start with http:// or https://.")
+			fmt.Println("✖ Invalid subscription URL. It must start with http:// or https://.")
 			return
 		}
 
@@ -75,35 +75,35 @@ var relaySubAddCmd = &cobra.Command{
 		}
 
 		if _, exists := cfg.RelaySubs[name]; exists {
-			fmt.Printf("⚠️  Subscription '%s' already exists. Use 'relay sub update %s' to refresh, or remove it first.\n", name, name)
+			fmt.Printf("▲ Subscription '%s' already exists. Use 'relay sub update %s' to refresh, or remove it first.\n", name, name)
 			return
 		}
 
-		fmt.Printf("🌐 Fetching subscription '%s'...\n", name)
+		fmt.Printf("Fetching subscription '%s'...\n", name)
 		body, err := relaysub.FetchSubscription(context.Background(), subURL)
 		if err != nil {
-			fmt.Printf("❌ Failed to fetch subscription: %v\n", err)
+			fmt.Printf("✖ Failed to fetch subscription: %v\n", err)
 			return
 		}
 
 		nodes, skipped, err := relaysub.ParseSubscription(name, body)
 		if err != nil {
-			fmt.Printf("❌ Failed to parse subscription payload: %v\n", err)
+			fmt.Printf("✖ Failed to parse subscription payload: %v\n", err)
 			return
 		}
 
 		if len(nodes) == 0 {
-			fmt.Printf("❌ No valid proxy nodes (VLESS, VMess, Shadowsocks) found in subscription. (%d skipped)\n", skipped)
+			fmt.Printf("✖ No valid proxy nodes (VLESS, VMess, Shadowsocks) found in subscription. (%d skipped)\n", skipped)
 			return
 		}
 
 		// Preview Information
-		fmt.Printf("📥 Subscription parsed successfully:\n")
+		fmt.Printf("Subscription parsed successfully:\n")
 		fmt.Printf("   • Valid proxy nodes: %d\n", len(nodes))
 		if skipped > 0 {
 			fmt.Printf("   • Skipped lines:     %d (unsupported protocols or announcements)\n", skipped)
 		}
-		fmt.Println("\n📋 Previewing nodes to import into STAGING:")
+		fmt.Println("\nPreviewing nodes to import into STAGING:")
 		previewLimit := 10
 		if len(nodes) < previewLimit {
 			previewLimit = len(nodes)
@@ -131,14 +131,14 @@ var relaySubAddCmd = &cobra.Command{
 		cfg.RelaySubs[name] = subURL
 
 		if relaySubTest {
-			fmt.Println("🔍 Running connectivity tests for imported nodes...")
+			fmt.Println("→ Running connectivity tests for imported nodes...")
 			var aliases []string
 			for _, n := range nodes {
 				aliases = append(aliases, n.Alias)
 			}
 			results, err := relaytest.RunTests(context.Background(), cfg, aliases, relaytest.ModeSimple, 4)
 			if err != nil {
-				fmt.Printf("⚠️  Test encountered error: %v\n", err)
+				fmt.Printf("▲ Test encountered error: %v\n", err)
 			} else {
 				fmt.Print(relaytest.RenderTerminal(results))
 				fmt.Println()
@@ -146,12 +146,12 @@ var relaySubAddCmd = &cobra.Command{
 		}
 
 		if err := cfg.SaveEx(true); err != nil {
-			fmt.Printf("❌ Failed to save STAGING configuration: %v\n", err)
+			fmt.Printf("✖ Failed to save STAGING configuration: %v\n", err)
 			return
 		}
 
-		fmt.Printf("✅ Added %d relay nodes for '%s' to STAGING.\n", len(nodes), name)
-		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		fmt.Printf("✔ Added %d relay nodes for '%s' to STAGING.\n", len(nodes), name)
+		fmt.Println("→ Run 'xray-proxya apply' to commit changes.")
 	},
 }
 
@@ -162,11 +162,11 @@ var relaySubUpdateCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil || cfg == nil {
-			fmt.Println("❌ Failed to load STAGING configuration.")
+			fmt.Println("✖ Failed to load STAGING configuration.")
 			return
 		}
 		if len(cfg.RelaySubs) == 0 {
-			fmt.Println("❌ No subscription sources configured. Use 'relay sub add <name> <url>' first.")
+			fmt.Println("✖ No subscription sources configured. Use 'relay sub add <name> <url>' first.")
 			return
 		}
 
@@ -174,7 +174,7 @@ var relaySubUpdateCmd = &cobra.Command{
 		if len(args) > 0 {
 			target := strings.TrimSpace(args[0])
 			if _, ok := cfg.RelaySubs[target]; !ok {
-				fmt.Printf("❌ Subscription '%s' not found.\n", target)
+				fmt.Printf("✖ Subscription '%s' not found.\n", target)
 				return
 			}
 			targets = append(targets, target)
@@ -190,28 +190,28 @@ var relaySubUpdateCmd = &cobra.Command{
 
 		for _, name := range targets {
 			subURL := cfg.RelaySubs[name]
-			fmt.Printf("🔄 Updating subscription '%s'...\n", name)
+			fmt.Printf("→ Updating subscription '%s'...\n", name)
 
 			body, err := relaysub.FetchSubscription(ctx, subURL)
 			if err != nil {
-				fmt.Printf("❌ Failed to fetch '%s': %v\n", name, err)
+				fmt.Printf("✖ Failed to fetch '%s': %v\n", name, err)
 				continue
 			}
 
 			nodes, skipped, err := relaysub.ParseSubscription(name, body)
 			if err != nil {
-				fmt.Printf("❌ Failed to parse payload for '%s': %v\n", name, err)
+				fmt.Printf("✖ Failed to parse payload for '%s': %v\n", name, err)
 				continue
 			}
 
 			diff := relaysub.ComputeDiff(name, cfg.CustomOutbounds, nodes)
 
 			// Print diff comparison
-			fmt.Printf("📊 Comparison result for '%s':\n", name)
-			fmt.Printf("   ➕ Added:     %d\n", len(diff.Added))
-			fmt.Printf("   🔄 Changed:   %d\n", len(diff.Updated))
-			fmt.Printf("   ⏹️  Unchanged: %d\n", len(diff.Unchanged))
-			fmt.Printf("   ➖ Removed:   %d\n", len(diff.Removed))
+			fmt.Printf("Comparison result for '%s':\n", name)
+			fmt.Printf("   + Added:     %d\n", len(diff.Added))
+			fmt.Printf("   → Changed:   %d\n", len(diff.Updated))
+			fmt.Printf("   • Unchanged: %d\n", len(diff.Unchanged))
+			fmt.Printf("   - Removed:   %d\n", len(diff.Removed))
 			if skipped > 0 {
 				fmt.Printf("   • Skipped:   %d non-proxy/unsupported items\n", skipped)
 			}
@@ -234,7 +234,7 @@ var relaySubUpdateCmd = &cobra.Command{
 					fmt.Printf("     - %s\n", r.Alias)
 					// Check active gateway relay protection
 					if cfg.Gateway.RelayAlias == r.Alias {
-						fmt.Printf("       ⚠️  Active gateway relay '%s' was removed upstream!\n", r.Alias)
+						fmt.Printf("       ▲ Active gateway relay '%s' was removed upstream!\n", r.Alias)
 					}
 				}
 			}
@@ -245,14 +245,14 @@ var relaySubUpdateCmd = &cobra.Command{
 			totalRemoved += len(diff.Removed)
 
 			if relaySubTest && len(nodes) > 0 {
-				fmt.Printf("🔍 Testing connectivity for '%s' nodes...\n", name)
+				fmt.Printf("→ Testing connectivity for '%s' nodes...\n", name)
 				var aliases []string
 				for _, n := range nodes {
 					aliases = append(aliases, n.Alias)
 				}
 				results, err := relaytest.RunTests(ctx, cfg, aliases, relaytest.ModeSimple, 4)
 				if err != nil {
-					fmt.Printf("⚠️  Test error: %v\n", err)
+					fmt.Printf("▲ Test error: %v\n", err)
 				} else {
 					fmt.Print(relaytest.RenderTerminal(results))
 					fmt.Println()
@@ -261,12 +261,12 @@ var relaySubUpdateCmd = &cobra.Command{
 		}
 
 		if err := cfg.SaveEx(true); err != nil {
-			fmt.Printf("❌ Failed to save STAGING configuration: %v\n", err)
+			fmt.Printf("✖ Failed to save STAGING configuration: %v\n", err)
 			return
 		}
 
-		fmt.Printf("\n✅ Subscription update complete in STAGING (Total Added: %d, Changed: %d, Removed: %d).\n", totalAdded, totalUpdated, totalRemoved)
-		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		fmt.Printf("\n✔ Subscription update complete in STAGING (Total Added: %d, Changed: %d, Removed: %d).\n", totalAdded, totalUpdated, totalRemoved)
+		fmt.Println("→ Run 'xray-proxya apply' to commit changes.")
 	},
 }
 
@@ -332,12 +332,12 @@ var relaySubRemoveCmd = &cobra.Command{
 		name := strings.TrimSpace(args[0])
 		cfg, err := config.LoadConfigEx(true)
 		if err != nil || cfg == nil {
-			fmt.Println("❌ Failed to load STAGING configuration.")
+			fmt.Println("✖ Failed to load STAGING configuration.")
 			return
 		}
 
 		if _, exists := cfg.RelaySubs[name]; !exists {
-			fmt.Printf("❌ Subscription '%s' not found.\n", name)
+			fmt.Printf("✖ Subscription '%s' not found.\n", name)
 			return
 		}
 
@@ -349,7 +349,7 @@ var relaySubRemoveCmd = &cobra.Command{
 			if strings.HasPrefix(co.Alias, prefix) {
 				removedCount++
 				if cfg.Gateway.RelayAlias == co.Alias {
-					fmt.Printf("⚠️  Removed relay '%s' was the configured gateway relay!\n", co.Alias)
+					fmt.Printf("▲ Removed relay '%s' was the configured gateway relay!\n", co.Alias)
 				}
 			} else {
 				newCOs = append(newCOs, co)
@@ -358,12 +358,12 @@ var relaySubRemoveCmd = &cobra.Command{
 		cfg.CustomOutbounds = newCOs
 
 		if err := cfg.SaveEx(true); err != nil {
-			fmt.Printf("❌ Failed to save STAGING configuration: %v\n", err)
+			fmt.Printf("✖ Failed to save STAGING configuration: %v\n", err)
 			return
 		}
 
-		fmt.Printf("✅ Removed subscription '%s' and %d associated relay node(s) from STAGING.\n", name, removedCount)
-		fmt.Println("🚀 Run 'xray-proxya apply' to commit changes.")
+		fmt.Printf("✔ Removed subscription '%s' and %d associated relay node(s) from STAGING.\n", name, removedCount)
+		fmt.Println("→ Run 'xray-proxya apply' to commit changes.")
 	},
 }
 

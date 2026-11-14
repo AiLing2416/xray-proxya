@@ -47,13 +47,13 @@ var certAddCmd = &cobra.Command{
 		}
 
 		if !certSkipDNS {
-			fmt.Printf("🔍 Checking DNS resolution for %s...\n", domain)
+			fmt.Printf("→ Checking DNS resolution for %s...\n", domain)
 			resolvedIP, err := certmanager.VerifyDNS(domain)
 			if err != nil {
-				fmt.Printf("⚠️  Warning: DNS check warning: %v\n", err)
+				fmt.Printf("▲ Warning: DNS check warning: %v\n", err)
 				fmt.Printf("   (Resolved to: %s; proceeding with ACME challenge...)\n", resolvedIP)
 			} else {
-				fmt.Printf("✅ DNS verified (points to %s).\n", resolvedIP)
+				fmt.Printf("✔ DNS verified (points to %s).\n", resolvedIP)
 			}
 		}
 
@@ -68,19 +68,19 @@ var certAddCmd = &cobra.Command{
 			p := &cfg.Presets[i]
 			if p.Mode == config.ModeHysteria2 && (strings.EqualFold(p.SkinDomain, domain) || strings.EqualFold(p.SNI, domain)) {
 				_ = cfg.UpdateHysteria2Credentials(p, domain)
-				fmt.Printf("🎨 Preset #%d (hysteria2) credentials updated to use authentic certificate for %s (pinSHA256 removed).\n", i+1, domain)
+				fmt.Printf("Preset #%d (hysteria2) credentials updated to use authentic certificate for %s (pinSHA256 removed).\n", i+1, domain)
 			}
 		}
 		if err := cfg.SaveEx(true); err != nil {
 			return fmt.Errorf("save config: %w", err)
 		}
 
-		fmt.Println("✅ Certificate issued and registered successfully [STAGING]!")
+		fmt.Println("✔ Certificate issued and registered successfully [STAGING]!")
 		fmt.Printf("   -> Domain:     %s\n", cert.Domain)
 		fmt.Printf("   -> Issuer:     %s\n", cert.Issuer)
 		fmt.Printf("   -> Issued:     %s\n", cert.IssuedAt.Format("2006-01-02 15:04:05"))
 		fmt.Printf("   -> Expires:    %s (approx %d days)\n", cert.ExpiresAt.Format("2006-01-02 15:04:05"), int(time.Until(cert.ExpiresAt).Hours()/24))
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("→ Run 'apply' to commit changes.")
 		return nil
 	},
 }
@@ -142,7 +142,7 @@ var certListCmd = &cobra.Command{
 			}
 			data, err := json.MarshalIndent(list, "", "  ")
 			if err != nil {
-				return fmt.Errorf("❌ Failed to serialize cert JSON: %w", err)
+				return fmt.Errorf("Failed to serialize cert JSON: %w", err)
 			}
 			fmt.Println(string(data))
 			return nil
@@ -232,7 +232,7 @@ var certRemoveCmd = &cobra.Command{
 
 		if len(disabled) > 0 {
 			for _, id := range disabled {
-				fmt.Printf("⚠️  Preset #%d was automatically DISABLED because domain %s was removed.\n", id, domain)
+				fmt.Printf("▲ Preset #%d was automatically DISABLED because domain %s was removed.\n", id, domain)
 			}
 		}
 
@@ -240,8 +240,8 @@ var certRemoveCmd = &cobra.Command{
 			return fmt.Errorf("save config: %w", err)
 		}
 
-		fmt.Printf("✅ Domain %s and its certificate files have been removed [STAGING].\n", domain)
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Printf("✔ Domain %s and its certificate files have been removed [STAGING].\n", domain)
+		fmt.Println("→ Run 'apply' to commit changes.")
 		return nil
 	},
 }
@@ -285,15 +285,15 @@ var certRenewCmd = &cobra.Command{
 
 		if targetDomain != "" {
 			if certForce {
-				fmt.Printf("🔄 Force renewing certificate for %s...\n", targetDomain)
+				fmt.Printf("→ Force renewing certificate for %s...\n", targetDomain)
 			} else {
-				fmt.Printf("🔍 Checking certificate for %s...\n", targetDomain)
+				fmt.Printf("→ Checking certificate for %s...\n", targetDomain)
 			}
 		} else {
 			if certForce {
-				fmt.Println("🔄 Force renewing all managed certificates...")
+				fmt.Println("→ Force renewing all managed certificates...")
 			} else {
-				fmt.Println("🔍 Checking all managed certificates for renewal...")
+				fmt.Println("→ Checking all managed certificates for renewal...")
 			}
 		}
 
@@ -308,10 +308,10 @@ var certRenewCmd = &cobra.Command{
 		}
 
 		for _, d := range renewed {
-			fmt.Printf("✅ Successfully renewed certificate for %s.\n", d)
+			fmt.Printf("✔ Successfully renewed certificate for %s.\n", d)
 		}
 		for _, f := range failed {
-			fmt.Printf("❌ Failed to renew certificate for %s: %v\n", f.Domain, f.Err)
+			fmt.Printf("✖ Failed to renew certificate for %s: %v\n", f.Domain, f.Err)
 		}
 		for _, d := range expiredFailed {
 			fmt.Printf("🚨 Alert: Certificate for %s expired and renewal failed. Dependent presets have been disabled.\n", d)
@@ -326,7 +326,7 @@ var certRenewCmd = &cobra.Command{
 			if err := cfg.SaveEx(true); err != nil {
 				return fmt.Errorf("save config: %w", err)
 			}
-			fmt.Println("🚀 Run 'apply' to commit changes.")
+			fmt.Println("→ Run 'apply' to commit changes.")
 		}
 
 		if len(failed) > 0 && len(renewed) == 0 {

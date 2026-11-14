@@ -33,7 +33,7 @@ var (
 			if err := xray.DownloadXray(); err != nil {
 				return err
 			}
-			fmt.Println("✅ Xray core downloaded.")
+			fmt.Println("✔ Xray core downloaded.")
 		}
 		return nil
 	}
@@ -41,25 +41,25 @@ var (
 )
 
 func selectServerRealityTarget() (string, string, error) {
-	fmt.Printf("🔍 Auto-detecting cloud provider for server...\n")
+	fmt.Printf("→ Auto-detecting cloud provider for server...\n")
 	detectedVendor := config.DetectCloudVendor()
 	if detectedVendor != "" {
 		fmt.Printf("☁️  Detected cloud provider: [%s]\n", detectedVendor)
 		domains, err := config.GetCloudVendorDomains(detectedVendor)
 		if err == nil && len(domains) > 0 {
-			fmt.Printf("🔍 Benchmarking [%s] candidate pool (%d domains)...\n", detectedVendor, len(domains))
+			fmt.Printf("→ Benchmarking [%s] candidate pool (%d domains)...\n", detectedVendor, len(domains))
 			bestDomain, rtt, err := config.BenchmarkDomains(domains, 5*time.Second)
 			if err == nil {
 				dest := net.JoinHostPort(bestDomain, "443")
-				fmt.Printf("🎯 Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", detectedVendor, bestDomain, float64(rtt.Microseconds())/1000.0)
+				fmt.Printf("• Selected [%s] REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", detectedVendor, bestDomain, float64(rtt.Microseconds())/1000.0)
 				return bestDomain, dest, nil
 			}
-			fmt.Printf("⚠️  Candidate domains in provider [%s] failed qualification: %v. Falling back to generic pool.\n", detectedVendor, err)
+			fmt.Printf("▲ Candidate domains in provider [%s] failed qualification: %v. Falling back to generic pool.\n", detectedVendor, err)
 		} else {
-			fmt.Printf("⚠️  No candidate domains available for detected provider [%s]. Falling back to generic pool.\n", detectedVendor)
+			fmt.Printf("▲ No candidate domains available for detected provider [%s]. Falling back to generic pool.\n", detectedVendor)
 		}
 	} else {
-		fmt.Printf("ℹ️  Cloud provider not recognized or non-cloud IP. Using generic global domain pool.\n")
+		fmt.Printf("ℹ Cloud provider not recognized or non-cloud IP. Using generic global domain pool.\n")
 	}
 
 	genericDomains, err := config.GetCloudVendorDomains(config.VendorGeneric)
@@ -67,28 +67,28 @@ func selectServerRealityTarget() (string, string, error) {
 		return "", "", fmt.Errorf("no generic candidate domains available: %w", err)
 	}
 
-	fmt.Printf("🔍 Benchmarking generic candidate pool (%d domains)...\n", len(genericDomains))
+	fmt.Printf("→ Benchmarking generic candidate pool (%d domains)...\n", len(genericDomains))
 	bestDomain, rtt, err := config.BenchmarkDomains(genericDomains, 5*time.Second)
 	if err != nil {
 		return "", "", fmt.Errorf("all candidate REALITY domains failed qualification: %w", err)
 	}
 	dest := net.JoinHostPort(bestDomain, "443")
-	fmt.Printf("🎯 Selected generic REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", bestDomain, float64(rtt.Microseconds())/1000.0)
+	fmt.Printf("• Selected generic REALITY target: %s (RTT: %.1fms, TLS 1.3 OK)\n", bestDomain, float64(rtt.Microseconds())/1000.0)
 	return bestDomain, dest, nil
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
 	configPath := config.GetConfigPath()
 	if _, err := os.Stat(configPath); err == nil && !forceInit {
-		fmt.Println("⚠️  Configuration already exists at", configPath)
-		fmt.Println("🚀 Use '--force' or '-f' to overwrite (this will reset ALL settings, keys, and UUIDs).")
+		fmt.Println("▲ Configuration already exists at", configPath)
+		fmt.Println("→ Use '--force' or '-f' to overwrite (this will reset ALL settings, keys, and UUIDs).")
 		return fmt.Errorf("configuration already exists at %s", configPath)
 	}
 
 	targetRoleStr := roleStr
 	if len(args) == 1 {
 		if cmd != nil && cmd.Flags().Changed("role") && roleStr != args[0] {
-			fmt.Printf("❌ Role specified in positional argument (%s) conflicts with --role flag (%s)\n", args[0], roleStr)
+			fmt.Printf("✖ Role specified in positional argument (%s) conflicts with --role flag (%s)\n", args[0], roleStr)
 			return fmt.Errorf("role conflict: positional argument %q conflicts with --role flag %q", args[0], roleStr)
 		}
 		targetRoleStr = args[0]
@@ -101,7 +101,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	case string(config.RoleGateway):
 		role = config.RoleGateway
 	default:
-		fmt.Printf("❌ Invalid role: %q (allowed: server, gateway)\n", targetRoleStr)
+		fmt.Printf("✖ Invalid role: %q (allowed: server, gateway)\n", targetRoleStr)
 		return fmt.Errorf("invalid role: %q", targetRoleStr)
 	}
 
@@ -114,24 +114,24 @@ func runInit(cmd *cobra.Command, args []string) error {
 			}
 		}
 		if len(missing) > 0 {
-			return fmt.Errorf("❌ Missing required gateway dependencies in PATH: %s (install nftables and iproute2)", strings.Join(missing, ", "))
+			return fmt.Errorf("Missing required gateway dependencies in PATH: %s (install nftables and iproute2)", strings.Join(missing, ", "))
 		}
 	}
 	if role == config.RoleServer {
 		var err error
 		selectedSNI, selectedDest, err = realityTargetSelector()
 		if err != nil {
-			fmt.Printf("❌ Failed to select qualified REALITY target: %v\n", err)
+			fmt.Printf("✖ Failed to select qualified REALITY target: %v\n", err)
 			return err
 		}
 	}
 
 	// Preflight succeeded; now prepare fresh init and ensure binary exists
 	prepareFreshInitFunc()
-	fmt.Printf("🚀 Initializing Xray-Proxya as %s...\n", role)
+	fmt.Printf("→ Initializing Xray-Proxya as %s...\n", role)
 
 	if err := ensureXrayBinaryFunc(); err != nil {
-		fmt.Printf("❌ Failed to ensure Xray binary: %v\n", err)
+		fmt.Printf("✖ Failed to ensure Xray binary: %v\n", err)
 		return err
 	}
 
@@ -148,7 +148,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		if iface, err := gateway.DetectDefaultInterface(); err == nil {
 			cfg.Gateway.LANInterface = iface
 		}
-		fmt.Println("✅ Gateway (Local & LAN) enabled by default.")
+		fmt.Println("✔ Gateway (Local & LAN) enabled by default.")
 	}
 
 	// COMMON PRESET INITIALIZATION
@@ -248,10 +248,10 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := cfg.SaveEx(true); err != nil {
-		fmt.Printf("❌ Failed: %v\n", err)
+		fmt.Printf("✖ Failed: %v\n", err)
 		return err
 	}
-	fmt.Println("🚀 First-time automatic apply...")
+	fmt.Println("→ First-time automatic apply...")
 	config.CommitStaging()
 
 	if role == config.RoleGateway {
@@ -264,8 +264,8 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	fmt.Println("✨ Initialization complete. Configuration is ready.")
-	fmt.Println("🚀 Run 'xray-proxya service install' to install systemd units, then 'xray-proxya service start' to run.")
+	fmt.Println("✔ Initialization complete. Configuration is ready.")
+	fmt.Println("→ Run 'xray-proxya service install' to install systemd units, then 'xray-proxya service start' to run.")
 	return nil
 }
 
@@ -282,7 +282,7 @@ var initCmd = &cobra.Command{
 func prepareFreshInit() {
 	if os.Geteuid() == 0 {
 		if err := gateway.CleanupFirewall(); err != nil {
-			fmt.Printf("⚠️ Failed to clean gateway firewall: %v\n", err)
+			fmt.Printf("▲ Failed to clean gateway firewall: %v\n", err)
 		}
 		_ = xray.StopXrayService()
 	} else {

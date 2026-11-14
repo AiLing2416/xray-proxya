@@ -46,9 +46,9 @@ var doctorCompletionInstallCmd = &cobra.Command{
 		if err := installCompletion(layout); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ Installed %s completion: %s\n", layout.shell, layout.file)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ Installed %s completion: %s\n", layout.shell, layout.file)
 		if layout.profile != "" {
-			fmt.Fprintf(cmd.OutOrStdout(), "✅ Updated shell profile: %s\n", layout.profile)
+			fmt.Fprintf(cmd.OutOrStdout(), "✔ Updated shell profile: %s\n", layout.profile)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "Open a new shell or reload its profile to activate completion.")
 		return nil
@@ -67,7 +67,7 @@ var doctorCompletionUninstallCmd = &cobra.Command{
 		if err := uninstallCompletion(layout); err != nil {
 			return err
 		}
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ Removed %s completion.\n", layout.shell)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ Removed %s completion.\n", layout.shell)
 		return nil
 	},
 }

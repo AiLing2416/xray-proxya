@@ -175,3 +175,42 @@ func TestRelayProbeLocalTargetAddress(t *testing.T) {
 		})
 	}
 }
+
+func TestRelayEmptyJSONOutput(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+
+	cfg := &config.UserConfig{Role: config.RoleServer}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx error: %v", err)
+	}
+
+	relayTestJSON = true
+	relayInfoJSON = true
+	relaySpeedJSON = true
+	t.Cleanup(func() {
+		relayTestJSON = false
+		relayInfoJSON = false
+		relaySpeedJSON = false
+	})
+
+	for _, tc := range []struct {
+		name string
+		run  func() error
+	}{
+		{"relay test --json", func() error { return testOutboundCmd.RunE(testOutboundCmd, nil) }},
+		{"relay info --json", func() error { return infoOutboundCmd.RunE(infoOutboundCmd, nil) }},
+		{"relay speed --json", func() error { return speedOutboundCmd.RunE(speedOutboundCmd, nil) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := captureStdout(t, func() {
+				if err := tc.run(); err != nil {
+					t.Fatalf("%s returned error: %v", tc.name, err)
+				}
+			})
+			if strings.TrimSpace(out) != "[]" {
+				t.Errorf("%s output = %q, want %q", tc.name, strings.TrimSpace(out), "[]")
+			}
+		})
+	}
+}

@@ -39,13 +39,13 @@ or remove it with --uninstall, managing security contexts for Xray-Proxya.`,
 			if err := uninstallSELinuxPolicy(); err != nil {
 				return fmt.Errorf("SELinux policy removal failed: %w", err)
 			}
-			fmt.Fprintln(cmd.OutOrStdout(), "✅ Reviewed SELinux policy and file contexts removed.")
+			fmt.Fprintln(cmd.OutOrStdout(), "✔ Reviewed SELinux policy and file contexts removed.")
 			return nil
 		}
 		if err := installSELinuxPolicy(); err != nil {
 			return fmt.Errorf("SELinux policy installation failed: %w", err)
 		}
-		fmt.Fprintln(cmd.OutOrStdout(), "✅ Reviewed SELinux policy installed. SELinux enforcing mode was not changed.")
+		fmt.Fprintln(cmd.OutOrStdout(), "✔ Reviewed SELinux policy installed. SELinux enforcing mode was not changed.")
 		return nil
 	},
 }

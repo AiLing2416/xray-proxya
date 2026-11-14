@@ -154,11 +154,11 @@ var serviceInstallCmd = &cobra.Command{
 			return err
 		}
 		initType := service.CurrentProvider().Type()
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ Managed %s service files installed.\n", initType)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ Managed %s service files installed.\n", initType)
 		if os.Geteuid() != 0 && initType == service.InitSystemd {
 			user := currentLingerUser()
 			if enabled, err := checkLingerStatus(user); err == nil && !enabled {
-				fmt.Fprintf(cmd.OutOrStdout(), "💡 Notice: User session lingering is disabled for %q.\n   Run 'xray-proxya doctor linger enable' to keep user services running after logout.\n", user)
+				fmt.Fprintf(cmd.OutOrStdout(), "ℹ Notice: User session lingering is disabled for %q.\n   Run 'xray-proxya doctor linger enable' to keep user services running after logout.\n", user)
 			}
 		}
 		return nil
@@ -174,7 +174,7 @@ var serviceUninstallCmd = &cobra.Command{
 			return err
 		}
 		initType := service.CurrentProvider().Type()
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ Managed %s service files uninstalled.\n", initType)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ Managed %s service files uninstalled.\n", initType)
 		return nil
 	},
 }

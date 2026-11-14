@@ -29,7 +29,7 @@ var applyCmd = &cobra.Command{
 			fmt.Println(line)
 		}
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		return nil
 	},
@@ -41,9 +41,9 @@ var undoCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := applyops.ClearPending(); err != nil {
-			return fmt.Errorf("❌ Failed: %w", err)
+			return fmt.Errorf("Failed: %w", err)
 		}
-		fmt.Println("✅ STAGING changes discarded.")
+		fmt.Println("✔ STAGING changes discarded.")
 		return nil
 	},
 }

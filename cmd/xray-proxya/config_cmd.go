@@ -26,20 +26,20 @@ func runConfigUpgrade(cmd *cobra.Command, args []string) error {
 	staging := configUpgradeStaging
 	path := config.GetConfigPathEx(staging)
 	if staging && !config.StagingExists() {
-		return fmt.Errorf("❌ No staging config found.")
+		return fmt.Errorf("No staging config found.")
 	}
 	if _, err := os.Stat(path); err != nil {
-		return fmt.Errorf("❌ Config file not found: %s", path)
+		return fmt.Errorf("Config file not found: %s", path)
 	}
 
 	cfg, err := config.LoadConfigFile(path, false)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to load config: %w", err)
+		return fmt.Errorf("Failed to load config: %w", err)
 	}
 
 	changes := cfg.BackfillDefaults()
 	if len(changes) == 0 {
-		fmt.Printf("ℹ️ No upgrade changes needed for %s.\n", path)
+		fmt.Printf("ℹ No upgrade changes needed for %s.\n", path)
 		return nil
 	}
 	if configUpgradeDryRun {
@@ -47,7 +47,7 @@ func runConfigUpgrade(cmd *cobra.Command, args []string) error {
 		if staging {
 			label = "STAGING"
 		}
-		fmt.Printf("🔎 Dry run for %s config: %s\n", label, path)
+		fmt.Printf("→ Dry run for %s config: %s\n", label, path)
 		fmt.Println("Pending changes:")
 		for _, change := range changes {
 			fmt.Printf(" - %s\n", change)
@@ -58,17 +58,17 @@ func runConfigUpgrade(cmd *cobra.Command, args []string) error {
 
 	backupPath, err := backupConfigFile(path)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to create backup: %w", err)
+		return fmt.Errorf("Failed to create backup: %w", err)
 	}
 	if err := cfg.SaveEx(staging); err != nil {
-		return fmt.Errorf("❌ Failed to write upgraded config: %w", err)
+		return fmt.Errorf("Failed to write upgraded config: %w", err)
 	}
 
 	label := "ACTIVE"
 	if staging {
 		label = "STAGING"
 	}
-	fmt.Printf("✅ Upgraded %s config: %s\n", label, path)
+	fmt.Printf("✔ Upgraded %s config: %s\n", label, path)
 	fmt.Printf("🗂️ Backup: %s\n", backupPath)
 	fmt.Println("Applied changes:")
 	for _, change := range changes {
@@ -133,7 +133,7 @@ var configPathCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if configPathStaging && configPathActive {
-			return fmt.Errorf("❌ Cannot specify both --staging and --active")
+			return fmt.Errorf("Cannot specify both --staging and --active")
 		}
 
 		configDir := config.GetConfigDir()
@@ -191,19 +191,19 @@ var configShowCmd = &cobra.Command{
 		var targetPath string
 		if configShowStaging {
 			if !config.StagingExists() {
-				return fmt.Errorf("❌ No staging config found.")
+				return fmt.Errorf("No staging config found.")
 			}
 			targetPath = config.GetConfigPathEx(true)
 		} else {
 			targetPath = config.GetConfigPathEx(false)
 			if _, err := os.Stat(targetPath); os.IsNotExist(err) {
-				return fmt.Errorf("❌ xray-proxya has not been initialized. Run 'init' first.")
+				return fmt.Errorf("xray-proxya has not been initialized. Run 'init' first.")
 			}
 		}
 
 		data, err := os.ReadFile(targetPath)
 		if err != nil {
-			return fmt.Errorf("❌ Failed to read config file: %w", err)
+			return fmt.Errorf("Failed to read config file: %w", err)
 		}
 
 		if configShowFilter != "" {
@@ -220,7 +220,7 @@ var configShowCmd = &cobra.Command{
 				}
 				cfg, err := config.LoadConfigEx(configShowStaging)
 				if err != nil || cfg == nil {
-					return fmt.Errorf("❌ Failed to load gateway configuration: %v", err)
+					return fmt.Errorf("Failed to load gateway configuration: %v", err)
 				}
 				formatted, err := json.MarshalIndent(cfg.Gateway, "", "  ")
 				if err != nil {
@@ -232,7 +232,7 @@ var configShowCmd = &cobra.Command{
 
 			var rawMap map[string]json.RawMessage
 			if err := json.Unmarshal(data, &rawMap); err != nil {
-				return fmt.Errorf("❌ Failed to parse config JSON: %w", err)
+				return fmt.Errorf("Failed to parse config JSON: %w", err)
 			}
 			filterKey = strings.TrimSpace(configShowFilter)
 			rawVal, ok := rawMap[filterKey]
@@ -240,7 +240,7 @@ var configShowCmd = &cobra.Command{
 				rawVal, ok = rawMap[strings.ToLower(filterKey)]
 			}
 			if !ok {
-				return fmt.Errorf("❌ Section '%s' not found in configuration.", filterKey)
+				return fmt.Errorf("Section '%s' not found in configuration.", filterKey)
 			}
 			if configShowRaw {
 				fmt.Println(strings.TrimSpace(string(rawVal)))
@@ -248,7 +248,7 @@ var configShowCmd = &cobra.Command{
 			}
 			var parsedVal interface{}
 			if err := json.Unmarshal(rawVal, &parsedVal); err != nil {
-				return fmt.Errorf("❌ Failed to parse section JSON: %w", err)
+				return fmt.Errorf("Failed to parse section JSON: %w", err)
 			}
 			formatted, err := json.MarshalIndent(parsedVal, "", "  ")
 			if err != nil {
@@ -265,11 +265,11 @@ var configShowCmd = &cobra.Command{
 
 		var parsedVal interface{}
 		if err := json.Unmarshal(data, &parsedVal); err != nil {
-			return fmt.Errorf("❌ Failed to parse config JSON: %w", err)
+			return fmt.Errorf("Failed to parse config JSON: %w", err)
 		}
 		formatted, err := json.MarshalIndent(parsedVal, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to format JSON: %w", err)
+			return fmt.Errorf("Failed to format JSON: %w", err)
 		}
 		fmt.Println(string(formatted))
 		return nil
@@ -300,11 +300,11 @@ If no staging changes exist, reports that the configuration is clean.
 
 func runConfigDiff(cmd *cobra.Command, args []string) error {
 	if _, err := os.Stat(config.GetConfigPath()); os.IsNotExist(err) {
-		return fmt.Errorf("❌ xray-proxya has not been initialized. Run 'init' first.")
+		return fmt.Errorf("xray-proxya has not been initialized. Run 'init' first.")
 	}
 
 	if !config.StagingExists() {
-		fmt.Println("ℹ️  STAGING is clean (in sync with active configuration).")
+		fmt.Println("ℹ STAGING is clean (in sync with active configuration).")
 		return nil
 	}
 
@@ -314,20 +314,20 @@ func runConfigDiff(cmd *cobra.Command, args []string) error {
 	}
 	stagingCfg, err := config.LoadConfigEx(true)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to load staging config: %w", err)
+		return fmt.Errorf("Failed to load staging config: %w", err)
 	}
 
 	diffs := config.DiffUserConfig(activeCfg, stagingCfg)
 	if len(diffs) == 0 {
-		fmt.Println("ℹ️  STAGING is clean (in sync with active configuration).")
+		fmt.Println("ℹ STAGING is clean (in sync with active configuration).")
 		return nil
 	}
 
-	fmt.Println("🔎 STAGING configuration diff:")
+	fmt.Println("→ STAGING configuration diff:")
 	for _, line := range diffs {
 		fmt.Println(line)
 	}
-	fmt.Println("\n🚀 Run 'apply' to commit changes, or 'undo' to discard.")
+	fmt.Println("\n→ Run 'apply' to commit changes, or 'undo' to discard.")
 	return nil
 }
 

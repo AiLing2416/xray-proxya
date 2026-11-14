@@ -442,7 +442,7 @@ var doctorTunnelUpCmd = &cobra.Command{
 		}
 
 		if fixed, ifaceName, orig := DetectAndFixNAT(spec); fixed {
-			fmt.Fprintf(cmd.OutOrStdout(), "💡 Auto-Fix: Detected NAT private interface (%s). Using local IP %s for tunnel binding (was %s).\n", ifaceName, spec.ClientIPv4, orig)
+			fmt.Fprintf(cmd.OutOrStdout(), "ℹ Auto-Fix: Detected NAT private interface (%s). Using local IP %s for tunnel binding (was %s).\n", ifaceName, spec.ClientIPv4, orig)
 		}
 
 		ipBin := findIPBinary()
@@ -512,7 +512,7 @@ WantedBy=multi-user.target
 		unitPath := filepath.Join(systemdDir, serviceName)
 		_ = os.MkdirAll(systemdDir, 0755)
 		if err := os.WriteFile(unitPath, []byte(serviceUnit), 0644); err != nil {
-			fmt.Fprintf(cmd.OutOrStdout(), "⚠️  Failed to write systemd unit (%s): %v\n", unitPath, err)
+			fmt.Fprintf(cmd.OutOrStdout(), "▲ Failed to write systemd unit (%s): %v\n", unitPath, err)
 		} else {
 			// Clean legacy generic unit if it existed and is different
 			if serviceName != "he-tunnel.service" {
@@ -526,7 +526,7 @@ WantedBy=multi-user.target
 		ok, rtt, probeErr := testTunnelReachability(spec.ClientIPv6, 5*time.Second)
 
 		fmt.Fprintln(cmd.OutOrStdout(), "")
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ Hurricane Electric IPv6 tunnel '%s' deployed successfully!\n", spec.Interface)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ Hurricane Electric IPv6 tunnel '%s' deployed successfully!\n", spec.Interface)
 		fmt.Fprintf(cmd.OutOrStdout(), "   - Interface:    %s (MTU 1480)\n", spec.Interface)
 		fmt.Fprintf(cmd.OutOrStdout(), "   - Local IPv4:   %s\n", spec.ClientIPv4)
 		fmt.Fprintf(cmd.OutOrStdout(), "   - Remote IPv4:  %s\n", spec.ServerIPv4)
@@ -539,11 +539,11 @@ WantedBy=multi-user.target
 		if ok {
 			fmt.Fprintf(cmd.OutOrStdout(), "   - Connectivity: OK (RTT: %v)\n", rtt.Round(time.Millisecond))
 		} else {
-			fmt.Fprintf(cmd.OutOrStdout(), "   - Connectivity: ⚠️  Probe failed (%v)\n", probeErr)
+			fmt.Fprintf(cmd.OutOrStdout(), "   - Connectivity: ▲ Probe failed (%v)\n", probeErr)
 		}
 		if spec.RoutedSubnet != "" {
 			fmt.Fprintln(cmd.OutOrStdout(), "")
-			fmt.Fprintln(cmd.OutOrStdout(), "💡 Next step: To use this tunnel for dynamic IPv6 rotation, run:")
+			fmt.Fprintln(cmd.OutOrStdout(), "ℹ Next step: To use this tunnel for dynamic IPv6 rotation, run:")
 			fmt.Fprintf(cmd.OutOrStdout(), "   xray-proxya endpoint set <name> --type dynamic-v6 --interface %s --subnet %s\n", spec.Interface, spec.RoutedSubnet)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "")
@@ -579,9 +579,9 @@ var doctorTunnelDownCmd = &cobra.Command{
 			// Branch B: input is an interface name -> require verified configuration source
 			verified, source := findVerifiedTunnelConfigFunc(iface)
 			if !verified {
-				return fmt.Errorf("❌ Error: Cannot safely tear down interface '%s': No verified configuration found in active network configs or systemd services. Please specify the configuration file explicitly.", iface)
+				return fmt.Errorf("Cannot safely tear down interface '%s': No verified configuration found in active network configs or systemd services. Please specify the configuration file explicitly.", iface)
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "ℹ️ Verified tunnel interface '%s' via %s.\n", iface, source)
+			fmt.Fprintf(cmd.OutOrStdout(), "ℹ Verified tunnel interface '%s' via %s.\n", iface, source)
 		}
 
 		ipBin := findIPBinary()
@@ -601,7 +601,7 @@ var doctorTunnelDownCmd = &cobra.Command{
 		_, _ = tunnelCmdRunner(ipBin, "link", "set", iface, "down")
 		_, _ = tunnelCmdRunner(ipBin, "tunnel", "del", iface)
 
-		fmt.Fprintf(cmd.OutOrStdout(), "✅ HE tunnel '%s' brought down and systemd persistence removed.\n", iface)
+		fmt.Fprintf(cmd.OutOrStdout(), "✔ HE tunnel '%s' brought down and systemd persistence removed.\n", iface)
 		return nil
 	},
 }
@@ -915,7 +915,7 @@ var doctorTunnelStatusCmd = &cobra.Command{
 			if len(tun.Diagnostics) > 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "Diagnostics:")
 				for _, diag := range tun.Diagnostics {
-					fmt.Fprintf(cmd.OutOrStdout(), "  ⚠️  %s\n", diag)
+					fmt.Fprintf(cmd.OutOrStdout(), "  ▲ %s\n", diag)
 				}
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), strings.Repeat("-", 80))

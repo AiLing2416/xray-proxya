@@ -117,7 +117,7 @@ func completeEndpointNames(cmd *cobra.Command, args []string, toComplete string)
 func runEndpointList(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load configuration: %w", err)
+		return fmt.Errorf("Failed to load configuration: %w", err)
 	}
 	if cfg.Endpoints == nil {
 		cfg.Endpoints = make(map[string]config.EndpointConfig)
@@ -163,7 +163,7 @@ func runEndpointList(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(views, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize JSON: %w", err)
+			return fmt.Errorf("Failed to serialize JSON: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
@@ -248,7 +248,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %w", err)
+		return fmt.Errorf("Failed to load staging config: %w", err)
 	}
 	if cfg.Endpoints == nil {
 		cfg.Endpoints = make(map[string]config.EndpointConfig)
@@ -269,7 +269,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 	hasTTL := cmd.Flags().Changed("ttl")
 
 	if !hasHost && !hasAuto && !hasV4 && !hasV6 && !hasType && !hasSubnet && !hasInterface && !hasMax && !hasNDP && !hasNoNDP && !hasProfile && !hasTTL {
-		return fmt.Errorf("❌ Error: No parameter supplied")
+		return fmt.Errorf("No parameter supplied")
 	}
 
 	targetType := strings.ToLower(strings.TrimSpace(endpointSetType))
@@ -289,22 +289,22 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 	switch targetType {
 	case string(config.EndpointTypeDynamicV6):
 		if hasHost {
-			return fmt.Errorf("❌ Error: Cannot specify --host for dynamic-v6 endpoint")
+			return fmt.Errorf("Cannot specify --host for dynamic-v6 endpoint")
 		}
 		subnetVal := strings.TrimSpace(endpointSetSubnet)
 		if subnetVal == "" && hasExisting && existingEp.Subnet != "" {
 			subnetVal = existingEp.Subnet
 		}
 		if subnetVal == "" {
-			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --subnet")
+			return fmt.Errorf("dynamic-v6 endpoint requires --subnet")
 		}
 		ip, ipNet, err := net.ParseCIDR(subnetVal)
 		if err != nil || ip == nil || ip.To4() != nil || ip.To16() == nil {
-			return fmt.Errorf("❌ Error: Invalid IPv6 subnet '%s' (must be a valid IPv6 CIDR, e.g. 2001:db8::/64)", subnetVal)
+			return fmt.Errorf("Invalid IPv6 subnet '%s' (must be a valid IPv6 CIDR, e.g. 2001:db8::/64)", subnetVal)
 		}
 		ones, bits := ipNet.Mask.Size()
 		if bits != 128 || ones <= 0 || ones > 120 {
-			return fmt.Errorf("❌ Error: Invalid IPv6 subnet mask '/%d' (dynamic-v6 requires a rotatable prefix between /1 and /120, typically /64)", ones)
+			return fmt.Errorf("Invalid IPv6 subnet mask '/%d' (dynamic-v6 requires a rotatable prefix between /1 and /120, typically /64)", ones)
 		}
 
 		ifaceVal := strings.TrimSpace(endpointSetInterface)
@@ -312,10 +312,10 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 			ifaceVal = existingEp.Interface
 		}
 		if ifaceVal == "" {
-			return fmt.Errorf("❌ Error: dynamic-v6 endpoint requires --interface (specify the network interface holding the routed IPv6 subnet, e.g. --interface eth0)")
+			return fmt.Errorf("dynamic-v6 endpoint requires --interface (specify the network interface holding the routed IPv6 subnet, e.g. --interface eth0)")
 		}
 		if len(ifaceVal) > 15 || strings.ContainsAny(ifaceVal, " \t\r\n/:") || ifaceVal == "." || ifaceVal == ".." {
-			return fmt.Errorf("❌ Error: Invalid interface name '%s' (must be 1-15 characters without spaces, slashes, or colons)", ifaceVal)
+			return fmt.Errorf("Invalid interface name '%s' (must be 1-15 characters without spaces, slashes, or colons)", ifaceVal)
 		}
 
 		profileVal := strings.ToLower(strings.TrimSpace(endpointSetProfile))
@@ -324,7 +324,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		}
 		if profileVal != "" {
 			if profileVal != config.RotationProfileTurtle && profileVal != config.RotationProfileProactive && profileVal != config.RotationProfileIsolated {
-				return fmt.Errorf("❌ Error: Invalid rotation profile '%s'. Valid options: turtle, proactive, isolated", profileVal)
+				return fmt.Errorf("Invalid rotation profile '%s'. Valid options: turtle, proactive, isolated", profileVal)
 			}
 		} else {
 			profileVal = config.RotationProfileTurtle
@@ -375,20 +375,20 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 
 	case string(config.EndpointTypeStatic):
 		if hasAuto || hasV4 || hasV6 {
-			return fmt.Errorf("❌ Error: Cannot specify both --host and --auto")
+			return fmt.Errorf("Cannot specify both --host and --auto")
 		}
 		hostVal := strings.TrimSpace(endpointSetHost)
 		if hostVal == "" && hasExisting && existingEp.Host != "" {
 			hostVal = existingEp.Host
 		}
 		if hostVal == "" {
-			return fmt.Errorf("❌ Error: Host cannot be empty")
+			return fmt.Errorf("Host cannot be empty")
 		}
 		subParts := strings.Split(hostVal, ",")
 		for _, sp := range subParts {
 			h := strings.TrimSpace(sp)
 			if !endpoint.IsValidHost(h) {
-				return fmt.Errorf("❌ Error: Invalid host or IP address '%s'", h)
+				return fmt.Errorf("Invalid host or IP address '%s'", h)
 			}
 		}
 		ep = config.EndpointConfig{
@@ -398,7 +398,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 
 	case string(config.EndpointTypeAuto):
 		if hasHost {
-			return fmt.Errorf("❌ Error: Cannot specify both --host and --auto")
+			return fmt.Errorf("Cannot specify both --host and --auto")
 		}
 		family := "v4"
 		if endpointSetV6 || (hasV6 && !hasV4) {
@@ -412,7 +412,7 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 		}
 
 	default:
-		return fmt.Errorf("❌ Error: Unsupported endpoint type '%s' (valid types: static, auto, dynamic-v6)", targetType)
+		return fmt.Errorf("Unsupported endpoint type '%s' (valid types: static, auto, dynamic-v6)", targetType)
 	}
 
 	if hasExisting && existingEp.Type == config.EndpointTypeDynamicV6 {
@@ -424,10 +424,10 @@ func runEndpointSet(cmd *cobra.Command, args []string) error {
 	cfg.Endpoints[name] = ep
 
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
 
-	fmt.Printf("✅ Endpoint '%s' configured in STAGING. Run 'apply' to commit.\n", name)
+	fmt.Printf("✔ Endpoint '%s' configured in STAGING. Run 'apply' to commit.\n", name)
 	return nil
 }
 
@@ -442,21 +442,21 @@ var endpointSetCmd = &cobra.Command{
 func runEndpointRemove(cmd *cobra.Command, args []string) error {
 	name := strings.TrimSpace(args[0])
 	if name == "default" {
-		return fmt.Errorf("❌ Error: Cannot delete reserved 'default' endpoint")
+		return fmt.Errorf("Cannot delete reserved 'default' endpoint")
 	}
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %w", err)
+		return fmt.Errorf("Failed to load staging config: %w", err)
 	}
 	existingEp, exists := cfg.Endpoints[name]
 	if !exists {
-		return fmt.Errorf("❌ Error: Endpoint '%s' not found", name)
+		return fmt.Errorf("Endpoint '%s' not found", name)
 	}
 
 	refs := endpoint.FindReferences(cfg, name)
 	if len(refs) > 0 {
-		fmt.Printf("⚠️  Warning: Endpoint '%s' is currently referenced by: %s\n", name, strings.Join(refs, ", "))
+		fmt.Printf("▲ Warning: Endpoint '%s' is currently referenced by: %s\n", name, strings.Join(refs, ", "))
 	}
 
 	if existingEp.Type == config.EndpointTypeDynamicV6 {
@@ -465,10 +465,10 @@ func runEndpointRemove(cmd *cobra.Command, args []string) error {
 
 	delete(cfg.Endpoints, name)
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
 
-	fmt.Printf("✅ Endpoint '%s' removed from STAGING. Run 'apply' to commit.\n", name)
+	fmt.Printf("✔ Endpoint '%s' removed from STAGING. Run 'apply' to commit.\n", name)
 	return nil
 }
 
@@ -489,11 +489,11 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %w", err)
+		return fmt.Errorf("Failed to load staging config: %w", err)
 	}
 	ep, exists := cfg.Endpoints[name]
 	if !exists {
-		return fmt.Errorf("❌ Error: Endpoint '%s' not found", name)
+		return fmt.Errorf("Endpoint '%s' not found", name)
 	}
 
 	resolved, err := endpoint.Resolve(cfg, name)
@@ -553,7 +553,7 @@ func runEndpointShow(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(detail, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize JSON: %w", err)
+			return fmt.Errorf("Failed to serialize JSON: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
@@ -665,14 +665,14 @@ var endpointShowCmd = &cobra.Command{
 func runEndpointTest(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load configuration: %w", err)
+		return fmt.Errorf("Failed to load configuration: %w", err)
 	}
 
 	var targetNames []string
 	if len(args) > 0 && strings.TrimSpace(args[0]) != "" && strings.TrimSpace(args[0]) != "all" {
 		targetName := strings.TrimSpace(args[0])
 		if _, exists := cfg.Endpoints[targetName]; !exists {
-			return fmt.Errorf("❌ Error: Endpoint '%s' not found", targetName)
+			return fmt.Errorf("Endpoint '%s' not found", targetName)
 		}
 		targetNames = append(targetNames, targetName)
 	} else {
@@ -783,7 +783,7 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(results, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize JSON: %w", err)
+			return fmt.Errorf("Failed to serialize JSON: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
@@ -794,12 +794,12 @@ func runEndpointTest(cmd *cobra.Command, args []string) error {
 	for _, res := range results {
 		if res.Name != currentName {
 			currentName = res.Name
-			fmt.Printf("🔍 Testing endpoint '%s' (%s):\n", res.Name, res.Type)
+			fmt.Printf("→ Testing endpoint '%s' (%s):\n", res.Name, res.Type)
 		}
 		if res.Status == "PASS" {
-			fmt.Printf("   ✅ [PASS] %s (RTT: %dms)\n", res.Address, res.RTTMs)
+			fmt.Printf("   ✔ [PASS] %s (RTT: %dms)\n", res.Address, res.RTTMs)
 		} else {
-			fmt.Printf("   ❌ [FAIL] %s (%s)\n", res.Address, res.Error)
+			fmt.Printf("   ✖ [FAIL] %s (%s)\n", res.Address, res.Error)
 		}
 	}
 	fmt.Println()
@@ -822,15 +822,15 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load configuration: %w", err)
+		return fmt.Errorf("Failed to load configuration: %w", err)
 	}
 	ep, exists := cfg.Endpoints[name]
 	if !exists {
-		return fmt.Errorf("❌ Error: Endpoint '%s' not found", name)
+		return fmt.Errorf("Endpoint '%s' not found", name)
 	}
 
 	if ep.Type != config.EndpointTypeDynamicV6 {
-		return fmt.Errorf("❌ Error: Endpoint '%s' has type '%s'; rotation only applies to 'dynamic-v6'", name, ep.Type)
+		return fmt.Errorf("Endpoint '%s' has type '%s'; rotation only applies to 'dynamic-v6'", name, ep.Type)
 	}
 
 	if err := endpointRequireRoot("endpoint rotate"); err != nil {
@@ -840,7 +840,7 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 	consumer := strings.TrimSpace(endpointRotateConsumer)
 	profile := endpoint.NormalizeProfile(ep.Profile)
 	if consumer != "" && profile != config.RotationProfileIsolated {
-		return fmt.Errorf("❌ Error: --consumer flag only applies to endpoints with 'isolated' rotation profile (endpoint '%s' uses '%s')", name, ep.Profile)
+		return fmt.Errorf("--consumer flag only applies to endpoints with 'isolated' rotation profile (endpoint '%s' uses '%s')", name, ep.Profile)
 	}
 	if profile == config.RotationProfileIsolated && consumer == "" {
 		st, _ := endpoint.LoadRotationState(name)
@@ -852,14 +852,14 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 			sort.Strings(availConsumers)
 		}
 		if len(availConsumers) > 0 {
-			return fmt.Errorf("❌ Error: Endpoint '%s' uses 'isolated' profile. Specify a consumer with --consumer (active consumers: %s)", name, strings.Join(availConsumers, ", "))
+			return fmt.Errorf("Endpoint '%s' uses 'isolated' profile. Specify a consumer with --consumer (active consumers: %s)", name, strings.Join(availConsumers, ", "))
 		}
-		return fmt.Errorf("❌ Error: Endpoint '%s' uses 'isolated' profile. Specify a consumer to rotate with --consumer <name>", name)
+		return fmt.Errorf("Endpoint '%s' uses 'isolated' profile. Specify a consumer to rotate with --consumer <name>", name)
 	}
 
 	newIP, err := endpoint.NextAddressForConsumer(name, ep, consumer)
 	if err != nil {
-		return fmt.Errorf("❌ Failed to rotate endpoint '%s': %w", name, err)
+		return fmt.Errorf("Failed to rotate endpoint '%s': %w", name, err)
 	}
 
 	st, _ := endpoint.LoadRotationState(name)
@@ -890,7 +890,7 @@ func runEndpointRotate(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	fmt.Printf("\n✅ Endpoint '%s' rotated successfully!\n", name)
+	fmt.Printf("\n✔ Endpoint '%s' rotated successfully!\n", name)
 	if consumer != "" {
 		fmt.Printf("   - Consumer:           %s\n", consumer)
 	}

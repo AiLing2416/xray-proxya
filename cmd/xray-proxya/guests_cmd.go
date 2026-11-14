@@ -116,7 +116,7 @@ func guestSubURL(host string, port int, token string) string {
 func runGuestsList(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load active config.")
+		return fmt.Errorf("Failed to load active config.")
 	}
 	views := quota.BuildAllGuestViews(cfg.Guests, time.Now())
 	if guestsListJSON {
@@ -125,7 +125,7 @@ func runGuestsList(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(views, "", "  ")
 		if err != nil {
-			return fmt.Errorf("❌ Failed to serialize guests JSON: %w", err)
+			return fmt.Errorf("Failed to serialize guests JSON: %w", err)
 		}
 		fmt.Println(string(data))
 		return nil
@@ -201,18 +201,18 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	alias, err := config.CleanGuestAlias(rawAlias)
 	if err != nil {
 		if len(strings.TrimSpace(rawAlias)) < 3 || len(strings.TrimSpace(rawAlias)) > 20 {
-			return fmt.Errorf("❌ Guest alias must be between 3 and 20 characters.")
+			return fmt.Errorf("Guest alias must be between 3 and 20 characters.")
 		}
-		return fmt.Errorf("❌ Invalid guest alias: %s (Only alphanumeric, underscore, and hyphen allowed)", rawAlias)
+		return fmt.Errorf("Invalid guest alias: %s (Only alphanumeric, underscore, and hyphen allowed)", rawAlias)
 	}
 
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	for _, g := range cfg.Guests {
 		if strings.EqualFold(g.Alias, alias) || config.SanitizeGuestAlias(g.Alias) == config.SanitizeGuestAlias(alias) {
-			return fmt.Errorf("❌ Guest '%s' already exists.", alias)
+			return fmt.Errorf("Guest '%s' already exists.", alias)
 		}
 	}
 
@@ -220,7 +220,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	hasRelayLink := (cmd != nil && cmd.Flags().Changed("relay-link")) || guestAddRelayLink != ""
 
 	if hasRelay && hasRelayLink {
-		return fmt.Errorf("❌ Error: Cannot specify both --relay and --relay-link")
+		return fmt.Errorf("Cannot specify both --relay and --relay-link")
 	}
 
 	newG := config.GuestConfig{
@@ -241,11 +241,11 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	}
 	if limitInput != "" {
 		if strings.EqualFold(limitInput, "reset") {
-			return fmt.Errorf("❌ 'reset' is only valid for 'guests set', not 'guests add'.")
+			return fmt.Errorf("'reset' is only valid for 'guests set', not 'guests add'.")
 		}
 		byteVal, err := config.ParseByteSize(limitInput)
 		if err != nil {
-			return fmt.Errorf("❌ Invalid limit value %q: %w", limitInput, err)
+			return fmt.Errorf("Invalid limit value %q: %w", limitInput, err)
 		}
 		newG.LimitBytes = byteVal
 		if byteVal > 0 {
@@ -266,11 +266,11 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 			rawLink = strings.TrimSpace(cmd.Flag("relay-link").Value.String())
 		}
 		if rawLink == "" {
-			return fmt.Errorf("❌ Error: --relay-link cannot be empty")
+			return fmt.Errorf("--relay-link cannot be empty")
 		}
 		conf, err := xray.ParseProxyLink(rawLink)
 		if err != nil {
-			return fmt.Errorf("❌ Failed to parse link: %w", err)
+			return fmt.Errorf("Failed to parse link: %w", err)
 		}
 		newG.OutboundLink = rawLink
 		newG.OutboundConf = conf
@@ -294,7 +294,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 				newG.OutboundLink = found.Alias
 				newG.OutboundConf = found.Config
 			} else {
-				return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
+				return fmt.Errorf("Relay '%s' not found.", targetRelay)
 			}
 		}
 	}
@@ -310,7 +310,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	if effectiveResetDay >= 1 && effectiveResetDay <= 31 {
 		newG.ResetDay = effectiveResetDay
 	} else {
-		return fmt.Errorf("❌ Reset day must be between 1 and 31.")
+		return fmt.Errorf("Reset day must be between 1 and 31.")
 	}
 
 	// 4. Notify
@@ -324,7 +324,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 		case config.GuestNotifyOff, config.GuestNotifyHeader, config.GuestNotifyRemark, config.GuestNotifyAll:
 			newG.Notify = mode
 		default:
-			return fmt.Errorf("❌ Invalid notify mode '%s'. Valid options: off, header, remark, all", notifyInput)
+			return fmt.Errorf("Invalid notify mode '%s'. Valid options: off, header, remark, all", notifyInput)
 		}
 	}
 
@@ -332,10 +332,10 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	if cmd != nil && cmd.Flags().Changed("endpoint") {
 		epVal := strings.TrimSpace(guestAddEndpoint)
 		if epVal == "" {
-			return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
+			return fmt.Errorf("Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 		}
 		if err := endpoint.ValidateEndpointSpec(cfg, epVal); err != nil {
-			return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
+			return fmt.Errorf("Invalid endpoint %q: %w", epVal, err)
 		}
 		newG.Endpoint = epVal
 	} else {
@@ -353,7 +353,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 
 	cfg.Guests = append(cfg.Guests, newG)
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
 
 	limitDesc := config.FormatByteSize(newG.LimitBytes)
@@ -365,7 +365,7 @@ func runGuestsAdd(cmd *cobra.Command, args []string) error {
 	if newG.Endpoint != "" {
 		epDesc = newG.Endpoint
 	}
-	fmt.Printf("✅ Guest '%s' added to STAGING. Limit: %s, Relay: %s, Endpoint: %s, Reset Day: %d. Run 'apply' to commit.\n",
+	fmt.Printf("✔ Guest '%s' added to STAGING. Limit: %s, Relay: %s, Endpoint: %s, Reset Day: %d. Run 'apply' to commit.\n",
 		alias, limitDesc, relayDesc, epDesc, newG.ResetDay)
 	return nil
 }
@@ -381,7 +381,7 @@ func runGuestsRemove(cmd *cobra.Command, args []string) error {
 	rawAlias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	var newGuests []config.GuestConfig
 	found := false
@@ -395,14 +395,14 @@ func runGuestsRemove(cmd *cobra.Command, args []string) error {
 		newGuests = append(newGuests, g)
 	}
 	if !found {
-		return fmt.Errorf("❌ Guest '%s' not found.", rawAlias)
+		return fmt.Errorf("Guest '%s' not found.", rawAlias)
 	}
 	cfg.Guests = newGuests
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest '%s' removed from STAGING.\n", removedAlias)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Guest '%s' removed from STAGING.\n", removedAlias)
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -419,11 +419,11 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 	alias := args[0]
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	idx, guest := findGuest(cfg, alias)
 	if idx == -1 || guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", alias)
+		return fmt.Errorf("Guest '%s' not found.", alias)
 	}
 
 	success := false
@@ -440,14 +440,14 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 			if cfg.Guests[idx].DisabledReason == config.GuestDisabledQuotaReached && cfg.Guests[idx].EffectiveLimitBytes() > 0 {
 				cfg.Guests[idx].Enabled = true
 				cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
-				fmt.Printf("✅ Guest '%s' re-enabled after usage reset.\n", alias)
+				fmt.Printf("✔ Guest '%s' re-enabled after usage reset.\n", alias)
 			}
-			fmt.Printf("✅ Usage for '%s' reset to 0.\n", alias)
+			fmt.Printf("✔ Usage for '%s' reset to 0.\n", alias)
 			success = true
 		} else {
 			byteVal, err := config.ParseByteSize(effectiveLimitInput)
 			if err != nil {
-				return fmt.Errorf("❌ Invalid limit value %q: %w", effectiveLimitInput, err)
+				return fmt.Errorf("Invalid limit value %q: %w", effectiveLimitInput, err)
 			}
 			cfg.Guests[idx].LimitBytes = byteVal
 			if byteVal > 0 {
@@ -465,7 +465,7 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 					cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
 				}
 			}
-			fmt.Printf("✅ Limit for '%s' set to %s.\n", alias, config.FormatByteSize(byteVal))
+			fmt.Printf("✔ Limit for '%s' set to %s.\n", alias, config.FormatByteSize(byteVal))
 			success = true
 		}
 	}
@@ -474,13 +474,13 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 		currLimitBytes := cfg.Guests[idx].EffectiveLimitBytes()
 		normalizedTriggers, _, err := config.ParseTriggers(notifyTriggerStr, currLimitBytes)
 		if err != nil {
-			return fmt.Errorf("❌ %w", err)
+			return fmt.Errorf("%w", err)
 		}
 		cfg.Guests[idx].NotifyTrigger = normalizedTriggers
 		if len(normalizedTriggers) == 0 {
-			fmt.Printf("✅ Notify triggers for '%s' cleared.\n", alias)
+			fmt.Printf("✔ Notify triggers for '%s' cleared.\n", alias)
 		} else {
-			fmt.Printf("✅ Notify triggers for '%s' set to [%s].\n", alias, strings.Join(normalizedTriggers, ", "))
+			fmt.Printf("✔ Notify triggers for '%s' set to [%s].\n", alias, strings.Join(normalizedTriggers, ", "))
 		}
 		success = true
 	}
@@ -488,21 +488,21 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 	hasRelayLink := (cmd != nil && cmd.Flags().Changed("relay-link")) || relayLinkStr != ""
 
 	if hasRelay && hasRelayLink {
-		return fmt.Errorf("❌ Error: Cannot specify both --relay and --relay-link")
+		return fmt.Errorf("Cannot specify both --relay and --relay-link")
 	}
 
 	if hasRelayLink {
 		rawLink := strings.TrimSpace(relayLinkStr)
 		if rawLink == "" {
-			return fmt.Errorf("❌ Error: --relay-link cannot be empty")
+			return fmt.Errorf("--relay-link cannot be empty")
 		}
 		conf, err := xray.ParseProxyLink(rawLink)
 		if err != nil {
-			return fmt.Errorf("❌ Failed to parse link: %w", err)
+			return fmt.Errorf("Failed to parse link: %w", err)
 		}
 		cfg.Guests[idx].OutboundLink = rawLink
 		cfg.Guests[idx].OutboundConf = conf
-		fmt.Printf("✅ Relay for '%s' updated via link.\n", alias)
+		fmt.Printf("✔ Relay for '%s' updated via link.\n", alias)
 		success = true
 	} else if hasRelay {
 		targetRelay := strings.TrimSpace(relayStr)
@@ -512,7 +512,7 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 		if strings.EqualFold(targetRelay, "direct") {
 			cfg.Guests[idx].OutboundLink = ""
 			cfg.Guests[idx].OutboundConf = nil
-			fmt.Printf("✅ Relay for '%s' set to direct.\n", alias)
+			fmt.Printf("✔ Relay for '%s' set to direct.\n", alias)
 			success = true
 		} else {
 			var found *config.CustomOutbound
@@ -525,20 +525,20 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 			if found != nil {
 				cfg.Guests[idx].OutboundLink = found.Alias
 				cfg.Guests[idx].OutboundConf = found.Config
-				fmt.Printf("✅ Relay for '%s' set to '%s'.\n", alias, found.Alias)
+				fmt.Printf("✔ Relay for '%s' set to '%s'.\n", alias, found.Alias)
 				success = true
 			} else {
-				return fmt.Errorf("❌ Relay '%s' not found.", targetRelay)
+				return fmt.Errorf("Relay '%s' not found.", targetRelay)
 			}
 		}
 	}
 	if cmd != nil && cmd.Flags().Changed("reset") {
 		if resetDay >= 1 && resetDay <= 31 {
 			cfg.Guests[idx].ResetDay = resetDay
-			fmt.Printf("✅ Reset day for '%s' set to %d.\n", alias, resetDay)
+			fmt.Printf("✔ Reset day for '%s' set to %d.\n", alias, resetDay)
 			success = true
 		} else {
-			return fmt.Errorf("❌ Reset day must be between 1 and 31.")
+			return fmt.Errorf("Reset day must be between 1 and 31.")
 		}
 	}
 	if cmd != nil && cmd.Flags().Changed("notify") {
@@ -546,32 +546,32 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 		switch mode {
 		case config.GuestNotifyOff, config.GuestNotifyHeader, config.GuestNotifyRemark, config.GuestNotifyAll:
 			cfg.Guests[idx].Notify = mode
-			fmt.Printf("✅ Notify mode for '%s' set to '%s'.\n", alias, mode)
+			fmt.Printf("✔ Notify mode for '%s' set to '%s'.\n", alias, mode)
 			success = true
 		default:
-			return fmt.Errorf("❌ Invalid notify mode '%s'. Valid options: off, header, remark, all", notifyStr)
+			return fmt.Errorf("Invalid notify mode '%s'. Valid options: off, header, remark, all", notifyStr)
 		}
 	}
 	if cmd != nil && cmd.Flags().Changed("notify-webhook") {
 		webhook := strings.TrimSpace(notifyWebhookStr)
 		cfg.Guests[idx].NotifyWebhook = webhook
 		if webhook == "" {
-			fmt.Printf("✅ Notify webhook for '%s' cleared.\n", alias)
+			fmt.Printf("✔ Notify webhook for '%s' cleared.\n", alias)
 		} else {
-			fmt.Printf("✅ Notify webhook for '%s' set to %s.\n", alias, webhook)
+			fmt.Printf("✔ Notify webhook for '%s' set to %s.\n", alias, webhook)
 		}
 		success = true
 	}
 	if cmd != nil && cmd.Flags().Changed("endpoint") {
 		epVal := strings.TrimSpace(guestSetEndpoint)
 		if epVal == "" {
-			return fmt.Errorf("❌ Error: Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
+			return fmt.Errorf("Endpoint cannot be empty. Specify a valid endpoint alias (e.g. -e default) or comma-separated list.")
 		}
 		if err := endpoint.ValidateEndpointSpec(cfg, epVal); err != nil {
-			return fmt.Errorf("❌ Error: Invalid endpoint %q: %w", epVal, err)
+			return fmt.Errorf("Invalid endpoint %q: %w", epVal, err)
 		}
 		cfg.Guests[idx].Endpoint = epVal
-		fmt.Printf("✅ Endpoint for '%s' set to '%s'.\n", alias, epVal)
+		fmt.Printf("✔ Endpoint for '%s' set to '%s'.\n", alias, epVal)
 		success = true
 	}
 	defer func() {
@@ -585,9 +585,9 @@ func runGuestsSet(cmd *cobra.Command, args []string) error {
 	}()
 	if success {
 		if err := cfg.SaveEx(true); err != nil {
-			return fmt.Errorf("❌ Failed to save staging config: %w", err)
+			return fmt.Errorf("Failed to save staging config: %w", err)
 		}
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("→ Run 'apply' to commit changes.")
 	}
 	return nil
 }
@@ -603,19 +603,19 @@ var guestsSetCmd = &cobra.Command{
 func runGuestsPause(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	idx, guest := findGuest(cfg, args[0])
 	if idx == -1 || guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	cfg.Guests[idx].Enabled = false
 	cfg.Guests[idx].DisabledReason = config.GuestDisabledManual
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest '%s' paused in STAGING.\n", args[0])
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Guest '%s' paused in STAGING.\n", args[0])
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -630,22 +630,22 @@ var guestsPauseCmd = &cobra.Command{
 func runGuestsResume(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	idx, guest := findGuest(cfg, args[0])
 	if idx == -1 || guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	if cfg.Guests[idx].QuotaGB == 0 {
-		return fmt.Errorf("❌ Guest '%s' still has quota=0. Set a positive quota first.", args[0])
+		return fmt.Errorf("Guest '%s' still has quota=0. Set a positive quota first.", args[0])
 	}
 	cfg.Guests[idx].Enabled = true
 	cfg.Guests[idx].DisabledReason = config.GuestDisabledNone
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest '%s' resumed in STAGING.\n", args[0])
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Guest '%s' resumed in STAGING.\n", args[0])
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -660,11 +660,11 @@ var guestsResumeCmd = &cobra.Command{
 func runGuestsInfo(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load active config: %v", err)
+		return fmt.Errorf("Failed to load active config: %v", err)
 	}
 	_, guest := findGuest(cfg, args[0])
 	if guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	view := quota.BuildGuestView(*guest, time.Now())
 	lastReset := view.LastResetYM
@@ -716,32 +716,32 @@ var guestsInfoCmd = &cobra.Command{
 func runGuestsCheck(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfig()
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Error: Failed to load active config.")
+		return fmt.Errorf("Failed to load active config.")
 	}
 	monitor, err := quota.LoadMonitor()
 	if err != nil {
-		fmt.Printf("⚠️  Failed to load quota monitor state: %v\n", err)
+		fmt.Printf("▲ Failed to load quota monitor state: %v\n", err)
 		monitor = quota.NewMonitor()
 	}
 	update, err := checkGuestQuotaState(cfg, monitor, time.Now())
 	if err != nil {
-		return fmt.Errorf("❌ Guest check failed: %w", err)
+		return fmt.Errorf("Guest check failed: %w", err)
 	}
 	if !update.Changed {
-		fmt.Println("ℹ️ No guest state changes were needed.")
+		fmt.Println("ℹ No guest state changes were needed.")
 		return nil
 	}
 	for _, msg := range update.Messages {
-		fmt.Printf("ℹ️  %s\n", msg)
+		fmt.Printf("ℹ %s\n", msg)
 	}
 	if update.RestartNeeded {
-		fmt.Println("🔄 Restarting service to apply guest state changes...")
+		fmt.Println("→ Restarting service to apply guest state changes...")
 		if err := xray.RestartXrayService(); err != nil {
-			return fmt.Errorf("❌ State updated, but restart failed: %w", err)
+			return fmt.Errorf("State updated, but restart failed: %w", err)
 		}
 	}
 	notify.Wait()
-	fmt.Println("✅ Guest state check completed.")
+	fmt.Println("✔ Guest state check completed.")
 	return nil
 }
 
@@ -762,22 +762,22 @@ For central server subscription distribution, see 'xray-proxya sub'.`,
 func runGuestsSubEnable(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	idx, guest := findGuest(cfg, args[0])
 	if idx == -1 || guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	ensureGuestSubListenerConfig(cfg)
 	if cfg.Guests[idx].SubToken == "" {
 		cfg.Guests[idx].SubToken = utils.GenerateRandomString(32)
 	}
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest sub enabled for '%s' in STAGING.\n", args[0])
+	fmt.Printf("✔ Guest sub enabled for '%s' in STAGING.\n", args[0])
 	fmt.Printf("🔒 Listener: http://%s:%d/guest-sub/<token>\n", cfg.GuestSubBind, cfg.GuestSubPort)
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -792,18 +792,18 @@ var guestsSubEnableCmd = &cobra.Command{
 func runGuestsSubDisable(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	idx, guest := findGuest(cfg, args[0])
 	if idx == -1 || guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	cfg.Guests[idx].SubToken = ""
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest sub disabled for '%s' in STAGING.\n", args[0])
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Guest sub disabled for '%s' in STAGING.\n", args[0])
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -818,19 +818,19 @@ var guestsSubDisableCmd = &cobra.Command{
 func runGuestsSubRotate(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	idx, guest := findGuest(cfg, args[0])
 	if idx == -1 || guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	ensureGuestSubListenerConfig(cfg)
 	cfg.Guests[idx].SubToken = utils.GenerateRandomString(32)
 	if err := cfg.SaveEx(true); err != nil {
-		return fmt.Errorf("❌ Failed to save staging config: %w", err)
+		return fmt.Errorf("Failed to save staging config: %w", err)
 	}
-	fmt.Printf("✅ Guest sub token rotated for '%s' in STAGING.\n", args[0])
-	fmt.Println("🚀 Run 'apply' to commit changes.")
+	fmt.Printf("✔ Guest sub token rotated for '%s' in STAGING.\n", args[0])
+	fmt.Println("→ Run 'apply' to commit changes.")
 	return nil
 }
 
@@ -845,18 +845,18 @@ var guestsSubRotateCmd = &cobra.Command{
 func runGuestsSubShow(cmd *cobra.Command, args []string) error {
 	cfg, err := config.LoadConfigEx(true)
 	if err != nil || cfg == nil {
-		return fmt.Errorf("❌ Failed to load staging config: %v", err)
+		return fmt.Errorf("Failed to load staging config: %v", err)
 	}
 	_, guest := findGuest(cfg, args[0])
 	if guest == nil {
-		return fmt.Errorf("❌ Guest '%s' not found.", args[0])
+		return fmt.Errorf("Guest '%s' not found.", args[0])
 	}
 	tokenOrUUID := guest.UUID
 	if tokenOrUUID == "" {
 		tokenOrUUID = guest.SubToken
 	}
 	if tokenOrUUID == "" {
-		return fmt.Errorf("❌ Guest sub is not enabled for '%s'.", args[0])
+		return fmt.Errorf("Guest sub is not enabled for '%s'.", args[0])
 	}
 	host := guestSubShowAddr
 	if host == "" {
@@ -945,8 +945,8 @@ var guestsSubSetCmd = &cobra.Command{
 		if err := cfg.SaveEx(true); err != nil {
 			return err
 		}
-		fmt.Println("✅ Guest subscription configuration updated in STAGING.")
-		fmt.Println("🚀 Run 'apply' to commit changes.")
+		fmt.Println("✔ Guest subscription configuration updated in STAGING.")
+		fmt.Println("→ Run 'apply' to commit changes.")
 		return nil
 	},
 }
