@@ -544,7 +544,7 @@ func TestGenerateXrayJSONRoutesRelayPrivateTargetsOnlyWhenAllowed(t *testing.T) 
 				if relayIndex < 0 && rule["outboundTag"] == "outbound-remote" && containsString(rule["user"], "relay-remote") {
 					relayIndex = index
 				}
-				if rule["outboundTag"] == "direct" && containsString(rule["ip"], "geoip:private") {
+				if rule["outboundTag"] == "direct" && containsString(rule["ip"], "10.0.0.0/8") && containsString(rule["ip"], "192.168.0.0/16") {
 					privateIndex = index
 				}
 			}
@@ -1181,7 +1181,7 @@ func TestGenerateXrayJSONInternalProxyAllowPrivateTargets(t *testing.T) {
 				if inboundIndex < 0 && rule["outboundTag"] == "outbound-relay-p" && containsString(rule["inboundTag"], "relay-socks-relay-p") {
 					inboundIndex = index
 				}
-				if rule["outboundTag"] == "direct" && containsString(rule["ip"], "geoip:private") {
+				if rule["outboundTag"] == "direct" && containsString(rule["ip"], "10.0.0.0/8") && containsString(rule["ip"], "192.168.0.0/16") {
 					privateIndex = index
 				}
 			}
@@ -1352,46 +1352,30 @@ func TestGenerateXrayJSONGatewayDNSInboundDisabledWhenTunDisabled(t *testing.T) 
 	}
 }
 
-func TestDNSRoutingTargetsSkipsLocalSchemes(t *testing.T) {
+func TestDNSRoutingTargetsIncludesLocalSchemes(t *testing.T) {
 	servers := []string{
 		"https+local://1.1.1.1/dns-query",
 		"tcp+local://8.8.8.8:53",
 		"quic+local://dns.adguard.com:853",
-		"tls://1.1.1.1:853",
-		"quic://dns.adguard.com:853",
-		"tcp://8.8.8.8:53",
 	}
 
 	domains, ips := dnsRoutingTargets(servers)
-	for _, d := range domains {
-		if strings.Contains(d, "local") {
-			t.Errorf("unexpected local domain in routing targets: %s", d)
+	hasItem := func(list []string, target string) bool {
+		for _, item := range list {
+			if item == target {
+				return true
+			}
 		}
+		return false
 	}
-	for _, ip := range ips {
-		if ip == "1.1.1.1" && len(domains) == 0 {
-			// 1.1.1.1 comes from tls://1.1.1.1:853
-		}
+	if !hasItem(ips, "1.1.1.1") {
+		t.Errorf("expected 1.1.1.1 in ips, got: %v", ips)
 	}
-	foundAdguard := false
-	for _, d := range domains {
-		if d == "dns.adguard.com" {
-			foundAdguard = true
-			break
-		}
-	}
-	if !foundAdguard {
-		t.Errorf("expected dns.adguard.com in domains, got: %v", domains)
-	}
-	found8888 := false
-	for _, ip := range ips {
-		if ip == "8.8.8.8" {
-			found8888 = true
-			break
-		}
-	}
-	if !found8888 {
+	if !hasItem(ips, "8.8.8.8") {
 		t.Errorf("expected 8.8.8.8 in ips, got: %v", ips)
+	}
+	if !hasItem(domains, "dns.adguard.com") {
+		t.Errorf("expected dns.adguard.com in domains, got: %v", domains)
 	}
 }
 
@@ -1482,7 +1466,7 @@ func TestMultiRelayTProxyInboundsAndAllowPrivateTargets(t *testing.T) {
 				idxLoopback = i
 			}
 		}
-		if outTag == "direct" && len(ips) == 1 && ips[0] == "geoip:private" {
+		if outTag == "direct" && len(ips) == len(privateIPCIDRs) && containsString(ips, "10.0.0.0/8") && containsString(ips, "fc00::/7") {
 			idxGeoIPPrivate = i
 		}
 		if outTag == "outbound-relay-private" && len(inTags) == 1 && inTags[0] == "tproxy-in-relay-private" {
@@ -1500,7 +1484,7 @@ func TestMultiRelayTProxyInboundsAndAllowPrivateTargets(t *testing.T) {
 		t.Fatal("missing relay-private routing rule")
 	}
 	if idxGeoIPPrivate == -1 {
-		t.Fatal("missing geoip:private rule")
+		t.Fatal("missing private-IP CIDR guard rule")
 	}
 	if idxPublicRelay == -1 {
 		t.Fatal("missing relay-public routing rule")
@@ -1948,13 +1932,13 @@ func TestGenerateXrayJSON_GuestPrivateIsolation(t *testing.T) {
 	idxGeoPrivate := -1
 	for i, raw := range rules {
 		rule, _ := raw.(map[string]interface{})
-		if rule["outboundTag"] == "blocked" && containsString(rule["user"], "guest-alice") && containsString(rule["ip"], "geoip:private") {
+		if rule["outboundTag"] == "blocked" && containsString(rule["user"], "guest-alice") && containsString(rule["ip"], "10.0.0.0/8") && containsString(rule["ip"], "fc00::/7") {
 			idxGuestBlock = i
 		}
 		if rule["outboundTag"] == "direct" && containsString(rule["user"], "guest-alice") && len(rule) == 3 {
 			idxGuestRoute = i
 		}
-		if rule["outboundTag"] == "direct" && containsString(rule["ip"], "geoip:private") {
+		if rule["outboundTag"] == "direct" && containsString(rule["ip"], "10.0.0.0/8") && containsString(rule["ip"], "fc00::/7") {
 			idxGeoPrivate = i
 		}
 	}
@@ -1993,4 +1977,185 @@ func TestGenerateXrayJSON_StaticGatewayPortConflictCheck(t *testing.T) {
 	if _, err := GenerateXrayJSON(cfg, map[string]int{"gateway-tun-disabled": 1}, ""); err == nil {
 		t.Fatalf("expected port conflict error between APIInbound (5353) and virtual dns-in (5353)")
 	}
+}
+
+
+func TestGenerateXrayJSON_NoGeoStringsWithoutBypassCountries(t *testing.T) {
+	cfg := &config.UserConfig{
+		UUID: "11111111-2222-3333-4444-555555555555",
+		Role: config.RoleGateway,
+		Gateway: config.GatewayConfig{
+			Mode:       "tproxy",
+			State:      "proxy",
+			LANEnabled: true,
+			RelayAlias: "relay-a",
+		},
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "relay-a", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+		},
+		Guests: []config.GuestConfig{
+			{Alias: "alice", UUID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", Enabled: true},
+		},
+	}
+
+	raw, err := GenerateXrayJSON(cfg, nil, "")
+	if err != nil {
+		t.Fatalf("GenerateXrayJSON failed: %v", err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "geoip:") || strings.Contains(text, "geosite:") {
+		t.Fatalf("expected no geoip:/geosite: strings when BypassCountries is empty, got:\n%s", text)
+	}
+
+	parsed := generateAndDecodeXrayConfig(t, cfg, "")
+	rules := getMap(t, parsed, "routing")["rules"].([]interface{})
+	foundGuestBlock := false
+	foundPrivateDirect := false
+	for _, item := range rules {
+		rule, _ := item.(map[string]interface{})
+		if rule["outboundTag"] == "blocked" && containsString(rule["user"], "guest-alice") {
+			for _, cidr := range privateIPCIDRs {
+				if !containsString(rule["ip"], cidr) {
+					t.Fatalf("guest block rule missing private CIDR %s: %v", cidr, rule["ip"])
+				}
+			}
+			foundGuestBlock = true
+		}
+		if rule["outboundTag"] == "direct" && rule["user"] == nil && rule["inboundTag"] == nil && rule["network"] == nil {
+			if containsString(rule["ip"], "10.0.0.0/8") && containsString(rule["ip"], "100.64.0.0/10") && containsString(rule["ip"], "fc00::/7") {
+				foundPrivateDirect = true
+			}
+		}
+	}
+	if !foundGuestBlock || !foundPrivateDirect {
+		t.Fatalf("expected both guest block (%v) and private direct (%v) CIDR rules", foundGuestBlock, foundPrivateDirect)
+	}
+}
+
+func TestGenerateXrayJSON_FallbackDNSAliasFromZoneDefaultRelays(t *testing.T) {
+	for _, relayAlias := range []string{"", "direct", "block", "disabled-relay"} {
+		t.Run("relay="+relayAlias, func(t *testing.T) {
+			cfg := &config.UserConfig{
+				Role: config.RoleGateway,
+				Gateway: config.GatewayConfig{
+					Mode:              "tproxy",
+					State:             "proxy",
+					LANEnabled:        true,
+					RelayAlias:        relayAlias,
+					ZoneDefaultRelays: map[string]string{"lan1": "relay-jp"},
+				},
+				CustomOutbounds: []config.CustomOutbound{
+					{Alias: "disabled-relay", Enabled: false, Config: map[string]interface{}{"protocol": "freedom"}},
+					{Alias: "relay-jp", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+				},
+			}
+
+			parsed := generateAndDecodeXrayConfig(t, cfg, "")
+			outbounds := parsed["outbounds"].([]interface{})
+			var dnsDialer string
+			for _, raw := range outbounds {
+				ob, _ := raw.(map[string]interface{})
+				if ob["tag"] == "dns-out" {
+					ss, _ := ob["streamSettings"].(map[string]interface{})
+					so, _ := ss["sockopt"].(map[string]interface{})
+					dnsDialer, _ = so["dialerProxy"].(string)
+				}
+			}
+			if dnsDialer != "outbound-relay-jp" {
+				t.Fatalf("dns-out dialerProxy = %q, want outbound-relay-jp", dnsDialer)
+			}
+
+			rules := getMap(t, parsed, "routing")["rules"].([]interface{})
+			if !containsDomainRule(rules, "dns.google", "outbound-relay-jp") {
+				t.Fatalf("expected dns.google routed to outbound-relay-jp")
+			}
+			if !containsIPRule(rules, "8.8.8.8", "outbound-relay-jp") {
+				t.Fatalf("expected 8.8.8.8 routed to outbound-relay-jp")
+			}
+		})
+	}
+}
+
+func TestGenerateXrayJSON_NormalizesLocalDoHAndBootstrapsCustomDomainDoH(t *testing.T) {
+	t.Run("normalizes_https_plus_local_for_proxy_outbound", func(t *testing.T) {
+		cfg := &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				Mode:       "tproxy",
+				State:      "proxy",
+				LANEnabled: true,
+				RelayAlias: "relay-a",
+				DNSServers: []string{"https+local://1.1.1.1/dns-query"},
+			},
+			CustomOutbounds: []config.CustomOutbound{
+				{Alias: "relay-a", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+			},
+		}
+
+		parsed := generateAndDecodeXrayConfig(t, cfg, "")
+		servers := getStringSlice(t, getMap(t, parsed, "dns"), "servers")
+		assertStringSliceEqual(t, servers, []string{"https://1.1.1.1/dns-query"})
+
+		rules := getMap(t, parsed, "routing")["rules"].([]interface{})
+		if !containsIPRule(rules, "1.1.1.1", "outbound-relay-a") {
+			t.Fatalf("expected 1.1.1.1 routed via outbound-relay-a")
+		}
+	})
+
+	t.Run("bootstraps_custom_domain_doh_without_hosts_entry", func(t *testing.T) {
+		cfg := &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				Mode:       "tproxy",
+				State:      "proxy",
+				LANEnabled: true,
+				RelayAlias: "relay-a",
+				DNSServers: []string{"https://doh.example.com/dns-query"},
+			},
+			CustomOutbounds: []config.CustomOutbound{
+				{Alias: "relay-a", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+			},
+		}
+
+		parsed := generateAndDecodeXrayConfig(t, cfg, "")
+		servers := getStringSlice(t, getMap(t, parsed, "dns"), "servers")
+		assertStringSliceEqual(t, servers, []string{"https://doh.example.com/dns-query", defaultDoHBootstrapServer})
+
+		rules := getMap(t, parsed, "routing")["rules"].([]interface{})
+		if !containsDomainRule(rules, "doh.example.com", "outbound-relay-a") {
+			t.Fatalf("expected doh.example.com routed via outbound-relay-a")
+		}
+		if !containsIPRule(rules, "1.1.1.1", "outbound-relay-a") {
+			t.Fatalf("expected bootstrap 1.1.1.1 routed via outbound-relay-a")
+		}
+	})
+
+	t.Run("uses_dns_records_ip_for_custom_domain_doh", func(t *testing.T) {
+		cfg := &config.UserConfig{
+			Role: config.RoleGateway,
+			Gateway: config.GatewayConfig{
+				Mode:       "tproxy",
+				State:      "proxy",
+				LANEnabled: true,
+				RelayAlias: "relay-a",
+				DNSServers: []string{"https://doh.example.com/dns-query"},
+				DNSRecords: map[string][]string{"doh.example.com": {"9.9.9.9"}},
+			},
+			CustomOutbounds: []config.CustomOutbound{
+				{Alias: "relay-a", Enabled: true, Config: map[string]interface{}{"protocol": "freedom"}},
+			},
+		}
+
+		parsed := generateAndDecodeXrayConfig(t, cfg, "")
+		servers := getStringSlice(t, getMap(t, parsed, "dns"), "servers")
+		assertStringSliceEqual(t, servers, []string{"https://doh.example.com/dns-query"})
+
+		rules := getMap(t, parsed, "routing")["rules"].([]interface{})
+		if !containsDomainRule(rules, "doh.example.com", "outbound-relay-a") {
+			t.Fatalf("expected doh.example.com routed via outbound-relay-a")
+		}
+		if !containsIPRule(rules, "9.9.9.9", "outbound-relay-a") {
+			t.Fatalf("expected 9.9.9.9 from DNSRecords routed via outbound-relay-a")
+		}
+	})
 }

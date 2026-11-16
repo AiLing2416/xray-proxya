@@ -14,6 +14,28 @@ import (
 
 const DefaultDNSQueryStrategy = "UseIP"
 
+// privateIPCIDRs lists standard private, loopback, link-local, CGNAT, and ULA CIDRs
+// used in place of "geoip:private" so Xray-core can start without geoip.dat.
+var privateIPCIDRs = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"100.64.0.0/10",
+	"127.0.0.0/8",
+	"169.254.0.0/16",
+	"fc00::/7",
+	"fe80::/10",
+	"::1/128",
+}
+
+func privateIPCIDRsCopy() []string {
+	out := make([]string, len(privateIPCIDRs))
+	copy(out, privateIPCIDRs)
+	return out
+}
+
+const defaultDoHBootstrapServer = "https://1.1.1.1/dns-query"
+
 var validDNSQueryStrategies = map[string]string{
 	"useip":   "UseIP",
 	"useipv4": "UseIPv4",
@@ -50,12 +72,59 @@ func defaultDNSServers(_ bool) []interface{} {
 }
 
 func findOutboundByAlias(userCfg *config.UserConfig, alias string) *config.CustomOutbound {
+	if userCfg == nil {
+		return nil
+	}
 	for i := range userCfg.CustomOutbounds {
 		if userCfg.CustomOutbounds[i].Alias == alias {
 			return &userCfg.CustomOutbounds[i]
 		}
 	}
 	return nil
+}
+
+func isProxyOutboundAlias(alias string) bool {
+	return alias != "" && alias != "direct" && alias != "block"
+}
+
+func isEnabledCustomOutbound(userCfg *config.UserConfig, alias string) bool {
+	if !isProxyOutboundAlias(alias) {
+		return false
+	}
+	co := findOutboundByAlias(userCfg, alias)
+	return co != nil && co.Enabled
+}
+
+func fallbackGatewayDNSAlias(userCfg *config.UserConfig) string {
+	if userCfg == nil {
+		return ""
+	}
+	if isEnabledCustomOutbound(userCfg, userCfg.Gateway.RelayAlias) {
+		return userCfg.Gateway.RelayAlias
+	}
+	if isEnabledCustomOutbound(userCfg, userCfg.Gateway.LocalRelay) {
+		return userCfg.Gateway.LocalRelay
+	}
+	if len(userCfg.Gateway.ZoneDefaultRelays) > 0 {
+		ifaces := make([]string, 0, len(userCfg.Gateway.ZoneDefaultRelays))
+		for iface := range userCfg.Gateway.ZoneDefaultRelays {
+			ifaces = append(ifaces, iface)
+		}
+		sort.Strings(ifaces)
+		for _, iface := range ifaces {
+			alias := strings.TrimSpace(userCfg.Gateway.ZoneDefaultRelays[iface])
+			if isEnabledCustomOutbound(userCfg, alias) {
+				return alias
+			}
+		}
+	}
+	for _, rule := range userCfg.Gateway.Rules {
+		alias := strings.TrimSpace(rule.Target)
+		if isEnabledCustomOutbound(userCfg, alias) {
+			return alias
+		}
+	}
+	return ""
 }
 
 func selectDNSOutboundAlias(relayAlias string, testTarget string) string {
@@ -69,8 +138,100 @@ func selectDNSOutboundAlias(relayAlias string, testTarget string) string {
 	}
 }
 
+func stripLocalDNSScheme(server string) string {
+	if !strings.Contains(server, "://") {
+		return server
+	}
+	u, err := url.Parse(server)
+	if err != nil {
+		return server
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if strings.HasSuffix(scheme, "+local") {
+		u.Scheme = strings.TrimSuffix(scheme, "+local")
+		return u.String()
+	}
+	return server
+}
+
+func normalizeProxyDNSServers(servers []string) []string {
+	if len(servers) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(servers))
+	for _, server := range servers {
+		normalized = append(normalized, stripLocalDNSScheme(server))
+	}
+	return normalizeDNSServers(normalized)
+}
+
+func extractDNSHost(server string) string {
+	server = strings.TrimSpace(server)
+	if server == "" {
+		return ""
+	}
+	host := server
+	if strings.Contains(server, "://") {
+		u, err := url.Parse(server)
+		if err != nil {
+			return ""
+		}
+		host = u.Hostname()
+	} else if parsedHost, parsedPort, err := net.SplitHostPort(server); err == nil && parsedHost != "" && parsedPort != "" {
+		host = parsedHost
+	}
+	return strings.Trim(host, "[]")
+}
+
+func hasDoHBootstrapOrStaticHost(servers []string, hosts map[string]interface{}) bool {
+	for _, server := range servers {
+		host := extractDNSHost(server)
+		if host == "" {
+			continue
+		}
+		if net.ParseIP(host) != nil {
+			return true
+		}
+		if _, ok := hosts[strings.ToLower(host)]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func buildDNSHosts(userCfg *config.UserConfig, isGateway bool) map[string]interface{} {
+	hosts := map[string]interface{}{
+		"dns.google":                  "8.8.8.8",
+		"cloudflare-dns.com":          "1.1.1.1",
+		"engage.cloudflareclient.com": []interface{}{"162.159.192.1", "2606:4700:d0::a29f:c001"},
+	}
+
+	if isGateway && userCfg != nil && len(userCfg.Gateway.DNSRecords) > 0 {
+		for domain, ips := range userCfg.Gateway.DNSRecords {
+			d := strings.ToLower(strings.TrimSpace(domain))
+			if d == "" {
+				continue
+			}
+			if len(ips) == 1 {
+				hosts[d] = ips[0]
+			} else if len(ips) > 1 {
+				hosts[d] = ips
+			}
+		}
+	}
+
+	return hosts
+}
+
 func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget string, isGateway bool) (string, string, []string) {
 	selectedAlias := selectDNSOutboundAlias(relayAlias, testTarget)
+	if isGateway && testTarget == "" && userCfg != nil {
+		if !isProxyOutboundAlias(selectedAlias) || !isEnabledCustomOutbound(userCfg, selectedAlias) {
+			if fallback := fallbackGatewayDNSAlias(userCfg); fallback != "" {
+				selectedAlias = fallback
+			}
+		}
+	}
 	strategy := ""
 	var servers []string
 
@@ -113,6 +274,17 @@ func resolveDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget 
 		}
 	}
 
+	// 4. When DNS routes through a proxy outbound, normalize +local schemes so queries
+	//    traverse dns-internal routing instead of bypassing via OS sockets, and ensure
+	//    custom domain DoH servers have an IP-based DoH bootstrap fallback if not in hosts.
+	if isProxyOutboundAlias(selectedAlias) {
+		servers = normalizeProxyDNSServers(servers)
+		hosts := buildDNSHosts(userCfg, isGateway)
+		if !hasDoHBootstrapOrStaticHost(servers, hosts) {
+			servers = append(servers, defaultDoHBootstrapServer)
+		}
+	}
+
 	return selectedAlias, strategy, servers
 }
 
@@ -123,25 +295,7 @@ func buildDNSConfig(userCfg *config.UserConfig, relayAlias string, testTarget st
 		servers = append(servers, server)
 	}
 
-	hosts := map[string]interface{}{
-		"dns.google":                  "8.8.8.8",
-		"cloudflare-dns.com":          "1.1.1.1",
-		"engage.cloudflareclient.com": []interface{}{"162.159.192.1", "2606:4700:d0::a29f:c001"},
-	}
-
-	if isGateway && userCfg != nil && len(userCfg.Gateway.DNSRecords) > 0 {
-		for domain, ips := range userCfg.Gateway.DNSRecords {
-			d := strings.ToLower(strings.TrimSpace(domain))
-			if d == "" {
-				continue
-			}
-			if len(ips) == 1 {
-				hosts[d] = ips[0]
-			} else if len(ips) > 1 {
-				hosts[d] = ips
-			}
-		}
-	}
+	hosts := buildDNSHosts(userCfg, isGateway)
 
 	return map[string]interface{}{
 		"hosts":         hosts,
@@ -158,26 +312,7 @@ func dnsRoutingTargets(servers []string) ([]string, []string) {
 	seenIPs := make(map[string]struct{}, len(servers))
 
 	for _, server := range servers {
-		server = strings.TrimSpace(server)
-		if server == "" {
-			continue
-		}
-		host := server
-		if strings.Contains(server, "://") {
-			u, err := url.Parse(server)
-			if err != nil {
-				continue
-			}
-			scheme := strings.ToLower(u.Scheme)
-			if strings.HasSuffix(scheme, "+local") {
-				continue
-			}
-			host = u.Hostname()
-		} else if parsedHost, parsedPort, err := net.SplitHostPort(server); err == nil && parsedHost != "" && parsedPort != "" {
-			host = parsedHost
-		}
-
-		host = strings.Trim(host, "[]")
+		host := extractDNSHost(server)
 		if host == "" || strings.EqualFold(host, "localhost") {
 			continue
 		}
@@ -201,20 +336,15 @@ func dnsRoutingTargets(servers []string) ([]string, []string) {
 }
 
 func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []interface{} {
-	if selectedAlias == "" || selectedAlias == "direct" || selectedAlias == "block" {
+	return buildDNSOutboundRoutingRulesWithHosts(selectedAlias, servers, buildDNSHosts(nil, false))
+}
+
+func buildDNSOutboundRoutingRulesWithHosts(selectedAlias string, servers []string, hosts map[string]interface{}) []interface{} {
+	if !isProxyOutboundAlias(selectedAlias) {
 		return nil
 	}
 	domains, ips := dnsRoutingTargets(servers)
 
-	hasGoogle := false
-	hasCloudflare := false
-	for _, d := range domains {
-		if d == "dns.google" {
-			hasGoogle = true
-		} else if d == "cloudflare-dns.com" {
-			hasCloudflare = true
-		}
-	}
 	appendUniqueIP := func(ip string) {
 		for _, existing := range ips {
 			if existing == ip {
@@ -223,11 +353,29 @@ func buildDNSOutboundRoutingRules(selectedAlias string, servers []string) []inte
 		}
 		ips = append(ips, ip)
 	}
-	if hasGoogle {
-		appendUniqueIP("8.8.8.8")
-	}
-	if hasCloudflare {
-		appendUniqueIP("1.1.1.1")
+	for _, d := range domains {
+		val, ok := hosts[strings.ToLower(d)]
+		if !ok {
+			continue
+		}
+		switch v := val.(type) {
+		case string:
+			if net.ParseIP(v) != nil {
+				appendUniqueIP(v)
+			}
+		case []string:
+			for _, item := range v {
+				if net.ParseIP(item) != nil {
+					appendUniqueIP(item)
+				}
+			}
+		case []interface{}:
+			for _, item := range v {
+				if s, ok := item.(string); ok && net.ParseIP(s) != nil {
+					appendUniqueIP(s)
+				}
+			}
+		}
 	}
 
 	rules := make([]interface{}, 0, 2)
@@ -850,7 +998,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 
 	// Route port 53 traffic to dns-out first, so IP rules for DoH servers don't override port 53 interception
 	rules = append(rules, map[string]interface{}{"type": "field", "port": "53", "outboundTag": "dns-out"})
-	rules = append(rules, buildDNSOutboundRoutingRules(selectedDNSAlias, selectedDNSServers)...)
+	rules = append(rules, buildDNSOutboundRoutingRulesWithHosts(selectedDNSAlias, selectedDNSServers, buildDNSHosts(userCfg, isGateway))...)
 
 	// Block inbound loopback access (127.0.0.0/8, ::1/128) to prevent SSRF to local services such as APIInbound
 	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"127.0.0.0/8", "::1/128"}, "outboundTag": "blocked"})
@@ -922,7 +1070,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		}
 	}
 
-	// Guests are isolated from private network targets before the generic geoip:private -> direct rule.
+	// Guests are isolated from private network targets before the generic private-IP -> direct rule.
 	var guestUsers []string
 	for _, guest := range userCfg.Guests {
 		if guest.Enabled {
@@ -933,7 +1081,7 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		rules = append(rules, map[string]interface{}{
 			"type":        "field",
 			"user":        guestUsers,
-			"ip":          []string{"geoip:private"},
+			"ip":          privateIPCIDRsCopy(),
 			"outboundTag": "blocked",
 		})
 	}
@@ -952,12 +1100,12 @@ func GenerateXrayJSON(userCfg *config.UserConfig, overridePorts map[string]int, 
 		})
 	}
 
-	// geoip:private guard
+	// private-IP guard (explicit CIDRs instead of geoip:private so Xray runs without geoip.dat)
 	rules = append(rules,
-		map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"},
+		map[string]interface{}{"type": "field", "ip": privateIPCIDRsCopy(), "outboundTag": "direct"},
 	)
 
-	// 2. Relays without AllowPrivateTargets placed AFTER geoip:private
+	// 2. Relays without AllowPrivateTargets placed AFTER private-IP guard
 	for _, tr := range tproxyRoutes {
 		if !allowPrivateByAlias[tr.alias] {
 			appendBypassCountries(tr.inboundTag)
