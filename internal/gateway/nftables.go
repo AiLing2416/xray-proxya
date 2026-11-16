@@ -139,15 +139,17 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 		return nil
 	}
 
-	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, cfg.Gateway.LANEnabled)
+	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRsFn(lanIfaces, cfg.Gateway.LANEnabled)
 	if err != nil {
 		return err
 	}
 	wanIface := resolveWANInterface(cfg)
-	if wanIface == "" && !cfg.Gateway.NATDisabled && cfg.Gateway.LANEnabled {
+	fw4NAT := !cfg.Gateway.NATDisabled && hasOpenWrtFW4NAT()
+	skipManagedNAT := cfg.Gateway.NATDisabled || fw4NAT
+	if wanIface == "" && !skipManagedNAT && cfg.Gateway.LANEnabled {
 		fmt.Println("⚠️ WAN interface could not be detected (no default route) and none is configured; managed NAT is skipped. Run 'gateway set --wan <iface>' or re-apply once the default route is up.")
 	}
-	rules := buildNFTMulti(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface)
+	rules := buildNFTMultiWithOptions(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface, skipManagedNAT)
 	configDir := filepath.Dir(config.GetConfigPathEx(false))
 	_ = os.MkdirAll(configDir, 0700)
 	f, err := os.CreateTemp(configDir, "xray-proxya-*.nft")
@@ -329,7 +331,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			[]string{"oifname", tunName, "accept"})
 	}
 	managedNATInstalled := false
-	if !cfg.Gateway.NATDisabled && wanIface != "" && len(lanIfaces) > 0 {
+	if !skipManagedNAT && wanIface != "" && len(lanIfaces) > 0 {
 		wanDistinct := true
 		for _, liface := range lanIfaces {
 			if liface == wanIface {
@@ -377,7 +379,7 @@ func ApplyFirewall(cfg *config.UserConfig) (err error) {
 			return err
 		}
 	}
-	if cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled && !managedNATInstalled && !cfg.Gateway.NATDisabled && len(lanIfaces) > 0 {
+	if cfg.Gateway.LocalEnabled && !cfg.Gateway.LANEnabled && !managedNATInstalled && !skipManagedNAT && len(lanIfaces) > 0 {
 		if err := installDirectLANForwardRulesWithConfig(cfg, lanIfaces...); err != nil {
 			return err
 		}
@@ -745,7 +747,7 @@ func BuildRulesPreview(cfg *config.UserConfig) (string, error) {
 	if cfg.Gateway.LANEnabled && len(lanIfaces) == 0 {
 		return "", fmt.Errorf("gateway LAN interface is not configured")
 	}
-	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRs(lanIfaces, cfg.Gateway.LANEnabled)
+	lanCIDRs, lanIPv6CIDRs, err := collectLANCIDRsFn(lanIfaces, cfg.Gateway.LANEnabled)
 	if err != nil {
 		return "", err
 	}
@@ -1310,7 +1312,7 @@ func writeIsolatedForwardRules(b *strings.Builder, isoIfaces, lanIfaces []string
 	b.WriteString("        ct state established,related accept\n")
 }
 
-func writeCommonDestinationBypasses(b *strings.Builder, cfg *config.UserConfig, lanCIDRs, lanIPv6CIDRs []string) {
+func writeCommonDestinationBypasses(b *strings.Builder, cfg *config.UserConfig, lanCIDRs, lanIPv6CIDRs []string, includeLocalBypasses bool) {
 	b.WriteString("        ip daddr { 0.0.0.0/8, 10.0.0.0/8, 100.64.0.0/10, 127.0.0.0/8, 169.254.0.0/16, 172.16.0.0/12, 192.168.0.0/16, 224.0.0.0/4, 240.0.0.0/4 } return\n")
 	for _, cidr := range flattenCIDRs(lanCIDRs) {
 		if cidr != "" {
@@ -1322,6 +1324,9 @@ func writeCommonDestinationBypasses(b *strings.Builder, cfg *config.UserConfig, 
 		if cidr != "" {
 			b.WriteString("        ip6 daddr " + cidr + " return\n")
 		}
+	}
+	if !includeLocalBypasses {
+		return
 	}
 	for _, target := range outboundEndpoints(cfg) {
 		writeOutboundEndpointRule(b, target)
@@ -1349,6 +1354,10 @@ func ruleTProxyFamily(r config.GatewayRule) string {
 }
 
 func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6CIDRs []string, wanIface string) string {
+	return buildNFTMultiWithOptions(cfg, lanIfaces, lanCIDRs, lanIPv6CIDRs, wanIface, cfg != nil && cfg.Gateway.NATDisabled)
+}
+
+func buildNFTMultiWithOptions(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6CIDRs []string, wanIface string, natDisabled bool) string {
 	var b strings.Builder
 	basePort := cfg.Gateway.EffectiveTProxyPort()
 	tproxyPorts := config.GatewayTProxyPorts(cfg)
@@ -1536,8 +1545,9 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 				}
 			}
 
-			// Destination bypasses (always bypass RFC1918/ULA + LAN CIDRs + outbound endpoints)
-			writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+			// Destination bypasses for LAN prerouting: only RFC1918/ULA + LAN CIDRs;
+			// outboundEndpoints and BypassDNS must not bypass LAN TProxy.
+			writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs, false)
 
 			// Per-client non-DNS rules ordered by unified specificity
 			for _, rule := range sortedRules {
@@ -1597,7 +1607,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		b.WriteString("        type route hook output priority mangle; policy accept;\n")
 		b.WriteString("        meta mark " + xrayMark + " return\n")
 		b.WriteString("        fib daddr type local return\n")
-		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs, true)
 		for _, port := range getSSHPorts() {
 			// Exclude the SSH listener's reply traffic (source port) to prevent
 			// inbound management sessions from being intercepted or broken.
@@ -1615,7 +1625,7 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 
 	// Managed WAN NAT Masquerade, Port Forwarding & Forwarding
 	hasPortForwards := wanIface != "" && len(cfg.Gateway.PortForwards) > 0
-	hasManagedNAT := !cfg.Gateway.NATDisabled && wanIface != "" && len(lanIfaces) > 0
+	hasManagedNAT := !natDisabled && wanIface != "" && len(lanIfaces) > 0
 
 	wanDistinct := true
 	if hasManagedNAT {
@@ -1671,8 +1681,9 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 	}
 
 	hasIsolated := len(isoIfaces) > 0
+	lanForwardActive := cfg.Gateway.LANEnabled && len(lanIfaces) > 0
 
-	if hasManagedNAT || hasPortForwards || hasIsolated || len(blockEntries) > 0 || len(noV6Ifaces) > 0 {
+	if hasManagedNAT || hasPortForwards || hasIsolated || len(blockEntries) > 0 || len(noV6Ifaces) > 0 || lanForwardActive {
 		b.WriteString("    chain forward {\n")
 		b.WriteString("        type filter hook forward priority filter; policy accept;\n")
 		if len(blockEntries) > 0 {
@@ -1685,7 +1696,81 @@ func buildNFTMulti(cfg *config.UserConfig, lanIfaces []string, lanCIDRs, lanIPv6
 		for _, iface := range noV6Ifaces {
 			b.WriteString("        iifname " + quoteIface(iface) + " ip6 saddr != { ::/128, fe80::/10 } drop\n")
 		}
-		if hasManagedNAT {
+		if lanForwardActive {
+			lanMatch := nftIfaceList(lanIfaces)
+			// Allow intra-LAN / inter-LAN forwarding (isolated interfaces were already dropped above).
+			b.WriteString("        iifname " + lanMatch + " oifname " + lanMatch + " accept\n")
+			// Allow return traffic from WAN / non-LAN to LAN for direct rules and port forwards.
+			if wanIface != "" {
+				b.WriteString("        iifname " + quoteIface(wanIface) + " oifname " + lanMatch + " ct state established,related accept\n")
+			} else {
+				b.WriteString("        iifname != " + lanMatch + " oifname " + lanMatch + " ct state established,related accept\n")
+			}
+			// Allow PathLink ICMP tunnel and TUN forwarding if enabled.
+			if pathTunnelEnabled(cfg) {
+				b.WriteString("        iifname " + quoteIface(pathTunName) + " accept\n")
+				b.WriteString("        oifname " + quoteIface(pathTunName) + " accept\n")
+			}
+			if cfg.Gateway.EffectiveTUNEnabled() {
+				b.WriteString("        iifname " + quoteIface(tunName) + " accept\n")
+				b.WriteString("        oifname " + quoteIface(tunName) + " accept\n")
+			}
+			// Per-client rules ordered by unified specificity: allow explicit direct
+			// rules to WAN/non-LAN and drop non-direct clients so non-TCP/UDP or
+			// bypassed traffic cannot leak out to WAN.
+			for _, rule := range sortedRules {
+				if isBlockRule(rule) {
+					continue
+				}
+				match := strings.Join(matchTokens(rule), " ")
+				if isDirectRule(rule) {
+					if wanIface != "" {
+						b.WriteString("        " + match + " oifname " + quoteIface(wanIface) + " accept\n")
+					} else {
+						b.WriteString("        " + match + " accept\n")
+					}
+				} else {
+					b.WriteString("        " + match + " drop\n")
+				}
+			}
+			// Zone / global default policy for remaining LAN -> WAN / non-LAN traffic.
+			if len(cfg.Gateway.ZoneDefaultRelays) == 0 {
+				if strings.EqualFold(cfg.Gateway.RelayAlias, "direct") || cfg.Gateway.RelayAlias == "" {
+					if hasManagedNAT {
+						b.WriteString("        iifname " + lanMatch + " oifname " + quoteIface(wanIface) + " accept\n")
+					}
+				} else {
+					// Proxy or block default: drop any remaining LAN -> non-LAN traffic
+					// (non-TCP/UDP, spoofed source IP, WAN-side RFC1918, etc.).
+					b.WriteString("        iifname " + lanMatch + " drop\n")
+				}
+			} else {
+				for _, liface := range lanIfaces {
+					explicit := strings.TrimSpace(cfg.Gateway.ZoneDefaultRelays[liface])
+					switch {
+					case strings.EqualFold(explicit, "block"):
+						b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+					case strings.EqualFold(explicit, "direct"):
+						if wanIface != "" {
+							b.WriteString("        iifname " + quoteIface(liface) + " oifname " + quoteIface(wanIface) + " accept\n")
+						} else {
+							b.WriteString("        iifname " + quoteIface(liface) + " accept\n")
+						}
+					default:
+						zRelay := cfg.Gateway.EffectiveRelayForInterface(liface)
+						if explicit != "" && !config.GatewayRelayActive(cfg, explicit) {
+							b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+						} else if zRelay != "" {
+							b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+						} else if strings.EqualFold(cfg.Gateway.RelayAlias, "block") {
+							b.WriteString("        iifname " + quoteIface(liface) + " drop\n")
+						} else if hasManagedNAT {
+							b.WriteString("        iifname " + quoteIface(liface) + " oifname " + quoteIface(wanIface) + " accept\n")
+						}
+					}
+				}
+			}
+		} else if hasManagedNAT {
 			lanMatch := nftIfaceList(lanIfaces)
 			b.WriteString("        iifname " + lanMatch + " oifname \"" + wanIface + "\" accept\n")
 			b.WriteString("        iifname \"" + wanIface + "\" oifname " + lanMatch + " ct state established,related accept\n")
@@ -1746,7 +1831,7 @@ func buildFailClosedNFT(cfg *config.UserConfig, lanIfaces, lanCIDRs, lanIPv6CIDR
 		b.WriteString("        iifname != \"lo\" fib daddr type local th dport != 53 return\n")
 		// Drop proxied DNS (:53) even for direct clients while proxy DNS is down.
 		b.WriteString("        meta l4proto { tcp, udp } th dport 53 drop\n")
-		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs, false)
 		for _, rule := range sortedRules {
 			if isBlockRule(rule) {
 				continue
@@ -1806,7 +1891,7 @@ func buildFailClosedNFT(cfg *config.UserConfig, lanIfaces, lanCIDRs, lanIPv6CIDR
 		b.WriteString("    chain output {\n")
 		b.WriteString("        type route hook output priority mangle; policy accept;\n")
 		b.WriteString("        fib daddr type local return\n")
-		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs)
+		writeCommonDestinationBypasses(&b, cfg, lanCIDRs, lanIPv6CIDRs, true)
 		for _, port := range getSSHPorts() {
 			b.WriteString("        tcp sport " + port + " return\n")
 		}
@@ -2070,6 +2155,7 @@ func getSSHPorts() []string {
 
 var (
 	detectDefaultInterfaceFn  = DetectDefaultInterface
+	collectLANCIDRsFn         = collectLANCIDRs
 	runCommand                = defaultRunCommand
 	execCommandCombinedOutput = defaultExecCombinedOutput
 	execCommandRun            = defaultExecRun
@@ -2130,6 +2216,16 @@ func installDirectLANForwardRules(lanIfaces ...string) error {
 	return installDirectLANForwardRulesWithConfig(nil, lanIfaces...)
 }
 
+// hasOpenWrtFW4NAT reports whether OpenWrt's fw4 nftables table is present
+// and managing WAN masquerade NAT.
+func hasOpenWrtFW4NAT() bool {
+	out, err := execCommandCombinedOutput("nft", "list", "table", "inet", "fw4")
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(out), "masquerade")
+}
+
 func installDirectLANForwardRulesWithConfig(cfg *config.UserConfig, lanIfaces ...string) error {
 	var wanIface string
 	if cfg != nil {
@@ -2141,8 +2237,10 @@ func installDirectLANForwardRulesWithConfig(cfg *config.UserConfig, lanIfaces ..
 			return fmt.Errorf("detect default WAN interface: %w", err)
 		}
 	}
+	fw4NAT := hasOpenWrtFW4NAT()
+	skipNAT := (cfg != nil && cfg.Gateway.NATDisabled) || fw4NAT
 	if wanIface == "" {
-		if cfg != nil && cfg.Gateway.NATDisabled {
+		if skipNAT {
 			return nil
 		}
 		return fmt.Errorf("detect default WAN interface: no default route interface found")
@@ -2156,18 +2254,22 @@ func installDirectLANForwardRulesWithConfig(cfg *config.UserConfig, lanIfaces ..
 
 	_ = run("nft", "add", "table", "inet", "filter")
 	_ = run("nft", "add", "chain", "inet", "filter", "forward", "{ type filter hook forward priority filter; }")
-	_ = run("nft", "add", "chain", "inet", "filter", "postrouting", "{ type nat hook postrouting priority srcnat; }")
+	if !skipNAT {
+		_ = run("nft", "add", "chain", "inet", "filter", "postrouting", "{ type nat hook postrouting priority srcnat; }")
+	}
 
 	for _, lanIface := range lanIfaces {
 		if lanIface == "" {
 			continue
 		}
-		if err := insertFilterRules("forward",
-			[]string{"iifname", lanIface, "oifname", wanIface, "accept"},
-			[]string{"iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept"}); err != nil {
-			return fmt.Errorf("allow LAN/WAN forwarding: %w", err)
+		if !fw4NAT {
+			if err := insertFilterRules("forward",
+				[]string{"iifname", lanIface, "oifname", wanIface, "accept"},
+				[]string{"iifname", wanIface, "oifname", lanIface, "ct", "state", "established,related", "accept"}); err != nil {
+				return fmt.Errorf("allow LAN/WAN forwarding: %w", err)
+			}
 		}
-		if cfg != nil && cfg.Gateway.NATDisabled {
+		if skipNAT {
 			continue
 		}
 		// In the inet table, masquerade performs dual-stack NAT (NAT44 and NAT66).

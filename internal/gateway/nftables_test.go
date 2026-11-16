@@ -1018,11 +1018,20 @@ func TestBuildNFTMultiRouterCapabilities(t *testing.T) {
 	if !strings.Contains(rules, `chain forward {`) {
 		t.Errorf("expected chain forward, got:\n%s", rules)
 	}
-	if !strings.Contains(rules, `iifname { "eth1", "eth2" } oifname "eth0" accept`) {
-		t.Errorf("expected LAN to WAN accept in forward chain, got:\n%s", rules)
+	if strings.Contains(rules, `iifname { "eth1", "eth2" } oifname "eth0" accept`) {
+		t.Errorf("must not blanket-accept all LAN to WAN traffic in proxy mode, got:\n%s", rules)
 	}
-	if !strings.Contains(rules, `iifname "eth0" oifname { "eth1", "eth2" } ct state established,related accept`) {
-		t.Errorf("expected WAN to LAN established accept in forward chain, got:\n%s", rules)
+	for _, want := range []string{
+		`iifname { "eth1", "eth2" } oifname { "eth1", "eth2" } accept`,
+		`iifname "eth0" oifname { "eth1", "eth2" } ct state established,related accept`,
+		`ether saddr 52:54:00:83:00:12 oifname "eth0" accept`,
+		`ether saddr 52:54:00:83:00:13 drop`,
+		`iifname "eth1" oifname "eth0" accept`,
+		`iifname { "eth1", "eth2" } drop`,
+	} {
+		if !strings.Contains(rules, want) {
+			t.Errorf("expected %q in forward chain, got:\n%s", want, rules)
+		}
 	}
 	if !strings.Contains(rules, `chain postrouting {`) {
 		t.Errorf("expected chain postrouting, got:\n%s", rules)
@@ -1763,5 +1772,173 @@ func TestForwardOnly_RespectsNATDisabledAndIsolatedInterfaces(t *testing.T) {
 	}
 	if !strings.Contains(all, "iifname guest0 drop") || !strings.Contains(all, "iifname guest0 oifname eth1 drop") {
 		t.Fatalf("expected isolated guest0 rules in forward-only mode, got:\n%s", all)
+	}
+}
+
+func TestBuildNFT_LANPreroutingDoesNotBypassOutboundOrBypassDNS(t *testing.T) {
+	cfg := testGatewayConfig(true, true)
+	cfg.Gateway.BypassDNS = []string{"8.8.8.8", "2001:4860:4860::8888"}
+	cfg.CustomOutbounds = []config.CustomOutbound{
+		{
+			Alias:   "proxy",
+			Enabled: true,
+			Config: map[string]interface{}{
+				"settings": map[string]interface{}{
+					"vnext": []interface{}{
+						map[string]interface{}{
+							"address": "87.58.209.196",
+							"port":    443,
+						},
+					},
+				},
+			},
+		},
+	}
+
+	rules := buildNFT(cfg, "eth1", "10.0.83.0/24", "fd00:83::/64")
+	preIdx := strings.Index(rules, "chain prerouting {")
+	outIdx := strings.Index(rules, "chain output {")
+	if preIdx < 0 || outIdx < 0 || preIdx >= outIdx {
+		t.Fatalf("unexpected chain layout:\n%s", rules)
+	}
+	preroutingSection := rules[preIdx:outIdx]
+	outputSection := rules[outIdx:]
+
+	for _, forbidden := range []string{"8.8.8.8", "2001:4860:4860::8888", "87.58.209.196"} {
+		if strings.Contains(preroutingSection, forbidden) {
+			t.Fatalf("LAN prerouting must not bypass %s:\n%s", forbidden, preroutingSection)
+		}
+		if !strings.Contains(outputSection, forbidden) {
+			t.Fatalf("host output chain should still bypass %s:\n%s", forbidden, outputSection)
+		}
+	}
+}
+
+func TestBuildNFTMulti_ForwardBlocksNonProxiedLANTrafficAndPreservesDirectAndPathLink(t *testing.T) {
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{
+			{
+				Alias:   "hk-node",
+				Enabled: true,
+				Path:    &config.PathConfig{Listen: pathd.DefaultListenAddress, Token: "tok", IdleSeconds: 20},
+			},
+		},
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			State:         "proxy",
+			LANEnabled:    true,
+			LANInterfaces: []string{"eth1", "eth2"},
+			WANInterface:  "eth0",
+			RelayAlias:    "hk-node",
+			ZoneDefaultRelays: map[string]string{
+				"eth1": "hk-node",
+				"eth2": "direct",
+			},
+			Rules: []config.GatewayRule{
+				{IP: "10.0.83.50", Target: "direct"},
+				{IP: "10.0.84.50", Target: "hk-node"},
+			},
+		},
+	}
+
+	rules := buildNFTMulti(cfg, []string{"eth1", "eth2"}, []string{"10.0.83.0/24", "10.0.84.0/24"}, []string{"fd00:83::/64", "fd00:84::/64"}, "eth0")
+	fwdIdx := strings.Index(rules, "chain forward {")
+	if fwdIdx < 0 {
+		t.Fatalf("expected chain forward in:\n%s", rules)
+	}
+	fwdSection := rules[fwdIdx:]
+	for _, want := range []string{
+		`iifname { "eth1", "eth2" } oifname { "eth1", "eth2" } accept`,
+		`iifname "eth0" oifname { "eth1", "eth2" } ct state established,related accept`,
+		`iifname "path-tun" accept`,
+		`oifname "path-tun" accept`,
+		`ip saddr 10.0.83.50 oifname "eth0" accept`,
+		`ip saddr 10.0.84.50 drop`,
+		`iifname "eth1" drop`,
+		`iifname "eth2" oifname "eth0" accept`,
+	} {
+		if !strings.Contains(fwdSection, want) {
+			t.Errorf("expected %q in forward chain, got:\n%s", want, fwdSection)
+		}
+	}
+
+	// Verify kernel nft syntax check if available.
+	cmd := exec.Command("unshare", "-r", "-n", "bash", "-c", "printf '%s' \"$1\" | nft -c -f -", "_", rules)
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Logf("unshare nft syntax check skipped/failed: %v: %s", err, string(outBytes))
+	}
+}
+
+func TestApplyFirewall_SkipsManagedNATWhenOpenWrtFW4Active(t *testing.T) {
+	t.Setenv("XRAY_PROXYA_CONFIG_DIR", t.TempDir())
+	var recordedCmds [][]string
+	var appliedNFTContent string
+	origRun := runCommand
+	origExec := execCommandCombinedOutput
+	origDetect := detectDefaultInterfaceFn
+	origCollectLAN := collectLANCIDRsFn
+	origReadSysctl := readSysctlFn
+	origTProxyListening := isTProxyPortListeningFn
+	defer func() {
+		runCommand = origRun
+		execCommandCombinedOutput = origExec
+		detectDefaultInterfaceFn = origDetect
+		collectLANCIDRsFn = origCollectLAN
+		readSysctlFn = origReadSysctl
+		isTProxyPortListeningFn = origTProxyListening
+	}()
+	readSysctlFn = func(key string) (string, error) { return "0", nil }
+	isTProxyPortListeningFn = func(port int) bool { return true }
+	detectDefaultInterfaceFn = func() (string, error) { return "eth0", nil }
+	collectLANCIDRsFn = func(lanIfaces []string, lanEnabled bool) ([]string, []string, error) {
+		return []string{"10.0.87.0/24"}, []string{""}, nil
+	}
+	runCommand = func(name string, args ...string) error {
+		recordedCmds = append(recordedCmds, append([]string{name}, args...))
+		if name == "nft" && len(args) == 2 && args[0] == "-f" {
+			data, err := os.ReadFile(args[1])
+			if err == nil {
+				appliedNFTContent = string(data)
+			}
+		}
+		return nil
+	}
+	execCommandCombinedOutput = func(name string, args ...string) ([]byte, error) {
+		if name == "nft" && len(args) == 4 && args[0] == "list" && args[1] == "table" && args[2] == "inet" && args[3] == "fw4" {
+			return []byte("table inet fw4 {\n  chain srcnat {\n    oifname \"eth0\" masquerade\n  }\n}\n"), nil
+		}
+		return []byte(""), errors.New("Error: No such chain")
+	}
+
+	cfg := &config.UserConfig{
+		Role: config.RoleGateway,
+		CustomOutbounds: []config.CustomOutbound{
+			{Alias: "proxy", Enabled: true},
+		},
+		Gateway: config.GatewayConfig{
+			Mode:          "tproxy",
+			State:         "proxy",
+			LANEnabled:    true,
+			LANInterfaces: []string{"eth1"},
+			WANInterface:  "eth0",
+			RelayAlias:    "proxy",
+			NATDisabled:   false,
+		},
+	}
+	if err := ApplyFirewall(cfg); err != nil {
+		t.Fatalf("ApplyFirewall() error = %v", err)
+	}
+	if strings.Contains(appliedNFTContent, "masquerade") {
+		t.Fatalf("expected no masquerade in xray_proxya when fw4 manages NAT, got:\n%s", appliedNFTContent)
+	}
+	if !strings.Contains(appliedNFTContent, `iifname "eth1" drop`) {
+		t.Fatalf("expected forward drop for proxy LAN interface even when fw4 manages NAT, got:\n%s", appliedNFTContent)
+	}
+	for _, cmd := range recordedCmds {
+		joined := strings.Join(cmd, " ")
+		if strings.Contains(joined, "oifname eth0 accept") || strings.Contains(joined, "masquerade") {
+			t.Fatalf("expected no redundant inet filter WAN accept or masquerade when fw4 manages NAT, got command: %s", joined)
+		}
 	}
 }
