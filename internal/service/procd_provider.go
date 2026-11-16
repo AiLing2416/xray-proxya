@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/xray"
 )
 
 // ProcdProvider implements Provider for OpenWrt procd init system.
@@ -66,10 +67,10 @@ func (p *ProcdProvider) Install(cfg *config.UserConfig) error {
 	}
 
 	workDir := filepath.Join(config.GetHomeDir(), ".local", "share", "xray-proxya")
-	assetDir := filepath.Join(workDir, "bin")
-	if err := os.MkdirAll(assetDir, 0700); err != nil {
-		return fmt.Errorf("create asset directory: %w", err)
+	if err := os.MkdirAll(workDir, 0700); err != nil {
+		return fmt.Errorf("create work directory: %w", err)
 	}
+	assetDir := xray.GetXrayAssetPath()
 
 	// 1. Write /etc/init.d/xray-proxya
 	mainContent := BuildProcdServiceContent(binPath, workDir, assetDir)
@@ -155,7 +156,9 @@ func (p *ProcdProvider) Restart(unit string) error {
 		return err
 	}
 	path := p.UnitPath(unit)
-	out, err := exec.Command(path, "restart").CombinedOutput()
+	cmd := exec.Command(path, "restart")
+	cmd.Env = append(os.Environ(), "PROXYA_SKIP_STOP_DOWN=1")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s restart: %w: %s", path, err, strings.TrimSpace(string(out)))
 	}

@@ -369,21 +369,31 @@ func TestBuildOpenRCPathdServiceContent(t *testing.T) {
 }
 
 func TestBuildProcdServiceContent(t *testing.T) {
-	content := BuildProcdServiceContent("/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.local/share/xray-proxya/bin")
+	content := BuildProcdServiceContent("/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/usr/share/xray")
 	for _, expected := range []string{
 		"#!/bin/sh /etc/rc.common",
 		"USE_PROCD=1",
 		"START=95",
 		`PROG="/root/.local/bin/xray-proxya"`,
+		`ASSETDIR="/usr/share/xray"`,
 		`procd_set_param command "$PROG" run`,
-		`procd_set_param env XRAY_LOCATION_ASSET=`,
+		`procd_set_param env XRAY_LOCATION_ASSET="$ASSETDIR"`,
 		`procd_set_param respawn 3600 2 5`,
 		`procd_set_param term_timeout 15`,
 		`"$PROG" gateway system-down`,
+		"PROXYA_PROCD_RESTARTING=1",
+		"PROXYA_SKIP_STOP_DOWN",
+		"service_triggers()",
+		`procd_add_reload_trigger "network" "firewall"`,
+		"reload_service()",
+		`"$PROG" gateway system-sync >/dev/null 2>&1 || restart`,
 	} {
 		if !strings.Contains(content, expected) {
 			t.Errorf("expected Procd content to contain %q, but did not:\n%s", expected, content)
 		}
+	}
+	if strings.Contains(content, `chmod 0700 "$WORKDIR" "$ASSETDIR"`) {
+		t.Errorf("procd script must not chmod 0700 ASSETDIR:\n%s", content)
 	}
 }
 

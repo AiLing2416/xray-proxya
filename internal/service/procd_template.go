@@ -17,8 +17,8 @@ WORKDIR="%s"
 ASSETDIR="%s"
 
 start_service() {
-	mkdir -p "$WORKDIR" "$ASSETDIR"
-	chmod 0700 "$WORKDIR" "$ASSETDIR"
+	mkdir -p "$WORKDIR"
+	chmod 0700 "$WORKDIR"
 
 	procd_open_instance "main"
 	procd_set_param command "$PROG" run
@@ -32,11 +32,24 @@ start_service() {
 }
 
 stop_service() {
+	if [ "${PROXYA_PROCD_RESTARTING:-0}" = "1" ] || [ "${PROXYA_SKIP_STOP_DOWN:-0}" = "1" ]; then
+		return 0
+	fi
 	"$PROG" gateway system-down >/dev/null 2>&1 || true
 }
 
+restart() {
+	PROXYA_PROCD_RESTARTING=1
+	stop "$@"
+	start "$@"
+}
+
+service_triggers() {
+	procd_add_reload_trigger "network" "firewall"
+}
+
 reload_service() {
-	restart
+	"$PROG" gateway system-sync >/dev/null 2>&1 || restart
 }
 `, binPath, workDir, assetDir)
 }
@@ -54,8 +67,8 @@ WORKDIR="%s"
 ASSETDIR="%s"
 
 start_service() {
-	mkdir -p "$WORKDIR" "$ASSETDIR"
-	chmod 0700 "$WORKDIR" "$ASSETDIR"
+	mkdir -p "$WORKDIR"
+	chmod 0700 "$WORKDIR"
 	"$PROG" sub validate || return 1
 
 	procd_open_instance "sub"
