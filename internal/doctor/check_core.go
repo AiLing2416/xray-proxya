@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"xray-proxya/internal/config"
 	"xray-proxya/internal/service"
 	"xray-proxya/internal/xray"
 )
@@ -55,8 +56,9 @@ func CheckCore(ctx context.Context) []CheckResult {
 		})
 	} else {
 		// Binary exists and is executable, test execution and version
+		assetDir := xray.GetXrayAssetPath()
 		cmd := exec.CommandContext(ctx, binPath, "version")
-		cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+filepath.Dir(binPath))
+		cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+assetDir)
 		out, err := cmd.Output()
 		if err != nil {
 			results = append(results, CheckResult{
@@ -107,19 +109,31 @@ func CheckCore(ctx context.Context) []CheckResult {
 
 	// 2. Check Geo asset files
 	geoStart := time.Now()
-	assetDir := filepath.Dir(binPath)
+	assetDir := xray.GetXrayAssetPath()
 	geoIPPath := filepath.Join(assetDir, "geoip.dat")
 	geoSitePath := filepath.Join(assetDir, "geosite.dat")
 
 	hasIP := fileExists(geoIPPath)
 	hasSite := fileExists(geoSitePath)
+	needsGeo := false
+	if cfg, cfgErr := config.LoadConfig(); cfgErr == nil && len(cfg.Gateway.BypassCountries) > 0 {
+		needsGeo = true
+	}
 
 	if hasIP && hasSite {
 		results = append(results, CheckResult{
 			Category:   "Core & Assets",
 			Name:       "Geo Data Files",
 			Status:     StatusPass,
-			Detail:     "geoip.dat and geosite.dat present",
+			Detail:     fmt.Sprintf("geoip.dat and geosite.dat present in %s", assetDir),
+			DurationMs: time.Since(geoStart).Milliseconds(),
+		})
+	} else if !needsGeo {
+		results = append(results, CheckResult{
+			Category:   "Core & Assets",
+			Name:       "Geo Data Files",
+			Status:     StatusPass,
+			Detail:     "geoip.dat/geosite.dat not present (optional: no Geo bypass rules configured)",
 			DurationMs: time.Since(geoStart).Milliseconds(),
 		})
 	} else if !hasIP && !hasSite {

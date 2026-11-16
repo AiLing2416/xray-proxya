@@ -244,8 +244,9 @@ func (r *Resolver) defaultPrivateBinaryPath() string {
 // ResolveBinary probes candidate paths and returns the chosen Xray core binary path:
 // 1. Prioritize user explicitly specified environment variable XRAY_BIN (if set and file exists).
 // 2. Probe system public paths (/usr/bin/xray, /usr/local/bin/xray, and LookPath found xray).
-//    Check if candidate version >= PinnedXrayVersion. If qualified, reuse system binary.
-// 3. If no qualified system binary exists, check private directory.
+//    Any executable, non-corrupted system xray binary is reused unconditionally without
+//    requiring it to meet PinnedXrayVersion (which only governs private downloads/upgrades).
+// 3. If no usable system binary exists, check private directory.
 // 4. If private directory does not exist either, fallback to default private binary path.
 func (r *Resolver) ResolveBinary() string {
 	// 1. User explicit environment variable XRAY_BIN (if set and file exists)
@@ -269,11 +270,6 @@ func (r *Resolver) ResolveBinary() string {
 
 	seen := make(map[string]bool)
 	cleanPrivate := filepath.Clean(privateBin)
-
-	pinned := r.PinnedVersion
-	if pinned == "" {
-		pinned = PinnedXrayVersion
-	}
 
 	for _, cand := range candidates {
 		cand = strings.TrimSpace(cand)
@@ -301,7 +297,7 @@ func (r *Resolver) ResolveBinary() string {
 			continue
 		}
 
-		// Query version
+		// Verify the binary is runnable and is a valid xray binary
 		if r.ExecVersion == nil {
 			continue
 		}
@@ -309,15 +305,11 @@ func (r *Resolver) ResolveBinary() string {
 		if err != nil {
 			continue
 		}
-		candVer, err := ParseXrayVersion(verOutput)
-		if err != nil {
+		if _, err := ParseXrayVersion(verOutput); err != nil {
 			continue
 		}
 
-		ok, err := IsVersionAtLeast(candVer, pinned)
-		if err == nil && ok {
-			return cleanCand
-		}
+		return cleanCand
 	}
 
 	// 3. Check private directory
@@ -330,16 +322,19 @@ func (r *Resolver) ResolveBinary() string {
 }
 
 // ResolveAsset resolves the asset directory for GeoIP / GeoSite dat files:
-// 1. If XRAY_LOCATION_ASSET is set, prioritize it.
+// 1. If XRAY_LOCATION_ASSET is set and contains .dat files, prioritize it.
 // 2. Otherwise check the directory of the current Xray binary; if dat files exist there, use it.
 // 3. Otherwise check system public asset paths (/usr/share/xray or /usr/share/v2ray) for dat files.
-// 4. Otherwise fallback to private directory.
+// 4. Otherwise if XRAY_LOCATION_ASSET was explicitly set, honor it; else fallback to private directory.
 func (r *Resolver) ResolveAsset(binPath string) string {
-	// 1. Environment variable XRAY_LOCATION_ASSET
+	var envAsset string
 	if r.Getenv != nil {
-		if envAsset := strings.TrimSpace(r.Getenv("XRAY_LOCATION_ASSET")); envAsset != "" {
-			return envAsset
-		}
+		envAsset = strings.TrimSpace(r.Getenv("XRAY_LOCATION_ASSET"))
+	}
+
+	// 1. Environment variable XRAY_LOCATION_ASSET (when it actually contains .dat files)
+	if envAsset != "" && r.hasDatFiles(envAsset) {
+		return envAsset
 	}
 
 	// 2. Binary co-located directory
@@ -357,7 +352,10 @@ func (r *Resolver) ResolveAsset(binPath string) string {
 		}
 	}
 
-	// 4. Fallback to private directory
+	// 4. Fallback to explicit env var if set, otherwise private directory
+	if envAsset != "" {
+		return envAsset
+	}
 	return r.defaultPrivateAssetPath()
 }
 

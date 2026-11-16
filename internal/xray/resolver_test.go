@@ -394,7 +394,7 @@ func TestResolveBinary_SystemProbe(t *testing.T) {
 		}
 	})
 
-	t.Run("outdated system binary skipped and next qualified candidate selected", func(t *testing.T) {
+	t.Run("lower version system binary reused unconditionally", func(t *testing.T) {
 		r := &Resolver{
 			Getenv: func(k string) string { return "" },
 			Stat: func(name string) (os.FileInfo, error) {
@@ -418,8 +418,8 @@ func TestResolveBinary_SystemProbe(t *testing.T) {
 		}
 
 		got := r.ResolveBinary()
-		if got != "/usr/local/bin/xray" {
-			t.Errorf("expected /usr/local/bin/xray, got %q", got)
+		if got != "/usr/bin/xray" {
+			t.Errorf("expected /usr/bin/xray, got %q", got)
 		}
 	})
 
@@ -544,7 +544,7 @@ func TestResolveBinary_LookPath(t *testing.T) {
 func TestResolveBinary_PrivateAndFallback(t *testing.T) {
 	privatePath := "/home/test/.local/share/xray-proxya/bin/xray"
 
-	t.Run("system outdated and private exists", func(t *testing.T) {
+	t.Run("lower version system binary preferred over private binary", func(t *testing.T) {
 		r := &Resolver{
 			Getenv: func(k string) string { return "" },
 			Stat: func(name string) (os.FileInfo, error) {
@@ -565,8 +565,8 @@ func TestResolveBinary_PrivateAndFallback(t *testing.T) {
 		}
 
 		got := r.ResolveBinary()
-		if got != privatePath {
-			t.Errorf("expected %q, got %q", privatePath, got)
+		if got != "/usr/bin/xray" {
+			t.Errorf("expected /usr/bin/xray, got %q", got)
 		}
 	})
 
@@ -605,6 +605,30 @@ func TestResolveAsset(t *testing.T) {
 		got := r.ResolveAsset("/usr/bin/xray")
 		if got != "/custom/assets" {
 			t.Errorf("expected /custom/assets, got %q", got)
+		}
+	})
+
+	t.Run("XRAY_LOCATION_ASSET without dat files falls back to system asset dir with dat files", func(t *testing.T) {
+		r := &Resolver{
+			Getenv: func(k string) string {
+				if k == "XRAY_LOCATION_ASSET" {
+					return privateAssetDir
+				}
+				return ""
+			},
+			Stat: func(name string) (os.FileInfo, error) {
+				if name == "/usr/share/xray/geoip.dat" {
+					return mockFileInfo{name: "geoip.dat", mode: 0644}, nil
+				}
+				return nil, os.ErrNotExist
+			},
+			SystemAssetDirs: []string{"/usr/share/xray", "/usr/share/v2ray"},
+			HomeDir:         "/home/test",
+		}
+
+		got := r.ResolveAsset("/usr/bin/xray")
+		if got != "/usr/share/xray" {
+			t.Errorf("expected /usr/share/xray, got %q", got)
 		}
 	})
 
