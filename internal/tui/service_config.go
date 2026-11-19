@@ -8,6 +8,7 @@ import (
 	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/pathd"
+	subpkg "xray-proxya/internal/sub"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -462,6 +463,9 @@ func validateAndApplyServiceProp(cfg *config.UserConfig, item ManagedServiceItem
 		case "Listen":
 			if newVal == "" {
 				return fmt.Errorf("listen address cannot be empty")
+			}
+			if err := subpkg.ValidateListenAddress(newVal); err != nil {
+				return err
 			}
 			sub.Listen = newVal
 		case "GateURL":

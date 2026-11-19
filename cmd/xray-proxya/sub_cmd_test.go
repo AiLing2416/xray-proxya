@@ -421,5 +421,76 @@ func TestSubShowCmd_QRCodeFlag(t *testing.T) {
 	}
 }
 
+func TestSubSetListenValidationAndWarning(t *testing.T) {
+	setupTestConfigDir(t)
+
+	cfg := &config.UserConfig{
+		Role: config.RoleServer,
+		AdminSub: config.AdminSubConfig{
+			Token: "tok-listen-test",
+			Port:  8443,
+		},
+	}
+	if err := cfg.SaveEx(true); err != nil {
+		t.Fatalf("SaveEx staging error: %v", err)
+	}
+
+	resetListenFlag := func() {
+		subListen = ""
+		if f := subSetCmd.Flags().Lookup("listen"); f != nil {
+			f.Changed = false
+			_ = f.Value.Set("")
+		}
+	}
+	defer resetListenFlag()
+
+	// 1. Non-loopback IP (0.0.0.0) should succeed with a plaintext HTTP warning
+	resetListenFlag()
+	if err := subSetCmd.ParseFlags([]string{"--listen", "0.0.0.0"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	out := captureStdout(t, func() {
+		if err := subSetCmd.RunE(subSetCmd, nil); err != nil {
+			t.Fatalf("subSetCmd.RunE(0.0.0.0) failed: %v", err)
+		}
+	})
+	if !strings.Contains(out, "non-loopback address 0.0.0.0") {
+		t.Errorf("expected plaintext HTTP warning for 0.0.0.0, got: %s", out)
+	}
+
+	staged, err := config.LoadConfigEx(true)
+	if err != nil {
+		t.Fatalf("LoadConfigEx error: %v", err)
+	}
+	if staged.AdminSub.Listen != "0.0.0.0" {
+		t.Fatalf("staged.AdminSub.Listen = %q, want 0.0.0.0", staged.AdminSub.Listen)
+	}
+	if err := staged.SaveEx(false); err != nil {
+		t.Fatalf("SaveEx active error: %v", err)
+	}
+	if err := validateSubInstance(); err != nil {
+		t.Fatalf("validateSubInstance() for 0.0.0.0 failed: %v", err)
+	}
+
+	// 2. Public IP should also be accepted
+	resetListenFlag()
+	if err := subSetCmd.ParseFlags([]string{"--listen", "203.0.113.10"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := subSetCmd.RunE(subSetCmd, nil); err != nil {
+		t.Fatalf("subSetCmd.RunE(public IP) failed: %v", err)
+	}
+
+	// 3. Invalid address should be rejected
+	resetListenFlag()
+	if err := subSetCmd.ParseFlags([]string{"--listen", "not-an-ip"}); err != nil {
+		t.Fatalf("ParseFlags error: %v", err)
+	}
+	if err := subSetCmd.RunE(subSetCmd, nil); err == nil {
+		t.Fatalf("expected error for invalid listen address, got nil")
+	}
+}
+
+
 
 

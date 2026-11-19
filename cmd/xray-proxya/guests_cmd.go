@@ -933,7 +933,7 @@ var guestsSubSetCmd = &cobra.Command{
 			bindVal = strings.TrimSpace(guestSubSetBind)
 		}
 		if bindVal != "" {
-			if err := sub.ValidatePrivateBindAddress(bindVal); err != nil {
+			if err := sub.ValidateListenAddress(bindVal); err != nil {
 				return err
 			}
 			cfg.GuestSubBind = bindVal
@@ -946,6 +946,9 @@ var guestsSubSetCmd = &cobra.Command{
 			return err
 		}
 		fmt.Println("✔ Guest subscription configuration updated in STAGING.")
+		if bindVal != "" && !sub.IsLoopbackListenAddress(cfg.GuestSubBind) {
+			fmt.Printf("⚠️  Guest subscription listener is configured for non-loopback address %s (plaintext HTTP). Restrict access with a firewall/tunnel or place it behind an HTTPS reverse proxy.\n", cfg.GuestSubBind)
+		}
 		fmt.Println("→ Run 'apply' to commit changes.")
 		return nil
 	},
@@ -1029,8 +1032,8 @@ func init() {
 
 	guestsSubSetCmd.Flags().StringVarP(&guestSubSetAddr, "address", "a", "", "Public IP or domain for proxy nodes in guest subscriptions (or empty to auto-detect)")
 	guestsSubSetCmd.Flags().IntVarP(&guestSubSetPort, "port", "p", 0, "Guest subscription listener port (1-65535)")
-	guestsSubSetCmd.Flags().StringVarP(&guestSubSetListen, "listen", "l", "", "Guest subscription bind address (loopback or private IP)")
-	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (loopback or private IP)")
+	guestsSubSetCmd.Flags().StringVarP(&guestSubSetListen, "listen", "l", "", "Guest subscription bind address (default: 127.0.0.1; IP or localhost)")
+	guestsSubSetCmd.Flags().StringVarP(&guestSubSetBind, "bind", "b", "", "Guest subscription bind address (default: 127.0.0.1; IP or localhost)")
 	guestsSubSetCmd.RegisterFlagCompletionFunc("listen", completeIPListenAddresses)
 
 	guestsListCmd.Flags().BoolVar(&guestsListJSON, "json", false, "Output guests list in JSON format")

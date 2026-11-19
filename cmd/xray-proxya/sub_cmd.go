@@ -349,11 +349,15 @@ func subscriptionInstance(name ...string) (config.SubscriptionServiceConfig, err
 		if port <= 0 {
 			port = cfg.AdminSub.Port
 		}
-		listen := inst.Listen
+		listen := strings.TrimSpace(inst.Listen)
 		if listen == "" {
 			listen = "127.0.0.1"
 		}
+		if err := sub.ValidateListenAddress(listen); err != nil {
+			return config.SubscriptionServiceConfig{}, err
+		}
 		inst.Port = port
+		inst.Listen = listen
 		return config.SubscriptionServiceConfig{Listen: listen, Port: port, AdminSub: inst}, nil
 	}
 	entry := cfg.AdminSub
@@ -369,11 +373,15 @@ func subscriptionInstance(name ...string) (config.SubscriptionServiceConfig, err
 	if entry.Token == "" || port <= 0 {
 		return config.SubscriptionServiceConfig{}, fmt.Errorf("subscription service is not configured; use 'sub set', then apply")
 	}
-	listen := entry.Listen
+	listen := strings.TrimSpace(entry.Listen)
 	if listen == "" {
 		listen = "127.0.0.1"
 	}
+	if err := sub.ValidateListenAddress(listen); err != nil {
+		return config.SubscriptionServiceConfig{}, err
+	}
 	entry.Port = port
+	entry.Listen = listen
 	return config.SubscriptionServiceConfig{Listen: listen, Port: port, AdminSub: entry}, nil
 }
 
@@ -423,7 +431,14 @@ Supported target types:
 		entry := *ensureSubscriptionInstance(cfg, inst)
 		changed := false
 		if cmd.Flags().Changed("listen") {
-			entry.Listen = strings.TrimSpace(subListen)
+			listenVal := strings.TrimSpace(subListen)
+			if err := sub.ValidateListenAddress(listenVal); err != nil {
+				return err
+			}
+			if listenVal == "" {
+				listenVal = "127.0.0.1"
+			}
+			entry.Listen = listenVal
 			changed = true
 		}
 		if cmd.Flags().Changed("gate-url") {
@@ -487,6 +502,9 @@ Supported target types:
 			proto = "HTTPS"
 		}
 		fmt.Printf("✔ Subscription configuration updated in STAGING (%s). Run 'apply', then control it with 'service start xray-proxya-sub'.\n", proto)
+		if !sub.IsLoopbackListenAddress(entry.Listen) {
+			fmt.Printf("⚠️  Subscription listener is configured for non-loopback address %s (plaintext HTTP). Restrict access with a firewall/tunnel or place it behind an HTTPS reverse proxy.\n", entry.Listen)
+		}
 		return nil
 	},
 }
@@ -793,7 +811,7 @@ var subValidateCmd = &cobra.Command{
 
 func init() {
 	subSetCmd.Flags().StringVar(&subGateURL, "gate-url", "", "Advertised subscription download URL (e.g. https://sub.example.com)")
-	subSetCmd.Flags().StringVarP(&subListen, "listen", "l", "", "Loopback listener address")
+	subSetCmd.Flags().StringVarP(&subListen, "listen", "l", "", "Listener bind address (default: 127.0.0.1; IP or localhost)")
 	subSetCmd.Flags().StringVarP(&subToken, "token", "t", "", "Subscription access token")
 	subSetCmd.Flags().IntVarP(&subPort, "port", "p", 0, "Subscription HTTP port")
 	subSetCmd.Flags().StringVar(&subTargetType, "target-type", "", "Direct, outbound, or guest")

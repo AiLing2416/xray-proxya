@@ -458,4 +458,38 @@ func TestServer_Handler_DefaultEndpointResolvedWhenUnset(t *testing.T) {
 	}
 }
 
+func TestValidateListenAddressAndLoopbackCheck(t *testing.T) {
+	tests := []struct {
+		addr         string
+		wantErr      bool
+		wantLoopback bool
+	}{
+		{"", false, true},
+		{"127.0.0.1", false, true},
+		{"::1", false, true},
+		{"localhost", false, true},
+		{"LOCALHOST", false, true},
+		{"0.0.0.0", false, false},
+		{"::", false, false},
+		{"10.0.0.1", false, false},
+		{"100.64.0.1", false, false},
+		{"203.0.113.10", false, false},
+		{"2001:db8::1", false, false},
+		{"example.com", true, false},
+		{"127.0.0.1:8443", true, false},
+		{"not-an-ip", true, false},
+	}
+
+	for _, tc := range tests {
+		err := ValidateListenAddress(tc.addr)
+		if (err != nil) != tc.wantErr {
+			t.Errorf("ValidateListenAddress(%q) error = %v, wantErr %v", tc.addr, err, tc.wantErr)
+		}
+		if got := IsLoopbackListenAddress(tc.addr); got != tc.wantLoopback {
+			t.Errorf("IsLoopbackListenAddress(%q) = %v, want %v", tc.addr, got, tc.wantLoopback)
+		}
+	}
+}
+
+
 

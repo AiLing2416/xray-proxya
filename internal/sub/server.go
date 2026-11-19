@@ -19,6 +19,31 @@ import (
 	"xray-proxya/pkg/utils"
 )
 
+// ValidateListenAddress checks whether listen is a valid subscription bind address.
+// Empty string (defaults to 127.0.0.1), "localhost", or any valid IPv4/IPv6 address
+// (including loopback, private, CGNAT, wildcard 0.0.0.0 / ::, or public IP) is accepted.
+func ValidateListenAddress(listen string) error {
+	listen = strings.TrimSpace(listen)
+	if listen == "" || strings.EqualFold(listen, "localhost") {
+		return nil
+	}
+	if net.ParseIP(listen) == nil {
+		return fmt.Errorf("subscription listener address must be a valid IP address or localhost: %s", listen)
+	}
+	return nil
+}
+
+// IsLoopbackListenAddress reports whether listen targets a loopback address.
+// An empty string is treated as the default loopback address (127.0.0.1).
+func IsLoopbackListenAddress(listen string) bool {
+	listen = strings.TrimSpace(listen)
+	if listen == "" || strings.EqualFold(listen, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(listen)
+	return ip != nil && ip.IsLoopback()
+}
+
 func StartSubServer(instance config.SubscriptionServiceConfig) error {
 	if instance.Port <= 0 || instance.Port > 65535 {
 		return fmt.Errorf("subscription listener port must be between 1 and 65535")
@@ -27,8 +52,11 @@ func StartSubServer(instance config.SubscriptionServiceConfig) error {
 	if listen == "" {
 		listen = "127.0.0.1"
 	}
-	if ip := net.ParseIP(listen); ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("subscription listener must bind to a loopback IP")
+	if err := ValidateListenAddress(listen); err != nil {
+		return err
+	}
+	if !IsLoopbackListenAddress(listen) {
+		fmt.Printf("⚠️  Subscription server is binding to non-loopback address %s over plaintext HTTP. Restrict access with a firewall/tunnel or place it behind an HTTPS reverse proxy.\n", listen)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", httpUnifiedSubHandler(instance.AdminSub))

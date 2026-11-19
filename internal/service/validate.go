@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 	"xray-proxya/internal/config"
+	"xray-proxya/internal/sub"
 )
 
 // ValidateServiceStart checks prerequisites before starting, restarting, or enabling a unit.
@@ -63,6 +64,9 @@ func ValidateServiceStart(unit string) error {
 		}
 		if entry.Token == "" || port <= 0 {
 			return fmt.Errorf("configure subscription first with 'sub set', then apply")
+		}
+		if err := sub.ValidateListenAddress(entry.Listen); err != nil {
+			return err
 		}
 		return nil
 
