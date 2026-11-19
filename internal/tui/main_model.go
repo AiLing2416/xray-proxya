@@ -68,6 +68,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/google/uuid"
 )
 
@@ -157,6 +158,8 @@ type Model struct {
 	staging            *config.UserConfig
 	currentTab         sessionTab
 	cursor             int
+	listScroll         int
+	statusScroll       int
 	width              int
 	height             int
 	directStat         int64
@@ -571,8 +574,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if st, err := config.LoadConfigEx(true); err == nil && st != nil {
 			m.staging = st
 		}
-		if m.staging != nil && m.cursor >= len(m.staging.CustomOutbounds) && len(m.staging.CustomOutbounds) > 0 {
-			m.cursor = len(m.staging.CustomOutbounds) - 1
+		if m.staging != nil && m.cursor >= len(m.staging.CustomOutbounds) {
+			m.cursor = max(0, len(m.staging.CustomOutbounds)-1)
+		}
+		if m.staging != nil {
+			m.clampListScroll(len(m.staging.CustomOutbounds))
 		}
 		return m, m.setNotice(fmt.Sprintf("subs updated: +%d, ~%d, -%d", msg.added, msg.updated, msg.removed))
 
@@ -726,6 +732,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.infoSelectIdx = (m.infoSelectIdx + 1) % len(m.infoSelectChoices)
 				}
 				return m, nil
+			case "pgup":
+				if len(m.infoSelectChoices) > 0 {
+					step := max(1, m.detailPaneHeightForFooter(m.footerLineCount())-1)
+					m.infoSelectIdx = max(0, m.infoSelectIdx-step)
+				}
+				return m, nil
+			case "pgdown":
+				if len(m.infoSelectChoices) > 0 {
+					step := max(1, m.detailPaneHeightForFooter(m.footerLineCount())-1)
+					m.infoSelectIdx = min(len(m.infoSelectChoices)-1, m.infoSelectIdx+step)
+				}
+				return m, nil
+			case "home":
+				if len(m.infoSelectChoices) > 0 {
+					m.infoSelectIdx = 0
+				}
+				return m, nil
+			case "end":
+				if len(m.infoSelectChoices) > 0 {
+					m.infoSelectIdx = len(m.infoSelectChoices) - 1
+				}
+				return m, nil
 			case "enter":
 				return m.confirmInfoSelect()
 			}
@@ -789,6 +817,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.serviceChoiceIdx = (m.serviceChoiceIdx + 1) % len(m.serviceChoiceOptions)
 						}
 						return m, nil
+					case "pgup":
+						if len(m.serviceChoiceOptions) > 0 {
+							step := max(1, m.detailPaneHeightForFooter(m.footerLineCount())-1)
+							m.serviceChoiceIdx = max(0, m.serviceChoiceIdx-step)
+						}
+						return m, nil
+					case "pgdown":
+						if len(m.serviceChoiceOptions) > 0 {
+							step := max(1, m.detailPaneHeightForFooter(m.footerLineCount())-1)
+							m.serviceChoiceIdx = min(len(m.serviceChoiceOptions)-1, m.serviceChoiceIdx+step)
+						}
+						return m, nil
 					case "enter":
 						if len(m.serviceChoiceOptions) > 0 {
 							val := m.serviceChoiceOptions[m.serviceChoiceIdx]
@@ -832,6 +872,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "down", "j":
 				if m.servicePropIndex < len(m.serviceProps)-1 {
 					m.servicePropIndex++
+				}
+				return m, nil
+			case "pgup":
+				if len(m.serviceProps) > 0 {
+					step := max(1, m.detailPaneHeightForFooter(m.footerLineCount())-1)
+					m.servicePropIndex = max(0, m.servicePropIndex-step)
+				}
+				return m, nil
+			case "pgdown":
+				if len(m.serviceProps) > 0 {
+					step := max(1, m.detailPaneHeightForFooter(m.footerLineCount())-1)
+					m.servicePropIndex = min(len(m.serviceProps)-1, m.servicePropIndex+step)
 				}
 				return m, nil
 			case " ":
@@ -939,6 +991,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.relayResults = make(map[string]relayTestMsg)
 			m.overrideMsg = ""
+			m.clampCurrentTabCursor()
 			flashCmd := m.getFlash().Trigger("undo", FlashSuccess, 1*time.Second)
 			return m, tea.Batch(m.setNotice("staging reset"), flashCmd)
 
@@ -966,6 +1019,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// =============================================================
 		case tabStatus:
 			switch s {
+			case "up", "k":
+				if m.statusScroll > 0 {
+					m.statusScroll--
+				}
+				return m, nil
+
+			case "down", "j":
+				m.statusScroll++
+				m.clampStatusScroll()
+				return m, nil
+
+			case "pgup":
+				step := max(1, m.mainPaneHeight()-1)
+				m.statusScroll = max(0, m.statusScroll-step)
+				return m, nil
+
+			case "pgdown":
+				step := max(1, m.mainPaneHeight()-1)
+				m.statusScroll += step
+				m.clampStatusScroll()
+				return m, nil
+
+			case "home":
+				m.statusScroll = 0
+				return m, nil
+
+			case "end":
+				m.statusScroll = m.statusMaxScroll()
+				return m, nil
+
 			case "s", "S":
 				action := "start"
 				if m.serviceState.Active {
@@ -1000,17 +1083,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tabService:
 			switch s {
 			case "up", "k":
-				if m.cursor > 0 {
-					m.cursor--
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(-1, len(m.managedServices))
+				m.overrideMsg = ""
 				return m, nil
 
 			case "down", "j":
-				if m.cursor < len(m.managedServices)-1 {
-					m.cursor++
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(1, len(m.managedServices))
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgup":
+				m.pageListCursor(-1, len(m.managedServices))
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgdown":
+				m.pageListCursor(1, len(m.managedServices))
+				m.overrideMsg = ""
+				return m, nil
+
+			case "home":
+				m.jumpListCursor(0, len(m.managedServices))
+				m.overrideMsg = ""
+				return m, nil
+
+			case "end":
+				m.jumpListCursor(len(m.managedServices)-1, len(m.managedServices))
+				m.overrideMsg = ""
 				return m, nil
 
 			case "enter":
@@ -1096,18 +1195,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// PRESETS TAB
 		// =============================================================
 		case tabPresets:
+			presetCount := 0
+			if m.staging != nil {
+				presetCount = len(m.staging.Presets)
+			}
 			switch s {
 			case "up", "k":
-				if m.cursor > 0 {
-					m.cursor--
+				if m.moveListCursor(-1, presetCount) {
 					m.portBuffer = ""
 					m.overrideMsg = ""
 				}
 				return m, nil
 
 			case "down", "j":
-				if m.staging != nil && m.cursor < len(m.staging.Presets)-1 {
-					m.cursor++
+				if m.moveListCursor(1, presetCount) {
+					m.portBuffer = ""
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "pgup":
+				if m.pageListCursor(-1, presetCount) {
+					m.portBuffer = ""
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "pgdown":
+				if m.pageListCursor(1, presetCount) {
+					m.portBuffer = ""
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "home":
+				if m.jumpListCursor(0, presetCount) {
+					m.portBuffer = ""
+					m.overrideMsg = ""
+				}
+				return m, nil
+
+			case "end":
+				if m.jumpListCursor(presetCount-1, presetCount) {
 					m.portBuffer = ""
 					m.overrideMsg = ""
 				}
@@ -1168,19 +1297,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// RELAYS TAB
 		// =============================================================
 		case tabRelays:
+			relayCount := 0
+			if m.staging != nil {
+				relayCount = len(m.staging.CustomOutbounds)
+			}
 			switch s {
 			case "up", "k":
-				if m.cursor > 0 {
-					m.cursor--
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(-1, relayCount)
+				m.overrideMsg = ""
 				return m, nil
 
 			case "down", "j":
-				if m.staging != nil && m.cursor < len(m.staging.CustomOutbounds)-1 {
-					m.cursor++
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(1, relayCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgup":
+				m.pageListCursor(-1, relayCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgdown":
+				m.pageListCursor(1, relayCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "home":
+				m.jumpListCursor(0, relayCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "end":
+				m.jumpListCursor(relayCount-1, relayCount)
+				m.overrideMsg = ""
 				return m, nil
 
 			case "t", "T":
@@ -1249,6 +1398,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.cursor < 0 {
 						m.cursor = 0
 					}
+					m.clampListScroll(len(m.staging.CustomOutbounds))
 					m.overrideMsg = ""
 					return m, m.setNotice(fmt.Sprintf("removed relay %s", deleted))
 				}
@@ -1259,19 +1409,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// GUESTS TAB
 		// =============================================================
 		case tabGuests:
+			guestCount := 0
+			if m.staging != nil {
+				guestCount = len(m.staging.Guests)
+			}
 			switch s {
 			case "up", "k":
-				if m.cursor > 0 {
-					m.cursor--
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(-1, guestCount)
+				m.overrideMsg = ""
 				return m, nil
 
 			case "down", "j":
-				if m.staging != nil && m.cursor < len(m.staging.Guests)-1 {
-					m.cursor++
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(1, guestCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgup":
+				m.pageListCursor(-1, guestCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgdown":
+				m.pageListCursor(1, guestCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "home":
+				m.jumpListCursor(0, guestCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "end":
+				m.jumpListCursor(guestCount-1, guestCount)
+				m.overrideMsg = ""
 				return m, nil
 
 			case " ":
@@ -1309,6 +1479,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.cursor < 0 {
 						m.cursor = 0
 					}
+					m.clampListScroll(len(m.staging.Guests))
 					m.overrideMsg = ""
 					return m, m.setNotice(fmt.Sprintf("removed guest %s", deleted))
 				}
@@ -1417,19 +1588,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// GATEWAY TAB
 		// =============================================================
 		case tabGateway:
+			gwCount := gwRowMax + 1
 			switch s {
 			case "up", "k":
-				if m.cursor > 0 {
-					m.cursor--
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(-1, gwCount)
+				m.overrideMsg = ""
 				return m, nil
 
 			case "down", "j":
-				if m.cursor < gwRowMax {
-					m.cursor++
-					m.overrideMsg = ""
-				}
+				m.moveListCursor(1, gwCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgup":
+				m.pageListCursor(-1, gwCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "pgdown":
+				m.pageListCursor(1, gwCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "home":
+				m.jumpListCursor(0, gwCount)
+				m.overrideMsg = ""
+				return m, nil
+
+			case "end":
+				m.jumpListCursor(gwCount-1, gwCount)
+				m.overrideMsg = ""
 				return m, nil
 
 			case " ":
@@ -1560,6 +1748,8 @@ func (m *Model) nextTab() {
 		if t == m.currentTab {
 			m.currentTab = tabs[(i+1)%len(tabs)]
 			m.cursor = 0
+			m.listScroll = 0
+			m.statusScroll = 0
 			m.infoShowLogs = false
 			m.serviceFollow = false
 			m.infoSelectMode = false
@@ -1578,6 +1768,8 @@ func (m *Model) prevTab() {
 		if t == m.currentTab {
 			m.currentTab = tabs[(i-1+len(tabs))%len(tabs)]
 			m.cursor = 0
+			m.listScroll = 0
+			m.statusScroll = 0
 			m.infoShowLogs = false
 			m.serviceFollow = false
 			m.infoSelectMode = false
@@ -1927,8 +2119,18 @@ func (m Model) getLargeInfoLineCount() int {
 	return max(5, int(float64(m.height)*0.40))
 }
 
+func (m Model) footerLineCount() int {
+	return len(strings.Split(m.renderFooter(), "\n"))
+}
+
 func (m Model) detailPaneHeight() int {
-	footerLines := 1
+	return m.detailPaneHeightForFooter(1)
+}
+
+func (m Model) detailPaneHeightForFooter(footerLines int) int {
+	if footerLines < 1 {
+		footerLines = 1
+	}
 	detailHeight := m.height / 5
 	if m.largeInfo {
 		detailHeight = int(float64(m.height) * 0.40)
@@ -1944,6 +2146,175 @@ func (m Model) detailPaneHeight() int {
 	return detailHeight
 }
 
+func (m Model) layoutHeights() (mainHeight, detailHeight, footerHeight int, footerText string) {
+	footerText = m.renderFooter()
+	footerHeight = len(strings.Split(footerText, "\n"))
+	detailHeight = m.detailPaneHeightForFooter(footerHeight)
+	if m.height <= 0 {
+		return 15, detailHeight, footerHeight, footerText
+	}
+	mainHeight = m.height - detailHeight - footerHeight
+	if mainHeight < 1 {
+		mainHeight = 1
+	}
+	if mainHeight+detailHeight+footerHeight > m.height {
+		detailHeight = max(1, m.height-mainHeight-footerHeight)
+	}
+	return mainHeight, detailHeight, footerHeight, footerText
+}
+
+func (m Model) mainPaneHeight() int {
+	mainHeight, _, _, _ := m.layoutHeights()
+	return mainHeight
+}
+
+func (m Model) tablePageSize() int {
+	mainHeight := m.mainPaneHeight()
+	headerLines := 2
+	if m.currentTab == tabGateway && m.width > 0 && m.width < 115 {
+		headerLines = 3
+	}
+	avail := mainHeight - headerLines
+	if avail <= 1 {
+		return 1
+	}
+	return max(1, avail-1)
+}
+
+func (m *Model) clampListScroll(total int) {
+	if total <= 0 {
+		m.cursor = 0
+		m.listScroll = 0
+		return
+	}
+	if m.cursor < 0 {
+		m.cursor = 0
+	} else if m.cursor >= total {
+		m.cursor = total - 1
+	}
+	pageSize := m.tablePageSize()
+	if total <= pageSize {
+		m.listScroll = 0
+		return
+	}
+	maxStart := total - pageSize
+	if m.listScroll < 0 {
+		m.listScroll = 0
+	} else if m.listScroll > maxStart {
+		m.listScroll = maxStart
+	}
+	if m.cursor < m.listScroll {
+		m.listScroll = m.cursor
+	} else if m.cursor >= m.listScroll+pageSize {
+		m.listScroll = m.cursor - pageSize + 1
+	}
+	if m.listScroll > maxStart {
+		m.listScroll = maxStart
+	}
+}
+
+func (m *Model) moveListCursor(delta, total int) bool {
+	if total <= 0 {
+		return false
+	}
+	prev := m.cursor
+	m.cursor += delta
+	if m.cursor < 0 {
+		m.cursor = 0
+	} else if m.cursor >= total {
+		m.cursor = total - 1
+	}
+	m.clampListScroll(total)
+	return m.cursor != prev
+}
+
+func (m *Model) pageListCursor(dir, total int) bool {
+	if total <= 0 {
+		return false
+	}
+	prevCursor := m.cursor
+	prevScroll := m.listScroll
+	pageSize := m.tablePageSize()
+	step := dir * pageSize
+	m.cursor += step
+	m.listScroll += step
+	if m.cursor < 0 {
+		m.cursor = 0
+	} else if m.cursor >= total {
+		m.cursor = total - 1
+	}
+	m.clampListScroll(total)
+	return m.cursor != prevCursor || m.listScroll != prevScroll
+}
+
+func (m *Model) jumpListCursor(idx, total int) bool {
+	if total <= 0 {
+		return false
+	}
+	prev := m.cursor
+	m.cursor = idx
+	m.clampListScroll(total)
+	return m.cursor != prev
+}
+
+func (m *Model) clampCurrentTabCursor() {
+	switch m.currentTab {
+	case tabService:
+		m.clampListScroll(len(m.managedServices))
+	case tabPresets:
+		if m.staging != nil {
+			m.clampListScroll(len(m.staging.Presets))
+		}
+	case tabRelays:
+		if m.staging != nil {
+			m.clampListScroll(len(m.staging.CustomOutbounds))
+		}
+	case tabGuests:
+		if m.staging != nil {
+			m.clampListScroll(len(m.staging.Guests))
+		}
+	case tabGateway:
+		m.clampListScroll(gwRowMax + 1)
+	}
+}
+
+func (m Model) statusMaxScroll() int {
+	cWidth := m.contentWidth()
+	mainHeight := m.mainPaneHeight()
+	full := RenderStatusWindow(m.active, m.serviceState, m.lastStats, cWidth, 0, 0)
+	totalLines := len(strings.Split(strings.TrimSuffix(full, "\n"), "\n"))
+	visible := mainHeight
+	if totalLines > mainHeight && mainHeight >= 2 {
+		visible = mainHeight - 1
+	}
+	if totalLines <= visible {
+		return 0
+	}
+	return totalLines - visible
+}
+
+func (m *Model) clampStatusScroll() {
+	if m.statusScroll < 0 {
+		m.statusScroll = 0
+		return
+	}
+	maxS := m.statusMaxScroll()
+	if m.statusScroll > maxS {
+		m.statusScroll = maxS
+	}
+}
+
+func (m Model) contentWidth() int {
+	if m.width <= 0 {
+		return 68
+	}
+	cWidth := m.width - 12
+	if cWidth < 1 {
+		cWidth = 1
+	}
+	return cWidth
+}
+
 func (m Model) isLargeInfo() bool {
 	return m.largeInfo && m.detailPaneHeight() >= 8
 }
@@ -1954,41 +2325,30 @@ func (m Model) View() string {
 	}
 
 	// 1. Calculate Heights
-	footerText := m.renderFooter()
-	footerLines := len(strings.Split(footerText, "\n"))
-	footerHeight := footerLines
-
-	detailHeight := m.detailPaneHeight()
-
-	mainHeight := m.height - detailHeight - footerHeight
-	if mainHeight < 5 {
-		mainHeight = 5
-	}
+	mainHeight, detailHeight, _, footerText := m.layoutHeights()
 
 	// 2. Render Main Area
 	sidebar := m.renderSidebar(mainHeight)
-	cWidth := m.width - 12
-	if cWidth < 20 {
-		cWidth = 20
-	}
+	cWidth := m.contentWidth()
 
 	var content string
 	switch m.currentTab {
 	case tabStatus:
-		content = RenderStatus(m.active, m.serviceState, m.lastStats)
+		content = RenderStatusWindow(m.active, m.serviceState, m.lastStats, cWidth, mainHeight, m.statusScroll)
 	case tabService:
-		content = RenderServiceList(m.active, m.staging, m.managedServices, m.cursor, cWidth)
+		content = RenderServiceListWindow(m.active, m.staging, m.managedServices, m.cursor, cWidth, mainHeight, m.listScroll)
 	case tabPresets:
-		content = RenderPresets(m.active, m.staging, m.cursor, cWidth)
+		content = RenderPresetsWindow(m.active, m.staging, m.cursor, cWidth, mainHeight, m.listScroll)
 	case tabRelays:
-		content = RenderRelays(m.active, m.staging, m.cursor, cWidth, m.relayResults)
+		content = RenderRelaysWindow(m.active, m.staging, m.cursor, cWidth, m.relayResults, mainHeight, m.listScroll)
 	case tabGuests:
-		content = RenderGuests(m.active, m.staging, m.cursor, cWidth)
+		content = RenderGuestsWindow(m.active, m.staging, m.cursor, cWidth, mainHeight, m.listScroll)
 	case tabGateway:
-		content = RenderGateway(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP)
+		content = RenderGatewayWindow(m.active, m.staging, m.cursor, cWidth, m.gwNftables, m.gwTProxy, m.gwTun, m.gwForward, m.gwLocalTestIP, m.gwLANTestIP, mainHeight, m.listScroll)
 	}
 
-	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, lipgloss.NewStyle().Height(mainHeight).MaxHeight(mainHeight).Render(content))
+	rightPane := lipgloss.NewStyle().Height(mainHeight).MaxHeight(mainHeight).MaxWidth(cWidth).Render(content)
+	mainArea := lipgloss.JoinHorizontal(lipgloss.Top, sidebar, rightPane)
 
 	// 3. Render Detail Pane (Info Bar)
 	detailContent := m.getSelectedDetailContent()
@@ -2186,8 +2546,10 @@ func (m Model) getSelectedDetailContent() string {
 
 func (m Model) renderDetailPane(detailContent string, height int) string {
 	lineWidth := m.width
-	if lineWidth < 20 {
-		lineWidth = 20
+	if lineWidth <= 0 {
+		lineWidth = 80
+	} else if lineWidth < 10 {
+		lineWidth = 10
 	}
 
 	title := "INFO"
@@ -2271,59 +2633,57 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 
 	var rawLines []string
 
+	maxBodyLines := height - 1
+	if maxBodyLines < 0 {
+		maxBodyLines = 0
+	}
+
 	if m.servicePropEdit {
 		if m.servicePropIndex >= 0 && m.servicePropIndex < len(m.serviceProps) {
 			prop := m.serviceProps[m.servicePropIndex]
 			if prop.Type == PropInput {
 				rawLines = append(rawLines, "  "+m.textInput.View())
-			} else if prop.Type == PropChoice {
-				rawLines = append(rawLines, RenderVerticalChoiceList(m.serviceChoiceOptions, m.serviceChoiceIdx, height-1)...)
+			} else if prop.Type == PropChoice && maxBodyLines > 0 {
+				rawLines = append(rawLines, RenderVerticalChoiceListWidth(m.serviceChoiceOptions, m.serviceChoiceIdx, maxBodyLines, lineWidth)...)
 			}
 		}
 	} else if m.servicePropMode {
 		if len(m.serviceProps) == 0 {
-			rawLines = append(rawLines, "  Core service configuration is managed in PRESETS / GATEWAY / GUESTS.")
-		} else {
-			rawLines = append(rawLines, RenderServicePropertyList(m.serviceProps, m.servicePropIndex, lineWidth)...)
+			rawLines = append(rawLines, wrapVisual("  Core service configuration is managed in PRESETS / GATEWAY / GUESTS.", lineWidth)...)
+		} else if maxBodyLines > 0 {
+			rawLines = append(rawLines, RenderServicePropertyListWindow(m.serviceProps, m.servicePropIndex, lineWidth, maxBodyLines)...)
 		}
 	} else if m.inputMode != inputNone {
 		rawLines = append(rawLines, "  "+m.textInput.View())
 	} else if m.infoSelectMode {
-		if m.infoSelectMulti {
-			rawLines = append(rawLines, RenderMultiChoiceList(m.infoSelectChoices, m.infoSelectChecked, m.infoSelectIdx, height-1)...)
-		} else {
-			rawLines = append(rawLines, RenderVerticalChoiceList(m.infoSelectChoices, m.infoSelectIdx, height-1)...)
+		if maxBodyLines > 0 {
+			if m.infoSelectMulti {
+				rawLines = append(rawLines, RenderMultiChoiceListWidth(m.infoSelectChoices, m.infoSelectChecked, m.infoSelectIdx, maxBodyLines, lineWidth)...)
+			} else {
+				rawLines = append(rawLines, RenderVerticalChoiceListWidth(m.infoSelectChoices, m.infoSelectIdx, maxBodyLines, lineWidth)...)
+			}
 		}
 	} else if time.Now().Before(m.transientUntil) && m.transientMsg != "" {
 		for _, l := range strings.Split(strings.TrimSpace(m.transientMsg), "\n") {
-			rawLines = append(rawLines, "  "+l)
+			rawLines = append(rawLines, wrapVisual("  "+l, lineWidth)...)
 		}
 	} else if m.infoShowLogs {
 		logLines := strings.Split(strings.TrimSpace(m.serviceLogs), "\n")
-		maxLines := height - 1
-		if maxLines < 1 {
-			maxLines = 1
-		}
+		maxLines := max(1, maxBodyLines)
 		start := 0
 		if len(logLines) > maxLines {
 			start = len(logLines) - maxLines
 		}
 		for i := start; i < len(logLines); i++ {
-			rawLines = append(rawLines, logLines[i])
+			rawLines = append(rawLines, ansi.Truncate(logLines[i], lineWidth, ""))
 		}
 	} else if strings.TrimSpace(m.overrideMsg) != "" {
 		for _, l := range strings.Split(strings.TrimSpace(m.overrideMsg), "\n") {
-			rawLines = append(rawLines, l)
+			rawLines = append(rawLines, wrapVisual(l, lineWidth)...)
 		}
 	} else if strings.TrimSpace(detailContent) != "" {
 		for _, l := range strings.Split(strings.TrimSpace(detailContent), "\n") {
-			if m.currentTab == tabPresets {
-				for _, chunk := range wrapHard(l, lineWidth) {
-					rawLines = append(rawLines, chunk)
-				}
-			} else {
-				rawLines = append(rawLines, l)
-			}
+			rawLines = append(rawLines, wrapVisual(l, lineWidth)...)
 		}
 	}
 
@@ -2331,14 +2691,13 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	var flatBodyLines []string
 	for _, l := range rawLines {
 		for _, sub := range strings.Split(l, "\n") {
+			if visualWidth(sub) > lineWidth {
+				sub = ansi.Truncate(sub, lineWidth, "")
+			}
 			flatBodyLines = append(flatBodyLines, sub)
 		}
 	}
 
-	maxBodyLines := height - 1
-	if maxBodyLines < 0 {
-		maxBodyLines = 0
-	}
 	if len(flatBodyLines) > maxBodyLines {
 		flatBodyLines = flatBodyLines[:maxBodyLines]
 	}
@@ -2349,32 +2708,24 @@ func (m Model) renderDetailPane(detailContent string, height int) string {
 	for len(allLines) < height {
 		allLines = append(allLines, "")
 	}
+	if len(allLines) > height && height > 0 {
+		allLines = allLines[:height]
+	}
 
 	return strings.Join(allLines, "\n")
 }
 
 func wrapHard(s string, width int) []string {
-	if width <= 0 {
-		return []string{s}
-	}
-	runes := []rune(s)
-	if len(runes) <= width {
-		return []string{s}
-	}
-	var lines []string
-	for len(runes) > 0 {
-		n := width
-		if len(runes) < n {
-			n = len(runes)
-		}
-		lines = append(lines, string(runes[:n]))
-		runes = runes[n:]
-	}
-	return lines
+	return wrapVisual(s, width)
 }
 
 func detailPaneHeader(title string, width int) string {
-	dashes := width - runeLen(title) - 4
+	tWidth := visualWidth(title)
+	if width > 5 && tWidth > width-5 {
+		title = truncateVisual(title, width-5)
+		tWidth = visualWidth(title)
+	}
+	dashes := width - tWidth - 5
 	if dashes < 1 {
 		dashes = 1
 	}
@@ -2382,7 +2733,12 @@ func detailPaneHeader(title string, width int) string {
 }
 
 func detailPaneCustomHeader(styledTitle, rawTitle string, width int) string {
-	dashes := width - runeLen(rawTitle) - 4
+	tWidth := visualWidth(rawTitle)
+	if width > 5 && tWidth > width-5 {
+		styledTitle = ansi.Truncate(styledTitle, width-5, "..")
+		tWidth = visualWidth(styledTitle)
+	}
+	dashes := width - tWidth - 5
 	if dashes < 1 {
 		dashes = 1
 	}
@@ -2390,12 +2746,18 @@ func detailPaneCustomHeader(styledTitle, rawTitle string, width int) string {
 }
 
 func detailPaneHeaderWithBadges(styledTitle, rawTitle string, badges []string, width int) string {
-	titleLen := runeLen(rawTitle)
+	styledTitle = normalizeDisplayText(styledTitle)
+	rawTitle = normalizeDisplayText(rawTitle)
+	titleLen := visualWidth(rawTitle)
+	if width > 5 && titleLen > width-5 {
+		styledTitle = ansi.Truncate(styledTitle, width-5, "..")
+		titleLen = visualWidth(styledTitle)
+	}
 	leftOverhead := 3 + titleLen + 1 // "┌─ " + rawTitle + " "
 	rightOverhead := 4               // " ──┐"
 
 	if len(badges) == 0 || width < leftOverhead+rightOverhead+2 {
-		dashes := width - titleLen - 4
+		dashes := width - titleLen - 5
 		if dashes < 1 {
 			dashes = 1
 		}
@@ -2423,7 +2785,7 @@ func detailPaneHeaderWithBadges(styledTitle, rawTitle string, badges []string, w
 		}
 	}
 
-	dashes := width - titleLen - 4
+	dashes := width - titleLen - 5
 	if dashes < 1 {
 		dashes = 1
 	}
@@ -2454,24 +2816,24 @@ func (m Model) renderFooter() string {
 		}
 	} else if m.infoSelectMode {
 		if m.infoSelectMulti {
-			badges = []string{"[↑/↓] Move", "[Space] Toggle", "[Enter] Confirm", "[Esc] Cancel"}
+			badges = []string{"[↑/↓] Move", "[PgUp/PgDn] Page", "[Space] Toggle", "[Enter] Confirm", "[Esc] Cancel"}
 		} else {
-			badges = []string{"[↑/↓] Select", "[Enter] Confirm", "[Esc] Cancel"}
+			badges = []string{"[↑/↓] Select", "[PgUp/PgDn] Page", "[Enter] Confirm", "[Esc] Cancel"}
 		}
 	} else if m.inputMode != inputNone {
 		badges = []string{"[Enter] Confirm", "[Esc] Cancel"}
 	} else {
 		switch m.currentTab {
 		case tabStatus:
-			badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow")
+			badges = append(badges, "[S] Toggle", "[R] Restart", "[L] Logs", "[F] Follow", "[PgUp/PgDn] Scroll")
 		case tabService:
 			badges = append(badges, "[Enter] Config", "[Space/S] Toggle", "[R] Restart", "[E] Enable", "[D] Disable", "[L] Logs", "[F] Follow")
 		case tabPresets:
 			badges = append(badges, "[Space] Toggle", "[0-9] Port", "[R] Regen", "[C] Copy")
 		case tabRelays:
-			badges = append(badges, "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy")
+			badges = append(badges, "[T] Test", "[I] Info", "[S] Speed", "[V] Private", "[P] Pull Subs", "[N] New", "[X] Remove", "[C] Copy", "[PgUp/PgDn] Page")
 		case tabGuests:
-			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy")
+			badges = append(badges, "[Space] Toggle", "[N] New", "[X] Remove", "[L] Limit", "[E] Endpoint", "[Z] Zero", "[R] Relay", "[C] Copy", "[PgUp/PgDn] Page")
 		case tabGateway:
 			if m.cursor == gwRowRules {
 				badges = append(badges, "[Space] Toggle Rules")
@@ -2506,14 +2868,24 @@ func (m Model) renderFooter() string {
 		}
 	}
 
-	lines := wrapBadges(formattedBadges, m.width-2)
+	maxBadgeWidth := 78
+	if m.width > 2 {
+		maxBadgeWidth = m.width - 2
+	} else if m.width > 0 {
+		maxBadgeWidth = m.width
+	}
+	lines := wrapBadges(formattedBadges, maxBadgeWidth)
 	s := strings.Join(lines, "\n")
-	return lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true).Width(m.width).Render(s)
+	style := lipgloss.NewStyle().Bold(true).BorderStyle(lipgloss.NormalBorder()).BorderTop(true)
+	if m.width > 0 {
+		style = style.Width(m.width).MaxWidth(m.width)
+	}
+	return style.Render(s)
 }
 
 func wrapBadges(badges []string, maxWidth int) []string {
-	if maxWidth < 20 {
-		maxWidth = 20
+	if maxWidth < 1 {
+		maxWidth = 1
 	}
 	var lines []string
 	var currentLine []string
@@ -2692,10 +3064,6 @@ func summarizeActionResult(lines []string, err error) string {
 		}
 	}
 	return "apply succeeded"
-}
-
-func runeLen(s string) int {
-	return len([]rune(s))
 }
 
 func guestSubURL(host string, port int, token string) string {

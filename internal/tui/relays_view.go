@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"strings"
 	"xray-proxya/internal/config"
 	"xray-proxya/internal/sharelink"
 
@@ -9,6 +8,10 @@ import (
 )
 
 func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int, results map[string]relayTestMsg) string {
+	return RenderRelaysWindow(active, staging, selectedIdx, width, results, 0, 0)
+}
+
+func RenderRelaysWindow(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int, results map[string]relayTestMsg, maxHeight int, scrollOffset int) string {
 	if staging == nil {
 		return "No configuration found."
 	}
@@ -61,20 +64,6 @@ func RenderRelays(active *config.UserConfig, staging *config.UserConfig, selecte
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 8, 7, 5, 4, 6, 4, 4, 6, 6}, width)
-
-	var b strings.Builder
-	b.WriteString(renderRow(headers, widths, true))
-	b.WriteString("\n")
-
-	for i, r := range rows {
-		s := renderRow(r, widths, false)
-		if i == selectedIdx {
-			b.WriteString(activeStyle.Render(s))
-		} else {
-			b.WriteString(s)
-		}
-		b.WriteString("\n")
-	}
-
-	return b.String()
+	headerBlock := renderRow(headers, widths, true)
+	return renderTableBody(headerBlock, rows, widths, nil, selectedIdx, width, maxHeight, scrollOffset)
 }

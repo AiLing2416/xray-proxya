@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"github.com/charmbracelet/lipgloss"
-	"strings"
 	"xray-proxya/internal/config"
 )
 
@@ -14,6 +13,10 @@ var (
 )
 
 func RenderPresets(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int) string {
+	return RenderPresetsWindow(active, staging, selectedIdx, width, 0, 0)
+}
+
+func RenderPresetsWindow(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int, maxHeight int, scrollOffset int) string {
 	if staging == nil || len(staging.Presets) == 0 {
 		return "No presets found. Run 'init' first."
 	}
@@ -60,26 +63,8 @@ func RenderPresets(active *config.UserConfig, staging *config.UserConfig, select
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 10, 4, 3, 17, 8, 4}, width)
-
-	var b strings.Builder
-	b.WriteString(renderRow(headers, widths, true))
-	b.WriteString("\n")
-
-	for i, row := range rows {
-		s := renderRow(row, widths, false)
-		if disabled[i] {
-			s = faintStyle.Render(s)
-		}
-
-		if i == selectedIdx {
-			b.WriteString(activeStyle.Render(s))
-		} else {
-			b.WriteString(s)
-		}
-		b.WriteString("\n")
-	}
-
-	return b.String()
+	headerBlock := renderRow(headers, widths, true)
+	return renderTableBody(headerBlock, rows, widths, disabled, selectedIdx, width, maxHeight, scrollOffset)
 }
 
 func getSecurityName(m config.ModeInfo) string {

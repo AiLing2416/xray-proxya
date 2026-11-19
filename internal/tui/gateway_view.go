@@ -11,11 +11,12 @@ import (
 )
 
 func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tproxy, tun, fwd bool, localIP, lanIP string) string {
-	var b strings.Builder
+	return RenderGatewayWindow(active, staging, cursor, width, nft, tproxy, tun, fwd, localIP, lanIP, 0, 0)
+}
 
+func RenderGatewayWindow(active *config.UserConfig, staging *config.UserConfig, cursor int, width int, nft, tproxy, tun, fwd bool, localIP, lanIP string, maxHeight int, scrollOffset int) string {
 	if staging == nil {
-		b.WriteString("No configuration loaded.")
-		return b.String()
+		return "No configuration loaded."
 	}
 
 	headers := []string{"  ", "OPTION", "INFO", "STATUS", "TEST IP"}
@@ -172,31 +173,33 @@ func RenderGateway(active *config.UserConfig, staging *config.UserConfig, cursor
 
 	widths := fitTableWidths(headers, rows, []int{3, 16, 12, 10, 20}, width)
 
-	// Combine headers and status tags on the same line (right-aligned)
+	// Combine headers and status tags on the same line when wide enough; otherwise stack cleanly.
 	res := renderRow(headers, widths, false)
 	statusLine := fmt.Sprintf("%sNFTABLES   %sTPROXY   %sTUN   %sFORWARD",
 		getStatusEmoji(nft), getStatusEmoji(tproxy), getStatusEmoji(tun), getStatusEmoji(fwd))
 
-	spacing := width - lipgloss.Width(res) - lipgloss.Width(statusLine) - 2
-	if spacing < 2 {
-		spacing = 2
-	}
-	combinedHeaders := res + strings.Repeat(" ", spacing) + statusLine
-
-	b.WriteString(headerStyle.Width(width).Render(combinedHeaders))
-	b.WriteString("\n")
-
-	for i, r := range rows {
-		s := renderRow(r, widths, false)
-		if i == cursor {
-			b.WriteString(activeStyle.Render(s))
-		} else {
-			b.WriteString(s)
+	var headerBlock string
+	if width <= 0 || lipgloss.Width(res)+2+lipgloss.Width(statusLine) <= width {
+		spacing := width - lipgloss.Width(res) - lipgloss.Width(statusLine) - 2
+		if spacing < 2 {
+			spacing = 2
 		}
-		b.WriteString("\n")
+		combinedHeaders := res + strings.Repeat(" ", spacing) + statusLine
+		if width > 0 {
+			headerBlock = headerStyle.Width(width).Render(combinedHeaders)
+		} else {
+			headerBlock = headerStyle.Render(combinedHeaders)
+		}
+	} else {
+		compactStatus := fmt.Sprintf("%sNFT  %sTPROXY  %sTUN  %sFWD",
+			getStatusEmoji(nft), getStatusEmoji(tproxy), getStatusEmoji(tun), getStatusEmoji(fwd))
+		if lipgloss.Width(statusLine) <= width {
+			compactStatus = statusLine
+		}
+		headerBlock = truncateVisual(compactStatus, width) + "\n" + headerStyle.Render(res)
 	}
 
-	return b.String()
+	return renderTableBody(headerBlock, rows, widths, nil, cursor, width, maxHeight, scrollOffset)
 }
 
 func getStatusEmoji(val bool) string {

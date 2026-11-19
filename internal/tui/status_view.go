@@ -21,6 +21,11 @@ type namedStatRow struct {
 // RenderStatus renders the optimized STATUS home view, combining the ASCII banner,
 // core service runtime status, and real-time cumulative traffic analytics.
 func RenderStatus(cfg *config.UserConfig, state xray.ServiceState, allStats map[string]int64) string {
+	return RenderStatusWindow(cfg, state, allStats, 0, 0, 0)
+}
+
+// RenderStatusWindow renders the STATUS home view constrained to width/maxHeight with scrollOffset.
+func RenderStatusWindow(cfg *config.UserConfig, state xray.ServiceState, allStats map[string]int64, width int, maxHeight int, scrollOffset int) string {
 	statusStr := "Inactive (Stopped)"
 	statusStyle := lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("1"))
 	if state.Active {
@@ -88,7 +93,38 @@ func RenderStatus(cfg *config.UserConfig, state xray.ServiceState, allStats map[
 	appendNamedStats(&b, "\nOutbound Relays Traffic", summary.RelayStats)
 	appendNamedStats(&b, "\nGuests Traffic", summary.GuestStats)
 
-	return lipgloss.NewStyle().Padding(0, 1).Render(b.String())
+	lines := strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n")
+	innerWidth := 0
+	if width > 2 {
+		innerWidth = width - 2
+	}
+	for i := range lines {
+		lines[i] = normalizeDisplayText(lines[i])
+		if innerWidth > 0 {
+			lines[i] = truncateVisual(lines[i], innerWidth)
+		}
+	}
+
+	if maxHeight > 0 && len(lines) > maxHeight {
+		visible := maxHeight
+		showIndicator := false
+		if maxHeight >= 2 {
+			visible = maxHeight - 1
+			showIndicator = true
+		}
+		start, end := clampScrollWindow(len(lines), -1, scrollOffset, visible)
+		sliced := append([]string(nil), lines[start:end]...)
+		if showIndicator {
+			ind := fmt.Sprintf("Lines %d-%d of %d", start+1, end, len(lines))
+			if innerWidth > 0 {
+				ind = truncateVisual(ind, innerWidth)
+			}
+			sliced = append(sliced, faintStyle.Render(ind))
+		}
+		lines = sliced
+	}
+
+	return lipgloss.NewStyle().Padding(0, 1).Render(strings.Join(lines, "\n"))
 }
 
 // BuildStatusReport generates a clean plain-text status report for clipboard copying.

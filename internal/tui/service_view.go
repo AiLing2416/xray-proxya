@@ -44,12 +44,18 @@ func QueryManagedServices(cfg *config.UserConfig) []ManagedServiceItem {
 
 // RenderServiceList renders the list table of managed services with simplified names.
 func RenderServiceList(active *config.UserConfig, staging *config.UserConfig, services []ManagedServiceItem, selectedIdx int, width int) string {
+	return RenderServiceListWindow(active, staging, services, selectedIdx, width, 0, 0)
+}
+
+// RenderServiceListWindow renders the list table of managed services constrained to maxHeight and scrollOffset.
+func RenderServiceListWindow(active *config.UserConfig, staging *config.UserConfig, services []ManagedServiceItem, selectedIdx int, width int, maxHeight int, scrollOffset int) string {
 	if len(services) == 0 {
 		return "No managed services found."
 	}
 
 	headers := []string{"   ", "SERVICE", "STATUS", "PID", "AUTOSTART", "DESCRIPTION"}
 	rows := make([][]string, 0, len(services))
+	disabled := make([]bool, 0, len(services))
 
 	for _, s := range services {
 		indicator := "   "
@@ -73,28 +79,12 @@ func RenderServiceList(active *config.UserConfig, staging *config.UserConfig, se
 			autostartStr,
 			s.Description,
 		})
+		disabled = append(disabled, !s.Active)
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 12, 9, 6, 9, 28}, width)
-
-	var b strings.Builder
-	b.WriteString(renderRow(headers, widths, true))
-	b.WriteString("\n")
-
-	for i, row := range rows {
-		s := renderRow(row, widths, false)
-		if !services[i].Active {
-			s = faintStyle.Render(s)
-		}
-		if i == selectedIdx {
-			b.WriteString(activeStyle.Render(s))
-		} else {
-			b.WriteString(s)
-		}
-		b.WriteString("\n")
-	}
-
-	return b.String()
+	headerBlock := renderRow(headers, widths, true)
+	return renderTableBody(headerBlock, rows, widths, disabled, selectedIdx, width, maxHeight, scrollOffset)
 }
 
 // BuildServiceReport builds an informative report for the selected service item.

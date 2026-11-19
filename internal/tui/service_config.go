@@ -576,8 +576,21 @@ func hasAnyServiceStagedChanges(active, staging *config.UserConfig, services []M
 
 // RenderServicePropertyList renders the property list for the in-bar tree view.
 func RenderServicePropertyList(props []ServiceProperty, selectedIdx int, width int) []string {
-	lines := make([]string, 0, len(props))
-	for i, p := range props {
+	return RenderServicePropertyListWindow(props, selectedIdx, width, 0)
+}
+
+// RenderServicePropertyListWindow renders the property list windowed to maxVisible lines and width.
+func RenderServicePropertyListWindow(props []ServiceProperty, selectedIdx int, width int, maxVisible int) []string {
+	if len(props) == 0 {
+		return nil
+	}
+	start, end := 0, len(props)
+	if maxVisible > 0 && maxVisible < len(props) {
+		start, end = clampScrollWindow(len(props), selectedIdx, selectedIdx-maxVisible/2, maxVisible)
+	}
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		p := props[i]
 		valStr := p.Value
 		if p.Type == PropBool {
 			if p.BoolVal {
@@ -590,7 +603,10 @@ func RenderServicePropertyList(props []ServiceProperty, selectedIdx int, width i
 			valStr = "(not set)"
 		}
 
-		line := fmt.Sprintf("%-20s %s", p.Label+":", valStr)
+		line := normalizeDisplayText(fmt.Sprintf("%-20s %s", p.Label+":", valStr))
+		if width > 2 {
+			line = truncateVisual(line, width-2)
+		}
 		if i == selectedIdx {
 			line = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("> " + line)
 		} else {
@@ -610,38 +626,25 @@ func boolToString(b bool) string {
 
 // RenderVerticalChoiceList renders a vertical list of choices with cursor indicator and windowed viewport.
 func RenderVerticalChoiceList(choices []string, selectedIdx int, maxVisible int) []string {
+	return RenderVerticalChoiceListWidth(choices, selectedIdx, maxVisible, 0)
+}
+
+// RenderVerticalChoiceListWidth renders a windowed vertical list of choices truncated to maxWidth (when > 0).
+func RenderVerticalChoiceListWidth(choices []string, selectedIdx int, maxVisible int, maxWidth int) []string {
 	if len(choices) == 0 {
 		return nil
 	}
-	if maxVisible <= 0 || maxVisible >= len(choices) {
-		lines := make([]string, 0, len(choices))
-		for i, c := range choices {
-			if i == selectedIdx {
-				lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("> "+c))
-			} else {
-				lines = append(lines, "  "+c)
-			}
-		}
-		return lines
-	}
-
-	// Calculate scrolling window
-	start := selectedIdx - maxVisible/2
-	if start < 0 {
-		start = 0
-	}
-	end := start + maxVisible
-	if end > len(choices) {
-		end = len(choices)
-		start = end - maxVisible
-		if start < 0 {
-			start = 0
-		}
+	start, end := 0, len(choices)
+	if maxVisible > 0 && maxVisible < len(choices) {
+		start, end = clampScrollWindow(len(choices), selectedIdx, selectedIdx-maxVisible/2, maxVisible)
 	}
 
 	lines := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
-		c := choices[i]
+		c := normalizeDisplayText(choices[i])
+		if maxWidth > 2 {
+			c = truncateVisual(c, maxWidth-2)
+		}
 		if i == selectedIdx {
 			lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("> "+c))
 		} else {

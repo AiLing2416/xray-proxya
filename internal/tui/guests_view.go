@@ -12,6 +12,10 @@ import (
 )
 
 func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int) string {
+	return RenderGuestsWindow(active, staging, selectedIdx, width, 0, 0)
+}
+
+func RenderGuestsWindow(active *config.UserConfig, staging *config.UserConfig, selectedIdx int, width int, maxHeight int, scrollOffset int) string {
 	if staging == nil {
 		return "No configuration found."
 	}
@@ -50,23 +54,8 @@ func RenderGuests(active *config.UserConfig, staging *config.UserConfig, selecte
 	}
 
 	widths := fitTableWidths(headers, rows, []int{3, 8, 5, 8, 3, 6, 14, 5, 7}, width)
-
-	var b strings.Builder
-	b.WriteString(renderRow(headers, widths, true))
-	b.WriteString("\n")
-	for i, row := range rows {
-		s := renderRow(row, widths, false)
-		if disabled[i] {
-			s = faintStyle.Render(s)
-		}
-		if i == selectedIdx {
-			b.WriteString(activeStyle.Render(s))
-		} else {
-			b.WriteString(s)
-		}
-		b.WriteString("\n")
-	}
-	return b.String()
+	headerBlock := renderRow(headers, widths, true)
+	return renderTableBody(headerBlock, rows, widths, disabled, selectedIdx, width, maxHeight, scrollOffset)
 }
 
 func BuildGuestReport(guest config.GuestConfig) string {

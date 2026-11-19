@@ -133,23 +133,17 @@ func joinChecked(choices []string, checked map[int]bool) []string {
 
 // RenderMultiChoiceList renders a checkbox list ("[x]" / "[ ]") with a cursor and windowed viewport.
 func RenderMultiChoiceList(choices []string, checked map[int]bool, cursor int, maxVisible int) []string {
+	return RenderMultiChoiceListWidth(choices, checked, cursor, maxVisible, 0)
+}
+
+// RenderMultiChoiceListWidth renders a windowed checkbox list truncated to maxWidth (when > 0).
+func RenderMultiChoiceListWidth(choices []string, checked map[int]bool, cursor int, maxVisible int, maxWidth int) []string {
 	if len(choices) == 0 {
 		return nil
 	}
 	start, end := 0, len(choices)
 	if maxVisible > 0 && maxVisible < len(choices) {
-		start = cursor - maxVisible/2
-		if start < 0 {
-			start = 0
-		}
-		end = start + maxVisible
-		if end > len(choices) {
-			end = len(choices)
-			start = end - maxVisible
-			if start < 0 {
-				start = 0
-			}
-		}
+		start, end = clampScrollWindow(len(choices), cursor, cursor-maxVisible/2, maxVisible)
 	}
 	lines := make([]string, 0, end-start)
 	for i := start; i < end; i++ {
@@ -157,7 +151,10 @@ func RenderMultiChoiceList(choices []string, checked map[int]bool, cursor int, m
 		if checked[i] {
 			box = "[x]"
 		}
-		line := fmt.Sprintf("%s %s", box, choices[i])
+		line := normalizeDisplayText(fmt.Sprintf("%s %s", box, choices[i]))
+		if maxWidth > 2 {
+			line = truncateVisual(line, maxWidth-2)
+		}
 		if i == cursor {
 			lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("33")).Render("> "+line))
 		} else {
