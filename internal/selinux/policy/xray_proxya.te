@@ -1,4 +1,4 @@
-policy_module(xray_proxya, 2.1.4)
+policy_module(xray_proxya, 2.1.5)
 
 ########################################
 # Dedicated domain for the root-managed Xray-Proxya service.  This policy is
@@ -28,9 +28,15 @@ type xray_proxya_pathd_t;
 type xray_proxya_pathd_exec_t;
 init_daemon_domain(xray_proxya_pathd_t, xray_proxya_pathd_exec_t)
 domain_use_interactive_fds(xray_proxya_pathd_t)
-# The hardened unit uses NoNewPrivileges=true.  This explicit transition is
+# pathd may be invoked via a symlink to the multi-call xray-proxya binary with
+# an explicit SELinuxContext= in the systemd unit. Allow systemd (init_t) to
+# resolve the symlink and transition into xray_proxya_pathd_t using
+# xray_proxya_exec_t as the entrypoint.
+spec_domtrans_pattern(init_t, xray_proxya_exec_t, xray_proxya_pathd_t)
+# The hardened unit uses NoNewPrivileges=true.  These explicit transitions are
 # still required for systemd to enter the dedicated pathd domain.
-allow init_t xray_proxya_pathd_t:process2 nnp_transition;
+allow init_t xray_proxya_pathd_t:process2 { nnp_transition nosuid_transition };
+allow init_t { xray_proxya_pathd_exec_t xray_proxya_data_t }:lnk_file read;
 
 # Short-lived domain entered by explicit `gateway up` / `gateway down` or
 # the companion systemd gateway-restore service.
@@ -90,6 +96,8 @@ allow xray_proxya_t xray_proxya_data_t:file { execute execute_no_trans getattr m
 # pathd reads only its root-owned private config.  It accepts its authenticated
 # PathLink stream on loopback and sends raw ICMP to caller-selected public
 # targets; it cannot modify host networking or application state.
+can_exec(xray_proxya_pathd_t, xray_proxya_exec_t)
+domain_entry_file(xray_proxya_pathd_t, xray_proxya_exec_t)
 files_search_home(xray_proxya_pathd_t)
 allow xray_proxya_pathd_t config_home_t:dir { getattr open search };
 allow xray_proxya_pathd_t data_home_t:dir { getattr open search };

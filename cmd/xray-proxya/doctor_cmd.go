@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,7 @@ or remove it with --uninstall, managing security contexts for Xray-Proxya.`,
 			return fmt.Errorf("SELinux policy installation failed: %w", err)
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), "✔ Reviewed SELinux policy installed. SELinux enforcing mode was not changed.")
+		warnIfLegacyPathdUnit(cmd.OutOrStdout(), defaultPathdSystemdUnitPath)
 		return nil
 	},
 }
@@ -100,7 +102,7 @@ func installSELinuxPolicy() error {
 		}
 	}
 	for _, path := range []string{"/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.config/xray-proxya"} {
-		if _, err := os.Stat(path); err == nil {
+		if _, err := os.Lstat(path); err == nil {
 			if out, err := exec.Command("restorecon", "-RF", path).CombinedOutput(); err != nil {
 				return fmt.Errorf("restore context on %s: %w (%s)", path, err, out)
 			}
@@ -135,11 +137,37 @@ func uninstallSELinuxPolicy() error {
 	}
 
 	for _, path := range []string{"/root/.local/bin/xray-proxya", "/root/.local/share/xray-proxya", "/root/.config/xray-proxya"} {
-		if _, err := os.Stat(path); err == nil {
+		if _, err := os.Lstat(path); err == nil {
 			_ = exec.Command("restorecon", "-RF", path).Run()
 		}
 	}
 	return nil
+}
+
+const defaultPathdSystemdUnitPath = "/etc/systemd/system/xray-proxya-pathd.service"
+
+func pathdUnitLacksSELinuxContext(unitPath string) bool {
+	data, err := os.ReadFile(unitPath)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, ";") {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "SELinuxContext=") {
+			val := strings.TrimSpace(strings.TrimPrefix(trimmed, "SELinuxContext="))
+			return val == ""
+		}
+	}
+	return true
+}
+
+func warnIfLegacyPathdUnit(out io.Writer, unitPath string) {
+	if pathdUnitLacksSELinuxContext(unitPath) {
+		fmt.Fprintf(out, "⚠️  Detected %s without SELinuxContext=. Run 'xray-proxya service install' to update the unit file.\n", unitPath)
+	}
 }
 
 func containsSELinuxEnabled(status string) bool {

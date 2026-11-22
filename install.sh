@@ -131,6 +131,9 @@ fi
 
 install -m 0755 "$WORK_DIR/$MAIN_ASSET" "$INSTALL_DIR/.xray-proxya.new"
 mv -f "$INSTALL_DIR/.xray-proxya.new" "$INSTALL_DIR/xray-proxya"
+if command -v restorecon >/dev/null 2>&1; then
+    restorecon -F "$INSTALL_DIR/xray-proxya" 2>/dev/null || true
+fi
 
 # Multi-call symlink for pathd (saves ~4.5MB redundant Go runtime binary)
 rm -f "$SHARE_BIN_DIR/pathd"
@@ -146,6 +149,9 @@ else
         cp -f "$INSTALL_DIR/xray-proxya" "$SHARE_BIN_DIR/pathd"
         echo -e "${GREEN}✅ pathd copied from: $INSTALL_DIR/xray-proxya${NC}"
     fi
+fi
+if command -v restorecon >/dev/null 2>&1; then
+    restorecon -F "$SHARE_BIN_DIR/pathd" 2>/dev/null || true
 fi
 echo -e "${GREEN}✅ xray-proxya installed to: $INSTALL_DIR/xray-proxya${NC}"
 

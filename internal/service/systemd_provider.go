@@ -89,12 +89,12 @@ func (p *SystemdProvider) Install(cfg *config.UserConfig) error {
 	}
 
 	var pathdContent string
-	if system {
+	if shouldInstallSystemdPathdUnit(cfg, system) {
 		_, _ = EnsurePathdSymlink()
 		if _, err := ValidateRootOwnedExecutable(PathdBinaryPath()); err != nil {
 			return fmt.Errorf("pathd binary is unavailable: %w", err)
 		}
-		if cfg.Role == config.RoleServer && cfg.Path.Token != "" {
+		if cfg.Path.Token != "" {
 			if err := WritePathdConfig(cfg); err != nil {
 				return fmt.Errorf("write pathd configuration: %w", err)
 			}
@@ -133,9 +133,38 @@ func (p *SystemdProvider) Install(cfg *config.UserConfig) error {
 		if err := os.WriteFile(p.UnitPath(PathdUnit), []byte(pathdContent), 0644); err != nil {
 			return fmt.Errorf("write %s: %w", PathdUnit, err)
 		}
+	} else if system {
+		_ = removeStalePathdUnitIfSafe(
+			p.UnitPath(PathdUnit),
+			func() bool { return p.IsActive(PathdUnit) },
+			func() error { return xray.ManageSystemdUnit("disable", PathdUnit) },
+		)
 	}
 
 	return xray.ReloadSystemdDaemon()
+}
+
+func shouldInstallSystemdPathdUnit(cfg *config.UserConfig, system bool) bool {
+	return system && cfg != nil && cfg.Role == config.RoleServer
+}
+
+func removeStalePathdUnitIfSafe(unitPath string, isActive func() bool, disable func() error) error {
+	if _, err := os.Stat(unitPath); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if isActive != nil && isActive() {
+		return nil
+	}
+	if disable != nil {
+		_ = disable()
+	}
+	if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (p *SystemdProvider) Uninstall() error {

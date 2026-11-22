@@ -113,5 +113,37 @@ func EnsurePathdSymlinkAt(targetPath string) (string, error) {
 		return "", fmt.Errorf("replace symlink %s: %w", cleanPath, err)
 	}
 
+	restoreSELinuxContextBestEffort(cleanPath)
+
 	return cleanPath, nil
+}
+
+var (
+	isSELinuxEnabledFunc = isSELinuxEnabled
+	runRestoreconFunc    = runRestorecon
+)
+
+func isSELinuxEnabled() bool {
+	for _, path := range []string{"/sys/fs/selinux/enforce", "/selinux/enforce"} {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+func runRestorecon(path string) error {
+	restoreconBin, err := exec.LookPath("restorecon")
+	if err != nil {
+		return err
+	}
+	// restorecon does not follow symlinks; -F restores the full context on the symlink itself.
+	return exec.Command(restoreconBin, "-F", path).Run()
+}
+
+func restoreSELinuxContextBestEffort(path string) {
+	if !isSELinuxEnabledFunc() {
+		return
+	}
+	_ = runRestoreconFunc(path)
 }

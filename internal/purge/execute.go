@@ -112,8 +112,9 @@ func Execute(plan *Plan, configDir, homeDir, installDir string, out io.Writer) e
 			} {
 				_ = exec.Command("semanage", "fcontext", "-d", pattern).Run()
 			}
+			_ = exec.Command("semanage", "fcontext", "-d", "-f", "f", `/root/.local/share/xray-proxya/bin/pathd`).Run()
 			if semoduleOut, err := exec.Command("semodule", "-r", item.Target).CombinedOutput(); err != nil {
-				if !strings.Contains(string(semoduleOut), "not found") {
+				if !strings.Contains(string(semoduleOut), "not found") && !strings.Contains(string(semoduleOut), "Failed to resolve") {
 					errs = append(errs, fmt.Errorf("remove SELinux policy module %s: %w (%s)", item.Target, err, semoduleOut))
 				}
 			} else {

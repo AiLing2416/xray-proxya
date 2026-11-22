@@ -102,3 +102,50 @@ func TestEnsurePathdSymlinkAt(t *testing.T) {
 		t.Fatalf("expected regular file to be preserved as regular file")
 	}
 }
+
+func TestEnsurePathdSymlinkAtBestEffortRestorecon(t *testing.T) {
+	origEnabled := isSELinuxEnabledFunc
+	origRestore := runRestoreconFunc
+	t.Cleanup(func() {
+		isSELinuxEnabledFunc = origEnabled
+		runRestoreconFunc = origRestore
+	})
+
+	t.Run("invoked and error ignored when SELinux enabled", func(t *testing.T) {
+		var restored []string
+		isSELinuxEnabledFunc = func() bool { return true }
+		runRestoreconFunc = func(path string) error {
+			restored = append(restored, path)
+			return os.ErrPermission
+		}
+
+		targetPath := filepath.Join(t.TempDir(), "share", "bin", "pathd")
+		created, err := EnsurePathdSymlinkAt(targetPath)
+		if err != nil {
+			t.Fatalf("EnsurePathdSymlinkAt should ignore restorecon error, got: %v", err)
+		}
+		if created != targetPath {
+			t.Fatalf("created = %q, want %q", created, targetPath)
+		}
+		if len(restored) != 1 || restored[0] != targetPath {
+			t.Fatalf("restored = %v, want [%s]", restored, targetPath)
+		}
+	})
+
+	t.Run("skipped when SELinux disabled", func(t *testing.T) {
+		called := false
+		isSELinuxEnabledFunc = func() bool { return false }
+		runRestoreconFunc = func(path string) error {
+			called = true
+			return nil
+		}
+
+		targetPath := filepath.Join(t.TempDir(), "share", "bin", "pathd")
+		if _, err := EnsurePathdSymlinkAt(targetPath); err != nil {
+			t.Fatalf("EnsurePathdSymlinkAt failed: %v", err)
+		}
+		if called {
+			t.Fatal("restorecon should not be called when SELinux is disabled")
+		}
+	})
+}

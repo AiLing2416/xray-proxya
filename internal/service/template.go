@@ -138,11 +138,15 @@ func BuildPathdServiceContent(binaryPath, configPath string) string {
 Description=Xray-Proxya PathLink Agent
 After=network-online.target
 Wants=network-online.target
+ConditionPathExists=%s
+StartLimitIntervalSec=60s
+StartLimitBurst=5
 
 [Service]
 Type=simple
 # pathd needs only raw ICMP; it never changes routing, firewall, or files.
 User=root
+SELinuxContext=-system_u:system_r:xray_proxya_pathd_t:s0
 ExecStart=%s serve --config %s
 Restart=on-failure
 RestartSec=2
@@ -165,7 +169,7 @@ SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
-`, binaryPath, configPath)
+`, configPath, binaryPath, configPath)
 }
 
 // WritePathdConfig writes out the pathd configuration file based on the user config.

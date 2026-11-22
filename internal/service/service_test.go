@@ -70,7 +70,11 @@ func TestBuildPathdServiceContent(t *testing.T) {
 	content := BuildPathdServiceContent("/root/.local/share/xray-proxya/bin/pathd", "/root/.config/xray-proxya/pathd.json")
 	for _, required := range []string{
 		"Description=Xray-Proxya PathLink Agent",
+		"ConditionPathExists=/root/.config/xray-proxya/pathd.json",
+		"StartLimitIntervalSec=60s",
+		"StartLimitBurst=5",
 		"User=root",
+		"SELinuxContext=-system_u:system_r:xray_proxya_pathd_t:s0",
 		"ExecStart=/root/.local/share/xray-proxya/bin/pathd serve --config /root/.config/xray-proxya/pathd.json",
 		"CapabilityBoundingSet=CAP_NET_RAW",
 		"AmbientCapabilities=CAP_NET_RAW",
@@ -79,6 +83,110 @@ func TestBuildPathdServiceContent(t *testing.T) {
 			t.Fatalf("pathd service missing %q:\n%s", required, content)
 		}
 	}
+
+	unitIdx := strings.Index(content, "[Unit]")
+	svcIdx := strings.Index(content, "[Service]")
+	if unitIdx < 0 || svcIdx <= unitIdx {
+		t.Fatalf("unexpected section layout:\n%s", content)
+	}
+	unitSection := content[unitIdx:svcIdx]
+	for _, inUnit := range []string{
+		"ConditionPathExists=/root/.config/xray-proxya/pathd.json",
+		"StartLimitIntervalSec=60s",
+		"StartLimitBurst=5",
+	} {
+		if !strings.Contains(unitSection, inUnit) {
+			t.Fatalf("[Unit] section missing %q:\n%s", inUnit, unitSection)
+		}
+	}
+	serviceSection := content[svcIdx:]
+	if !strings.Contains(serviceSection, "SELinuxContext=-system_u:system_r:xray_proxya_pathd_t:s0") {
+		t.Fatalf("[Service] section missing SELinuxContext:\n%s", serviceSection)
+	}
+}
+
+func TestShouldInstallSystemdPathdUnit(t *testing.T) {
+	cases := []struct {
+		name   string
+		cfg    *config.UserConfig
+		system bool
+		want   bool
+	}{
+		{"system server", &config.UserConfig{Role: config.RoleServer}, true, true},
+		{"user server", &config.UserConfig{Role: config.RoleServer}, false, false},
+		{"system gateway", &config.UserConfig{Role: config.RoleGateway}, true, false},
+		{"system empty role", &config.UserConfig{}, true, false},
+		{"system nil config", nil, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shouldInstallSystemdPathdUnit(tc.cfg, tc.system); got != tc.want {
+				t.Fatalf("shouldInstallSystemdPathdUnit(%+v, %t) = %t, want %t", tc.cfg, tc.system, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRemoveStalePathdUnitIfSafe(t *testing.T) {
+	t.Run("missing unit is no-op", func(t *testing.T) {
+		unitPath := filepath.Join(t.TempDir(), PathdUnit)
+		disableCalled := false
+		err := removeStalePathdUnitIfSafe(
+			unitPath,
+			func() bool { t.Fatal("isActive should not be called for missing unit"); return false },
+			func() error { disableCalled = true; return nil },
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if disableCalled {
+			t.Fatal("disable should not be called for missing unit")
+		}
+	})
+
+	t.Run("active unit is preserved", func(t *testing.T) {
+		unitPath := filepath.Join(t.TempDir(), PathdUnit)
+		if err := os.WriteFile(unitPath, []byte("[Unit]\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		disableCalled := false
+		err := removeStalePathdUnitIfSafe(
+			unitPath,
+			func() bool { return true },
+			func() error { disableCalled = true; return nil },
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if disableCalled {
+			t.Fatal("disable should not be called for active unit")
+		}
+		if _, err := os.Stat(unitPath); err != nil {
+			t.Fatalf("active unit should remain on disk: %v", err)
+		}
+	})
+
+	t.Run("inactive stale unit is disabled and removed", func(t *testing.T) {
+		unitPath := filepath.Join(t.TempDir(), PathdUnit)
+		if err := os.WriteFile(unitPath, []byte("[Unit]\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		disableCalled := false
+		err := removeStalePathdUnitIfSafe(
+			unitPath,
+			func() bool { return false },
+			func() error { disableCalled = true; return nil },
+		)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !disableCalled {
+			t.Fatal("expected disable to be called before removing stale unit")
+		}
+		if _, err := os.Stat(unitPath); !os.IsNotExist(err) {
+			t.Fatalf("expected stale unit to be removed, stat err = %v", err)
+		}
+	})
 }
 
 func TestBuildGatewayRestoreServiceContent(t *testing.T) {

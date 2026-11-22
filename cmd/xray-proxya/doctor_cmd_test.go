@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -124,5 +127,65 @@ func TestSELinuxPolicyAllowsParentDirAttributes(t *testing.T) {
 		if !strings.Contains(proxyaSELinux.PolicySource, want) {
 			t.Fatalf("%s missing permission %q for evaluating parent config directory", domain, want)
 		}
+	}
+}
+
+func TestSELinuxPolicyAllowsPathdMultiCallSymlinkTransition(t *testing.T) {
+	for _, rule := range []string{
+		"policy_module(xray_proxya, 2.1.5)",
+		"init_daemon_domain(xray_proxya_pathd_t, xray_proxya_pathd_exec_t)",
+		"spec_domtrans_pattern(init_t, xray_proxya_exec_t, xray_proxya_pathd_t)",
+		"domain_entry_file(xray_proxya_pathd_t, xray_proxya_exec_t)",
+		"can_exec(xray_proxya_pathd_t, xray_proxya_exec_t)",
+		"allow init_t xray_proxya_pathd_t:process2 { nnp_transition nosuid_transition };",
+		"allow init_t { xray_proxya_pathd_exec_t xray_proxya_data_t }:lnk_file read;",
+	} {
+		if !strings.Contains(proxyaSELinux.PolicySource, rule) {
+			t.Fatalf("policy missing %q for pathd multi-call symlink transition", rule)
+		}
+	}
+}
+
+func TestPathdUnitLacksSELinuxContextAndWarn(t *testing.T) {
+	dir := t.TempDir()
+
+	missingPath := filepath.Join(dir, "missing.service")
+	if pathdUnitLacksSELinuxContext(missingPath) {
+		t.Fatal("missing unit file should not report lacking SELinuxContext")
+	}
+
+	legacyPath := filepath.Join(dir, "legacy.service")
+	if err := os.WriteFile(legacyPath, []byte("[Service]\nExecStart=/root/.local/share/xray-proxya/bin/pathd serve\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !pathdUnitLacksSELinuxContext(legacyPath) {
+		t.Fatal("legacy unit without SELinuxContext= should be detected")
+	}
+
+	var buf bytes.Buffer
+	warnIfLegacyPathdUnit(&buf, legacyPath)
+	if !strings.Contains(buf.String(), "xray-proxya service install") || !strings.Contains(buf.String(), "SELinuxContext=") {
+		t.Fatalf("unexpected hint output: %q", buf.String())
+	}
+
+	commentedPath := filepath.Join(dir, "commented.service")
+	if err := os.WriteFile(commentedPath, []byte("[Service]\n# SELinuxContext=-system_u:system_r:xray_proxya_pathd_t:s0\nSELinuxContext=\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if !pathdUnitLacksSELinuxContext(commentedPath) {
+		t.Fatal("unit with commented/empty SELinuxContext= should be detected")
+	}
+
+	updatedPath := filepath.Join(dir, "updated.service")
+	if err := os.WriteFile(updatedPath, []byte("[Service]\nSELinuxContext=-system_u:system_r:xray_proxya_pathd_t:s0\nExecStart=/root/.local/share/xray-proxya/bin/pathd serve\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if pathdUnitLacksSELinuxContext(updatedPath) {
+		t.Fatal("updated unit with SELinuxContext= should not trigger legacy warning")
+	}
+	buf.Reset()
+	warnIfLegacyPathdUnit(&buf, updatedPath)
+	if buf.Len() != 0 {
+		t.Fatalf("expected no warning for updated unit, got %q", buf.String())
 	}
 }
