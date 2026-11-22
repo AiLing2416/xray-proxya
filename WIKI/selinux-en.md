@@ -32,8 +32,8 @@ This command will:
 
 1. Compile the built-in policy module locally against Fedora's SELinux reference policy headers;
 2. Install the `xray_proxya` policy module;
-3. Label all application binaries, configuration files, runtime data, and log directories;
-4. Pre-create systemd output log targets to prevent `209/STDOUT` execution errors on fresh configuration directories.
+3. Label application binaries, configuration files, and runtime data (service logs go to journald, so no private log files are needed);
+4. Confine `pathd` in its own `xray_proxya_pathd_t` domain (it shares the `xray-proxya` binary through a multi-call symlink).
 
 It will **not** switch the global SELinux state to Permissive, nor will it auto-generate rules from historical `audit.log` files.
 
@@ -78,9 +78,13 @@ Never directly edit `config.json` or `config.active.json`.
 ```bash
 systemctl is-active xray-proxya
 ss -ltnp | grep xray
-tail -n 50 /root/.config/xray-proxya/xray.log
+journalctl -u xray-proxya -n 50 --no-pager
+systemctl is-active xray-proxya-pathd   # Server role only
+ps -eZ | grep -E 'xray-proxya|pathd'    # pathd should run as xray_proxya_pathd_t
 ausearch -m AVC,USER_AVC -ts recent -i
 ```
+
+> After upgrading, run `xray-proxya doctor selinux` and then `xray-proxya service install` (refreshes `xray-proxya-pathd.service` with `SELinuxContext=`), then restart `xray-proxya-pathd`.
 
 Under normal operation, the service is `active`, Xray listens on enabled preset ports and internal API/Test ports, and no new AVC denial messages are logged during startup.
 

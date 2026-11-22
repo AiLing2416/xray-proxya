@@ -41,8 +41,8 @@ xray-proxya doctor selinux
 
 1. 在本机用 Fedora 的 SELinux 参考策略编译项目内置策略；
 2. 安装 `xray_proxya` 模块；
-3. 标记程序、配置、数据与日志路径；
-4. 预创建 systemd 输出日志，避免新配置目录首次启动时出现 `209/STDOUT`。
+3. 标记程序、配置与数据路径（服务日志由 journald 接管，无需私有日志文件）；
+4. 为 `pathd` 配置独立的 `xray_proxya_pathd_t` 域（与主服务共用 `xray-proxya` 二进制，通过符号链接多入口运行）。
 
 它**不会**切换全局 Permissive，也不会从历史 `audit.log` 自动生成规则。
 
@@ -88,9 +88,13 @@ xray-proxya apply
 ```bash
 systemctl is-active xray-proxya
 ss -ltnp | grep xray
-tail -n 50 /root/.config/xray-proxya/xray.log
+journalctl -u xray-proxya -n 50 --no-pager
+systemctl is-active xray-proxya-pathd   # 仅 Server 角色
+ps -eZ | grep -E 'xray-proxya|pathd'    # pathd 应运行于 xray_proxya_pathd_t
 ausearch -m AVC,USER_AVC -ts recent -i
 ```
+
+> 从旧版本升级后，请依次执行 `xray-proxya doctor selinux` 与 `xray-proxya service install`（刷新 `xray-proxya-pathd.service`，使其带 `SELinuxContext=`），再重启 `xray-proxya-pathd`。
 
 正常情况下，服务为 `active`，Xray 会监听启用的预设端口和内部 API/Test
 端口，且本轮启动没有新增 AVC。
